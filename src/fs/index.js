@@ -177,7 +177,11 @@ class VirtualFS {
   _findBackend(resolvedPath) {
     for (const m of this.mounts) {
       if (resolvedPath.startsWith(m.prefix)) {
-        const relative = resolvedPath.slice(m.prefix.length) || "/";
+        let relative = resolvedPath.slice(m.prefix.length) || "/";
+        // Ensure relative path always starts with "/" — when the matching
+        // prefix is "/" (root), the slice strips it and we lose the leading
+        // slash unless we re-add it.
+        if (!relative.startsWith("/")) relative = "/" + relative;
         return { backend: m.backend, relative };
       }
     }
