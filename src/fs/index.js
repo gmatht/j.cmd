@@ -123,7 +123,9 @@ class VirtualFS {
     this.mount(hasLocalStorage ? "localStorage" : "ram", "/commands",
       hasLocalStorage ? new LocalStorageFS() : new RamFS());
     this.mount("http", "/http", new HttpFS());
-    this.mount("github", "/mount/github", new GitHubFS());
+    const github = new GitHubFS();
+    this.mount("github", "/mount/github", github);
+    this.mount("github", "/github", github);  // convenience alias
     this.mount("dev", "/dev", new DevFS());
 
     // Initialize default files
