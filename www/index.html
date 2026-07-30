@@ -318,6 +318,9 @@ const builtins = {
     Up/Down          — command history
     edit <file>      — built-in text editor
 
+  /dev/ devices: cat /dev/info · cat /dev/cpu · cat /dev/time
+                cat /dev/webgl · cat /dev/webgl/extensions
+
   Aliases: vi/vim/nano = edit · less/more = cat · cls = clear
            dir = ls · ? = help · q/quit = exit
 
@@ -610,7 +613,8 @@ write("╚═══════════════════════�
 write("Type 'help' for available commands.\n\n", "info");
 write("Features: Tab completion · Ctrl+L clear · Up/Down history\n", "info");
 write("          edit <file> — built-in text editor\n", "info");
-write("          vi/vim/nano → edit · less/more → cat · cls → clear\n\n", "info");
+write("          vi/vim/nano → edit · less/more → cat · cls → clear\n", "info");
+write("          ls /dev/ · cat /dev/info · cat /dev/cpu\n\n", "info");
 updatePrompt();
 input.focus();
 </script>

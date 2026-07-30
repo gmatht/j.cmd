@@ -16,6 +16,7 @@ import { RamFS } from "./ramfs.js";
 import { LocalStorageFS } from "./localstoragefs.js";
 import { HttpFS } from "./httpfs.js";
 import { GitHubFS } from "./githubfs.js";
+import { DevFS } from "./devfs.js";
 
 // ─── RootFS: A virtual directory that shows mount points ───────
 
@@ -123,6 +124,7 @@ class VirtualFS {
       hasLocalStorage ? new LocalStorageFS() : new RamFS());
     this.mount("http", "/http", new HttpFS());
     this.mount("github", "/mount/github", new GitHubFS());
+    this.mount("dev", "/dev", new DevFS());
 
     // Initialize default files
     if (hasLocalStorage && !localStorage.getItem("fs:initialized")) {
