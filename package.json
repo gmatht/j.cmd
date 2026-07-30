@@ -1,0 +1,15 @@
+{
+  "name": "sh2perl-runtime",
+  "version": "0.1.0",
+  "description": "Browser virtual filesystem runtime — the 'machine code' layer for compiled shell scripts",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "tinysh": "src/tinysh.js"
+  },
+  "scripts": {
+    "start": "node src/tinysh.js"
+  },
+  "keywords": ["shell", "filesystem", "browser", "plan9", "virtual-fs"],
+  "license": "GPL-3.0"
+}
