@@ -4,23 +4,20 @@
 // compile down to. Every path is a file. Every file has a backend.
 //
 // Mount table:
-//   /tmp/         → RamFS       (ephemeral, in-memory)
-//   /home/        → LocalStorage (persistent across reloads)
-//   /pc/          → DownloadFS  (write = browser download, read = file picker)
-//   /http/        → HttpFS      (fetch with caching)
-//   /mount/github → GitHubFS    (GitHub API as a filesystem)
-//   /dev/input    → InputFS     (keyboard state)
-//   /dev/webgl    → WebglFS     (GPU as a filesystem)
+//   /             → RootFS        (aggregates mount points)
+//   /tmp/         → RamFS         (ephemeral, in-memory)
+//   /home/        → LocalStorageFS(persistent across reloads)
+//   /commands/    → LocalStorageFS(persistent user commands)
+//   /http/        → HttpFS        (CORS fetch access)
+//   /mount/github → GitHubFS      (GitHub API as a filesystem)
 // -------------------------------------------------------------------
 
 import { RamFS } from "./ramfs.js";
+import { LocalStorageFS } from "./localstoragefs.js";
 import { HttpFS } from "./httpfs.js";
 import { GitHubFS } from "./githubfs.js";
 
 // ─── RootFS: A virtual directory that shows mount points ───────
-// When listing the root or any prefix that contains mount boundaries,
-// this backend merges the underlying RamFS entries with synthetic
-// directory entries for each registered mount point.
 
 class RootFS {
   constructor(vfs) {
@@ -59,8 +56,6 @@ class RootFS {
 
   async list(path) {
     const norm = path.replace(/\/$/, "") || "/";
-
-    // Collect entries from our own files
     const entries = new Set();
     const prefix = norm === "/" ? "/" : norm + "/";
 
@@ -78,9 +73,7 @@ class RootFS {
         if (name) entries.add(name + "/");
       }
     }
-
-    // Also inject mount point directories: any mount whose prefix is
-    // a direct child of the listed path gets a synthetic directory entry.
+    // Inject mount point directories
     for (const m of this.vfs.mounts) {
       if (m.prefix.startsWith(prefix) && m.prefix !== norm) {
         const rest = m.prefix.slice(prefix.length);
@@ -88,7 +81,6 @@ class RootFS {
         if (name) entries.add(name + "/");
       }
     }
-
     return [...entries].sort();
   }
 
@@ -102,7 +94,14 @@ class RootFS {
   }
 }
 
-// ─── Mount Registry ─────────────────────────────────────────────
+// ─── Synchronous wrapper for LocalStorageFS writes during init ──
+
+function syncWrite(backend, path, content) {
+  // LocalStorageFS is synchronous under the hood despite the async API
+  backend.write(path, content);
+}
+
+// ─── VirtualFS ─────────────────────────────────────────────────
 
 class VirtualFS {
   constructor() {
@@ -113,48 +112,59 @@ class VirtualFS {
     const root = new RootFS(this);
     this.mount("root", "/", root);
 
+    // Detect whether localStorage is available (browser vs Node.js)
+    const hasLocalStorage = typeof localStorage !== "undefined";
+
     // Register filesystem backends
     this.mount("ram", "/tmp", new RamFS());
-    this.mount("ram", "/home", new RamFS());
-    this.mount("ram", "/commands", new RamFS());
+    this.mount(hasLocalStorage ? "localStorage" : "ram", "/home",
+      hasLocalStorage ? new LocalStorageFS() : new RamFS());
+    this.mount(hasLocalStorage ? "localStorage" : "ram", "/commands",
+      hasLocalStorage ? new LocalStorageFS() : new RamFS());
     this.mount("http", "/http", new HttpFS());
     this.mount("github", "/mount/github", new GitHubFS());
 
-    // Default files
-    this.write("/home/hello.txt", "Hello from the virtual filesystem!\n");
-    this.write("/tmp/README", "This is ramfs. Contents lost on reload.\n");
+    // Initialize default files
+    if (hasLocalStorage && !localStorage.getItem("fs:initialized")) {
+      localStorage.setItem("fs:initialized", "1");
+      syncWrite(this._getBackend("/home/hello.txt"), "/hello.txt",
+        "Hello from localStorage! This survives reload.\n");
+      syncWrite(this._getBackend("/home/.welcome"), "/.welcome",
+        "Files in /home/ persist across page reloads.\n");
+    } else if (!hasLocalStorage) {
+      // No localStorage (Node.js), write init files to RamFS
+      syncWrite(this._getBackend("/home/hello.txt"), "/hello.txt",
+        "Hello from RamFS! Contents lost on restart.\n");
+    }
+    syncWrite(this._getBackend("/tmp/README"), "/README",
+      "This is ramfs. Contents lost on reload.\n");
 
-    // Pre-populate /commands/ with example "binaries"
-    this.write("/commands/sayhello.js", `
-const name = args[0] || "world";
-console.log("Hello, " + name + "!");
-`.trim());
-    this.write("/commands/counter.js", `
-const counterPath = "/tmp/counter.txt";
-let count;
-try {
-  const raw = await fs.read(counterPath);
-  count = parseInt(raw.trim(), 10) || 0;
-} catch { count = 0; }
-count++;
-await fs.write(counterPath, String(count));
-console.log("Invocation #" + count);
-`.trim());
+    // Pre-populate commands
+    const helloContent = `const name = args[0] || "world";\nconsole.log("Hello, " + name + "!");\n`;
+    const counterContent = `const counterPath = "/tmp/counter.txt";\nlet count;\ntry {\n  const raw = await fs.read(counterPath);\n  count = parseInt(raw.trim(), 10) || 0;\n} catch { count = 0; }\ncount++;\nawait fs.write(counterPath, String(count));\nconsole.log("Invocation #" + count);\n`;
+    syncWrite(this._getBackend("/commands/sayhello.js"), "/sayhello.js", helloContent);
+    syncWrite(this._getBackend("/commands/counter.js"), "/counter.js", counterContent);
+  }
+
+  _getBackend(resolvedPath) {
+    for (const m of this.mounts) {
+      if (resolvedPath.startsWith(m.prefix)) {
+        return m.backend;
+      }
+    }
+    return null;
   }
 
   mount(name, prefix, backend) {
     this.mounts.push({ name, prefix, backend });
-    // Sort longest prefix first so /mount/github matches before /mount
     this.mounts.sort((a, b) => b.prefix.length - a.prefix.length);
   }
 
   _resolve(path) {
-    // Resolve relative paths against cwd
     let resolved = path;
     if (!path.startsWith("/")) {
       resolved = (this.cwd === "/" ? "/" : this.cwd + "/") + path;
     }
-    // Normalize: remove .. and .
     const parts = resolved.split("/").filter(Boolean);
     const out = [];
     for (const p of parts) {
@@ -211,11 +221,9 @@ console.log("Invocation #" + count);
     }
   }
 
-  // Print a directory listing in 'ls' format
   async formatList(path) {
     const entries = await this.list(path);
     if (entries.length === 0) return "";
-    // Simple column layout
     const cols = 4;
     const widths = entries.map(e => e.length);
     const colW = Math.max(...widths) + 2;
