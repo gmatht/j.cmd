@@ -1,8 +1,12 @@
-# sh2perl-runtime
+# sh2runtime
 
 **JavaScript is the "binary format"** of the browser-shell architecture.
 This runtime is the "machine code layer" — the virtual filesystem that
 compiled shell scripts run against.
+
+This is the JavaScript runtime for the [sh2perl](https://github.com/gmatht/sh2perl)
+transpiler ecosystem. Shell scripts compiled by sh2perl produce JavaScript
+that imports this library and calls its virtual filesystem API.
 
 ## Architecture
 
@@ -21,9 +25,9 @@ compiled shell scripts run against.
 └──────────────────────────────────────────┘
 ```
 
-- **RAMFS**: In-memory filesystem at `/tmp/`, `/home/`
+- **RamFS**: In-memory filesystem at `/tmp/`, `/home/`, `/commands/`
 - **HttpFS**: Read-only fetch-backed filesystem at `/http/` (for CORS APIs)
-- **More to come**: localStorage, WebGL, GitHub, clipboard, terminal
+- **More to come**: localStorage, IndexedDB, WebGL, GitHub API, clipboard
 
 ## tinysh — The Minimal Shell
 
@@ -36,16 +40,13 @@ tinysh:/home$ ls
 hello.txt
 tinysh:/home$ cat hello.txt
 Hello from the virtual filesystem!
-tinysh:/home$ echo hello world
-hello world
-tinysh:/home$ pwd
-/home
-tinysh:/home$ cd /tmp
-tinysh:/tmp$ ls
-README
-tinysh:/tmp$ cat README
-This is ramfs. Contents lost on reload.
-tinysh:/tmp$ help
+tinysh:/home$ sayhello
+Hello, world!
+tinysh:/home$ counter
+Invocation #1
+tinysh:/home$ counter
+Invocation #2
+tinysh:/home$ help
 ```
 
 ### Running .js Files as Commands
@@ -56,14 +57,21 @@ virtual filesystem's command path (`/commands/`, `/usr/bin/`, `/bin/`).
 These are the "compiled binaries" of this architecture:
 
 ```
-tinysh:/home$ echo "console.log('args:', args)" > /tmp/printargs.js
-tinysh:/home$ /tmp/printargs.js one two three
-args: [ 'one', 'two', 'three' ]
+tinysh:/home$ echo "console.log(args[0])" > /commands/echo.js
+tinysh:/home$ echo hello
+hello
 ```
 
-The runtime provides `args` (command arguments as an array), `fs`
-(the virtual filesystem), and `console` (with captured `.log()` output)
-to every executed `.js` file.
+### In the Browser
+
+```
+cd /root/src/sh2runtime
+python3 -m http.server 8080
+# → http://localhost:8080/www/
+```
+
+The same runtime runs in the browser with a DOM-based terminal.
+No build step, no bundler — just ES modules served over HTTP.
 
 ## The Plan 9 Connection
 

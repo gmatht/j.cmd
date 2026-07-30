@@ -1,5 +1,5 @@
 {
-  "name": "sh2perl-runtime",
+  "name": "sh2runtime",
   "version": "0.1.0",
   "description": "Browser virtual filesystem runtime — the 'machine code' layer for compiled shell scripts",
   "type": "module",
