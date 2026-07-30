@@ -318,6 +318,9 @@ const builtins = {
     Up/Down          — command history
     edit <file>      — built-in text editor
 
+  Aliases: vi/vim/nano = edit · less/more = cat · cls = clear
+           dir = ls · ? = help · q/quit = exit
+
   Any other command runs a .js file from /commands/.
   `);
   },
@@ -370,7 +373,19 @@ async function handleLine(line) {
   try {
     const resolved = await resolveCommand(cmd);
     if (!resolved) {
-      stderr.write(`${cmd}: command not found\n`);
+      const hints = {
+        "vi": "edit", "vim": "edit", "nano": "edit", "emacs": "edit",
+        "more": "cat", "less": "cat",
+        "cls": "clear", "quit": "exit", "q": "exit",
+        "?": "help", "dir": "ls", "ll": "ls", "la": "ls",
+        "chdir": "cd",
+      };
+      const hint = hints[cmd];
+      if (hint) {
+        stderr.write(`${cmd}: command not found — try "${hint}" instead\n`);
+      } else {
+        stderr.write(`${cmd}: command not found\n`);
+      }
       return;
     }
 
@@ -594,7 +609,8 @@ write("║     JavaScript is the binary format ║\n", "info");
 write("╚══════════════════════════════════════╝\n", "info");
 write("Type 'help' for available commands.\n\n", "info");
 write("Features: Tab completion · Ctrl+L clear · Up/Down history\n", "info");
-write("          edit <file> — built-in text editor\n\n", "info");
+write("          edit <file> — built-in text editor\n", "info");
+write("          vi/vim/nano → edit · less/more → cat · cls → clear\n\n", "info");
 updatePrompt();
 input.focus();
 </script>

@@ -138,6 +138,9 @@ Built-in commands:
   help            This help
   exit            Exit the shell
 
+Aliases: vi/vim/nano = edit · less/more = cat · cls = clear
+         dir = ls · ? = help · q/quit = exit
+
 Any other command runs a .js file from the command path.
 Write new commands by creating .js files in /commands/.
 `);
@@ -195,7 +198,19 @@ async function handleLine(line) {
     const resolved = await resolveCommand(cmd);
 
     if (!resolved) {
-      process.stderr.write(`${cmd}: command not found\n`);
+      const hints = {
+        "vi": "edit", "vim": "edit", "nano": "edit", "emacs": "edit",
+        "more": "cat", "less": "cat",
+        "cls": "clear", "quit": "exit", "q": "exit",
+        "?": "help", "dir": "ls", "ll": "ls", "la": "ls",
+        "chdir": "cd",
+      };
+      const hint = hints[cmd];
+      if (hint) {
+        process.stderr.write(`${cmd}: command not found — try "${hint}" instead\n`);
+      } else {
+        process.stderr.write(`${cmd}: command not found\n`);
+      }
       return;
     }
 
