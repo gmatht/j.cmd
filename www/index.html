@@ -3,12 +3,15 @@
 <head>
 <meta charset="UTF-8">
 <title>tinysh — browser shell</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/codemirror.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/theme/monokai.min.css">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { background: #1a1a2e; color: #e0e0e0; font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace; font-size: 14px; }
   
   #terminal {
-    width: 100vw; height: 100vh;
+    width: 100vw;
+    height: calc(100vh - 48px);
     padding: 16px;
     overflow-y: auto;
     white-space: pre-wrap;
@@ -20,6 +23,7 @@
     padding: 4px 16px 16px;
     background: #1a1a2e;
     position: fixed; bottom: 0; left: 0; right: 0;
+    height: 48px;
   }
   
   #prompt {
@@ -39,22 +43,69 @@
     border-radius: 4px;
   }
   #input:focus { border-color: #7ec8e3; }
-  
+
+  /* ─── Editor mode ─────────────────────────────────── */
+  #editor-container {
+    display: none;
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 48px;
+    background: #0d1117;
+    z-index: 10;
+  }
+  #editor-container.active {
+    display: flex;
+    flex-direction: column;
+  }
+  #editor-header {
+    background: #161b22;
+    padding: 8px 16px;
+    color: #8b949e;
+    font-size: 12px;
+    display: flex;
+    justify-content: space-between;
+    border-bottom: 1px solid #30363d;
+  }
+  #editor-body {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+  }
+  .CodeMirror {
+    height: 100% !important;
+    font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+    font-size: 14px;
+  }
+  .cm-s-monokai .CodeMirror-cursor {
+    border-color: #7ec8e3;
+  }
   .out { color: #a0d6a0; }
   .err { color: #d6a0a0; }
   .info { color: #7ec8e3; }
   .prompt { color: #7ec8e3; }
+  .dir { color: #7ec8e3; }
+  .file { color: #e0e0e0; }
 </style>
 </head>
 <body>
 
 <div id="terminal"></div>
 
+<div id="editor-container">
+  <div id="editor-header">
+    <span id="editor-filename">untitled</span>
+    <span>Ctrl+S save · Esc cancel</span>
+  </div>
+  <div id="editor-body">
+    <textarea id="editor-textarea" spellcheck="false"></textarea>
+  </div>
+</div>
+
 <div id="input-line">
   <span id="prompt"></span>
   <input id="input" type="text" autofocus spellcheck="false" autocomplete="off" />
 </div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/codemirror.min.js"></script>
 <script type="module">
 import { fs } from "../src/fs/index.js";
 
@@ -72,11 +123,73 @@ function write(text, cls = "out") {
   term.scrollTop = term.scrollHeight;
 }
 
-// Override process-like globals for builtins to write to the terminal
 const stdout = { write: (s) => write(s, "out") };
 const stderr = { write: (s) => write(s, "err") };
 
-// ─── Built-in Commands (same as tinysh.js) ─────────────────────
+// ─── Text Editor ───────────────────────────────────────────────
+
+const editorContainer = document.getElementById("editor-container");
+const editorTextarea = document.getElementById("editor-textarea");
+const editorFilename = document.getElementById("editor-filename");
+
+let editorFilepath = null;
+let editorCallback = null;
+let cm = null;
+
+function openEditor(filepath, initialContent, onSave) {
+  editorFilepath = filepath;
+  editorCallback = onSave;
+  editorFilename.textContent = `Editing: ${filepath}`;
+  editorContainer.classList.add("active");
+  input.disabled = true;
+
+  // Initialize CodeMirror on the textarea
+  cm = CodeMirror.fromTextArea(editorTextarea, {
+    value: initialContent,
+    mode: "text/plain",
+    theme: "monokai",
+    lineNumbers: true,
+    indentUnit: 2,
+    tabSize: 2,
+    indentWithTabs: false,
+    lineWrapping: false,
+    extraKeys: {
+      "Ctrl-S": () => closeEditor(true),
+      "Cmd-S": () => closeEditor(true),
+      "Esc": () => {
+        const val = cm.getValue();
+        if (val !== "") {
+          if (confirm("Discard unsaved changes?")) closeEditor(false);
+        } else {
+          closeEditor(false);
+        }
+      }
+    }
+  });
+  cm.setValue(initialContent);
+  cm.focus();
+  cm.setCursor(0, 0);
+}
+
+function closeEditor(save) {
+  if (save && editorCallback) {
+    const content = cm.getValue();
+    editorCallback(content);
+  }
+  // Destroy CodeMirror and restore the textarea
+  if (cm) {
+    cm.toTextArea();
+    cm = null;
+  }
+  editorContainer.classList.remove("active");
+  input.disabled = false;
+  editorFilepath = null;
+  editorCallback = null;
+  write(`[editor closed] ${save ? "saved" : "cancelled"}\n`, "info");
+  input.focus();
+}
+
+// ─── Built-in Commands ─────────────────────────────────────────
 
 const builtins = {
   async ls(args) {
@@ -120,21 +233,93 @@ const builtins = {
     }
   },
 
+  async edit(args) {
+    if (args.length === 0) { stderr.write("edit: missing filename\n"); return; }
+    const filepath = args[0];
+    let content = "";
+    try {
+      content = await fs.read(filepath);
+    } catch {
+      // File doesn't exist — start with empty content
+    }
+    // Open the editor — it blocks the shell until closed
+    await new Promise((resolve) => {
+      openEditor(filepath, content, async (newContent) => {
+        await fs.write(filepath, newContent);
+        resolve();
+      });
+    });
+  },
+
+  async rm(args) {
+    if (args.length === 0) { stderr.write("rm: missing operand\n"); return; }
+    for (const file of args) {
+      try { await fs.remove(file); }
+      catch (e) { stderr.write(`rm: ${file}: ${e.message}\n`); }
+    }
+  },
+
+  async mkdir(args) {
+    if (args.length === 0) { stderr.write("mkdir: missing operand\n"); return; }
+    for (const dir of args) {
+      try {
+        const r = fs._resolve(dir);
+        const parent = fs._resolve(r + "/..");
+        // Create the directory by writing a marker
+        await fs.write(r + "/.directory", "");
+      } catch (e) {
+        stderr.write(`mkdir: ${dir}: ${e.message}\n`);
+      }
+    }
+  },
+
+  async cp(args) {
+    if (args.length < 2) { stderr.write("cp: missing operand\n"); return; }
+    try {
+      const content = await fs.read(args[0]);
+      await fs.write(args[1], content);
+    } catch (e) {
+      stderr.write(`cp: ${args[0]}: ${e.message}\n`);
+    }
+  },
+
+  async mv(args) {
+    if (args.length < 2) { stderr.write("mv: missing operand\n"); return; }
+    try {
+      const content = await fs.read(args[0]);
+      await fs.write(args[1], content);
+      await fs.remove(args[0]);
+    } catch (e) {
+      stderr.write(`mv: ${args[0]}: ${e.message}\n`);
+    }
+  },
+
   async help(args) {
     stdout.write(`tinysh — browser shell
 
-Built-in commands:
-  ls [dir]        List directory contents
-  cat <file>...   Print file contents
-  echo <text>     Print text
-  pwd             Print working directory
-  cd [dir]        Change directory
-  help            This help
-  clear           Clear terminal
+  Built-in commands:
+    ls [dir]        List directory contents
+    cat <file>...   Print file contents
+    echo <text>     Print text
+    pwd             Print working directory
+    cd [dir]        Change directory
+    edit <file>     Edit a file (Ctrl+S save, Esc cancel)
+    rm <file>...    Remove files
+    mkdir <dir>...  Create directories
+    cp <src> <dst>  Copy files
+    mv <src> <dst>  Move files
+    help            This help
+    clear           Clear terminal
+    exit            Exit the shell
 
-Any other command runs a .js file from /commands/.
-Write new commands: echo "code..." > /commands/name.js
-`);
+  Features:
+    Tab completion   — complete commands and file paths
+    Ctrl+L           — clear terminal
+    Up/Down          — command history
+    edit <file>      — built-in text editor
+
+  Any other command runs a .js file from /commands/.
+  `);
   },
 
   async clear(args) {
@@ -209,9 +394,7 @@ async function handleLine(line) {
         return (async () => { ${content} })();
       `);
       const logChunks = [];
-      const fakeConsole = {
-        log: (...msgs) => logChunks.push(msgs.join(" ") + "\n")
-      };
+      const fakeConsole = { log: (...msgs) => logChunks.push(msgs.join(" ") + "\n") };
       await fn(args, fs, fakeConsole);
       output = logChunks.join("");
       if (outputRedirect) {
@@ -225,27 +408,182 @@ async function handleLine(line) {
   }
 }
 
+// ─── Command History ────────────────────────────────────────────
+
+const history = [];
+let historyIndex = -1;
+
+// ─── Tab Completion ─────────────────────────────────────────────
+
+async function complete(line, cursorPos) {
+  const beforeCursor = line.slice(0, cursorPos);
+
+  // Find the start of the current word
+  const wordStart = Math.max(beforeCursor.lastIndexOf(" ") + 1, 0);
+  const prefix = beforeCursor.slice(wordStart);
+
+  if (!prefix) return { line, cursorPos, matches: [] };
+
+  let matches = [];
+  const isPath = prefix.includes("/");
+
+  if (isPath) {
+    // Filesystem path completion
+    const lastSlash = prefix.lastIndexOf("/");
+    const dir = prefix.slice(0, lastSlash + 1);
+    const filePrefix = prefix.slice(lastSlash + 1);
+
+    try {
+      const resolvedDir = dir === "/" ? "/" : fs._resolve(dir.replace(/\/$/, ""));
+      const entries = await fs.list(resolvedDir);
+      matches = entries
+        .filter(e => e.startsWith(filePrefix))
+        .map(e => {
+          const isDir = e.endsWith("/");
+          return isDir ? dir + e : dir + e;
+        });
+    } catch { /* directory doesn't exist or no permission */ }
+  } else {
+    // Command completion
+    matches.push(...Object.keys(builtins).filter(name => name.startsWith(prefix)));
+
+    // Search command paths
+    try {
+      const cmdEntries = await fs.list("/commands");
+      for (const e of cmdEntries) {
+        const name = e.replace(/\/$/, "").replace(/\.js$/, "");
+        if (name.startsWith(prefix) && !matches.includes(name)) {
+          matches.push(name);
+        }
+      }
+    } catch { /* /commands doesn't exist */ }
+  }
+
+  matches = [...new Set(matches)].sort();
+
+  if (matches.length === 1) {
+    const m = matches[0];
+    const suffix = isPath && m.endsWith("/") ? "" : " ";
+    const newLine = beforeCursor.slice(0, wordStart) + m + suffix + line.slice(cursorPos);
+    const newPos = wordStart + m.length + suffix.length;
+    return { line: newLine, cursorPos: newPos, matches: [] };
+  }
+
+  if (matches.length > 1) {
+    const common = longestCommonPrefix(matches);
+    if (common !== prefix && common.length > prefix.length) {
+      const newLine = beforeCursor.slice(0, wordStart) + common + line.slice(cursorPos);
+      const newPos = wordStart + common.length;
+      return { line: newLine, cursorPos: newPos, matches };
+    }
+    // Show all matches on a new line
+    return { line, cursorPos, matches };
+  }
+
+  return { line, cursorPos, matches: [] };
+}
+
+function longestCommonPrefix(strings) {
+  if (!strings.length) return "";
+  let prefix = strings[0];
+  for (let i = 1; i < strings.length; i++) {
+    while (strings[i].indexOf(prefix) !== 0) {
+      prefix = prefix.slice(0, -1);
+      if (!prefix) return "";
+    }
+  }
+  return prefix;
+}
+
 // ─── Input Handling ─────────────────────────────────────────────
+
+let lastTabPress = 0;
+let lastPrefix = "";
+let lastMatches = [];
 
 function updatePrompt() {
   promptEl.textContent = `tinysh:${fs.cwd}$ `;
 }
 
-function onCommand() {
+async function onCommand() {
   const line = input.value;
   input.value = "";
-  
-  // Echo the command with prompt
+  if (line.trim()) history.push(line);
+  historyIndex = history.length;
+
   write(`tinysh:${fs.cwd}$ ${line}\n`, "prompt");
-  
-  handleLine(line).then(() => {
-    updatePrompt();
-    input.focus();
-  });
+
+  await handleLine(line);
+  updatePrompt();
+  input.focus();
+  lastMatches = [];
 }
 
-input.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") onCommand();
+input.addEventListener("keydown", async (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    await onCommand();
+    return;
+  }
+
+  // Tab completion
+  if (e.key === "Tab") {
+    e.preventDefault();
+    const now = Date.now();
+    const isDoubleTab = (now - lastTabPress < 500) && lastPrefix === input.value;
+    lastTabPress = now;
+
+    const result = await complete(input.value, input.selectionStart);
+    if (result.matches && result.matches.length > 0 && isDoubleTab) {
+      // Double-tab: show all matches
+      write("\n" + result.matches.join("  ") + "\n", "info");
+      write(`${promptEl.textContent}${result.line}`, "prompt");
+      input.value = result.line;
+      input.setSelectionRange(result.cursorPos, result.cursorPos);
+    } else if (result.line !== input.value) {
+      input.value = result.line;
+      input.setSelectionRange(result.cursorPos, result.cursorPos);
+      lastPrefix = result.line;
+      lastMatches = result.matches || [];
+    } else if (result.matches && result.matches.length > 1) {
+      // Single tab with multiple matches: show them
+      write("\n" + result.matches.join("  ") + "\n", "info");
+      write(`${promptEl.textContent}${input.value}`, "prompt");
+      lastPrefix = input.value;
+    }
+    return;
+  }
+
+  // Ctrl+L — clear
+  if ((e.ctrlKey || e.metaKey) && e.key === "l") {
+    e.preventDefault();
+    term.innerHTML = "";
+    write(`${promptEl.textContent}${input.value}`, "prompt");
+    return;
+  }
+
+  // Up/Down — history
+  if (e.key === "ArrowUp") {
+    e.preventDefault();
+    if (historyIndex > 0) {
+      historyIndex--;
+      input.value = history[historyIndex];
+    }
+    return;
+  }
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    if (historyIndex < history.length - 1) {
+      historyIndex++;
+      input.value = history[historyIndex];
+    } else {
+      historyIndex = history.length;
+      input.value = "";
+    }
+    return;
+  }
+
+  lastMatches = [];
 });
 
 // ─── Welcome ────────────────────────────────────────────────────
@@ -255,6 +593,8 @@ write("║     tinysh — browser shell          ║\n", "info");
 write("║     JavaScript is the binary format ║\n", "info");
 write("╚══════════════════════════════════════╝\n", "info");
 write("Type 'help' for available commands.\n\n", "info");
+write("Features: Tab completion · Ctrl+L clear · Up/Down history\n", "info");
+write("          edit <file> — built-in text editor\n\n", "info");
 updatePrompt();
 input.focus();
 </script>
