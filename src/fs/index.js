@@ -146,6 +146,27 @@ class VirtualFS {
     const counterContent = `const counterPath = "/tmp/counter.txt";\nlet count;\ntry {\n  const raw = await fs.read(counterPath);\n  count = parseInt(raw.trim(), 10) || 0;\n} catch { count = 0; }\ncount++;\nawait fs.write(counterPath, String(count));\nconsole.log("Invocation #" + count);\n`;
     syncWrite(this._getBackend("/commands/sayhello.js"), "/sayhello.js", helloContent);
     syncWrite(this._getBackend("/commands/counter.js"), "/counter.js", counterContent);
+
+    // Sample content for new users
+    syncWrite(this._getBackend("/home/examples/README.txt"), "/examples/README.txt",
+      `Welcome to tinysh!\n\n` +
+      `Try these commands:\n` +
+      `  ls /mount/github/gmatht/sh2perl  -- browse a GitHub repo\n` +
+      `  cat /mount/github/gmatht/sh2perl/README.md  -- read a file\n` +
+      `  cat /home/examples/hello.sh      -- a sample script\n` +
+      `  edit /home/examples/note.txt     -- edit a file\n` +
+      `  ls /dev/                         -- browser devices\n` +
+      `  cat /dev/info                    -- system info\n`);
+    syncWrite(this._getBackend("/home/examples/hello.sh"), "/examples/hello.sh",
+      `echo "Hello from the browser shell!"\n` +
+      `name="world"\n` +
+      `echo "Hello, \$name!"\n` +
+      `for i in 1 2 3; do\n` +
+      `  echo "Counting: \$i"\n` +
+      `done\n`);
+    syncWrite(this._getBackend("/home/examples/note.txt"), "/examples/note.txt",
+      `Notes\n=====\n\nEdit this file with:  edit /home/examples/note.txt\n` +
+      `Ctrl+S to save, Esc to cancel.\n`);
   }
 
   _getBackend(resolvedPath) {
