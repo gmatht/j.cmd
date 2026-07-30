@@ -15,6 +15,7 @@
 
 import { RamFS } from "./ramfs.js";
 import { HttpFS } from "./httpfs.js";
+import { GitHubFS } from "./githubfs.js";
 
 // ─── RootFS: A virtual directory that shows mount points ───────
 // When listing the root or any prefix that contains mount boundaries,
@@ -117,6 +118,7 @@ class VirtualFS {
     this.mount("ram", "/home", new RamFS());
     this.mount("ram", "/commands", new RamFS());
     this.mount("http", "/http", new HttpFS());
+    this.mount("github", "/mount/github", new GitHubFS());
 
     // Default files
     this.write("/home/hello.txt", "Hello from the virtual filesystem!\n");
