@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>tinysh — browser shell</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #1a1a2e; color: #e0e0e0; font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace; font-size: 14px; }
+  
+  #terminal {
+    width: 100vw; height: 100vh;
+    padding: 16px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+  }
+  
+  #input-line {
+    display: flex;
+    padding: 4px 16px 16px;
+    background: #1a1a2e;
+    position: fixed; bottom: 0; left: 0; right: 0;
+  }
+  
+  #prompt {
+    color: #7ec8e3; white-space: pre;
+    padding: 4px 0;
+    flex-shrink: 0;
+  }
+  
+  #input {
+    flex: 1;
+    background: #16213e;
+    border: 1px solid #2a2a4a;
+    color: #e0e0e0;
+    font-family: inherit; font-size: inherit;
+    padding: 4px 8px;
+    outline: none;
+    border-radius: 4px;
+  }
+  #input:focus { border-color: #7ec8e3; }
+  
+  .out { color: #a0d6a0; }
+  .err { color: #d6a0a0; }
+  .info { color: #7ec8e3; }
+  .prompt { color: #7ec8e3; }
+</style>
+</head>
+<body>
+
+<div id="terminal"></div>
+
+<div id="input-line">
+  <span id="prompt"></span>
+  <input id="input" type="text" autofocus spellcheck="false" autocomplete="off" />
+</div>
+
+<script type="module">
+import { fs } from "../src/fs/index.js";
+
+// ─── Terminal Output ───────────────────────────────────────────
+
+const term = document.getElementById("terminal");
+const input = document.getElementById("input");
+const promptEl = document.getElementById("prompt");
+
+function write(text, cls = "out") {
+  const span = document.createElement("span");
+  span.className = cls;
+  span.textContent = text;
+  term.appendChild(span);
+  term.scrollTop = term.scrollHeight;
+}
+
+// Override process-like globals for builtins to write to the terminal
+const stdout = { write: (s) => write(s, "out") };
+const stderr = { write: (s) => write(s, "err") };
+
+// ─── Built-in Commands (same as tinysh.js) ─────────────────────
+
+const builtins = {
+  async ls(args) {
+    const dir = args[0] || ".";
+    try {
+      const output = await fs.formatList(dir);
+      stdout.write(output);
+    } catch (e) {
+      stderr.write(`ls: ${dir}: ${e.message}\n`);
+    }
+  },
+
+  async cat(args) {
+    if (args.length === 0) { stderr.write("cat: missing operand\n"); return; }
+    for (const file of args) {
+      try {
+        let content = await fs.read(file);
+        stdout.write(content);
+        if (!content.endsWith("\n")) stdout.write("\n");
+      } catch (e) {
+        stderr.write(`cat: ${file}: ${e.message}\n`);
+      }
+    }
+  },
+
+  async echo(args) {
+    stdout.write(args.join(" ") + "\n");
+  },
+
+  async pwd(args) {
+    stdout.write(fs.cwd + "\n");
+  },
+
+  async cd(args) {
+    const dir = args[0] || "/home";
+    try {
+      await fs.list(dir);
+      fs.cwd = fs._resolve(dir);
+    } catch (e) {
+      stderr.write(`cd: ${dir}: ${e.message}\n`);
+    }
+  },
+
+  async help(args) {
+    stdout.write(`tinysh — browser shell
+
+Built-in commands:
+  ls [dir]        List directory contents
+  cat <file>...   Print file contents
+  echo <text>     Print text
+  pwd             Print working directory
+  cd [dir]        Change directory
+  help            This help
+  clear           Clear terminal
+
+Any other command runs a .js file from /commands/.
+Write new commands: echo "code..." > /commands/name.js
+`);
+  },
+
+  async clear(args) {
+    term.innerHTML = "";
+  },
+
+  async exit(args) {
+    write("Goodbye.\n", "info");
+    input.disabled = true;
+  }
+};
+
+// ─── Command Resolution ─────────────────────────────────────────
+
+async function resolveCommand(name) {
+  if (builtins[name]) return { type: "builtin", fn: builtins[name] };
+  const searchPaths = ["/commands", "/usr/bin", "/bin"];
+  for (const dir of searchPaths) {
+    try {
+      for (const entry of await fs.list(dir)) {
+        const clean = entry.replace(/\/$/, "");
+        if (clean === name || clean === name + ".js") {
+          return { type: "file", path: dir + "/" + clean };
+        }
+      }
+    } catch { /* skip */ }
+  }
+  return null;
+}
+
+// ─── Command Handler ────────────────────────────────────────────
+
+async function handleLine(line) {
+  const trimmed = line.trim();
+  if (!trimmed) return;
+
+  const tokens = trimmed.split(/\s+/);
+  const cmd = tokens[0];
+  const args = tokens.slice(1);
+
+  let outputRedirect = null;
+  const redirectIndex = args.indexOf(">");
+  if (redirectIndex !== -1) {
+    outputRedirect = args[redirectIndex + 1];
+    args.splice(redirectIndex, 2);
+  }
+
+  try {
+    const resolved = await resolveCommand(cmd);
+    if (!resolved) {
+      stderr.write(`${cmd}: command not found\n`);
+      return;
+    }
+
+    let output = "";
+
+    if (resolved.type === "builtin") {
+      const origWrite = stdout.write;
+      const chunks = [];
+      if (outputRedirect) {
+        stdout.write = (chunk) => { chunks.push(chunk); return true; };
+      }
+      await resolved.fn(args);
+      if (outputRedirect) {
+        stdout.write = origWrite;
+        output = chunks.join("");
+        await fs.write(outputRedirect, output);
+      }
+    } else {
+      const content = await fs.read(resolved.path);
+      const fn = new Function("args", "fs", "console", `
+        return (async () => { ${content} })();
+      `);
+      const logChunks = [];
+      const fakeConsole = {
+        log: (...msgs) => logChunks.push(msgs.join(" ") + "\n")
+      };
+      await fn(args, fs, fakeConsole);
+      output = logChunks.join("");
+      if (outputRedirect) {
+        await fs.write(outputRedirect, output);
+      } else {
+        stdout.write(output);
+      }
+    }
+  } catch (e) {
+    stderr.write(`${cmd}: error: ${e.message}\n`);
+  }
+}
+
+// ─── Input Handling ─────────────────────────────────────────────
+
+function updatePrompt() {
+  promptEl.textContent = `tinysh:${fs.cwd}$ `;
+}
+
+function onCommand() {
+  const line = input.value;
+  input.value = "";
+  
+  // Echo the command with prompt
+  write(`tinysh:${fs.cwd}$ ${line}\n`, "prompt");
+  
+  handleLine(line).then(() => {
+    updatePrompt();
+    input.focus();
+  });
+}
+
+input.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") onCommand();
+});
+
+// ─── Welcome ────────────────────────────────────────────────────
+
+write("╔══════════════════════════════════════╗\n", "info");
+write("║     tinysh — browser shell          ║\n", "info");
+write("║     JavaScript is the binary format ║\n", "info");
+write("╚══════════════════════════════════════╝\n", "info");
+write("Type 'help' for available commands.\n\n", "info");
+updatePrompt();
+input.focus();
+</script>
+</body>
+</html>
