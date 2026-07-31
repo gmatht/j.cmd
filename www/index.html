@@ -300,8 +300,10 @@ function openViEditor(filepath, initialContent, onSave) {
     updateViModeDisplay();
   });
 
-  // Track dirty state
-  cm.on("change", () => { viState.dirty = true; });
+  // Track dirty state — ignore the initial setValue (it's not a user edit)
+  cm.on("change", (cm2, change) => {
+    if (change.origin !== "setValue") viState.dirty = true;
+  });
 
   cm.setValue(initialContent);
   cm.focus();
