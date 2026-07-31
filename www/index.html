@@ -3520,6 +3520,40 @@ document.addEventListener("pointerdown", (e) => {
   input.focus();
 });
 
+// ─── Drag & drop: copy files into ~/uploads ─────────────────────
+// Dropping a file on the terminal writes it into $HOME/uploads (like
+// scp'ing it in) and reports the destination in the status bar. /home is
+// localStorage (~5MB) — big files get a hint to use /big/ (IndexedDB).
+term.addEventListener("dragover", (e) => {
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+});
+term.addEventListener("drop", async (e) => {
+  e.preventDefault();
+  const files = [...(e.dataTransfer ? e.dataTransfer.files : [])];
+  if (files.length === 0) return;
+  const destDir = (env.HOME || "/home").replace(/\/+$/, "") + "/uploads";
+  let uploaded = [];
+  for (const file of files) {
+    try {
+      await fs.writeBlob(destDir + "/" + file.name, file);
+      uploaded.push(file.name);
+    } catch (err) {
+      const msg = err && err.message ? err.message : String(err);
+      const big = /quota/i.test(msg) || (err && err.name === "QuotaExceededError");
+      stderr.write(`upload: ${file.name}: ${msg}${big ? " — ~/uploads is localStorage (~5MB), try /big/ for large files" : ""}\n`);
+    }
+  }
+  if (uploaded.length > 0) {
+    const one = uploaded.length === 1 ? uploaded[0] : `${uploaded.length} files`;
+    write(`Uploaded ${one} → ${destDir}/\n`, "info");
+    statusHint.textContent =
+      uploaded.length === 1 ? `uploaded to ~/uploads/${uploaded[0]}`
+                            : `uploaded ${uploaded.length} files to ~/uploads/`;
+  }
+  input.focus();
+});
+
 // IME composition / pasting lands in the hidden input (those key events
 // can't be intercepted) — take its value into the inline line.
 input.addEventListener("input", () => {
@@ -3529,6 +3563,20 @@ input.addEventListener("input", () => {
   input.value = "";
   renderInput();
   recordLineRedraw();
+});
+
+// Ctrl-V / Shift-Insert paste, read straight off the clipboard event so
+// it works even when the browser wouldn't echo the text into the hidden
+// input. If clipboardData is empty (iOS quirks) we don't preventDefault
+// and the input-event path above takes over.
+input.addEventListener("paste", (e) => {
+  const text = e.clipboardData && e.clipboardData.getData("text/plain");
+  if (!text) return;
+  e.preventDefault();
+  currentLine = currentLine.slice(0, cursorPos) + text + currentLine.slice(cursorPos);
+  cursorPos += text.length;
+  renderInput();
+  recordLineRedraw();  // one redraw in the cast, like a real terminal paste
 });
 
 // Focus/blur tracking: the block cursor blinks only while the shell
