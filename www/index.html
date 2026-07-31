@@ -1822,6 +1822,7 @@ Loops, conditionals, variables, arithmetic and pipes work:
     help            This help
     history         Show command history (persists across refreshes)
     asciinema       Record/replay sessions: rec <file.cast> · stop · play
+                    (import a host cast first: cp /pc/foo.cast ~/Downloads/)
     clear           Clear terminal
     resize          Report terminal size (COLUMNS × LINES)
     stty size       Report terminal size ("rows cols")
@@ -1861,6 +1862,7 @@ Loops, conditionals, variables, arithmetic and pipes work:
     $PATH  /commands:/usr/bin:/bin · $HOME /home · $USER tinysh · $PWD current dir
     $COLUMNS × $LINES — terminal size (auto-updates on window resize)
     Expand with $NAME or \${NAME}: echo $HOME · cd $HOME
+    Tilde: ~ expands to $HOME — cat ~/file · cd ~/Downloads
     (single quotes or \$ keep the $ literal: echo '$HOME' prints $HOME)
 
   Startup config: ~/.tinyshrc (i.e. /home/.tinyshrc) is read at
@@ -2218,6 +2220,12 @@ function tokenize(segment) {
     if (ch === '"') { inDouble = true; started = true; quoted = true; continue; }
     if (ch === "\\") {
       if (i + 1 < segment.length) cur += segment[++i];
+      started = true;
+      continue;
+    }
+    if (ch === "~" && !started && !quoted) {
+      // ~ / ~/path → $HOME / $HOME/path (tilde expansion)
+      cur += env.HOME;
       started = true;
       continue;
     }

@@ -1182,6 +1182,12 @@ function tokenize(segment) {
       started = true;
       continue;
     }
+    if (ch === "~" && !started && !quoted) {
+      // ~ / ~/path → $HOME / $HOME/path (tilde expansion)
+      cur += env.HOME;
+      started = true;
+      continue;
+    }
     if (ch === "$") {
       // $NAME / ${NAME} expansion outside quotes
       const ref = expandRef(segment, i);
