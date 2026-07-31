@@ -497,8 +497,37 @@ function codegen(node, ctx) {
 
 // sh2perl emits a pipeline as a do{} block that shells out to
 // 'bash', '-c': capture the command and run it through the shell's
-// own pipeline machinery via rt.exec.
-const PIPE_RE = /^\s*open\(my \$__fh, '-\|', 'bash', '-c', ('(?:\\.|[^'])*')\s*\) or die "cmd failed: \$!\\n";\s*my \$_r = do \{ local \$\/; <\$__fh> \};\s*close \$__fh;\s*chomp \$_r;\s*\$CHILD_ERROR = \$\? >> 8;\s*\$_r;\s*$/s;
+// own pipeline machinery via rt.exec. The command literal may be
+// single-quoted ('...') or q{...} when the pipeline itself contains
+// quotes. Compose the shared "pipeline body" source so the plain
+// capture form and the if/while condition wrappers match the same
+// shape.
+const PIPE_CMD_SRC = String.raw`(?:(?:'(?:\\.|[^'])*')|(?:q\{[^}]*\}))`;
+const PIPE_BODY_SRC = String.raw`open\(my \$__fh, (?:'-\|'|q\{-\|\}), 'bash', '-c', (${PIPE_CMD_SRC})\) or (?:die|croak) [^;]*; my \$_r = do \{ local \$\/; <\$__fh> \}; close \$__fh; chomp \$_r; \$CHILD_ERROR = \$\? >> 8; \$_r;`;
+const PIPE_DO_SRC = String.raw`do \{ ${PIPE_BODY_SRC} \}`;
+
+// A bare pipeline capture: `my $output_0 = do { <PIPE> };` and friends.
+// (transformDoBlock receives the do{} body, i.e. without the braces.)
+const PIPE_RE = new RegExp("^\\s*" + PIPE_BODY_SRC + "\\s*$", "s");
+
+// A pipeline as an if/while/until condition. sh2perl wraps the
+// pipeline's do{} block in `local $CHILD_ERROR;`, an `# Original
+// bash: ...` comment and a trailing `print($output_N, "\n")` — the
+// block's *value* is the pipeline's EXIT STATUS, or a boolean of it
+// when the generated code ends with `$CHILD_ERROR == 0` /
+// `$main_exit_code == 0`. The surrounding `!do {...}` (if), bare
+// `do {...}` (if !) and `while/until (do {...})` all turn that into
+// the right branch decision: 0 (success) is falsy, non-zero is truthy.
+const COND_PIPE_RE = new RegExp(
+  "^\\s*" +
+  "(?:local \\$CHILD_ERROR;\\s*)?" +
+  "(?:# Original bash: [^\\n]*;\\s*)?" +
+  "my \\$(\\w+)\\s*=\\s*" + PIPE_DO_SRC + ";\\s*" +
+  "print\\(\\$\\1,\\s*\"\\\\n\"\\)\\s*" +
+  "(;\\s*(?:\\$CHILD_ERROR|\\$main_exit_code)\\s*==\\s*0\\s*)?" +
+  "$",
+  "s"
+);
 
 // $(cat file) — read a file, strip trailing newlines (bash cmdsub).
 const FILE_RE = /^\s*my \$cat_chunk = q\{\};\s*if \( open my \$fh, '<', ('(?:\\.|[^'])*')\s*\) \{ local \$INPUT_RECORD_SEPARATOR = undef; \$cat_chunk = <\$fh>; close \$fh; \} else \{ carp [^}]* \} \$cat_chunk;\s*$/s;
@@ -506,6 +535,9 @@ const FILE_RE = /^\s*my \$cat_chunk = q\{\};\s*if \( open my \$fh, '<', ('(?:\\.
 const WHOAMI_RE = /^\s*my \$whoami_user = \(getpwuid\(\$<\)\)\[0\];\s*\$whoami_user \. "\\n";\s*$/;
 
 function unescapePerlStr(q) {
+  // q{...} is the single-quoted form Perl uses when the string itself
+  // contains quotes (sh2perl emits it for pipelines with ' in them).
+  if (q.startsWith("q{") && q.endsWith("}")) return q.slice(2, -1);
   const inner = q.slice(1, -1);
   return inner.replace(/\\(\\|')/g, "$1");
 }
@@ -515,7 +547,21 @@ function transformDoBlock(content, ctx) {
   // are pipelines, file reads and `whoami` — match those wholesale.
   let m = content.match(PIPE_RE);
   if (m) {
-    return { code: `rt.chomp(await rt.exec(${JSON.stringify(unescapePerlStr(m[1]))}))`, async: true };
+    // Plain pipeline capture (`my $output_0 = do { <PIPE> };`): run it
+    // through the shell's own pipeline machinery, record its exit
+    // status in CHILD_ERROR, and use the chomped stdout as the value.
+    return { code: `await rt.pipe(${JSON.stringify(unescapePerlStr(m[1]))})`, async: true };
+  }
+  m = content.match(COND_PIPE_RE);
+  if (m) {
+    // Pipeline as an if/while/until condition: run it, print the
+    // captured stdout like bash does for an inherited pipeline, but
+    // make the block's VALUE the pipeline's exit status (or a boolean
+    // of it) so `if (!do {...})`, `while (do {...})` and
+    // `until (do {...})` make the correct branch decision.
+    const cmd = unescapePerlStr(m[2]);
+    const asBool = m[3] !== undefined;
+    return { code: `await rt.pipeCond(${JSON.stringify(cmd)}, ${asBool})`, async: true };
   }
   m = content.match(FILE_RE);
   if (m) {
@@ -665,6 +711,46 @@ function splitStatements(src) {
 
 // ─── statement transform ────────────────────────────────────────
 
+// Strip a Perl `# ...` comment from the end of a statement, keeping
+// '#' inside quoted strings (', ", q{...}) intact. sh2perl annotates
+// pipeline conditions with `# Original bash: <cmd>;` lines — those
+// must never reach the expression parser.
+function stripPerlComment(s) {
+  let inS = false, inD = false;
+  let i = 0;
+  const n = s.length;
+  while (i < n) {
+    const ch = s[i];
+    if (inS) {
+      if (ch === "\\" && i + 1 < n) { i += 2; continue; }
+      if (ch === "'") inS = false;
+      i++;
+      continue;
+    }
+    if (inD) {
+      if (ch === "\\" && i + 1 < n) { i += 2; continue; }
+      if (ch === '"') inD = false;
+      i++;
+      continue;
+    }
+    if (ch === "'") { inS = true; i++; continue; }
+    if (ch === '"') { inD = true; i++; continue; }
+    if (ch === "q" && s[i + 1] === "{") {
+      let d = 1;
+      i += 2;
+      while (i < n && d > 0) {
+        if (s[i] === "{") d++;
+        else if (s[i] === "}") d--;
+        i++;
+      }
+      continue;
+    }
+    if (ch === "#") return s.slice(0, i);
+    i++;
+  }
+  return s;
+}
+
 function expr(text, ctx) {
   const pre = preprocessExpr(text, ctx);
   return codegen(parseExpr(tokenizeExpr(pre), ctx), ctx);
@@ -704,6 +790,12 @@ function transformChunk(chunk, ctx, opts = {}) {
   if (s === "{") return "{";
   if (s === "}") return "}";
   if (s === "else") return "else";
+
+  // Drop Perl comments: a chunk that is only a comment vanishes, and
+  // a trailing comment is stripped before the statement is matched.
+  const stripped = stripPerlComment(s).trim();
+  if (stripped === "") return null;
+  if (stripped !== s) return transformChunk(stripped, ctx, opts);
 
   // Dropped constructs
   if (/^(use|require|local)\b/.test(s)) return null;
@@ -749,8 +841,14 @@ function transformChunk(chunk, ctx, opts = {}) {
   }
   if ((m = /^exit\s*(.+)$/s.exec(s))) return `return Number(${expr(m[1], ctx)});`;
   if ((m = /^return\s*(.*)$/s.exec(s))) return m[1].trim() ? `return ${expr(m[1], ctx)};` : "return;";
-  if (s === "last;") return "break;";
-  if (s === "next;") return "continue;";
+  // while/until pipelines are implemented with `last unless/if` guards
+  // (splitStatements strips the trailing `;`, so bare `last` matches too)
+  if ((m = /^last\s+unless\s*\((.*)\)$/s.exec(s))) return `if (!(${condExpr(m[1], ctx)})) break;`;
+  if ((m = /^last\s+if\s*\((.*)\)$/s.exec(s))) return `if (${condExpr(m[1], ctx)}) break;`;
+  if ((m = /^last\s+unless\s+(.+)$/s.exec(s))) return `if (!(${expr(m[1], ctx)})) break;`;
+  if ((m = /^last\s+if\s+(.+)$/s.exec(s))) return `if (${expr(m[1], ctx)}) break;`;
+  if (s === "last") return "break;";
+  if (s === "next") return "continue;";
   if ((m = /^die\s+(.+)$/s.exec(s))) return `throw new Error(String(${expr(m[1], ctx)}));`;
   if ((m = /^carp\s+(.+)$/s.exec(s))) return `rt.warn(${expr(m[1], ctx)});`;
   if ((m = /^warn\s+(.+)$/s.exec(s))) return `rt.warn(${expr(m[1], ctx)});`;

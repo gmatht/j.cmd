@@ -1755,9 +1755,10 @@ async function runPipeline(pipelineText) {
 
 // Run a nested command line from generated JS (pipelines and command
 // substitution inside a `bash` script) through the shell itself, and
-// return its captured stdout. This is what rt.exec / rt.system in the
-// generated JS call: sh2perl shells out to 'bash -c "..."' for pipes,
-// and we route that back through the shell's own pipeline machinery.
+// return its captured stdout plus exit status. This is what rt.exec /
+// rt.pipe / rt.pipeCond in the generated JS call: sh2perl shells out
+// to 'bash -c "..."' for pipes, and we route that back through the
+// shell's own pipeline machinery.
 async function runNestedCommand(cmdLine) {
   let captured = "";
   const origWrite = stdout.write;
@@ -1765,12 +1766,13 @@ async function runNestedCommand(cmdLine) {
     captured += chunk;
     return true;
   };
+  let code = 0;
   try {
-    await handleLine(cmdLine);
+    code = (await handleLine(cmdLine)) ?? 0;
   } finally {
     stdout.write = origWrite;
   }
-  return captured;
+  return { out: captured, code };
 }
 
 // Execute one pipeline segment. `stdin` carries the previous segment's
@@ -1994,6 +1996,7 @@ async function handleLine(line) {
     }
     exitCode = await runPipeline(parts[i].text);
   }
+  return exitCode;
 }
 
 // ─── Command History (persists across refreshes) ───────────────

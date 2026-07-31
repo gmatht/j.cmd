@@ -87,7 +87,7 @@ and device files. It runs in any browser with no build step.
 - [x] Compile sh2perl to WASM
 - [x] Bash → JS transpilation in the browser
 - [x] Type `bash` commands, get generated JS executed
-- [ ] Pipeline support via sh2perl's generated JS
+- [x] Pipeline support via sh2perl's generated JS
 
 ### Polish
 

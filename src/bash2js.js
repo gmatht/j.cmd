@@ -83,10 +83,34 @@ const rt = {
     return { buf: existing, write(s) { this.buf += String(s); }, close() { return rt.writeFile(path, this.buf); } };
   },
   exec: async (cmd) => {
+    // Returns { out, code }: the captured stdout and exit status of
+    // running cmd through the shell's own pipeline machinery (so
+    // pipelines, && and command substitution all nest correctly).
     if (typeof __runCmd === "function") return await __runCmd(cmd);
     throw new Error("rt.exec: shell not available in this context: " + cmd);
   },
   system: async (...cmd) => { await rt.exec(cmd.join(" ")); return 0; },
+  // Run a pipeline (a | b) captured in a do{} block: execute it, put
+  // its exit status in CHILD_ERROR (where the transpiled $CHILD_ERROR
+  // references read it) and return the chomped stdout as the block's
+  // value, e.g. for my $output_0 = do { ... }.
+  pipe: async (cmd) => {
+    const r = await rt.exec(cmd);
+    if (typeof CHILD_ERROR !== "undefined") CHILD_ERROR = r.code;
+    return rt.chomp(r.out);
+  },
+  // A pipeline used as an if/while/until condition: same execution,
+  // but print the captured stdout (bash inherits the pipeline's
+  // output) and return the exit STATUS — or status === 0 when the
+  // generated Perl ends with $CHILD_ERROR == 0 — as the condition
+  // value. 0 (success) is falsy, so if (!do { ... }) enters on
+  // success and while (do { ... }) loops on success.
+  pipeCond: async (cmd, asBool) => {
+    const r = await rt.exec(cmd);
+    if (typeof CHILD_ERROR !== "undefined") CHILD_ERROR = r.code;
+    if (r.out) rt.print(r.out);
+    return asBool ? r.code === 0 : r.code;
+  },
   printf: (fmt, ...args) => rt.print(sprintf(fmt, ...args)),
   todo: (what) => { throw new Error("perl2js: unsupported construct: " + what); },
 };
