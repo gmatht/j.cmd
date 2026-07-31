@@ -1194,6 +1194,8 @@ const builtins = {
     edit <file>      — built-in text editor
     cat image.png    — renders inline
     play music.mp3   — plays with audio controls
+    /big/            — IndexedDB storage, no 5MB limit (cp big files here)
+    /pc/             — download to your machine (cp file /pc)
 
   Environment:
     $PATH  /commands:/usr/bin:/bin · $HOME /home · $USER tinysh · $PWD current dir
@@ -2316,7 +2318,8 @@ input.addEventListener("keydown", async (e) => {
   write("          apt/yum/pip → wasmer · wasmer install <pkg>\n", "info");
   write("          python, echoc — auto-loaded from /wasm-bin/\n", "info");
   write("          history — persisted across refreshes\n", "info");
-  write("          cp file /pc — download to your machine\n\n", "info");
+  write("          cp file /pc — download to your machine\n", "info");
+  write("          /big/ — IndexedDB storage (no 5MB limit)\n\n", "info");
   write("          echo $HOME · $PATH · $USER — environment variables\n\n", "info");
   updatePrompt();
   input.focus();

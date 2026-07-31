@@ -6,7 +6,8 @@
 // Mount table:
 //   /             → RootFS        (aggregates mount points)
 //   /tmp/         → RamFS         (ephemeral, in-memory)
-//   /home/        → LocalStorageFS(persistent across reloads)
+//   /home/        → LocalStorageFS(persistent across reloads, ~5MB limit)
+//   /big/         → IndexedDBFS   (persistent, no practical size limit)
 //   /commands/    → LocalStorageFS(persistent user commands)
 //   /http/        → HttpFS        (CORS fetch access)
 //   /mount/github → GitHubFS      (GitHub API as a filesystem)
@@ -14,6 +15,7 @@
 
 import { RamFS } from "./ramfs.js";
 import { LocalStorageFS } from "./localstoragefs.js";
+import { IndexedDBFS } from "./indexeddbfs.js";
 import { HttpFS } from "./httpfs.js";
 import { GitHubFS } from "./githubfs.js";
 import { GitLabFS } from "./gitlabfs.js";
@@ -133,6 +135,9 @@ class VirtualFS {
 
     // Detect whether localStorage is available (browser vs Node.js)
     const hasLocalStorage = typeof localStorage !== "undefined";
+    // IndexedDB only exists in the browser; in Node the CLI falls back
+    // to an in-memory RamFS so /big/ still works (ephemerally).
+    const hasIndexedDB = typeof indexedDB !== "undefined";
 
     // Register filesystem backends
     this.mount("ram", "/tmp", new RamFS());
@@ -149,6 +154,11 @@ class VirtualFS {
     this.mount("gitlab", "/gitlab", gitlab);  // convenience alias
     this.mount("dev", "/dev", new DevFS());
     this.mount("download", "/pc", new DownloadFS());
+    // IndexedDB-backed persistent store for large files — unlike
+    // localStorage's ~5MB per-origin quota, IndexedDB has no practical
+    // size limit, so /big/ is where files that outgrow /home/ belong.
+    this.mount(hasIndexedDB ? "indexedDB" : "ram", "/big",
+      hasIndexedDB ? new IndexedDBFS() : new RamFS());
     this.mount("ram", "/bin", new RamFS());
 
     // Initialize default files
@@ -165,6 +175,16 @@ class VirtualFS {
     }
     syncWrite(this._getBackend("/tmp/README"), "/README",
       "This is ramfs. Contents lost on reload.\n");
+
+    // Big-file store README (IndexedDBFS is async; fire-and-forget)
+    const bigBackend = this._getBackend("/big/README");
+    if (bigBackend) {
+      bigBackend.write("/README",
+        "This is IndexedDB storage. No practical size limit —" +
+        " use it for files too big for /home/ (localStorage ~5MB).\n" +
+        "Files here survive reloads. Binary-safe (writeBlob).\n")
+        .catch(() => {});
+    }
 
     // Pre-populate commands
     const helloContent = `const name = args[0] || "world";\nconsole.log("Hello, " + name + "!");\n`;
