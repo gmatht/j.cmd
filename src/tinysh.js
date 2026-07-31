@@ -208,6 +208,11 @@ async function handleLine(line) {
         "apt": "wasmer", "apt-get": "wasmer", "yum": "wasmer",
         "dnf": "wasmer", "brew": "wasmer", "pacman": "wasmer",
         "apk": "wasmer", "pip": "wasmer", "npm": "wasmer install",
+        "python": "wasmer", "python3": "wasmer", "node": "wasmer",
+        "ruby": "wasmer", "go": "wasmer", "gcc": "wasmer",
+        "rustc": "wasmer", "java": "wasmer", "deno": "wasmer",
+        "cargo": "wasmer", "make": "wasmer",
+        "wasmer": "wasmer coming soon — WASM package manager for browser shell",
       };
       const hint = hints[cmd];
       if (hint) {

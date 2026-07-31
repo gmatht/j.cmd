@@ -35,6 +35,8 @@ and device files. It runs in any browser with no build step.
 - [x] Status bar: context-sensitive hints based on current directory
       (GitHub: login hint · /dev/: devices · /tmp/: ephemeral)
 - [x] `browse` command: opens current GitHub/GitLab dir in new browser tab
+- [x] Language hints: python/node/gcc/java/rustc → wasmer
+      (WASM is the native binary format, compilers run via WASM)
 - [x] GitLabFS: browse gitlab.com projects as a filesystem
       (mount at /gitlab and /mount/gitlab)
 - [ ] Replace WASI stub with @wasmer/wasi (full spec-compliant WASI)
