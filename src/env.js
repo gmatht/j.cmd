@@ -18,6 +18,11 @@ export const env = {
   HOME: "/home",
   USER: "tinysh",
   PWD: "/home",
+  // Terminal geometry (columns × rows). The browser shell keeps these
+  // in sync with the window size; a conventional 80×24 default matches
+  // what scripts assume before the first resize.
+  COLUMNS: "80",
+  LINES: "24",
 };
 
 // Expand the environment reference starting at str[i] ('$').

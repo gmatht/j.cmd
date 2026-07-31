@@ -27,6 +27,21 @@
     word-wrap: break-word;
   }
 
+  /* Hidden probe used to measure the monospace cell size for the
+     COLUMNS/LINES terminal geometry. Kept off-screen (and out of the
+     terminal's scroll area) so it never affects layout or scrollbars;
+     visibility:hidden still leaves its metrics measurable. */
+  .term-probe {
+    position: fixed;
+    left: -9999px;
+    top: 0;
+    visibility: hidden;
+    white-space: pre;
+    display: inline-block;
+    pointer-events: none;
+    font: inherit;  /* body font == #terminal font (14px monospace) */
+  }
+
   /* ─── Status bar ──────────────────────────────────── */
   #status-bar {
     display: flex;
@@ -241,6 +256,46 @@ function clearViewport() {
 
 const stdout = { write: (s) => write(s, "out") };
 const stderr = { write: (s) => write(s, "err") };
+
+// ─── Terminal size (COLUMNS × LINES) ────────────────────────────
+// Like a real tty, the terminal is a monospace character grid. We
+// measure the cell from a hidden probe (same font as the shell) and
+// keep COLUMNS/LINES in sync as the window resizes, so width-aware
+// commands (`ls`, `stty size`, `resize`) adapt to the live size.
+
+const termProbe = document.createElement("div");
+termProbe.className = "term-probe";
+termProbe.textContent = "M";
+document.body.appendChild(termProbe);
+
+function measureTermCell() {
+  // visibility:hidden keeps layout metrics measurable; inline-block
+  // shrink-wraps the probe around the single monospace glyph.
+  const charW = termProbe.offsetWidth;
+  const lineH = termProbe.offsetHeight;
+  return { charW: charW || 8, lineH: lineH || 16 };
+}
+
+function updateTermSize() {
+  const { charW, lineH } = measureTermCell();
+  const cs = getComputedStyle(term);
+  const width = Math.max(40, term.clientWidth
+    - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight));
+  const height = Math.max(10, term.clientHeight
+    - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom));
+  const cols = Math.max(2, Math.floor(width / charW));
+  const rows = Math.max(1, Math.floor(height / lineH));
+  env.COLUMNS = String(cols);
+  env.LINES = String(rows);
+  return { cols, rows };
+}
+
+// Re-measure whenever the browser window changes size (this also
+// covers zoom) and once fonts are ready, in case metrics shift.
+window.addEventListener("resize", updateTermSize);
+if (document.fonts && document.fonts.ready) {
+  document.fonts.ready.then(() => updateTermSize());
+}
 
 // ─── Text Editor ───────────────────────────────────────────────
 
@@ -469,7 +524,7 @@ const builtins = {
     let hadError = false;
     for (const dir of dirs) {
       try {
-        const output = await fs.formatList(dir, { long });
+        const output = await fs.formatList(dir, { long, width: Number(env.COLUMNS) || 80 });
         if (!output) continue;
         if (dirs.length > 1) stdout.write(`${dir}:\n`);
         stdout.write(output);
@@ -1386,6 +1441,8 @@ Loops, conditionals, variables, arithmetic and pipes work:
     help            This help
     history         Show command history (persists across refreshes)
     clear           Clear terminal
+    resize          Report terminal size (COLUMNS × LINES)
+    stty size       Report terminal size ("rows cols")
     exit            Exit the shell
 
   Pipes:
@@ -1409,6 +1466,7 @@ Loops, conditionals, variables, arithmetic and pipes work:
     Tab completion   — complete commands and file paths
     Ctrl+L           — clear terminal
     Up/Down          — command history
+    Resizable terminal — COLUMNS/LINES track the window; ls reflows to fit
     edit <file>      — built-in text editor
     cat image.png    — renders inline
     play music.mp3   — plays with audio controls
@@ -1418,6 +1476,7 @@ Loops, conditionals, variables, arithmetic and pipes work:
 
   Environment:
     $PATH  /commands:/usr/bin:/bin · $HOME /home · $USER tinysh · $PWD current dir
+    $COLUMNS × $LINES — terminal size (auto-updates on window resize)
     Expand with $NAME or \${NAME}: echo $HOME · cd $HOME
     (single quotes or \$ keep the $ literal: echo '$HOME' prints $HOME)
 
@@ -1441,6 +1500,27 @@ Loops, conditionals, variables, arithmetic and pipes work:
     // Respect scrollback: only blank the visible viewport, leaving
     // scrolled-above history intact (Ctrl+L does the same).
     clearViewport();
+  },
+
+  async resize(args) {
+    // The terminal tracks the window size automatically; this builtin
+    // re-measures right now and reports the current grid, so scripts
+    // can learn the geometry (like ncurses' resize).
+    const { cols, rows } = updateTermSize();
+    stdout.write(`COLUMNS=${cols} LINES=${rows}\n`);
+    return 0;
+  },
+
+  async stty(args) {
+    // stty size — print the terminal grid as "rows cols", the same
+    // format real terminals report on resize.
+    if (args.length === 0 || args[0] === "size" || args[0] === "-size") {
+      const { cols, rows } = updateTermSize();
+      stdout.write(`${rows} ${cols}\n`);
+      return 0;
+    }
+    stderr.write(`stty: unsupported operation '${args[0]}' (try 'stty size')\n`);
+    return 2;
   },
 
   async history(args) {
@@ -2613,6 +2693,7 @@ input.addEventListener("keydown", async (e) => {
 // ─── Init ──────────────────────────────────────────────────────
 
 (async () => {
+  updateTermSize();
   write("╔══════════════════════════════════════╗\n", "info");
   write("║     tinysh — browser shell          ║\n", "info");
   write("║     JavaScript is the binary format ║\n", "info");

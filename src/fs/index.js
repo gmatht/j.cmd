@@ -482,9 +482,13 @@ try {
     if (entries.length === 0) return "";
     if (opts.long) return await this.formatLongList(path, entries);
 
-    const cols = 4;
+    // Column count adapts to the terminal width when the caller passes
+    // one (the browser shell does); otherwise default to 4 columns.
     const widths = entries.map(e => e.length);
     const colW = Math.max(...widths) + 2;
+    const cols = opts.width
+      ? Math.max(1, Math.floor(opts.width / colW))
+      : Math.max(1, opts.cols || 4);
     const rows = [];
     for (let i = 0; i < entries.length; i += cols) {
       rows.push(
