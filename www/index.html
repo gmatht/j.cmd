@@ -3514,9 +3514,32 @@ async function onCommand() {
 }
 
 // Clicking the terminal (or anywhere outside the editor) focuses the
-// hidden input, so keys keep flowing and mobile keyboards open.
-document.addEventListener("pointerdown", (e) => {
+// hidden input, so keys keep flowing and mobile keyboards open. This must
+// be on click, not pointerdown: the browser's default mousedown action
+// blurs the previously focused element when the click target isn't
+// focusable, which would undo an earlier focus() and swallow typing.
+// (Drags never produce a click — those are covered by the dragend/drop
+// refocus handlers below.)
+//
+// But focusing a real <input> clears the document selection, so a click
+// that just made a text selection must NOT refocus — otherwise you could
+// never select-and-copy terminal output.
+let justSelected = false;
+document.addEventListener("mousedown", (e) => {
   if (e.target.closest("#editor-container")) return;
+  justSelected = false;
+  // Drop stale selections so they can't block the next click's focus.
+  const sel = window.getSelection();
+  if (sel && sel.rangeCount) sel.removeAllRanges();
+});
+document.addEventListener("mouseup", (e) => {
+  if (e.target.closest("#editor-container")) return;
+  const sel = window.getSelection();
+  if (sel && !sel.isCollapsed) justSelected = true;
+});
+document.addEventListener("click", (e) => {
+  if (e.target.closest("#editor-container")) return;
+  if (justSelected) return;  // user selected text — keep it
   input.focus();
 });
 
