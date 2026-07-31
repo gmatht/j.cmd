@@ -323,7 +323,7 @@ function registerViExCommands() {
       closeViEditor();
     }
   });
-  vim.defineEx("quit!", "q!", () => closeViEditor());
+  vim.defineEx("q!", "q!", () => closeViEditor());
 }
 
 // Call after CodeMirror + vim keymap load
@@ -1129,6 +1129,117 @@ async function runPythonReplReplayLine(line) {
   updatePrompt();
 }
 
+// ─── Pager (more/less) ──────────────────────────────────────────
+
+const pagerState = {
+  active: false,
+  lines: [],
+  pos: 0,
+  pageSize: 20,
+  name: "less",
+  search: null,
+};
+
+function startPager(lines, filename, name) {
+  pagerState.active = true;
+  pagerState.lines = lines;
+  pagerState.pos = 0;
+  pagerState.pageSize = 20;
+  pagerState.name = name || "less";
+  pagerState.search = null;
+  stdout.write(`── ${filename} ──\n`);
+  renderPagerPage();
+  updatePrompt();
+}
+
+function renderPagerPage() {
+  const end = Math.min(pagerState.pos + pagerState.pageSize, pagerState.lines.length);
+  for (let i = pagerState.pos; i < end; i++) {
+    stdout.write(pagerState.lines[i] + "\n");
+  }
+  // Pager prompt
+  const pct = pagerState.lines.length === 0
+    ? 100
+    : Math.min(100, Math.round((end / pagerState.lines.length) * 100));
+  const label = pagerState.name === "more" ? "More" : "Less";
+  write(`─${label}─(${pct}%)─ `, "info");
+}
+
+function exitPager() {
+  pagerState.active = false;
+  pagerState.lines = [];
+  pagerState.search = null;
+  stdout.write("\n");
+  updatePrompt();
+}
+
+async function handlePagerInput(line) {
+  const t = line.trim().toLowerCase();
+
+  if (t === "q" || t === "quit" || t === ":q") {
+    exitPager();
+    return;
+  }
+  if (t === "" || t === " " || t === "f" || t === "\uf000" || t === "next") {
+    // space / enter / f → next page
+    pagerState.pos += pagerState.pageSize;
+    if (pagerState.pos >= pagerState.lines.length) {
+      exitPager();
+    } else {
+      renderPagerPage();
+    }
+    return;
+  }
+  if (t === "b" || t === "prev" || t === "page-up") {
+    pagerState.pos = Math.max(0, pagerState.pos - pagerState.pageSize);
+    renderPagerPage();
+    return;
+  }
+  if (t === "g" || t === "home") {
+    pagerState.pos = 0;
+    renderPagerPage();
+    return;
+  }
+  if (t === "g" || t === "end" || t === "$" || t === "100%" || t === "last") {
+    pagerState.pos = Math.max(0, pagerState.lines.length - pagerState.pageSize);
+    renderPagerPage();
+    return;
+  }
+  if (t.startsWith("/")) {
+    // search forward
+    const pattern = t.slice(1);
+    try {
+      const re = new RegExp(pattern, "i");
+      for (let i = pagerState.pos + 1; i < pagerState.lines.length; i++) {
+        if (re.test(pagerState.lines[i])) {
+          pagerState.pos = Math.max(0, i - 5);
+          renderPagerPage();
+          return;
+        }
+      }
+      stdout.write(`Pattern not found: ${pattern}\n`);
+      write(`─${pagerState.name === "more" ? "More" : "Less"}─ `, "info");
+    } catch {
+      stdout.write(`Invalid pattern: ${pattern}\n`);
+      write(`─${pagerState.name === "more" ? "More" : "Less"}─ `, "info");
+    }
+    return;
+  }
+  if (t === "h" || t === "help" || t === "?") {
+    stdout.write("  space/f  next page   b  back page   g  first   G  last\n");
+    stdout.write("  /pattern search       q  quit\n");
+    write(`─${pagerState.name === "more" ? "More" : "Less"}─ `, "info");
+    return;
+  }
+  // Default: next page (like more)
+  pagerState.pos += pagerState.pageSize;
+  if (pagerState.pos >= pagerState.lines.length) {
+    exitPager();
+  } else {
+    renderPagerPage();
+  }
+}
+
 // ─── Status bar ─────────────────────────────────────────────────
 
 function updateStatusBar() {
@@ -1136,6 +1247,10 @@ function updateStatusBar() {
   statusContext.textContent = cwd;
 
   // REPL mode hint
+  if (pagerState.active) {
+    statusHint.textContent = "Pager: space/f next · b back · /search · q quit";
+    return;
+  }
   if (replState.active || replReplayState.active) {
     statusHint.textContent = "Python REPL · exit() or Ctrl-D to leave";
     return;
@@ -1164,7 +1279,9 @@ function updateStatusBar() {
 }
 
 function updatePrompt() {
-  if (replState.active) {
+  if (pagerState.active) {
+    promptEl.textContent = "";
+  } else if (replState.active) {
     promptEl.textContent = ">>> ";
   } else if (replReplayState.active) {
     promptEl.textContent = replReplayState.pending.length > 0 ? "... " : ">>> ";
@@ -1177,6 +1294,14 @@ function updatePrompt() {
 async function onCommand() {
   const line = input.value;
   input.value = "";
+
+  // Pager mode: input is a pager key
+  if (pagerState.active) {
+    write(`${line}\n`, "prompt");
+    await handlePagerInput(line);
+    input.focus();
+    return;
+  }
 
   // Worker-based REPL: send line to WASM via SAB
   if (replState.active) {
