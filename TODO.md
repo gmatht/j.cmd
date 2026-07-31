@@ -60,7 +60,7 @@ and device files. It runs in any browser with no build step.
 - [x] Pipe operator: `cat README.md | head -3`
 - [x] `grep` builtin or command
 - [x] `find` builtin or command
-- [ ] Quoted arguments parsing in tinysh (currently splits on spaces blindly)
+- [x] Quoted arguments parsing in tinysh (currently splits on spaces blindly)
 - [ ] `&&` and `||` conditional chaining
 - [ ] Environment variables ($PATH, $HOME, $USER)
 - [ ] `export` command
@@ -102,8 +102,8 @@ and device files. It runs in any browser with no build step.
 
 ## Known Issues
 
-- tinysh splits on spaces — quoted arguments like `echo "hello world"` become
-  two tokens instead of one
+- tinysh tokenizes quoted arguments: `echo "hello world"` is one argument
+  (single quotes, double quotes, backslash escapes, empty args all handled)
 - Pipes (`|`) are not supported — they fall through to `cat` which tries to
   read them as file paths
 - No environment variable expansion in the shell (`$HOME`, `$PATH` etc.)
