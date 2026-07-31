@@ -1927,7 +1927,10 @@ Loops, conditionals, variables, arithmetic and pipes work:
       if (recording.active) { stderr.write("asciinema: already recording\n"); return 1; }
       // Banner first (not captured), then start recording
       write(`asciinema: recording to ${file} — type 'asciinema stop' to finish\n`, "info");
-      startRecording(file);
+      // Resolve the path NOW (against the cwd where rec was issued) so
+      // the cast file goes where the user asked even if they cd elsewhere
+      // before 'asciinema stop'.
+      startRecording(fs._resolve(file));
       return 0;
     }
 
