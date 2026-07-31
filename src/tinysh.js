@@ -13,6 +13,9 @@
 
 import { createInterface } from "readline";
 import { fs } from "./fs/index.js";
+import { WasmRunner } from "./wasm.js";
+
+const wasmRunner = new WasmRunner(fs);
 
 // ─── Built-in Commands ─────────────────────────────────────────
 
@@ -169,6 +172,9 @@ async function resolveCommand(name) {
         if (clean === name + ".mjs") {
           return { type: "file", path: dir + "/" + clean };
         }
+        if (clean === name + ".wasm") {
+          return { type: "wasm", path: dir + "/" + clean };
+        }
       }
     } catch {
       // Directory doesn't exist, skip
@@ -215,6 +221,26 @@ async function handleLine(line) {
         process.stderr.write(`${cmd}: command not found — try "${hint}" instead\n`);
       } else {
         process.stderr.write(`${cmd}: command not found\n`);
+      }
+      return;
+    }
+
+    if (resolved.type === "wasm") {
+      // Run a wasm32-wasi binary (full WASI via @wasmer/wasi, filesystem
+      // bridged to our VirtualFS via @wasmer/wasmfs)
+      await wasmRunner.run(resolved.path, [cmd, ...args]);
+      const output = wasmRunner.getStdout();
+      const wasmErr = wasmRunner.getStderr();
+      if (outputRedirect) {
+        await fs.write(outputRedirect, output);
+      } else if (output) {
+        process.stdout.write(output);
+      }
+      if (wasmErr) {
+        process.stderr.write(wasmErr);
+      }
+      if (wasmRunner.getExitCode() !== 0) {
+        process.stderr.write(`${cmd}: exited with code ${wasmRunner.getExitCode()}\n`);
       }
       return;
     }

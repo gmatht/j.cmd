@@ -153,6 +153,15 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/codemirror.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/addon/dialog/dialog.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/keymap/vim.min.js"></script>
+<!-- Bare-specifier resolution for the WASM runtime packages (served from node_modules by serve.py) -->
+<script type="importmap">
+{
+  "imports": {
+    "@wasmer/wasi": "/node_modules/@wasmer/wasi/dist/Library.esm.js",
+    "@wasmer/wasmfs": "/node_modules/@wasmer/wasmfs/lib/index.esm.js"
+  }
+}
+</script>
 <script type="module">
 import { fs } from "../src/fs/index.js";
 import { WasmRunner } from "../src/wasm.js";
@@ -931,22 +940,23 @@ async function handleLine(line) {
           }
         }
 
-        const instance = await wasmRunner.run(resolved.path, wasmArgs);
+        await wasmRunner.run(resolved.path, wasmArgs);
+        const exitCode = wasmRunner.getExitCode();
         output = wasmRunner.getStdout();
+        const wasmErr = wasmRunner.getStderr();
         if (outputRedirect) {
           await fs.write(outputRedirect, output);
-        } else {
+        } else if (output) {
           stdout.write(output);
         }
-      } catch (e) {
-        if (e.constructor && e.constructor.name === "WasmExit") {
-          const exitCode = e.code;
-          if (outputRedirect) {
-            await fs.write(outputRedirect, "");
-          }
-        } else {
-          stderr.write(`${cmd}: wasm error: ${e.message}\n`);
+        if (wasmErr) {
+          stderr.write(wasmErr);
         }
+        if (exitCode !== 0) {
+          stderr.write(`${cmd}: exited with code ${exitCode}\n`);
+        }
+      } catch (e) {
+        stderr.write(`${cmd}: wasm error: ${e.message}\n`);
       }
     } else if (resolved.type === "builtin") {
       const origWrite = stdout.write;
