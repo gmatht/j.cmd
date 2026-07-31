@@ -225,21 +225,30 @@ function openEditor(filepath, initialContent, onSave) {
 }
 
 function closeEditor(save) {
+  const doClose = () => {
+    // Destroy CodeMirror and restore the textarea
+    if (cm) {
+      cm.toTextArea();
+      cm = null;
+    }
+    editorContainer.classList.remove("active");
+    input.disabled = false;
+    editorFilepath = null;
+    editorCallback = null;
+    write(`[editor closed] ${save ? "saved" : "cancelled"}\n`, "info");
+    input.focus();
+  };
+
   if (save && editorCallback) {
     const content = cm.getValue();
-    editorCallback(content);
+    Promise.resolve(editorCallback(content))
+      .then(doClose)
+      .catch((e) => {
+        stderr.write(`write failed: ${editorFilepath}: ${e.message}\n`);
+      });
+  } else {
+    doClose();
   }
-  // Destroy CodeMirror and restore the textarea
-  if (cm) {
-    cm.toTextArea();
-    cm = null;
-  }
-  editorContainer.classList.remove("active");
-  input.disabled = false;
-  editorFilepath = null;
-  editorCallback = null;
-  write(`[editor closed] ${save ? "saved" : "cancelled"}\n`, "info");
-  input.focus();
 }
 
 // ─── Vi-like editor (CodeMirror vim keymap) ─────────────────────
