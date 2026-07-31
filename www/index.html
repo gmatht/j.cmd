@@ -18,6 +18,25 @@
     word-wrap: break-word;
   }
   
+  /* ─── Status bar ──────────────────────────────────── */
+  #status-bar {
+    display: flex;
+    padding: 2px 16px;
+    background: #0d1117;
+    color: #8b949e;
+    font-size: 11px;
+    position: fixed;
+    bottom: 48px; left: 0; right: 0;
+    height: 22px;
+    align-items: center;
+    border-top: 1px solid #21262d;
+    gap: 16px;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+  #status-hint { flex: 1; }
+  #status-context { color: #7ec8e3; }
+  
   #input-line {
     display: flex;
     padding: 4px 16px 16px;
@@ -90,6 +109,11 @@
 
 <div id="terminal"></div>
 
+<div id="status-bar">
+  <span id="status-context">/home</span>
+  <span id="status-hint">Tab: complete · Ctrl+L: clear · edit: text editor</span>
+</div>
+
 <div id="editor-container">
   <div id="editor-header">
     <span id="editor-filename">untitled</span>
@@ -116,6 +140,8 @@ const wasmRunner = new WasmRunner(fs);
 const term = document.getElementById("terminal");
 const input = document.getElementById("input");
 const promptEl = document.getElementById("prompt");
+const statusContext = document.getElementById("status-context");
+const statusHint = document.getElementById("status-hint");
 
 function write(text, cls = "out") {
   const span = document.createElement("span");
@@ -590,8 +616,33 @@ let lastTabPress = 0;
 let lastPrefix = "";
 let lastMatches = [];
 
+function updateStatusBar() {
+  const cwd = fs.cwd;
+  statusContext.textContent = cwd;
+
+  // Context-sensitive hints
+  if (cwd.startsWith("/github") || cwd.startsWith("/mount/github")) {
+    statusHint.textContent = "Browse any repo. Login: GITHUB_AUTHKEY for private repos.";
+  } else if (cwd.startsWith("/http")) {
+    statusHint.textContent = "CORS-enabled fetch. Public CDNs and APIs only.";
+  } else if (cwd.startsWith("/dev")) {
+    statusHint.textContent = "Browser devices: info, cpu, webgl, clipboard, random...";
+  } else if (cwd.startsWith("/tmp")) {
+    statusHint.textContent = "Ephemeral — lost on reload.";
+  } else if (cwd.startsWith("/home")) {
+    statusHint.textContent = "Persistent storage (localStorage). edit: text editor.";
+  } else if (cwd.startsWith("/bin") || cwd.startsWith("/commands")) {
+    statusHint.textContent = "Executable commands. .js and .wasm files.";
+  } else if (cwd.startsWith("/mount")) {
+    statusHint.textContent = "Mounted filesystems. ls /mount/github/ for repos.";
+  } else {
+    statusHint.textContent = "Tab: complete · Ctrl+L: clear · Up/Down: history";
+  }
+}
+
 function updatePrompt() {
   promptEl.textContent = `tinysh:${fs.cwd}$ `;
+  updateStatusBar();
 }
 
 async function onCommand() {

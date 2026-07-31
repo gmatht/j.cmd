@@ -10,6 +10,16 @@
   "scripts": {
     "start": "node src/tinysh.js"
   },
-  "keywords": ["shell", "filesystem", "browser", "plan9", "virtual-fs"],
-  "license": "GPL-3.0"
+  "keywords": [
+    "shell",
+    "filesystem",
+    "browser",
+    "plan9",
+    "virtual-fs"
+  ],
+  "license": "GPL-3.0",
+  "dependencies": {
+    "@wasmer/wasi": "^1.2.2",
+    "@wasmer/wasmfs": "^0.12.0"
+  }
 }

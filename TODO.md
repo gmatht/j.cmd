@@ -32,7 +32,13 @@ and device files. It runs in any browser with no build step.
 - [x] WASM binary support: compile Rust→wasm32-unknown-unknown
       and run as commands from /bin/echo.wasm
 - [x] Minimal WASI host in JavaScript (stdout, args, clock, random)
-- [ ] Full WASI implementation (file I/O mapped to VirtualFS)
+- [x] Status bar: context-sensitive hints based on current directory
+      (GitHub: login hint · /dev/: devices · /tmp/: ephemeral)
+- [ ] Replace WASI stub with @wasmer/wasi (full spec-compliant WASI)
+      https://www.npmjs.com/package/@wasmer/wasi
+      - Wire @wasmer/wasmfs to our VirtualFS
+      - Then any wasm32-wasi binary works as a command:
+        grep, curl, python, etc.
 - [ ] `ls -l` output format (permissions, size, date)
 - [ ] Pipe operator: `cat README.md | head -3`
 - [ ] `grep` builtin or command
