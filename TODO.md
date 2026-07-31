@@ -68,8 +68,8 @@ and device files. It runs in any browser with no build step.
 ### Medium-term
 
 - [ ] IndexedDB FS backend (for files > localStorage 5MB limit)
-- [ ] DownloadFS: write to /pc/ triggers browser download dialog
-- [ ] Read from /pc/ opens file picker
+- [x] DownloadFS: write to /pc/ triggers browser download
+      cp file /pc · echo text > /pc/name.txt · binary via writeBlob
 - [ ] WASM/WASI runtime: compile Rust/C programs to wasm32-wasi,
       drop them in /bin/, run them as native commands.
       Needs WASI syscall implementation over VirtualFS.

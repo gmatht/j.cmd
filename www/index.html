@@ -476,11 +476,26 @@ const builtins = {
 
   async cp(args) {
     if (args.length < 2) { stderr.write("cp: missing operand\n"); return; }
+    const src = args[0];
+    let dest = args[1];
+    // If dest is a directory (ends with /), append source basename
+    if (dest.endsWith("/")) {
+      dest = dest + src.split("/").pop();
+    }
     try {
-      const content = await fs.read(args[0]);
-      await fs.write(args[1], content);
+      // Binary-aware copy: use readBlob/writeBlob when the backend supports it
+      try {
+        const blob = await fs.readBlob(src);
+        await fs.writeBlob(dest, blob);
+      } catch {
+        const content = await fs.read(src);
+        await fs.write(dest, content);
+      }
+      if (dest.startsWith("/pc")) {
+        stdout.write(`Downloading: ${dest.split("/").pop()}\n`);
+      }
     } catch (e) {
-      stderr.write(`cp: ${args[0]}: ${e.message}\n`);
+      stderr.write(`cp: ${src}: ${e.message}\n`);
     }
   },
 
@@ -1455,7 +1470,8 @@ input.addEventListener("keydown", async (e) => {
   write("          browse /github/user/repo — open in tab\n", "info");
   write("          apt/yum/pip → wasmer · wasmer install <pkg>\n", "info");
   write("          python, echoc — auto-loaded from /wasm-bin/\n", "info");
-  write("          history — persisted across refreshes\n\n", "info");
+  write("          history — persisted across refreshes\n", "info");
+  write("          cp file /pc — download to your machine\n\n", "info");
   updatePrompt();
   input.focus();
 })();

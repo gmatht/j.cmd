@@ -18,6 +18,7 @@ import { HttpFS } from "./httpfs.js";
 import { GitHubFS } from "./githubfs.js";
 import { GitLabFS } from "./gitlabfs.js";
 import { DevFS } from "./devfs.js";
+import { DownloadFS } from "./downloadfs.js";
 
 // ─── RootFS: A virtual directory that shows mount points ───────
 
@@ -131,6 +132,7 @@ class VirtualFS {
     this.mount("gitlab", "/mount/gitlab", gitlab);
     this.mount("gitlab", "/gitlab", gitlab);  // convenience alias
     this.mount("dev", "/dev", new DevFS());
+    this.mount("download", "/pc", new DownloadFS());
     this.mount("ram", "/bin", new RamFS());
 
     // Initialize default files
