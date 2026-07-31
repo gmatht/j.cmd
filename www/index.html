@@ -732,41 +732,121 @@ let lastTabPress = 0;
 let lastPrefix = "";
 let lastMatches = [];
 
-// ─── Python REPL (session replay) ──────────────────────────────
+// ─── Python REPL (worker-based, WASI-level blocking stdin) ─────
 
 const replState = {
   active: false,
-  snippets: [],
-  pending: [],   // current multi-line snippet being typed
+  worker: null,
+  sab: null,
 };
 
-function enterPythonRepl() {
+const SAB_DATA_OFFSET = 64;
+const SAB_BUF_SIZE = 65536;
+
+// Try to create a SharedArrayBuffer (requires COOP/COEP headers)
+function sabAvailable() {
+  return typeof SharedArrayBuffer !== "undefined";
+}
+
+async function enterPythonRepl() {
+  if (!sabAvailable()) {
+    stderr.write("SharedArrayBuffer unavailable — serve with www/serve.py (COOP/COEP).\n");
+    stderr.write("Falling back to session-replay REPL...\n");
+    enterPythonReplReplay();
+    return;
+  }
+
   replState.active = true;
-  replState.snippets = [];
-  replState.pending = [];
-  stdout.write("MicroPython REPL — type code, Ctrl-D or exit() to leave\n");
+  replState.sab = new SharedArrayBuffer(SAB_DATA_OFFSET + SAB_BUF_SIZE);
+
+  try {
+    const wasmBytes = await fetch("wasm-bin/python.wasm").then(r => r.arrayBuffer());
+    const blob = new Blob([wasmBytes]);
+
+    replState.worker = new Worker("wasi-worker.js");
+
+    replState.worker.onmessage = (e) => {
+      const msg = e.data;
+      if (msg.type === "stdout") {
+        stdout.write(msg.data);
+      } else if (msg.type === "exit") {
+        exitPythonRepl();
+      }
+    };
+
+    replState.worker.postMessage({ type: "run", wasmBytes, args: ["python"], sab: replState.sab });
+    stdout.write("MicroPython REPL (WASI-level stdin) — exit() or Ctrl-D to leave\n");
+  } catch (e) {
+    stderr.write(`python: ${e.message}\n`);
+    exitPythonRepl();
+  }
+
   updatePrompt();
 }
 
 function exitPythonRepl() {
   replState.active = false;
-  replState.snippets = [];
-  replState.pending = [];
+  if (replState.worker) {
+    replState.worker.terminate();
+    replState.worker = null;
+  }
+  replState.sab = null;
   stdout.write("\nLeaving Python REPL.\n");
   updatePrompt();
 }
 
-// Check if a Python snippet is syntactically complete
+function sendPythonLine(line) {
+  const control = new Int32Array(replState.sab);
+  const dataView = new Uint8Array(replState.sab);
+
+  // Write the line + newline into the SAB data region
+  const enc = new TextEncoder();
+  const bytes = enc.encode(line + "\n");
+  const len = Math.min(bytes.length, SAB_BUF_SIZE);
+  dataView.set(bytes.subarray(0, len), SAB_DATA_OFFSET);
+
+  Atomics.store(control, 1, len);
+  Atomics.store(control, 0, 1);  // data ready
+  Atomics.notify(control, 0, 1);
+}
+
+function sendPythonEof() {
+  const control = new Int32Array(replState.sab);
+  Atomics.store(control, 0, 2);  // EOF state
+  Atomics.notify(control, 0, 1);
+}
+
+// ─── Fallback: session replay REPL (no SharedArrayBuffer) ──────
+
+const replReplayState = {
+  active: false,
+  snippets: [],
+  pending: [],
+};
+
+function enterPythonReplReplay() {
+  replReplayState.active = true;
+  replReplayState.snippets = [];
+  replReplayState.pending = [];
+  stdout.write("MicroPython REPL (session replay) — exit() to leave\n");
+  updatePrompt();
+}
+
+function exitPythonReplReplay() {
+  replReplayState.active = false;
+  replReplayState.snippets = [];
+  replReplayState.pending = [];
+  stdout.write("\nLeaving Python REPL.\n");
+  updatePrompt();
+}
+
 function isComplete(source) {
   try {
-    // Heuristic: balanced parens/brackets/braces means it might be complete.
-    // MicroPython decides this too; we use a simple approximation.
     let depth = 0;
     for (const ch of source) {
       if ("([{".includes(ch)) depth++;
       if (")]}".includes(ch)) depth--;
     }
-    // Also check for trailing colon (block opener) — needs continuation
     const lines = source.split("\n");
     const last = lines[lines.length - 1].trimEnd();
     if (last.endsWith(":")) return false;
@@ -776,27 +856,24 @@ function isComplete(source) {
   }
 }
 
-async function runPythonReplLine(line) {
-  // Exit conditions
+async function runPythonReplReplayLine(line) {
   if (line.trim() === "exit()" || line.trim() === "quit()") {
-    exitPythonRepl();
+    exitPythonReplReplay();
     return;
   }
 
-  // Accumulate multi-line input
-  replState.pending.push(line);
-  const source = replState.pending.join("\n");
+  replReplayState.pending.push(line);
+  const source = replReplayState.pending.join("\n");
 
   if (!isComplete(source)) {
-    updatePrompt();  // shows "... " continuation prompt
+    updatePrompt();
     return;
   }
-  replState.pending = [];
+  replReplayState.pending = [];
 
-  // Build the transcript: all prior snippets + marker + new code
   const marker = `__repl_marker_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}__`;
   const transcript = [
-    ...replState.snippets,
+    ...replReplayState.snippets,
     `import sys as __rs; __rs.stdout.write(${JSON.stringify(marker)} + "\n")`,
     source,
   ].join("\n");
@@ -804,17 +881,10 @@ async function runPythonReplLine(line) {
   try {
     await wasmRunner.run("/bin/python.wasm", ["python", "-c", transcript]);
     let output = wasmRunner.getStdout();
-
-    // Split at the marker: only show output after it
     const idx = output.indexOf(marker + "\n");
-    if (idx !== -1) {
-      output = output.slice(idx + marker.length + 1);
-    }
-    // Also strip any microPython banner noise
+    if (idx !== -1) output = output.slice(idx + marker.length + 1);
     stdout.write(output);
-
-    // Keep the snippet for future replays
-    replState.snippets.push(source);
+    replReplayState.snippets.push(source);
   } catch (e) {
     stderr.write(`python: ${e.message}\n`);
   }
@@ -829,7 +899,7 @@ function updateStatusBar() {
   statusContext.textContent = cwd;
 
   // REPL mode hint
-  if (replState.active) {
+  if (replState.active || replReplayState.active) {
     statusHint.textContent = "Python REPL · exit() or Ctrl-D to leave";
     return;
   }
@@ -858,8 +928,9 @@ function updateStatusBar() {
 
 function updatePrompt() {
   if (replState.active) {
-    // >>> for fresh input, ... for continuation
-    promptEl.textContent = replState.pending.length > 0 ? "... " : ">>> ";
+    promptEl.textContent = ">>> ";
+  } else if (replReplayState.active) {
+    promptEl.textContent = replReplayState.pending.length > 0 ? "... " : ">>> ";
   } else {
     promptEl.textContent = `tinysh:${fs.cwd}$ `;
   }
@@ -870,11 +941,23 @@ async function onCommand() {
   const line = input.value;
   input.value = "";
 
-  // In REPL mode, send the line to the interpreter
+  // Worker-based REPL: send line to WASM via SAB
   if (replState.active) {
-    const promptText = replState.pending.length > 0 ? "... " : ">>> ";
+    write(`>>> ${line}\n`, "prompt");
+    if (line.trim() === "exit()" || line.trim() === "quit()") {
+      sendPythonEof();
+    } else {
+      sendPythonLine(line);
+    }
+    input.focus();
+    return;
+  }
+
+  // Session-replay REPL (fallback)
+  if (replReplayState.active) {
+    const promptText = replReplayState.pending.length > 0 ? "... " : ">>> ";
     write(`${promptText}${line}\n`, "prompt");
-    await runPythonReplLine(line);
+    await runPythonReplReplayLine(line);
     input.focus();
     return;
   }
@@ -926,9 +1009,13 @@ input.addEventListener("keydown", async (e) => {
   }
 
   // Ctrl+D — exit REPL (EOF)
-  if (e.ctrlKey && e.key === "d" && replState.active) {
+  if (e.ctrlKey && e.key === "d" && (replState.active || replReplayState.active)) {
     e.preventDefault();
-    exitPythonRepl();
+    if (replState.active) {
+      sendPythonEof();
+    } else {
+      exitPythonReplReplay();
+    }
     return;
   }
 
