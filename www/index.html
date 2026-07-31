@@ -192,6 +192,12 @@ import { watToWasm } from "../src/wabt-loader.js";
 import { bashToJS, runBash } from "../src/bash2js.js";
 import { getManPage, manIndex, searchManPages, MAN_PAGES } from "../src/manpages.js";
 const wasmRunner = new WasmRunner(fs);
+
+// Writes to read-only mounts (github/gitlab/http/git) land in a local
+// overlay via OverlayFS — surface the fork/login notice to the user.
+fs.onOverlayWrite = (path, mountName) => {
+  write(`Warning: ${path} is on the read-only ${mountName} mount. Your write is saved locally in an overlay — you will not be able to commit until you fork or (re)login.\n`, "err");
+};
 const wasmerReg = new WasmerRegistry(fs);
 
 // Pipe input for the current command — the previous pipeline segment's

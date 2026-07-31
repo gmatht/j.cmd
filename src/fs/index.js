@@ -127,6 +127,140 @@ function syncWrite(backend, path, content) {
   backend.write(path, content);
 }
 
+// ─── OverlayFS: copy-on-write layer over a read-only backend ──
+// Writes to read-only mounts (github/gitlab/http/git) don't fail with
+// EROFS — they land in a local overlay (in-memory + localStorage) and
+// shadow the remote on read. The shell surfaces a warning that the
+// change can't be committed until fork/(re)login.
+const WHITEOUT = "\u0000WHITEOUT";
+const B64 = "\u0001b64:";
+
+function strToB64(s) {
+  let bin = "";
+  for (let i = 0; i < s.length; i++) bin += String.fromCharCode(s.charCodeAt(i));
+  return btoa(bin);
+}
+function b64ToStr(b) {
+  const bin = atob(b);
+  let s = "";
+  for (let i = 0; i < bin.length; i++) s += String.fromCharCode(bin.charCodeAt(i));
+  return s;
+}
+
+class OverlayFS {
+  constructor(backend, name, storagePrefix) {
+    this.backend = backend;
+    this.name = name;
+    this.prefix = storagePrefix;
+    this.files = new Map();  // relative path → string (or base64 marker)
+    this._load();
+  }
+
+  _load() {
+    if (typeof localStorage === "undefined") return;
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith(this.prefix)) {
+          this.files.set(key.slice(this.prefix.length), localStorage.getItem(key));
+        }
+      }
+    } catch {}
+  }
+
+  _save(path, content) {
+    if (typeof localStorage !== "undefined") {
+      try { localStorage.setItem(this.prefix + path, content); } catch {}
+    }
+  }
+
+  _drop(path) {
+    this.files.delete(path);
+    if (typeof localStorage !== "undefined") {
+      try { localStorage.removeItem(this.prefix + path); } catch {}
+    }
+  }
+
+  async read(path) {
+    if (this.files.has(path)) {
+      const c = this.files.get(path);
+      if (c === WHITEOUT) throw new Error("ENOENT");
+      return c.startsWith(B64) ? b64ToStr(c.slice(B64.length)) : c;
+    }
+    return this.backend.read(path);
+  }
+
+  async readBlob(path) {
+    if (this.files.has(path)) {
+      const c = this.files.get(path);
+      if (c === WHITEOUT) throw new Error("ENOENT");
+      if (c.startsWith(B64)) {
+        const bin = atob(c.slice(B64.length));
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        return new Blob([bytes]);
+      }
+      return new Blob([c], { type: "text/plain" });
+    }
+    return this.backend.readBlob ? this.backend.readBlob(path) : this.backend.read(path);
+  }
+
+  async write(path, content) {
+    this.files.set(path, content);
+    this._save(path, content);
+    return { overlay: true };
+  }
+
+  async writeBlob(path, blob) {
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    let bin = "";
+    for (const b of bytes) bin += String.fromCharCode(b);
+    const encoded = B64 + btoa(bin);
+    this.files.set(path, encoded);
+    this._save(path, encoded);
+    return { overlay: true };
+  }
+
+  async list(path) {
+    const base = this.backend.list
+      ? (await this.backend.list(path).catch(() => []))
+      : [];
+    const entries = new Set(base);
+    const norm = path.replace(/\/+$/, "") || "/";
+    const prefix = norm === "/" ? "/" : norm + "/";
+    for (const key of this.files.keys()) {
+      if (key === WHITEOUT) continue;
+      if (key.startsWith(prefix)) {
+        const rest = key.slice(prefix.length);
+        const name = rest.split("/")[0];
+        if (name) entries.add(name);
+      }
+    }
+    return [...entries].sort();
+  }
+
+  async remove(path) {
+    if (this.files.has(path)) {
+      this._drop(path);
+      return;
+    }
+    // Removing a remote file → whiteout it locally
+    this.files.set(path, WHITEOUT);
+    this._save(path, WHITEOUT);
+    return { overlay: true };
+  }
+
+  async stat(path) {
+    if (this.files.has(path)) {
+      const c = this.files.get(path);
+      if (c === WHITEOUT) throw new Error("ENOENT");
+      const text = c.startsWith(B64) ? c.slice(B64.length) : c;
+      return { type: "file", size: text.length, mtime: Date.now() };
+    }
+    return this.backend.stat ? this.backend.stat(path) : null;
+  }
+}
+
 // ─── VirtualFS ─────────────────────────────────────────────────
 
 class VirtualFS {
@@ -150,17 +284,17 @@ class VirtualFS {
       hasLocalStorage ? new LocalStorageFS() : new RamFS());
     this.mount(hasLocalStorage ? "localStorage" : "ram", "/commands",
       hasLocalStorage ? new LocalStorageFS() : new RamFS());
-    this.mount("http", "/http", new HttpFS());
-    const github = new GitHubFS();
+    this.mount("http", "/http", new OverlayFS(new HttpFS(), "http", "fs:ovl:http:"));
+    const github = new OverlayFS(new GitHubFS(), "github", "fs:ovl:github:");
     this.mount("github", "/mount/github", github);
     this.mount("github", "/github", github);
-    const gitlab = new GitLabFS();
+    const gitlab = new OverlayFS(new GitLabFS(), "gitlab", "fs:ovl:gitlab:");
     this.mount("gitlab", "/mount/gitlab", gitlab);
     this.mount("gitlab", "/gitlab", gitlab);  // convenience alias
     // GitFS — real git over HTTP (smart or dumb). Path format:
     //   /mount/git/{host}/{repo-path}/{file-path}
     // e.g. /mount/git/github.com/torvalds/linux/README
-    const git = new GitFS();
+    const git = new OverlayFS(new GitFS(), "git", "fs:ovl:git:");
     this.mount("git", "/mount/git", git);
     this.mount("git", "/git", git);  // convenience alias
     this.mount("dev", "/dev", new DevFS());
@@ -352,7 +486,8 @@ try {
         throw new Error(`invalid github repo '${arg}'`);
       }
       return this.mount(`github:${owner}/${repo}`, prefix,
-        new GitHubRepoFS(owner, repo), { user: true });
+        new OverlayFS(new GitHubRepoFS(owner, repo), "github", `fs:ovl:${prefix}:`),
+        { user: true });
     }
     throw new Error(`unknown mount type '${type}' (supported: github)`);
   }
@@ -396,7 +531,7 @@ try {
         // prefix is "/" (root), the slice strips it and we lose the leading
         // slash unless we re-add it.
         if (!relative.startsWith("/")) relative = "/" + relative;
-        return { backend: m.backend, relative };
+        return { backend: m.backend, relative, name: m.name };
       }
     }
     return null;
@@ -424,19 +559,25 @@ try {
     const r = this._resolve(path);
     const m = this._findBackend(r);
     if (!m) throw new Error(`ENOENT: ${path} (no mount for ${r})`);
+    let result;
     if (m.backend.writeBlob) {
-      return m.backend.writeBlob(m.relative, blob);
+      result = await m.backend.writeBlob(m.relative, blob);
+    } else {
+      // Fallback: read blob as text and write
+      const text = await blob.text();
+      result = await m.backend.write(m.relative, text);
     }
-    // Fallback: read blob as text and write
-    const text = await blob.text();
-    return m.backend.write(m.relative, text);
+    if (result && result.overlay) this._emitOverlayWarning(r, m.name);
+    return result;
   }
 
   async write(path, content) {
     const r = this._resolve(path);
     const m = this._findBackend(r);
     if (!m) throw new Error(`ENOENT: ${path} (no mount for ${r})`);
-    return m.backend.write(m.relative, content);
+    const result = await m.backend.write(m.relative, content);
+    if (result && result.overlay) this._emitOverlayWarning(r, m.name);
+    return result;
   }
 
   async list(path) {
@@ -450,7 +591,15 @@ try {
     const r = this._resolve(path);
     const m = this._findBackend(r);
     if (!m) throw new Error(`ENOENT: ${path} (no mount for ${r})`);
-    return m.backend.remove(m.relative);
+    const result = await m.backend.remove(m.relative);
+    if (result && result.overlay) this._emitOverlayWarning(r, m.name);
+    return result;
+  }
+
+  // Overlay writes (read-only mounts) surface a warning via this hook.
+  // The shell sets it to print the fork/login notice.
+  _emitOverlayWarning(path, mountName) {
+    if (this.onOverlayWrite) this.onOverlayWrite(path, mountName);
   }
 
   async exists(path) {
