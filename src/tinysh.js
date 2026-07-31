@@ -953,6 +953,11 @@ Conditionals: cmd1 && cmd2 — run cmd2 only if cmd1 succeeded (exit 0)
   Example: cat x.js && echo ok || echo failed
   (A command's exit status: 0 success · 1 failure · 2 usage error · 127 not found)
 
+Keys:
+  Ctrl+C           — interrupt the running command (exit status 130, like SIGINT)
+                     or cancel the current line at an idle prompt
+  Ctrl+D           — exit the shell (at an empty prompt)
+
 Aliases: vi/vim/nano = edit · less/more = cat · cls = clear
          dir = ls · ? = help · q/quit = exit
          apt/yum/brew/pip = wasmer (WASM packages)
