@@ -1677,23 +1677,30 @@ async function runSegment(segmentText, stdin, isLast) {
           }
         }
 
-        // cc [-o out.wasm] prog.c — the compiler emits WAT; convert to a
-        // .wasm binary when -o (or a .wasm output) is requested.
-        let ccOutput = null;  // WASM output path, if any
+        // cc: compile C → WAT, then to a .wasm binary.
+        //   cc prog.c            → writes a.wasm (like gcc's a.out)
+        //   cc -o out.wasm prog.c → writes out.wasm
+        //   cc -S prog.c          → emits WAT to stdout (assembly)
+        let ccOutput = null;
+        let ccWatOnly = false;
         if ((cmd === "cc" || cmd === "compiler") && args.length > 0) {
           let srcFile = null;
           if (args[0] === "-o" && args[1]) {
             ccOutput = args[1];
             srcFile = args[2];
             wasmArgs = [cmd, srcFile];
+          } else if (args[0] === "-S") {
+            ccWatOnly = true;
+            srcFile = args[1];
+            wasmArgs = [cmd, srcFile];
+          } else if (args[0].endsWith(".wasm") && args[1]) {
+            ccOutput = args[0];
+            srcFile = args[1];
+            wasmArgs = [cmd, srcFile];
           } else {
+            ccOutput = "a.wasm";  // default, like gcc's a.out
             srcFile = args[0];
-            // If the first arg is already a .wasm output (cc out.wasm in.c)
-            if (args[0].endsWith(".wasm") && args[1]) {
-              ccOutput = args[0];
-              srcFile = args[1];
-              wasmArgs = [cmd, srcFile];
-            }
+            wasmArgs = [cmd, srcFile];
           }
         }
 
@@ -1702,8 +1709,8 @@ async function runSegment(segmentText, stdin, isLast) {
         let wasmOut = wasmRunner.getStdout();
         const wasmErr = wasmRunner.getStderr();
 
-        // Convert WAT → WASM binary for cc -o / cc out.wasm
-        if (ccOutput && exitCode === 0) {
+        // Convert WAT → WASM binary (skip for -S which wants the WAT)
+        if (!ccWatOnly && ccOutput && exitCode === 0) {
           try {
             const bytes = await watToWasm(wasmOut, "cc-output.wat");
             await fs.writeBlob(ccOutput, new Blob([bytes], { type: "application/wasm" }));

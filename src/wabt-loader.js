@@ -34,12 +34,27 @@ export async function loadWabt() {
 }
 
 /**
+ * Convert old-style WAT opcodes to modern syntax that wabt accepts.
+ * The c-to-wasm-compiler emits legacy opcodes:
+ *   get_global → global.get, set_global → global.set
+ *   (also handles get_local/set_local just in case)
+ */
+export function normalizeWat(watText) {
+  return watText
+    .replace(/get_global\b/g, "global.get")
+    .replace(/set_global\b/g, "global.set")
+    .replace(/get_local\b/g, "local.get")
+    .replace(/set_local\b/g, "local.set");
+}
+
+/**
  * Convert WAT text to a WASM binary (Uint8Array).
  * Throws an Error with the WAT diagnostics on failure.
  */
 export async function watToWasm(watText, name = "module.wat") {
   const wabt = await loadWabt();
-  const module = wabt.parseWat(name, watText);
+  const normalized = normalizeWat(watText);
+  const module = wabt.parseWat(name, normalized);
   const { buffer } = module.toBinary({ log: false, write_debug_names: false });
   module.destroy();
   return new Uint8Array(buffer);

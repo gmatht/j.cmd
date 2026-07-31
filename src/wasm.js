@@ -66,6 +66,8 @@ export class WasmRunner {
     this._initPromise = null;
     this._stdout = "";
     this._stderr = "";
+    this._stdCustomOut = "";
+    this._stdin = "";
     this._exitCode = 0;
   }
 
@@ -101,6 +103,27 @@ export class WasmRunner {
     // Holder so custom-import closures can reach the instance memory
     // once it exists (the closures only run after instantiation).
     const memRef = { memory: null };
+    const custom = this._buildCustomImports(module, memRef);
+
+    // The c-compiler's output (and other bare modules) import only custom
+    // modules like 'std', with no WASI imports — @wasmer/wasi can't
+    // determine a WASI version for them. Instantiate directly instead.
+    const hasWasi = WebAssembly.Module.imports(module)
+      .some((i) => i.module === "wasi_snapshot_preview1");
+    if (!hasWasi) {
+      const instance = await WebAssembly.instantiate(module, custom);
+      if (instance.exports.memory) memRef.memory = instance.exports.memory;
+      if (instance.exports.main) {
+        instance.exports.main();
+        this._exitCode = 0;
+      } else {
+        this._exitCode = 0;
+      }
+      this._stdout = this._stdCustomOut || "";
+      this._stderr = "";
+      this._stdCustomOut = "";
+      return instance;
+    }
 
     const wasi = new WASI({
       args,
@@ -109,6 +132,7 @@ export class WasmRunner {
     });
     // Pipe support: feed the previous command's output as this program's stdin
     if (stdin) wasi.setStdinString(stdin);
+    this._stdin = stdin || "";
 
     // Wire @wasmer/wasmfs to our VirtualFS: seed a WasmFs mirror from
     // the shell's files, then copy it into the WASI filesystem.
@@ -118,7 +142,6 @@ export class WasmRunner {
 
     // Instantiate (merging custom imports such as micropython_wasm) and
     // run _start. wasmer's WASI handles proc_exit by returning the code.
-    const custom = this._buildCustomImports(module, memRef);
     const instance = wasi.instantiate(module, custom);
     if (instance.exports.memory) {
       memRef.memory = instance.exports.memory;
@@ -135,6 +158,11 @@ export class WasmRunner {
 
     this._stdout = wasi.getStdoutString();
     this._stderr = wasi.getStderrString();
+    // Merge output written via the custom 'std' module (c-compiler runtime)
+    if (this._stdCustomOut) {
+      this._stdout = this._stdCustomOut + this._stdout;
+      this._stdCustomOut = "";
+    }
 
     // Harvest changes back through the WasmFs mirror into VirtualFS.
     this._copyWasiToWasmFs(wasi.fs, wasmfs);
@@ -307,6 +335,7 @@ export class WasmRunner {
   _buildCustomImports(module, memRef) {
     const enc = new TextEncoder();
     const dec = new TextDecoder();
+    const runner = this;
 
     const custom = {
       "micropython_wasm": {
@@ -321,7 +350,59 @@ export class WasmRunner {
           mem.set(encd, rp);
           return encd.length;
         }
-      }
+      },
+
+      // Runtime for the c-to-wasm-compiler-project: the WASM it generates
+      // imports a custom 'std' module (sleep, readln, print, ...). This
+      // bridge implements those against the browser shell.
+      "std": {
+        sleep: (ms) => {
+          // Busy-wait in small steps so the UI thread stays responsive-ish
+          const end = Date.now() + ms;
+          while (Date.now() < end) {}
+          return 0;
+        },
+        readln: (po, bufLen) => {
+          const mem = new Uint8Array(memRef.memory.buffer);
+          // stdin string was set on the runner during run()
+          const line = runner._stdin || "";
+          runner._stdin = "";
+          const bytes = enc.encode(line);
+          const max = Math.min(bytes.length, Math.max(0, bufLen - 1));
+          for (let i = 0; i < max; i++) mem[po + i] = bytes[i];
+          mem[po + max] = 0;
+          return bytes.length;
+        },
+        _ln: () => { runner._stdCustomOut += "\n"; return 0; },
+        _print: (po, len) => {
+          const mem = new Uint8Array(memRef.memory.buffer);
+          runner._stdCustomOut += dec.decode(mem.slice(po, po + len));
+          return 0;
+        },
+        _println: (po, len) => {
+          runner._print(po, len);
+          runner._stdCustomOut += "\n";
+          return 0;
+        },
+        print_int: (i) => { runner._stdCustomOut += String(i); return 0; },
+        print_real: (r) => { runner._stdCustomOut += String(r); return 0; },
+        println_int: (i) => { runner._stdCustomOut += String(i) + "\n"; return 0; },
+        println_real: (r) => { runner._stdCustomOut += String(r) + "\n"; return 0; },
+        print_int_pad: (i, fullLen) => {
+          let left = false;
+          if (fullLen < 0) { fullLen = -fullLen; left = true; }
+          const txt = String(i);
+          runner._stdCustomOut += left ? txt.padStart(fullLen) : txt.padEnd(fullLen);
+          return 0;
+        },
+        print_real_pad: (r, fullLen) => {
+          let left = false;
+          if (fullLen < 0) { fullLen = -fullLen; left = true; }
+          const txt = String(r);
+          runner._stdCustomOut += left ? txt.padStart(fullLen) : txt.padEnd(fullLen);
+          return 0;
+        },
+      },
     };
 
     // Only hand over the modules the binary actually imports — wasmer's
