@@ -97,7 +97,7 @@ and device files. It runs in any browser with no build step.
 - [x] Ctrl+C interrupt handling
 - [x] Config file (~/.tinyshrc or similar)
 - [x] `which` command
-- [ ] `man <command>` or help pages
+- [x] `man <command>` or help pages
 - [ ] Tab completion for partial paths (e.g., /mount/github/g<Tab> → /mount/github/gmatht/)
 
 ## Known Issues
