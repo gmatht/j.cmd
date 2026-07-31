@@ -96,7 +96,7 @@ and device files. It runs in any browser with no build step.
 - [x] Color output for `ls` (dirs in blue, files in white, executables in green)
 - [x] Ctrl+C interrupt handling
 - [x] Config file (~/.tinyshrc or similar)
-- [ ] `which` command
+- [x] `which` command
 - [ ] `man <command>` or help pages
 - [ ] Tab completion for partial paths (e.g., /mount/github/g<Tab> → /mount/github/gmatht/)
 

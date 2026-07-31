@@ -911,6 +911,32 @@ Loops, conditionals, variables, arithmetic and pipes work:
     }
   },
 
+  async which(args) {
+    // which cmd... — print the path (or builtin) the shell would run
+    // for each command name, like POSIX `which`. Lookup is the same
+    // as command resolution (wasm binary → builtin → .js/.mjs/.wasm
+    // files in $PATH) but without the auto-download side effect.
+    if (args.length === 0) {
+      process.stderr.write("which: missing operand\n");
+      return 2;
+    }
+    let missing = false;
+    for (const name of args) {
+      const resolved = await findCommand(name);
+      if (!resolved) {
+        missing = true;
+        process.stderr.write(`which: no ${name} in (${env.PATH})\n`);
+        continue;
+      }
+      if (resolved.type === "builtin") {
+        process.stdout.write(`${name}: shell builtin\n`);
+      } else {
+        process.stdout.write(resolved.path + "\n");
+      }
+    }
+    return missing ? 1 : 0;
+  },
+
   async help(args) {
     process.stdout.write(`tinysh — minimal shell for the virtual filesystem
 
@@ -939,6 +965,8 @@ Built-in commands:
                   (bash 'echo hi' · bash script.sh · cat s.sh | bash)
   true            Always succeeds (exit 0)
   false           Always fails (exit 1)
+  which <cmd>...  Show the path (or builtin) the shell would run
+                  (wasm binary → builtin → .js/.mjs/.wasm files in $PATH)
   help            This help
   exit            Exit the shell
 
@@ -989,11 +1017,13 @@ Write new commands by creating .js files in /commands/.
 
 // ─── Command Resolution ─────────────────────────────────────────
 
-async function resolveCommand(name) {
-  // A wasm32-wasi binary in the command path is a "native command" and
-  // shadows the builtin of the same name — so `wasmer install grep`
-  // (which drops /bin/grep.wasm) makes `grep` run real grep compiled
-  // to WASM instead of the JS fallback.
+// Look up where `name` would be found, without side effects: a wasm32-
+// wasi binary in the command path first (it shadows the builtin of the
+// same name — so `wasmer install grep`, which drops /bin/grep.wasm,
+// makes `grep` run real grep compiled to WASM instead of the JS
+// fallback), then builtins, then command files (.js/.mjs/.wasm) in
+// $PATH. Returns the same shapes as resolveCommand, or null.
+async function findCommand(name) {
   const searchPaths = env.PATH.split(":").filter(Boolean);
   for (const dir of searchPaths) {
     try {
@@ -1028,6 +1058,13 @@ async function resolveCommand(name) {
       // Directory doesn't exist, skip
     }
   }
+  return null;
+}
+
+async function resolveCommand(name) {
+  const found = await findCommand(name);
+  if (found) return found;
+
   // Auto-load a wasm binary from the local server's wasm-bin/ on first
   // use (cc is an alias for the compiler binary)
   let wasmName = name;
