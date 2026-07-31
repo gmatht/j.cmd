@@ -329,7 +329,12 @@ export class WasmRunner {
   _buildEnv() {
     // WASI programs see the shell's environment. PWD always reflects
     // the current directory (even if $PWD was overridden later).
-    return { ...env, PWD: this.vfs.cwd || env.HOME };
+    // Values are stringified: generated JS (bash2js) may write
+    // numbers into env, and WASI requires string values.
+    const merged = { ...env, PWD: this.vfs.cwd || env.HOME };
+    const out = {};
+    for (const k of Object.keys(merged)) out[k] = String(merged[k]);
+    return out;
   }
 
   _buildCustomImports(module, memRef) {

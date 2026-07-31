@@ -17,6 +17,7 @@ import { WasmRunner } from "./wasm.js";
 import { WasmerRegistry } from "./wasmer.js";
 import { env, expandRef } from "./env.js";
 import { procfs } from "./fs/procfs.js";
+import { bashToJS } from "./bash2js.js";
 
 const wasmRunner = new WasmRunner(fs);
 const wasmerReg = new WasmerRegistry(fs);
@@ -721,6 +722,60 @@ Once installed they run as native commands:
     return 2;
   },
 
+  async bash2js(args) {
+    // bash2js 'echo hello'  — transpile bash source to JavaScript
+    // bash2js -f file.sh    — transpile a file from the VFS
+    // bash2js < script.sh   — transpile from a pipe
+    //
+    // The whole pipeline runs in the browser:
+    //   bash → Perl (sh2perl.wasm, the debashc compiler) → JS (perl2js)
+    if (args[0] === "-h" || args[0] === "--help") {
+      process.stdout.write(`bash2js — transpile bash to JavaScript (runs entirely in the browser)
+
+Usage:
+  bash2js 'echo hello world'   transpile an inline bash script
+  bash2js -f script.sh         transpile a file from the virtual FS
+  cat script.sh | bash2js      transpile from a pipe
+
+Pipeline:  bash → Perl (sh2perl.wasm) → JS (perl2js)
+The generated JS targets the rt runtime + env; save it to a .js file
+and run it as a command.
+`);
+      return 0;
+    }
+    let source = null;
+    if (args[0] === "-f" || args[0] === "--file") {
+      const file = args[1];
+      if (!file) {
+        process.stderr.write("bash2js: -f needs a file name\n");
+        return 2;
+      }
+      try {
+        source = await fs.read(file);
+      } catch (e) {
+        process.stderr.write(`bash2js: ${file}: ${e.message}\n`);
+        return 1;
+      }
+    } else if (args.length === 0 || args[0] === "-") {
+      if (stdinBuffer) {
+        source = stdinBuffer; // piped in
+      } else {
+        process.stderr.write("bash2js: no script given (pass one as an argument, -f FILE, or pipe it in)\n");
+        return 2;
+      }
+    } else {
+      source = args.join(" ");
+    }
+    try {
+      const { js } = await bashToJS(fs, source, { wasmRunner });
+      process.stdout.write(js);
+      return 0;
+    } catch (e) {
+      process.stderr.write(`bash2js: ${e.message}\n`);
+      return 1;
+    }
+  },
+
   async help(args) {
     process.stdout.write(`tinysh — minimal shell for the virtual filesystem
 
@@ -744,6 +799,7 @@ Built-in commands:
   mount [github:user/repo /path]  List mounts, or attach a GitHub repo at a path
   unmount <path>   Detach a user-created mount
   wasmer          WASM package manager (list / install <pkg> / search <term>)
+  bash2js         Transpile bash to JavaScript (sh2perl → perl2js)
   true            Always succeeds (exit 0)
   false           Always fails (exit 1)
   help            This help
