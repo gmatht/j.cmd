@@ -826,6 +826,49 @@ function registerViExCommands() {
 // Call after CodeMirror + vim keymap load
 registerViExCommands();
 
+// ─── C pre-processing for the subset compiler ───────────────────
+// The c-to-wasm-compiler supports a C subset: no preprocessor, no
+// stdio printf. It exposes custom runtime functions that must be
+// declared: print/println/print_int/println_real/etc. (its own test
+// files do exactly this). preprocessC() lets users write standard-ish
+// C — #include <stdio.h> + printf — by stripping #lines, injecting
+// the runtime declarations, and rewriting printf calls.
+let ccCounter = 0;
+
+const C_RUNTIME_DECLS =
+  `void _ln();\n` +
+  `void print(const char*);\n` +
+  `void println(const char*);\n` +
+  `void print_int(int);\n` +
+  `void print_real(float);\n` +
+  `void println_int(int);\n` +
+  `void println_real(float);\n`;
+
+function rewritePrintf(code) {
+  // printf("text\n") → println("text")  ;  printf("text") → print("text")
+  code = code.replace(/printf\s*\(\s*("(?:[^"\\]|\\.)*")\s*\)\s*;/g,
+    (m, lit) => lit.endsWith('\\n"')
+      ? "println(" + lit.slice(0, -3) + '");'
+      : "print(" + lit + ");");
+  // printf("%d\n", x) → println_int(x)  ;  printf("%d", x) → print_int(x)
+  code = code.replace(/printf\s*\(\s*("(?:[^"\\]|\\.)*")\s*,\s*([^;]+?)\s*\)\s*;/g,
+    (m, fmt, arg) => {
+      const nl = fmt.endsWith('\\n"');
+      if (/%d|%i/.test(fmt)) return (nl ? "println_int(" : "print_int(") + arg + ");";
+      if (/%f|%lf/.test(fmt)) return (nl ? "println_real(" : "print_real(") + arg + ");";
+      if (/%s/.test(fmt)) return (nl ? "println(" : "print(") + arg + ");";
+      return m; // unsupported format — compiler will report it
+    });
+  return code;
+}
+
+function preprocessC(src) {
+  // Strip preprocessor lines (#include, #define, ...) — no # support
+  const body = src.split("\n").filter(l => !l.trim().startsWith("#")).join("\n");
+  // Inject runtime declarations unless the user already declared them
+  return body.includes("println_int(") ? rewritePrintf(body) : rewritePrintf(C_RUNTIME_DECLS + body);
+}
+
 // ─── Binary content detection ───────────────────────────────────
 // If a text read contains NUL bytes or an unusual ratio of control
 // characters, it's binary — don't dump it as garbage.
@@ -2464,20 +2507,32 @@ async function runSegment(segmentText, stdin, isLast) {
           if (args[0] === "-o" && args[1]) {
             ccOutput = resolveSrc(args[1]);
             srcFile = resolveSrc(args[2]);
-            wasmArgs = [cmd, srcFile];
           } else if (args[0] === "-S") {
             ccWatOnly = true;
             srcFile = resolveSrc(args[1]);
-            wasmArgs = [cmd, srcFile];
           } else if (args[0].endsWith(".wasm") && args[1]) {
             ccOutput = resolveSrc(args[0]);
             srcFile = resolveSrc(args[1]);
-            wasmArgs = [cmd, srcFile];
           } else {
             ccOutput = resolveSrc("a.wasm");  // default, like gcc's a.out
             srcFile = resolveSrc(args[0]);
-            wasmArgs = [cmd, srcFile];
           }
+
+          // This compiler is a C subset: no preprocessor, no printf. Pre-
+          // process standard C: strip #lines, inject the runtime function
+          // declarations, and rewrite printf → print/println/println_int.
+          if (srcFile) {
+            try {
+              const original = await fs.read(srcFile);
+              const prepped = preprocessC(original);
+              const tmpSrc = "/tmp/cc-src-" + (ccCounter++) + ".c";
+              await fs.write(tmpSrc, prepped);
+              srcFile = tmpSrc;
+            } catch (e) {
+              // read failed — leave srcFile as-is (compiler will report)
+            }
+          }
+          wasmArgs = [cmd, srcFile];
         }
 
         await wasmRunner.run(resolved.path, wasmArgs, stdin);
