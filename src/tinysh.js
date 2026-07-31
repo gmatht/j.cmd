@@ -33,12 +33,13 @@ const builtins = {
         long = true;
       } else if (a.startsWith("-")) {
         process.stderr.write(`ls: invalid option -- '${a}'\n`);
-        return;
+        return 2;
       } else {
         dirs.push(a);
       }
     }
     if (dirs.length === 0) dirs.push(".");
+    let hadError = false;
     for (const dir of dirs) {
       try {
         const output = await fs.formatList(dir, { long });
@@ -46,9 +47,11 @@ const builtins = {
         if (dirs.length > 1) process.stdout.write(`${dir}:\n`);
         process.stdout.write(output);
       } catch (e) {
+        hadError = true;
         process.stderr.write(`ls: ${dir}: ${e.message}\n`);
       }
     }
+    return hadError ? 1 : 0;
   },
 
   async cat(args) {
@@ -56,25 +59,40 @@ const builtins = {
       // No files — read from stdin (pipe input)
       process.stdout.write(stdinBuffer);
       if (stdinBuffer && !stdinBuffer.endsWith("\n")) process.stdout.write("\n");
-      return;
+      return 0;
     }
+    let hadError = false;
     for (const file of args) {
       try {
         const content = await fs.read(file);
         process.stdout.write(content);
         if (!content.endsWith("\n")) process.stdout.write("\n");
       } catch (e) {
+        hadError = true;
         process.stderr.write(`cat: ${file}: ${e.message}\n`);
       }
     }
+    return hadError ? 1 : 0;
   },
 
   async echo(args) {
     process.stdout.write(args.join(" ") + "\n");
+    return 0;
   },
 
   async pwd(args) {
     process.stdout.write(fs.cwd + "\n");
+    return 0;
+  },
+
+  async true(args) {
+    // Always succeeds (exit 0) — handy with `&&`
+    return 0;
+  },
+
+  async false(args) {
+    // Always fails (exit 1) — handy with `||`
+    return 1;
   },
 
   async cd(args) {
@@ -83,59 +101,70 @@ const builtins = {
       await fs.list(dir);
       const r = fs._resolve(dir);
       fs.cwd = r;
+      return 0;
     } catch (e) {
       process.stderr.write(`cd: ${dir}: ${e.message}\n`);
+      return 1;
     }
   },
 
   async rm(args) {
     if (args.length === 0) {
       process.stderr.write("rm: missing operand\n");
-      return;
+      return 2;
     }
+    let hadError = false;
     for (const file of args) {
       try {
+        await fs.stat(file); // fail on nonexistent paths, like real rm
         await fs.remove(file);
       } catch (e) {
+        hadError = true;
         process.stderr.write(`rm: ${file}: ${e.message}\n`);
       }
     }
+    return hadError ? 1 : 0;
   },
 
   async mkdir(args) {
     if (args.length === 0) {
       process.stderr.write("mkdir: missing operand\n");
-      return;
+      return 2;
     }
+    let hadError = false;
     for (const dir of args) {
       try {
         const r = fs._resolve(dir);
         await fs.write(r + "/.directory", "");
       } catch (e) {
+        hadError = true;
         process.stderr.write(`mkdir: ${dir}: ${e.message}\n`);
       }
     }
+    return hadError ? 1 : 0;
   },
 
   async cp(args) {
     if (args.length < 2) {
       process.stderr.write("cp: missing operand\n");
-      return;
+      return 2;
     }
     const src = args[0];
     const dest = args[1];
     try {
       const content = await fs.read(src);
       await fs.write(dest, content);
+      return 0;
     } catch (e) {
       process.stderr.write(`cp: ${src}: ${e.message}\n`);
+      return 1;
     }
   },
 
   async mv(args) {
     if (args.length < 2) {
       process.stderr.write("mv: missing operand\n");
-      return;
+      return 2;
     }
     const src = args[0];
     const dest = args[1];
@@ -143,8 +172,10 @@ const builtins = {
       const content = await fs.read(src);
       await fs.write(dest, content);
       await fs.remove(src);
+      return 0;
     } catch (e) {
       process.stderr.write(`mv: ${src}: ${e.message}\n`);
+      return 1;
     }
   },
 
@@ -159,14 +190,14 @@ const builtins = {
         count = parseInt(args[i + 1], 10);
         if (isNaN(count)) {
           process.stderr.write(`head: invalid number of lines: '${args[i + 1]}'\n`);
-          return;
+          return 2;
         }
         i++;
       } else if (/^-\d+$/.test(a)) {
         count = parseInt(a.slice(1), 10);
       } else if (a.startsWith("-")) {
         process.stderr.write(`head: invalid option -- '${a}'\n`);
-        return;
+        return 2;
       } else {
         files.push(a);
       }
@@ -183,17 +214,20 @@ const builtins = {
 
     if (files.length === 0) {
       printLines(stdinBuffer);
-      return;
+      return 0;
     }
+    let hadError = false;
     for (const file of files) {
       try {
         const content = await fs.read(file);
         if (files.length > 1) process.stdout.write(`==> ${file} <==\n`);
         printLines(content);
       } catch (e) {
+        hadError = true;
         process.stderr.write(`head: ${file}: ${e.message}\n`);
       }
     }
+    return hadError ? 1 : 0;
   },
 
   async grep(args) {
@@ -228,14 +262,14 @@ const builtins = {
       else if (!optsDone && (a === "-e" || a === "--regexp")) {
         if (i + 1 >= args.length) {
           process.stderr.write(`grep: option requires an argument -- '${a}'\n`);
-          return;
+          return 2;
         }
         pattern = args[++i];
         patterns.push(pattern);
         patternExplicit = true;
       } else if (!optsDone && a.startsWith("--")) {
         process.stderr.write(`grep: unrecognized option '${a}'\n`);
-        return;
+        return 2;
       } else if (!optsDone && a.startsWith("-") && a.length > 1) {
         // Bundled short flags, e.g. -in or -cv
         let ok = true;
@@ -245,7 +279,7 @@ const builtins = {
         }
         if (!ok) {
           process.stderr.write(`grep: invalid option -- '${a}'\n`);
-          return;
+          return 2;
         }
       } else if (!patternExplicit && pattern === null) {
         pattern = a;
@@ -257,7 +291,7 @@ const builtins = {
 
     if (patterns.length === 0) {
       process.stderr.write("grep: missing pattern\n");
-      return;
+      return 2;
     }
     // Multiple -e patterns match if ANY of them matches (OR)
     const patternSource = patterns.map(p => `(?:${p})`).join("|");
@@ -267,7 +301,7 @@ const builtins = {
       re = new RegExp(patternSource, ignoreCase ? "i" : "");
     } catch (e) {
       process.stderr.write(`grep: invalid regular expression: '${patterns.join("', '")}'\n`);
-      return;
+      return 2;
     }
 
     // Remote mounts would require crawling the network; refuse that and
@@ -297,21 +331,28 @@ const builtins = {
           );
         }
       }
+      return hits.length;
     };
 
     if (files.length === 0) {
-      processContent(stdinBuffer, "(standard input)");
-      return;
+      const hits = processContent(stdinBuffer, "(standard input)");
+      return hits > 0 ? 0 : 1;
     }
+
+    // grep exit status: 0 if any line matched, 1 if none did, 2 on error
+    let hadError = false;
+    let anyHits = 0;
 
     // Recursively collect files under a directory
     const walk = async (dir) => {
       if (isRemote(dir)) {
+        hadError = true;
         process.stderr.write(`grep: skipping remote mount ${dir} (name specific files to search them)\n`);
         return;
       }
       let entries;
       try { entries = await fs.list(dir); } catch (e) {
+        hadError = true;
         process.stderr.write(`grep: ${dir}: ${e.message}\n`);
         return;
       }
@@ -324,8 +365,9 @@ const builtins = {
         else {
           try {
             const content = await fs.read(full);
-            processContent(content, full);
+            anyHits += processContent(content, full);
           } catch (e) {
+            hadError = true;
             process.stderr.write(`grep: ${full}: ${e.message}\n`);
           }
         }
@@ -338,6 +380,7 @@ const builtins = {
       if (seen.has(r)) continue;
       seen.add(r);
       if (recursive && isRemote(r)) {
+        hadError = true;
         process.stderr.write(`grep: skipping remote mount ${r} (name specific files to search them)\n`);
         continue;
       }
@@ -345,15 +388,21 @@ const builtins = {
         const st = await fs.stat(file);
         if (st.type === "dir") {
           if (recursive) await walk(r);
-          else process.stderr.write(`grep: ${file}: Is a directory\n`);
+          else {
+            hadError = true;
+            process.stderr.write(`grep: ${file}: Is a directory\n`);
+          }
           continue;
         }
         const content = await fs.read(file);
-        processContent(content, r);
+        anyHits += processContent(content, r);
       } catch (e) {
+        hadError = true;
         process.stderr.write(`grep: ${file}: ${e.message}\n`);
       }
     }
+    if (hadError) return 2;
+    return anyHits > 0 ? 0 : 1;
   },
 
   async find(args) {
@@ -450,6 +499,7 @@ const builtins = {
     // depth of `dir` itself (start points are depth 0).
     const walk = async (dir, depth) => {
       if (isRemote(dir)) {
+        hadError = true;
         if (!skippedRemote) {
           process.stderr.write(`find: skipping remote mount ${dir} (name specific files to search them)\n`);
           skippedRemote = true;
@@ -458,6 +508,7 @@ const builtins = {
       }
       let entries;
       try { entries = await fs.list(dir); } catch (e) {
+        hadError = true;
         process.stderr.write(`find: ${dir}: ${e.message}\n`);
         return;
       }
@@ -477,6 +528,7 @@ const builtins = {
       }
     };
 
+    let hadError = false;
     const seen = new Set();
     for (const path of paths) {
       const r = fs._resolve(path);
@@ -484,6 +536,7 @@ const builtins = {
       seen.add(r);
       let st;
       try { st = await fs.stat(r); } catch (e) {
+        hadError = true;
         process.stderr.write(`find: ${path}: ${e.message}\n`);
         continue;
       }
@@ -494,11 +547,13 @@ const builtins = {
       }
       if (type !== "d") continue;
       if (isRemote(r)) {
+        hadError = true;
         process.stderr.write(`find: skipping remote mount ${r} (name specific files to search them)\n`);
         continue;
       }
       if (0 < maxDepth) await walk(r, 0);
     }
+    return hadError ? 1 : 0;
   },
 
   async help(args) {
@@ -520,6 +575,8 @@ Built-in commands:
                   -l files with matches · -r recursive · -e PATTERN)
   find [path...] [expr]  Find files by name/type
                  (-name PAT · -iname PAT · -type f|d · -maxdepth N · -mindepth N)
+  true            Always succeeds (exit 0)
+  false           Always fails (exit 1)
   help            This help
   exit            Exit the shell
 
@@ -527,6 +584,12 @@ Pipes: cmd1 | cmd2 — cmd1's stdout becomes cmd2's stdin
   Example: cat README.md | head -3
   Example: echo "hello" | grep -i hello
   Example: find /home -name *.txt | head -5
+
+Conditionals: cmd1 && cmd2 — run cmd2 only if cmd1 succeeded (exit 0)
+              cmd1 || cmd2 — run cmd2 only if cmd1 failed (non-zero exit)
+  Example: grep TODO README.md || echo "no TODOs"
+  Example: cat x.js && echo ok || echo failed
+  (A command's exit status: 0 success · 1 failure · 2 usage error · 127 not found)
 
 Aliases: vi/vim/nano = edit · less/more = cat · cls = clear
          dir = ls · ? = help · q/quit = exit
@@ -670,9 +733,9 @@ async function runSegment(segmentText, stdin, isLast) {
     tokens = tokenize(segmentText);
   } catch (e) {
     process.stderr.write(`tinysh: ${e.message}\n`);
-    return { ok: false, output: "" };
+    return { ok: false, code: 2, output: "" };
   }
-  if (tokens.length === 0) return { ok: false, output: "" };
+  if (tokens.length === 0) return { ok: false, code: 2, output: "" };
   const cmd = tokens[0];
   const args = tokens.slice(1);
 
@@ -705,7 +768,7 @@ async function runSegment(segmentText, stdin, isLast) {
     } else {
       process.stderr.write(`${cmd}: command not found\n`);
     }
-    return { ok: false, output: "" };
+    return { ok: false, code: 127, output: "" };
   }
 
   // Make pipe input available to builtins (head etc.)
@@ -728,11 +791,12 @@ async function runSegment(segmentText, stdin, isLast) {
       if (wasmErr) {
         process.stderr.write(wasmErr);
       }
-      if (wasmRunner.getExitCode() !== 0) {
-        process.stderr.write(`${cmd}: exited with code ${wasmRunner.getExitCode()}\n`);
-        return { ok: false, output: "" };
+      const exitCode = wasmRunner.getExitCode();
+      if (exitCode !== 0) {
+        process.stderr.write(`${cmd}: exited with code ${exitCode}\n`);
+        return { ok: false, code: exitCode, output: "" };
       }
-      return { ok: true, output };
+      return { ok: true, code: 0, output };
     }
 
     if (resolved.type === "builtin") {
@@ -745,14 +809,18 @@ async function runSegment(segmentText, stdin, isLast) {
           return true;
         };
       }
-      await resolved.fn(args);
-      if (capture) {
-        process.stdout.write = origWrite;
-        const captured = chunks.join("");
-        if (outputRedirect) await fs.write(outputRedirect, captured);
-        else output = captured;
+      let code = 0;
+      try {
+        code = (await resolved.fn(args)) ?? 0;
+      } finally {
+        if (capture) {
+          process.stdout.write = origWrite;
+          const captured = chunks.join("");
+          if (outputRedirect) await fs.write(outputRedirect, captured);
+          else output = captured;
+        }
       }
-      return { ok: true, output };
+      return { ok: code === 0, code, output };
     }
 
     // Run a .js command file from the virtual filesystem
@@ -765,7 +833,9 @@ async function runSegment(segmentText, stdin, isLast) {
       `);
     const logChunks = [];
     const fakeConsole = { log: (...msgs) => logChunks.push(msgs.join(" ") + "\n") };
-    await fn(args, fs, fakeConsole, stdin);
+    const ret = await fn(args, fs, fakeConsole, stdin);
+    // A command file may return a number to set its exit status
+    const code = typeof ret === "number" ? ret : 0;
     output = logChunks.join("");
     if (outputRedirect) {
       await fs.write(outputRedirect, output);
@@ -774,29 +844,112 @@ async function runSegment(segmentText, stdin, isLast) {
       process.stdout.write(output);
       output = "";
     }
-    return { ok: true, output };
+    return { ok: code === 0, code, output };
   } catch (e) {
     process.stderr.write(`${cmd}: error: ${e.message}\n`);
-    return { ok: false, output: "" };
+    return { ok: false, code: 1, output: "" };
   }
+}
+
+// Split a line into conditional segments on `&&` and `||`, respecting
+// quotes and backslash escapes (a `\&&` outside quotes is a literal
+// ampersand, not an operator). Returns { text, op } parts where `op`
+// is the operator preceding the part ('&&' or '||'), or null for the
+// first part. A lone `&` is a syntax error (no background jobs here).
+function splitConditionals(line) {
+  const parts = [];
+  let cur = "";
+  let op = null;
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inSingle) {
+      if (ch === "'") inSingle = false;
+      cur += ch;
+      continue;
+    }
+    if (inDouble) {
+      if (ch === '"') inDouble = false;
+      cur += ch;
+      continue;
+    }
+    if (ch === "\\") {
+      cur += ch;
+      if (i + 1 < line.length) { cur += line[i + 1]; i++; }
+      continue;
+    }
+    if (ch === "'") { inSingle = true; cur += ch; continue; }
+    if (ch === '"') { inDouble = true; cur += ch; continue; }
+    if ((ch === "&" || ch === "|") && line[i + 1] === ch) {
+      parts.push({ text: cur, op });
+      cur = "";
+      op = ch + ch;
+      i++;
+      continue;
+    }
+    if (ch === "&") {
+      throw new Error("syntax error near unexpected token '&'");
+    }
+    cur += ch;
+  }
+  parts.push({ text: cur, op });
+  return parts;
+}
+
+// Run one pipeline (`|`-separated commands), feeding each command's
+// stdout to the next command's stdin. Returns the pipeline's exit
+// status: the first failing command's status, else the last one's.
+async function runPipeline(pipelineText) {
+  const segments = splitPipe(pipelineText);
+  let stdin = "";
+  let exitCode = 0;
+  for (let i = 0; i < segments.length; i++) {
+    if (!segments[i].trim()) {
+      process.stderr.write(`tinysh: syntax error near unexpected token '|'\n`);
+      return 2;
+    }
+    const result = await runSegment(segments[i], stdin, i === segments.length - 1);
+    if (!result.ok) return result.code ?? 1;
+    stdin = result.output;
+    exitCode = result.code ?? 0;
+  }
+  return exitCode;
 }
 
 async function handleLine(line) {
   const trimmed = line.trim();
   if (!trimmed) return;
 
-  // Split on pipes and run left to right, feeding each command's stdout
-  // to the next command's stdin.
-  const segments = splitPipe(trimmed);
-  let stdin = "";
-  for (let i = 0; i < segments.length; i++) {
-    if (!segments[i].trim()) {
-      process.stderr.write(`tinysh: syntax error near unexpected token '|'\n`);
+  // Split on && / || and run left to right. `&&` runs the next command
+  // only if the previous one succeeded (exit 0); `||` runs it only if
+  // the previous one failed. Each conditional part is itself a pipeline.
+  let parts;
+  try {
+    parts = splitConditionals(trimmed);
+  } catch (e) {
+    process.stderr.write(`tinysh: ${e.message}\n`);
+    return;
+  }
+  // An empty segment means the line started with an operator, ended
+  // with one, or had two operators in a row (`&& echo hi`, `echo hi &&`,
+  // `a && || b`) — all syntax errors.
+  for (let i = 0; i < parts.length; i++) {
+    if (!parts[i].text.trim()) {
+      const nextOp = i + 1 < parts.length ? parts[i + 1].op : null;
+      const token = nextOp ? `'${nextOp}'` : "newline";
+      process.stderr.write(`tinysh: syntax error near unexpected token ${token}\n`);
       return;
     }
-    const result = await runSegment(segments[i], stdin, i === segments.length - 1);
-    if (!result.ok) return;
-    stdin = result.output;
+  }
+
+  let exitCode = 0;
+  for (let i = 0; i < parts.length; i++) {
+    if (i > 0) {
+      if (parts[i].op === "&&" && exitCode !== 0) continue;
+      if (parts[i].op === "||" && exitCode === 0) continue;
+    }
+    exitCode = await runPipeline(parts[i].text);
   }
 }
 
