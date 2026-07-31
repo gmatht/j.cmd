@@ -74,7 +74,7 @@ and device files. It runs in any browser with no build step.
       drop them in /bin/, run them as native commands.
       Needs WASI syscall implementation over VirtualFS.
       Example: `echo "hello" | grep hello` via real grep compiled to WASM.
-- [ ] Clipboard device: /dev/clipboard read/write
+- [x] Clipboard device: /dev/clipboard read/write
 - [ ] Git FS: mount a git repo as a filesystem (read tree, read blobs)
 - [ ] WebGL device: /dev/webgl with shader/buffer/uniform files
 - [ ] /dev/camera frame capture
