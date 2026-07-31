@@ -8,6 +8,10 @@ and device files. It runs in any browser with no build step.
 
 ## Recently Done
 
+- [x] asciinema casts match the v2 spec: cumulative timestamps (real
+      players had been running every session instantly), SGR colours, and
+      vi/edit buffers rendered as TUI regions
+
 - [x] Inline prompt editing: the prompt, typed text and a blinking block
       cursor live inside the terminal scrollback (last line), like a real
       shell — no more fixed bottom input bar. Printable chars, backspace,
