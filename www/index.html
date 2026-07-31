@@ -3580,6 +3580,49 @@ document.addEventListener("click", (e) => {
   input.focus();
 });
 
+// Ctrl/Cmd+C in the editor copies the selection. Vim mode maps Ctrl+C to
+// ESC, so without this "select with the mouse, Ctrl+C to copy" can't
+// work. No preventDefault: vim still gets its ESC when the key falls
+// through, and with no selection Ctrl+C stays plain vim ESC.
+editorContainer.addEventListener("keydown", (e) => {
+  if (!((e.ctrlKey || e.metaKey) && (e.key === "c" || e.key === "C"))) return;
+  if (!cm || !cm.getSelection()) return;
+  copyTextToClipboard(cm.getSelection());
+}, true);
+
+function copyTextToClipboard(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).catch(() => {});
+    return;
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.cssText = "position:fixed;opacity:0;pointer-events:none;";
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    ta.remove();
+  } catch {}
+}
+
+// Typing while a mouse selection exists clears the selection and types
+// normally. After a selection the hidden input deliberately isn't focused
+// (so the selection survives), which means a printable key would otherwise
+// vanish into the page — route it into the shell line instead.
+document.addEventListener("keydown", (e) => {
+  if (e.isComposing) return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key.length !== 1) return;  // printable characters only
+  if (e.target && e.target.closest && e.target.closest("#editor-container")) return;
+  if (document.activeElement === input) return;  // normal typing path
+  e.preventDefault();
+  const sel = window.getSelection();
+  if (sel && sel.rangeCount) sel.removeAllRanges();
+  input.focus();
+  insertChar(e.key);
+});
+
 // ─── Drag & drop: copy files into ~/uploads ─────────────────────
 // Dropping a file on the terminal writes it into $HOME/uploads (like
 // scp'ing it in) and reports the destination in the status bar. /home is
