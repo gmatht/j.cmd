@@ -36,26 +36,49 @@ function mimeHint(path) {
 export class DownloadFS {
   async read(path) {
     const name = path.replace(/^\//, "");
-    const picker = window.showOpenFilePicker;
-    if (!picker) {
-      throw new Error("File picker not supported in this browser");
-    }
-
-    // If the path hints at a type (e.g. /pc/photo.png), pass it as a filter
     const mime = mimeHint(name);
-    const options = {};
-    if (mime) {
-      options.types = [{ description: name, accept: { [mime]: [name.split(".").pop()] } }];
-      options.excludeAcceptAllOption = true;
+
+    // Prefer the File System Access API (Chromium)
+    if (window.showOpenFilePicker) {
+      const options = {};
+      if (mime) {
+        options.types = [{ description: name, accept: { [mime]: [name.split(".").pop()] } }];
+        options.excludeAcceptAllOption = true;
+      }
+      try {
+        const [handle] = await window.showOpenFilePicker(options);
+        const file = await handle.getFile();
+        return await file.text();
+      } catch (e) {
+        throw new Error(`file picker cancelled: ${e.message}`);
+      }
     }
 
-    try {
-      const [handle] = await picker(options);
-      const file = await handle.getFile();
-      return await file.text();
-    } catch (e) {
-      throw new Error(`file picker cancelled: ${e.message}`);
-    }
+    // Fallback (Firefox/Safari): hidden <input type=file>
+    const file = await this._pickViaInput(mime);
+    return await file.text();
+  }
+
+  _pickViaInput(mime) {
+    return new Promise((resolve, reject) => {
+      const input = document.createElement("input");
+      input.type = "file";
+      if (mime) input.accept = mime;
+      input.style.display = "none";
+      document.body.appendChild(input);
+      input.onchange = () => {
+        const file = input.files && input.files[0];
+        document.body.removeChild(input);
+        if (file) resolve(file);
+        else reject(new Error("no file selected"));
+      };
+      // User pressed Escape / cancelled
+      input.addEventListener("cancel", () => {
+        document.body.removeChild(input);
+        reject(new Error("file picker cancelled"));
+      });
+      input.click();
+    });
   }
 
   async write(path, content) {
