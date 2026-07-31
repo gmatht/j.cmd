@@ -21,10 +21,12 @@ export class WasmRunner {
     }
 
     const memory = new WebAssembly.Memory({ initial: 256, maximum: 512 });
-    const wasi = this._buildWasi(args, memory);
+    const wasiImports = this._buildWasi(args, memory);
+    const customImports = this._buildCustomImports(memory);
 
     const instance = await WebAssembly.instantiate(module, {
-      "wasi_snapshot_preview1": wasi,
+      "wasi_snapshot_preview1": wasiImports,
+      ...customImports,
       "env": { memory }
     });
 
@@ -35,6 +37,36 @@ export class WasmRunner {
     }
 
     return instance;
+  }
+
+  _buildCustomImports(memory) {
+    // Support micropython_wasm custom imports
+    // host_call(name, payload) → JSON response
+    const runner = this;
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+
+    return {
+      "micropython_wasm": {
+        host_result_cap: () => 256 * 1024,
+        host_call: (namePtr, nameLen, payloadPtr, payloadLen, resultPtr, resultCap) => {
+          const mem = new Uint8Array(memory.buffer);
+          const name = decoder.decode(mem.slice(namePtr, namePtr + nameLen));
+          const payload = decoder.decode(mem.slice(payloadPtr, payloadPtr + payloadLen));
+
+          // Default: return empty success for unknown calls
+          // In future, this can be extended with host function registration
+          const response = JSON.stringify({ ok: true, value: null });
+          const encoded = encoder.encode(response);
+
+          if (encoded.length > resultCap) {
+            return encoded.length;
+          }
+          mem.set(encoded, resultPtr);
+          return encoded.length;
+        }
+      }
+    };
   }
 
   _buildWasi(args, memory) {
@@ -120,6 +152,9 @@ export class WasmRunner {
         return 0;
       },
       fd_fdstat_set_flags: (fd, flags) => 0,
+      fd_readdir: (fd, buf, bufLen, cookie, nread) => { new Uint32Array(memory.buffer, nread, 1)[0] = 0; return 0; },
+      fd_sync: (fd) => 0,
+      sched_yield: () => 0,
       path_open: () => 8,
       path_readlink: () => -1,
       path_filestat_get: () => -1,

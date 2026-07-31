@@ -44,6 +44,11 @@ and device files. It runs in any browser with no build step.
       - Wire @wasmer/wasmfs to our VirtualFS
       - Then any wasm32-wasi binary works as a command:
         grep, curl, python, etc.
+- [ ] C-to-WASM compiler: compile tcc (Tiny C Compiler) or wasi-sdk
+      clang to wasm32-wasi. Place in /bin/cc. Users can write C in
+      the shell and compile it to WASM: 'cc -o hello.wasm hello.c'
+      Then ./hello.wasm runs as a native command.
+      Reference: https://github.com/Trailofbits/tcc-wasm
 - [ ] `ls -l` output format (permissions, size, date)
 - [ ] Pipe operator: `cat README.md | head -3`
 - [ ] `grep` builtin or command
