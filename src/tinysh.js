@@ -1541,6 +1541,67 @@ async function loadConfig() {
   }
 }
 
+// ─── Tab Completion ─────────────────────────────────────────────
+// Complete the word under the cursor, readline callback-style
+// (fs.* is async and some Node builds ignore Promise-returning
+// completers, so we call callback(null, [matches, word]) when done):
+//
+//   word contains "/"  → partial path completion. The last segment is
+//     completed against the directory listing, so
+//       /mount/github/g<Tab> → /mount/github/gmatht/
+//     (or the shared prefix of all matches; a second Tab lists them).
+//   otherwise            → command completion: builtins plus .js/.mjs/
+//     .wasm executables found in $PATH (/commands:/usr/bin:/bin).
+function tabComplete(line, callback) {
+  const wordStart = Math.max(line.lastIndexOf(" ") + 1, 0);
+  const word = line.slice(wordStart);
+  if (!word) return callback(null, [[], word]);
+
+  const finish = (matches) => {
+    callback(null, [[...new Set(matches)].sort(), word]);
+  };
+
+  if (word.includes("/")) {
+    // Partial path — list the directory and filter by the typed prefix
+    const lastSlash = word.lastIndexOf("/");
+    const dir = word.slice(0, lastSlash + 1);
+    const filePrefix = word.slice(lastSlash + 1);
+    (async () => {
+      try {
+        const resolvedDir = dir === "/" ? "/" : fs._resolve(dir.replace(/\/$/, ""));
+        const entries = await fs.list(resolvedDir);
+        finish(entries
+          .filter((e) => e.startsWith(filePrefix))
+          .map((e) => line.slice(0, wordStart) + dir + e));
+      } catch {
+        // Directory doesn't exist (or a remote backend hiccuped) — no matches
+        finish([]);
+      }
+    })();
+    return;
+  }
+
+  // Command completion: builtins + executables on $PATH
+  const matches = Object.keys(builtins)
+    .filter((name) => name.startsWith(word))
+    .map((name) => line.slice(0, wordStart) + name);
+  (async () => {
+    try {
+      for (const dir of env.PATH.split(":").filter(Boolean)) {
+        const entries = await fs.list(dir);
+        for (const e of entries) {
+          const name = e.replace(/\/$/, "").replace(/\.(js|mjs|wasm)$/i, "");
+          const full = line.slice(0, wordStart) + name;
+          if (name.startsWith(word) && !matches.includes(full)) matches.push(full);
+        }
+      }
+    } catch {
+      // Some PATH dirs don't exist — skip them
+    }
+    finish(matches);
+  })();
+}
+
 // ─── Main ───────────────────────────────────────────────────────
 
 const rl = createInterface({
@@ -1548,6 +1609,7 @@ const rl = createInterface({
   output: process.stdout,
   prompt: `tinysh:${fs.cwd}$ `,
   terminal: process.stdin.isTTY,
+  completer: tabComplete,
 });
 
 if (process.stdin.isTTY) {
