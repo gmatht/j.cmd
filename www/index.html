@@ -485,6 +485,9 @@ async function handleLine(line) {
         "cls": "clear", "quit": "exit", "q": "exit",
         "?": "help", "dir": "ls", "ll": "ls", "la": "ls",
         "chdir": "cd",
+        "apt": "wasmer", "apt-get": "wasmer", "yum": "wasmer",
+        "dnf": "wasmer", "brew": "wasmer", "pacman": "wasmer",
+        "apk": "wasmer", "pip": "wasmer", "npm": "wasmer install",
       };
       const hint = hints[cmd];
       if (hint) {
@@ -774,9 +777,9 @@ input.addEventListener("keydown", async (e) => {
   write("          edit <file> — built-in text editor\n", "info");
   write("          vi/vim/nano → edit · less/more → cat · cls → clear\n", "info");
   write("          ls /dev/ · cat /dev/info · cat /dev/cpu\n", "info");
-  write("          cat image.png · play music.mp3
-          browse /github/user/repo — open in tab
-
+  write("          cat image.png · play music.mp3\n", "info");
+  write("          browse /github/user/repo — open in tab\n", "info");
+  write("          apt/yum → wasmer · pip/npm → wasmer install\n\n", "info");
   updatePrompt();
   input.focus();
 })();

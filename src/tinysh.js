@@ -140,6 +140,7 @@ Built-in commands:
 
 Aliases: vi/vim/nano = edit · less/more = cat · cls = clear
          dir = ls · ? = help · q/quit = exit
+         apt/yum/brew/pip = wasmer (WASM packages)
 
 Any other command runs a .js file from the command path.
 Write new commands by creating .js files in /commands/.
@@ -204,6 +205,9 @@ async function handleLine(line) {
         "cls": "clear", "quit": "exit", "q": "exit",
         "?": "help", "dir": "ls", "ll": "ls", "la": "ls",
         "chdir": "cd",
+        "apt": "wasmer", "apt-get": "wasmer", "yum": "wasmer",
+        "dnf": "wasmer", "brew": "wasmer", "pacman": "wasmer",
+        "apk": "wasmer", "pip": "wasmer", "npm": "wasmer install",
       };
       const hint = hints[cmd];
       if (hint) {
