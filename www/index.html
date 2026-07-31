@@ -736,20 +736,30 @@ const builtins = {
       }
     } catch {}
 
-    // 3. HttpFS cache scan — files fetched via /http/ are cached in a RamFS
-    try {
-      const httpBackend = fs._getBackend("/http/");
-      if (httpBackend && httpBackend.cache) {
-        const cacheEntries = await httpBackend.cache.list("/");
-        for (const entry of cacheEntries) {
-          const clean = entry.replace(/\/$/, "");
-          const name = clean.split("/").pop();
-          if (re.test(name)) {
-            results.add("/http/" + clean);
+    // 3. GitHub/GitLab visited-path cache — can't enumerate all of GitHub,
+    //    so search what has actually been browsed in this session.
+    const remote = ["/github", "/gitlab"];
+    let remoteSearched = false;
+    for (const mount of remote) {
+      try {
+        const backend = fs._getBackend(mount + "/");
+        if (backend && backend.listVisited) {
+          const visited = await backend.listVisited();
+          for (const p of visited) {
+            const clean = p.replace(/\/$/, "");
+            const name = clean.split("/").pop();
+            if (re.test(name)) {
+              results.add(mount + clean + (p.endsWith("/") ? "/" : ""));
+            }
           }
+          remoteSearched = true;
         }
-      }
-    } catch {}
+      } catch {}
+    }
+
+    if (remoteSearched) {
+      write("# note: /github & /gitlab results limited to files visited this session\n", "info");
+    }
 
     if (results.size === 0) {
       stdout.write(`locate: no files matching "${pattern}"\n`);

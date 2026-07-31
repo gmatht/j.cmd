@@ -27,6 +27,12 @@ const FEATURED = [
 export class GitLabFS {
   constructor(branch = "main") {
     this.branch = branch;
+    this.visited = new Set();
+  }
+
+  // Return visited paths as a flat list, for locate
+  async listVisited() {
+    return [...this.visited].sort();
   }
 
   _parse(relative) {
@@ -86,7 +92,8 @@ export class GitLabFS {
   }
 
   async _listContents(owner, repo, path) {
-    // GitLab API: /api/v4/projects/{owner}%2F{repo}/repository/tree?path=...
+    this.visited.add(`/${owner}/${repo}/${path}`.replace(/\/$/, "") + "/");
+
     const projectPath = `${encodeURIComponent(owner)}%2F${encodeURIComponent(repo)}`;
     let apiUrl = `https://gitlab.com/api/v4/projects/${projectPath}/repository/tree`;
     if (path) apiUrl += `?path=${encodeURIComponent(path)}`;
@@ -94,6 +101,9 @@ export class GitLabFS {
     try {
       const data = await this._fetchAPI(apiUrl);
       if (!Array.isArray(data)) return [];
+      for (const item of data) {
+        this.visited.add(`/${owner}/${repo}/${path ? path + "/" : ""}${item.name}` + (item.type === "tree" ? "/" : ""));
+      }
       return data
         .map(item => item.type === "tree" ? item.name + "/" : item.name)
         .sort();
@@ -111,7 +121,8 @@ export class GitLabFS {
     if (!p.owner && p.file) throw new Error("ENOENT");
     if (!p.owner || !p.repo) throw new Error("ENOENT");
 
-    // GitLab raw file URL
+    this.visited.add(`/${p.owner}/${p.repo}/${p.filePath}`);
+
     const rawUrl = `https://gitlab.com/${p.owner}/${p.repo}/-/raw/${this.branch}/${p.filePath}`;
     const resp = await fetch(rawUrl);
     if (!resp.ok) throw new Error("ENOENT");
@@ -121,6 +132,8 @@ export class GitLabFS {
   async readBlob(path) {
     const p = this._parse(path);
     if (!p.owner || !p.repo) throw new Error("ENOENT");
+
+    this.visited.add(`/${p.owner}/${p.repo}/${p.filePath}`);
 
     const rawUrl = `https://gitlab.com/${p.owner}/${p.repo}/-/raw/${this.branch}/${p.filePath}`;
     const resp = await fetch(rawUrl);

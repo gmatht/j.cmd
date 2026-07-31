@@ -28,6 +28,15 @@ export class GitHubFS {
   constructor(branch = "main") {
     this.branch = branch;
     this.cache = new Map();
+    // Paths the user has actually visited (dirs end with '/', files don't).
+    // locate uses this to search what's been fetched without enumerating
+    // all of GitHub.
+    this.visited = new Set();
+  }
+
+  // Return visited paths as a flat list, for locate
+  async listVisited() {
+    return [...this.visited].sort();
   }
 
   // Parse /{owner}/{repo}/{path...} from a relative path
@@ -92,7 +101,9 @@ export class GitHubFS {
   }
 
   async _listContents(owner, repo, path) {
-    // Construct the API URL
+    // Record the visited directory
+    this.visited.add(`/${owner}/${repo}/${path}`.replace(/\/$/, "") + "/");
+
     let apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents`;
     if (path) apiUrl += "/" + path;
 
@@ -100,7 +111,12 @@ export class GitHubFS {
       const data = await this._fetchAPI(apiUrl);
       if (!Array.isArray(data)) {
         // It's a single file — return its name
+        this.visited.add(`/${owner}/${repo}/${path}`);
         return [path ? path.split("/").pop() : repo];
+      }
+      // Record the entries as visited too (they're what the user saw)
+      for (const item of data) {
+        this.visited.add(`/${owner}/${repo}/${path ? path + "/" : ""}${item.name}` + (item.type === "dir" ? "/" : ""));
       }
       return data
         .map(item => item.type === "dir" ? item.name + "/" : item.name)
@@ -123,6 +139,9 @@ export class GitHubFS {
     }
     if (!p.owner || !p.repo) throw new Error("ENOENT: not a file path");
 
+    // Record the fetched file
+    this.visited.add(`/${p.owner}/${p.repo}/${p.filePath}`);
+
     const rawUrl = `https://raw.githubusercontent.com/${p.owner}/${p.repo}/${this.branch}/${p.filePath}`;
     const resp = await fetch(rawUrl);
     if (!resp.ok) throw new Error("ENOENT");
@@ -132,6 +151,8 @@ export class GitHubFS {
   async readBlob(path) {
     const p = this._parse(path);
     if (!p.owner || !p.repo) throw new Error("ENOENT");
+
+    this.visited.add(`/${p.owner}/${p.repo}/${p.filePath}`);
 
     const rawUrl = `https://raw.githubusercontent.com/${p.owner}/${p.repo}/${this.branch}/${p.filePath}`;
     const resp = await fetch(rawUrl);
