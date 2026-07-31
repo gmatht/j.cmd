@@ -344,6 +344,30 @@ const builtins = {
     }
   },
 
+  async browse(args) {
+    const target = args[0] || fs.cwd;
+    const r = fs._resolve(target);
+    let url = null;
+
+    // Map virtual paths to real URLs
+    const githubMatch = r.match(/^\/github\/([^\/]+)\/([^\/]+)/);
+    if (githubMatch) {
+      url = `https://github.com/${githubMatch[1]}/${githubMatch[2]}`;
+    } else if (r.startsWith("/http/")) {
+      url = "https://" + r.slice(6);
+    } else if (r.startsWith("/mount/github/")) {
+      const m = r.match(/^\/mount\/github\/([^\/]+)\/([^\/]+)/);
+      if (m) url = `https://github.com/${m[1]}/${m[2]}`;
+    }
+
+    if (url) {
+      window.open(url, "_blank");
+      stdout.write(`Opening: ${url}\n`);
+    } else {
+      stderr.write(`browse: no URL mapping for ${r}\n`);
+    }
+  },
+
   async play(args) {
     if (args.length === 0) { stderr.write("play: missing filename\n"); return; }
     for (const file of args) {
@@ -372,6 +396,7 @@ const builtins = {
   Built-in commands:
     ls [dir]        List directory contents
     cat <file>...   Print file contents  (PNG/JPG/GIF renders inline)
+    browse [path]   Open in browser tab (default: current dir)
     play <file>     Play audio file (MP3/WAV/OGG)
     echo <text>     Print text
     pwd             Print working directory
@@ -622,9 +647,9 @@ function updateStatusBar() {
 
   // Context-sensitive hints
   if (cwd.startsWith("/github") || cwd.startsWith("/mount/github")) {
-    statusHint.textContent = "Browse any repo. Login: GITHUB_AUTHKEY for private repos.";
+    statusHint.textContent = "Browse any repo. Login: GITHUB_AUTHKEY for private repos. 'browse' opens in tab.";
   } else if (cwd.startsWith("/http")) {
-    statusHint.textContent = "CORS-enabled fetch. Public CDNs and APIs only.";
+    statusHint.textContent = "CORS-enabled fetch. Public CDNs and APIs only. 'browse' opens URL.";
   } else if (cwd.startsWith("/dev")) {
     statusHint.textContent = "Browser devices: info, cpu, webgl, clipboard, random...";
   } else if (cwd.startsWith("/tmp")) {
@@ -749,8 +774,9 @@ input.addEventListener("keydown", async (e) => {
   write("          edit <file> — built-in text editor\n", "info");
   write("          vi/vim/nano → edit · less/more → cat · cls → clear\n", "info");
   write("          ls /dev/ · cat /dev/info · cat /dev/cpu\n", "info");
-  write("          cat image.png · play music.mp3\n", "info");
-  write("          WASM binaries: /bin/echo.wasm loaded\n\n", "info");
+  write("          cat image.png · play music.mp3
+          browse /github/user/repo — open in tab
+
   updatePrompt();
   input.focus();
 })();

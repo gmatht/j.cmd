@@ -1,0 +1,4 @@
+node_modules/
+*.wasm
+www/demo.wasm
+www/wasm-test.html
