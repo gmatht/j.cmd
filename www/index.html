@@ -166,6 +166,7 @@
 import { fs } from "../src/fs/index.js";
 import { WasmRunner } from "../src/wasm.js";
 import { WasmerRegistry } from "../src/wasmer.js";
+import { env, expandRef } from "../src/env.js";
 const wasmRunner = new WasmRunner(fs);
 const wasmerReg = new WasmerRegistry(fs);
 
@@ -512,10 +513,11 @@ const builtins = {
   },
 
   async cd(args) {
-    const dir = args[0] || "/home";
+    const dir = args[0] || env.HOME;
     try {
       await fs.list(dir);
       fs.cwd = fs._resolve(dir);
+      env.PWD = fs.cwd;
       return 0;
     } catch (e) {
       stderr.write(`cd: ${dir}: ${e.message}\n`);
@@ -1164,6 +1166,11 @@ const builtins = {
     cat image.png    — renders inline
     play music.mp3   — plays with audio controls
 
+  Environment:
+    $PATH  /commands:/usr/bin:/bin · $HOME /home · $USER tinysh · $PWD current dir
+    Expand with $NAME or \${NAME}: echo $HOME · cd $HOME
+    (single quotes or \$ keep the $ literal: echo '$HOME' prints $HOME)
+
   /dev/ devices: cat /dev/info · cat /dev/cpu · cat /dev/time
                 cat /dev/webgl · cat /dev/webgl/extensions
 
@@ -1315,7 +1322,8 @@ async function resolveCommand(name) {
   // vim is an alias for vi
   if (name === "vim") name = "vi";
   if (builtins[name]) return { type: "builtin", fn: builtins[name] };
-  const searchPaths = ["/commands", "/usr/bin", "/bin"];
+  // Walk the command path from $PATH (colon-separated, like POSIX)
+  const searchPaths = env.PATH.split(":").filter(Boolean);
   for (const dir of searchPaths) {
     try {
       for (const entry of await fs.list(dir)) {
@@ -1380,6 +1388,11 @@ function tokenize(segment) {
       if (ch === '"') inDouble = false;
       else if (ch === "\\" && ['"', "\\", "$", "`"].includes(segment[i + 1])) {
         cur += segment[++i]; // escaped char loses its special meaning
+      } else if (ch === "$") {
+        // $NAME / ${NAME} expansion (valid inside double quotes too)
+        const ref = expandRef(segment, i);
+        cur += ref.value;
+        i = ref.end - 1;
       } else {
         cur += ch;
       }
@@ -1389,6 +1402,14 @@ function tokenize(segment) {
     if (ch === '"') { inDouble = true; started = true; quoted = true; continue; }
     if (ch === "\\") {
       if (i + 1 < segment.length) cur += segment[++i];
+      started = true;
+      continue;
+    }
+    if (ch === "$") {
+      // $NAME / ${NAME} expansion outside quotes
+      const ref = expandRef(segment, i);
+      cur += ref.value;
+      i = ref.end - 1;
       started = true;
       continue;
     }
@@ -1623,12 +1644,12 @@ async function runSegment(segmentText, stdin, isLast) {
 
     // Run a .js command file from /commands/ (or /bin/, /usr/bin/)
     const content = await fs.read(resolved.path);
-    const fn = new Function("args", "fs", "console", "stdin", `
+    const fn = new Function("args", "fs", "console", "stdin", "env", `
         return (async () => { ${content} })();
       `);
     const logChunks = [];
     const fakeConsole = { log: (...msgs) => logChunks.push(msgs.join(" ") + "\n") };
-    const ret = await fn(args, fs, fakeConsole, stdin);
+    const ret = await fn(args, fs, fakeConsole, stdin, env);
     // A command file may return a number to set its exit status
     const code = typeof ret === "number" ? ret : 0;
     output = logChunks.join("");
@@ -2267,6 +2288,7 @@ input.addEventListener("keydown", async (e) => {
   write("          python, echoc — auto-loaded from /wasm-bin/\n", "info");
   write("          history — persisted across refreshes\n", "info");
   write("          cp file /pc — download to your machine\n\n", "info");
+  write("          echo $HOME · $PATH · $USER — environment variables\n\n", "info");
   updatePrompt();
   input.focus();
 })();

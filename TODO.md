@@ -62,7 +62,7 @@ and device files. It runs in any browser with no build step.
 - [x] `find` builtin or command
 - [x] Quoted arguments parsing in tinysh (currently splits on spaces blindly)
 - [x] `&&` and `||` conditional chaining
-- [ ] Environment variables ($PATH, $HOME, $USER)
+- [x] Environment variables ($PATH, $HOME, $USER)
 - [ ] `export` command
 
 ### Medium-term
@@ -106,7 +106,6 @@ and device files. It runs in any browser with no build step.
   (single quotes, double quotes, backslash escapes, empty args all handled)
 - Pipes (`|`) are not supported — they fall through to `cat` which tries to
   read them as file paths
-- No environment variable expansion in the shell (`$HOME`, `$PATH` etc.)
 - RootFS doesn't support writing files outside mount points
 - No `..` resolution past mount boundaries (e.g., `cd /tmp; cd ..` doesn't
   go to `/`)

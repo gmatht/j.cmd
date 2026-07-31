@@ -26,6 +26,7 @@
 
 import { init, WASI } from "@wasmer/wasi";
 import { WasmFs } from "@wasmer/wasmfs";
+import { env } from "./env.js";
 
 // @wasmer/wasi embeds its WASI runtime wasm as a base64 data URI and
 // decodes it with Buffer.from(). Browsers have no Buffer, so provide a
@@ -298,11 +299,9 @@ export class WasmRunner {
   // ─── Env / custom imports ─────────────────────────────────
 
   _buildEnv() {
-    return {
-      HOME: "/home",
-      PATH: "/bin:/usr/bin:/commands",
-      PWD: this.vfs.cwd || "/home",
-    };
+    // WASI programs see the shell's environment. PWD always reflects
+    // the current directory (even if $PWD was overridden later).
+    return { ...env, PWD: this.vfs.cwd || env.HOME };
   }
 
   _buildCustomImports(module, memRef) {

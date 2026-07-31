@@ -14,6 +14,7 @@
 import { createInterface } from "readline";
 import { fs } from "./fs/index.js";
 import { WasmRunner } from "./wasm.js";
+import { env, expandRef } from "./env.js";
 
 const wasmRunner = new WasmRunner(fs);
 
@@ -96,11 +97,12 @@ const builtins = {
   },
 
   async cd(args) {
-    const dir = args[0] || "/home";
+    const dir = args[0] || env.HOME;
     try {
       await fs.list(dir);
       const r = fs._resolve(dir);
       fs.cwd = r;
+      env.PWD = r;
       return 0;
     } catch (e) {
       process.stderr.write(`cd: ${dir}: ${e.message}\n`);
@@ -595,6 +597,14 @@ Aliases: vi/vim/nano = edit · less/more = cat · cls = clear
          dir = ls · ? = help · q/quit = exit
          apt/yum/brew/pip = wasmer (WASM packages)
 
+Environment variables:
+  $PATH  /commands:/usr/bin:/bin   command search path
+  $HOME  /home                     default directory (bare cd goes there)
+  $USER  tinysh                    current user
+  $PWD   current directory
+  Expand with $NAME or \${NAME}: echo $HOME · cd $HOME · cat $HOME/examples/note.txt
+  (single quotes or a \$ keep the $ literal: echo '$HOME' prints $HOME)
+
 Any other command runs a .js file from the command path.
 Write new commands by creating .js files in /commands/.
 `);
@@ -610,7 +620,8 @@ Write new commands by creating .js files in /commands/.
 async function resolveCommand(name) {
   if (builtins[name]) return { type: "builtin", fn: builtins[name] };
 
-  const searchPaths = ["/commands", "/usr/bin", "/bin"];
+  // Walk the command path from $PATH (colon-separated, like POSIX)
+  const searchPaths = env.PATH.split(":").filter(Boolean);
   for (const dir of searchPaths) {
     try {
       const entries = await fs.list(dir);
@@ -669,6 +680,11 @@ function tokenize(segment) {
       if (ch === '"') inDouble = false;
       else if (ch === "\\" && ['"', "\\", "$", "`"].includes(segment[i + 1])) {
         cur += segment[++i]; // escaped char loses its special meaning
+      } else if (ch === "$") {
+        // $NAME / ${NAME} expansion (valid inside double quotes too)
+        const ref = expandRef(segment, i);
+        cur += ref.value;
+        i = ref.end - 1;
       } else {
         cur += ch;
       }
@@ -678,6 +694,14 @@ function tokenize(segment) {
     if (ch === '"') { inDouble = true; started = true; quoted = true; continue; }
     if (ch === "\\") {
       if (i + 1 < segment.length) cur += segment[++i];
+      started = true;
+      continue;
+    }
+    if (ch === "$") {
+      // $NAME / ${NAME} expansion outside quotes
+      const ref = expandRef(segment, i);
+      cur += ref.value;
+      i = ref.end - 1;
       started = true;
       continue;
     }
@@ -826,14 +850,14 @@ async function runSegment(segmentText, stdin, isLast) {
     // Run a .js command file from the virtual filesystem
     const content = await fs.read(resolved.path);
     // Wrap in async IIFE to support top-level await; stdin is the 4th arg
-    const fn = new Function("args", "fs", "console", "stdin", `
+    const fn = new Function("args", "fs", "console", "stdin", "env", `
         return (async () => {
           ${content}
         })();
       `);
     const logChunks = [];
     const fakeConsole = { log: (...msgs) => logChunks.push(msgs.join(" ") + "\n") };
-    const ret = await fn(args, fs, fakeConsole, stdin);
+    const ret = await fn(args, fs, fakeConsole, stdin, env);
     // A command file may return a number to set its exit status
     const code = typeof ret === "number" ? ret : 0;
     output = logChunks.join("");
