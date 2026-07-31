@@ -317,7 +317,11 @@ function stopRecording() {
   return result;
 }
 
-// Replay a v2 cast file's output events with their real timing.
+// Replay a v2 cast file with a mini terminal framebuffer.
+// Real casts contain \r, backspaces, ANSI cursor movement (CSI A/B/C/D/H/G,
+// K, J) and SGR color codes — naive text dumping jams them together and
+// loses colour. We render into a character grid, then paint the final
+// screen (with colour) through the normal ANSI-aware write().
 async function playCast(content) {
   const lines = content.trim().split("\n");
   if (lines.length === 0) return;
@@ -325,6 +329,86 @@ async function playCast(content) {
   if (header.version !== 2) {
     throw new Error("only v2 cast files are supported");
   }
+
+  const W = Math.max(10, Math.min(500, Number(header.width) || 80));
+  const H = Math.max(5, Math.min(200, Number(header.height) || 24));
+  // screen[r][c] = { ch, code } where code is the SGR code ('' = default)
+  let screen = Array.from({ length: H }, () =>
+    Array.from({ length: W }, () => ({ ch: " ", code: "" })));
+  let row = 0, col = 0, cur = "";  // cur = current SGR code
+
+  const blankRow = () => Array.from({ length: W }, () => ({ ch: " ", code: "" }));
+  const scroll = () => {
+    screen.shift();
+    screen.push(blankRow());
+    row = Math.max(0, row - 1);
+  };
+  const put = (ch) => {
+    if (col >= W) { col = 0; row++; if (row >= H) scroll(); }
+    screen[row][col] = { ch, code: cur };
+    col++;
+  };
+
+  // Handle a CSI sequence like "2J", "5;10H", "31m", "2K", "3A"
+  const csi = (seq) => {
+    const m = seq.match(/^([0-9;]*)([A-Za-z])$/);
+    if (!m) return;
+    const params = m[1] ? m[1].split(";").map(Number) : [1];
+    const n = params[0] || 1;
+    switch (m[2]) {
+      case "m": // SGR — record the raw code (e.g. "31"), reset on 0
+        cur = m[1] === "" || m[1] === "0" ? "" : m[1];
+        break;
+      case "A": row = Math.max(0, row - n); break;
+      case "B": row = Math.min(H - 1, row + n); break;
+      case "C": col = Math.min(W - 1, col + n); break;
+      case "D": col = Math.max(0, col - n); break;
+      case "G": col = Math.max(0, Math.min(W - 1, n - 1)); break;
+      case "H": row = Math.max(0, Math.min(H - 1, (params[0] || 1) - 1));
+                col = Math.max(0, Math.min(W - 1, (params[1] || 1) - 1)); break;
+      case "K": // erase line: 0=to end, 1=from start, 2=whole
+        if (n === 2) screen[row] = blankRow();
+        else if (n === 1) for (let c = 0; c <= col; c++) screen[row][c] = { ch: " ", code: "" };
+        else for (let c = col; c < W; c++) screen[row][c] = { ch: " ", code: "" };
+        break;
+      case "J": // erase screen
+        if (n === 2) {
+          screen = Array.from({ length: H }, blankRow);
+          row = 0; col = 0;
+        } else if (n === 1) {
+          for (let r = 0; r <= row; r++) screen[r] = blankRow();
+          col = 0;
+        } else {
+          for (let r = row; r < H; r++) screen[r] = blankRow();
+        }
+        break;
+    }
+  };
+
+  const feed = (text) => {
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (ch === "\r") { col = 0; continue; }
+      if (ch === "\n") { col = 0; row++; if (row >= H) scroll(); continue; }
+      if (ch === "\b") { col = Math.max(0, col - 1); continue; }
+      if (ch === "\t") { col = Math.min(W - 1, Math.ceil((col + 1) / 8) * 8); continue; }
+      if (ch === "\x1b") {
+        if (text[i + 1] === "[") {
+          let k = i + 2;
+          while (k < text.length && !/[A-Za-z]/.test(text[k])) k++;
+          if (k < text.length) { csi(text.slice(i + 2, k + 1)); i = k; }
+        } else if (text[i + 1] === "]") {
+          // OSC (e.g. title) — skip until BEL or ST
+          let k = i + 2;
+          while (k < text.length && text[k] !== "\x07" && !(text[k] === "\x1b" && text[k + 1] === "\\")) k++;
+          i = k;  // consume the terminator too via loop increment
+        }
+        continue;
+      }
+      put(ch);
+    }
+  };
+
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line) continue;
@@ -333,8 +417,31 @@ async function playCast(content) {
     if (ev[1] !== "o") continue;
     const delta = Math.max(0, Number(ev[0]) || 0);
     if (delta > 0) await new Promise((r) => setTimeout(r, delta * 1000));
-    write(String(ev[2]), "out");
+    feed(String(ev[2]));
   }
+
+  // Paint the final screen: each row as plain text with SGR codes so
+  // the normal ANSI-aware write() colours it.
+  const out = [];
+  for (let r = 0; r < H; r++) {
+    // Trim trailing blanks (real terminals don't show them)
+    let end = W - 1;
+    while (end >= 0 && screen[r][end].ch === " ") end--;
+    if (end < 0) { out.push(""); continue; }
+    let rowText = "", lastCode = null;
+    for (let c = 0; c <= end; c++) {
+      const cell = screen[r][c];
+      if (cell.code !== lastCode) {
+        if (cell.code !== "") rowText += `\x1b[${cell.code}m`;
+        else if (lastCode !== null && lastCode !== "") rowText += "\x1b[0m";
+        lastCode = cell.code;
+      }
+      rowText += cell.ch;
+    }
+    if (lastCode !== "" && lastCode !== null) rowText += "\x1b[0m";
+    out.push(rowText);
+  }
+  write(out.join("\n") + "\n", "out");
 }
 
 function clearViewport() {
