@@ -92,8 +92,8 @@ while true; do
     continue
   fi
 
-  # Let pi implement this single item
-  pi -p --cwd "$REPO" \
+  # Let pi implement this single item (script is already cd'd to $REPO)
+  pi -p \
     "You are working on the sh2runtime project (a browser shell). Complete THIS ONE TODO item: \"$TEXT\". \
      Make the change, run a quick sanity check, commit with a descriptive message, \
      then mark the item done in TODO.md by replacing '- [ ]' with '- [x]' on line $LINE. \

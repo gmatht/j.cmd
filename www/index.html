@@ -368,6 +368,23 @@ function registerViExCommands() {
 // Call after CodeMirror + vim keymap load
 registerViExCommands();
 
+// ─── Binary content detection ───────────────────────────────────
+// If a text read contains NUL bytes or an unusual ratio of control
+// characters, it's binary — don't dump it as garbage.
+function looksBinary(text) {
+  if (!text || text.length === 0) return false;
+  let control = 0;
+  const sample = Math.min(text.length, 4096);
+  for (let i = 0; i < sample; i++) {
+    const c = text.charCodeAt(i);
+    // NUL, control chars, or UTF-8 replacement char (0xFFFD = mangled binary)
+    if (c === 0 || (c < 32 && c !== 9 && c !== 10 && c !== 13) || c === 0xFFFD) {
+      control++;
+    }
+  }
+  return control > sample * 0.10;  // >10% binary-ish chars → binary
+}
+
 // ─── Built-in Commands ─────────────────────────────────────────
 
 const builtins = {
@@ -418,6 +435,11 @@ const builtins = {
       } else {
         try {
           let content = await fs.read(file);
+          // Refuse to dump binary content as text — show a warning instead
+          if (looksBinary(content)) {
+            stderr.write(`cat: ${file}: binary file (use 'cp ${file} /pc' to download or view via edit)\n`);
+            continue;
+          }
           stdout.write(content);
           if (!content.endsWith("\n")) stdout.write("\n");
         } catch (e) {
