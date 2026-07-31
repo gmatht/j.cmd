@@ -726,8 +726,10 @@ const builtins = {
       }
     }
 
-    // 1. Walk all top-level mounts
-    const tops = ["/tmp", "/home", "/commands", "/bin", "/dev", "/http", "/github", "/gitlab"];
+    // 1. Walk local mounts only — /github & /gitlab would trigger a
+    //    network crawl of every repo; remote content is searched via
+    //    the visited-cache below instead.
+    const tops = ["/tmp", "/home", "/commands", "/bin", "/dev", "/http"];
     for (const top of tops) {
       await walk(top);
     }
