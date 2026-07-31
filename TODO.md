@@ -49,7 +49,7 @@ and device files. It runs in any browser with no build step.
       - Wire @wasmer/wasmfs to our VirtualFS
       - Then any wasm32-wasi binary works as a command:
         grep, curl, python, etc.
-- [ ] C-to-WASM compiler: compile steinerkelvin/c-to-wasm-compiler-project
+- [x] C-to-WASM compiler: compile steinerkelvin/c-to-wasm-compiler-project
       to wasm32-wasi. It's a C compiler written in C++ that targets WASM
       (uses flex/bison, outputs .wasm). Currently has build errors with
       clang 18 (missing includes, std::transform, type issues). Needs:

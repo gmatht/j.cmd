@@ -51,6 +51,10 @@ const REGISTRY = {
     url: "wasm-bin/make.wasm",
     desc: "Build tool (Makefile runner)",
   },
+  "compiler": {
+    url: "wasm-bin/compiler.wasm",
+    desc: "C compiler targeting WebAssembly (c-to-wasm-compiler-project, wasi-sdk build). Usage: compiler prog.c > prog.wat",
+  },
 };
 
 export class WasmerRegistry {
