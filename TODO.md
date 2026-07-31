@@ -92,7 +92,7 @@ and device files. It runs in any browser with no build step.
 ### Polish
 
 - [x] `clear` respects scrollback
-- [ ] Resizable terminal
+- [x] Resizable terminal
 - [ ] Color output for `ls` (dirs in blue, files in white, executables in green)
 - [ ] Ctrl+C interrupt handling
 - [ ] Config file (~/.tinyshrc or similar)
