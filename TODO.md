@@ -98,7 +98,7 @@ and device files. It runs in any browser with no build step.
 - [x] Config file (~/.tinyshrc or similar)
 - [x] `which` command
 - [x] `man <command>` or help pages
-- [ ] Tab completion for partial paths (e.g., /mount/github/g<Tab> → /mount/github/gmatht/)
+- [x] Tab completion for partial paths (e.g., /mount/github/g<Tab> → /mount/github/gmatht/)
 
 ## Known Issues
 
