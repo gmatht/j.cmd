@@ -312,10 +312,9 @@ function registerViExCommands() {
   if (!CodeMirror.Vim) return;
   const vim = CodeMirror.Vim;
 
-  // defineEx(name, prefix, func) — name is the full command, prefix is
-  // the abbreviated form allowed (e.g. 'wq' accepts ':wq' only).
+  // defineEx(name, prefix, func) — name must start with prefix.
   vim.defineEx("write", "w", () => saveViFile());
-  vim.defineEx("writequit", "wq", () => { saveViFile(); closeViEditor(); });
+  vim.defineEx("wq", "wq", () => { saveViFile(); closeViEditor(); });
   vim.defineEx("xit", "x", () => { saveViFile(); closeViEditor(); });
   vim.defineEx("quit", "q", () => {
     if (viState.dirty) {
@@ -588,6 +587,7 @@ const builtins = {
     cp <src> <dst>  Copy files
     mv <src> <dst>  Move files
     help            This help
+    history         Show command history (persists across refreshes)
     clear           Clear terminal
     exit            Exit the shell
 
@@ -615,6 +615,16 @@ const builtins = {
 
   async clear(args) {
     term.innerHTML = "";
+  },
+
+  async history(args) {
+    if (history.length === 0) {
+      stdout.write("(empty history)\n");
+      return;
+    }
+    history.forEach((cmd, i) => {
+      stdout.write(`${String(i + 1).padStart(4)}  ${cmd}\n`);
+    });
   },
 
   async exit(args) {
@@ -772,10 +782,38 @@ async function handleLine(line) {
   }
 }
 
-// ─── Command History ────────────────────────────────────────────
+// ─── Command History (persists across refreshes) ───────────────
 
-const history = [];
-let historyIndex = -1;
+const HISTORY_KEY = "tinysh:history";
+const HISTORY_MAX = 500;
+
+// Load history from localStorage (browser) or empty
+let history = [];
+try {
+  const saved = localStorage.getItem(HISTORY_KEY);
+  if (saved) history = JSON.parse(saved);
+} catch {}
+let historyIndex = history.length;
+
+function saveHistory() {
+  try {
+    // Keep only the most recent HISTORY_MAX entries
+    if (history.length > HISTORY_MAX) {
+      history = history.slice(-HISTORY_MAX);
+    }
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+  } catch {}
+}
+
+function addHistory(line) {
+  const trimmed = line.trim();
+  if (!trimmed) return;
+  // Don't duplicate the last command
+  if (history[history.length - 1] === trimmed) return;
+  history.push(trimmed);
+  historyIndex = history.length;
+  saveHistory();
+}
 
 // ─── Tab Completion ─────────────────────────────────────────────
 
@@ -1095,8 +1133,7 @@ async function onCommand() {
     return;
   }
 
-  if (line.trim()) history.push(line);
-  historyIndex = history.length;
+  addHistory(line);
 
   write(`tinysh:${fs.cwd}$ ${line}\n`, "prompt");
 
@@ -1202,7 +1239,8 @@ input.addEventListener("keydown", async (e) => {
   write("          cat image.png · play music.mp3\n", "info");
   write("          browse /github/user/repo — open in tab\n", "info");
   write("          apt/yum/pip → wasmer · wasmer install <pkg>\n", "info");
-  write("          python, echoc — auto-loaded from /wasm-bin/\n\n", "info");
+  write("          python, echoc — auto-loaded from /wasm-bin/\n", "info");
+  write("          history — persisted across refreshes\n\n", "info");
   updatePrompt();
   input.focus();
 })();
