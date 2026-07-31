@@ -93,7 +93,7 @@ and device files. It runs in any browser with no build step.
 
 - [x] `clear` respects scrollback
 - [x] Resizable terminal
-- [ ] Color output for `ls` (dirs in blue, files in white, executables in green)
+- [x] Color output for `ls` (dirs in blue, files in white, executables in green)
 - [ ] Ctrl+C interrupt handling
 - [ ] Config file (~/.tinyshrc or similar)
 - [ ] `which` command
