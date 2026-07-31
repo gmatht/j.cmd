@@ -80,7 +80,7 @@ and device files. It runs in any browser with no build step.
 - [x] /dev/camera frame capture
 - [x] Audio device: /dev/audio oscillator
 - [x] /proc/ filesystem (process info, browser stats)
-- [ ] Mount command: `mount github:user/repo /mymount`
+- [x] Mount command: `mount github:user/repo /mymount`
 
 ### Integration with sh2perl
 
