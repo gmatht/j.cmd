@@ -311,13 +311,17 @@ function openViEditor(filepath, initialContent, onSave) {
   updateViModeDisplay();
 }
 
-function saveViFile() {
+async function saveViFile() {
   const content = cm.getValue();
-  if (viState.callback) {
-    viState.callback(content);
+  try {
+    if (viState.callback) {
+      await viState.callback(content);
+    }
+    viState.dirty = false;
+    write(`[saved] ${viState.filepath}\n`, "info");
+  } catch (e) {
+    stderr.write(`write failed: ${viState.filepath}: ${e.message}\n`);
   }
-  viState.dirty = false;
-  write(`[saved] ${viState.filepath}\n`, "info");
 }
 
 function closeViEditor() {
@@ -338,8 +342,8 @@ function registerViExCommands() {
 
   // defineEx(name, prefix, func) — name must start with prefix.
   vim.defineEx("write", "w", () => saveViFile());
-  vim.defineEx("wq", "wq", () => { saveViFile(); closeViEditor(); });
-  vim.defineEx("xit", "x", () => { saveViFile(); closeViEditor(); });
+  vim.defineEx("wq", "wq", () => { saveViFile().then(closeViEditor); });
+  vim.defineEx("xit", "x", () => { saveViFile().then(closeViEditor); });
   vim.defineEx("quit", "q", (cm2, params) => {
     // :q! is parsed as command 'q' with '!' as an argument — detect it
     // by inspecting the full input string.
