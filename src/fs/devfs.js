@@ -4,13 +4,13 @@
 // browser APIs. Each device is a file that exposes information
 // about or control over a browser capability.
 //
-// Current devices (mostly informational placeholders):
+// Current devices:
 //   /dev/null        — discards writes, returns empty on read
 //   /dev/zero        — returns endless null bytes
 //   /dev/random      — returns random bytes
 //   /dev/info        — browser and system information
 //   /dev/input       — keyboard state (placeholder)
-//   /dev/webgl       — WebGL info (placeholder)
+//   /dev/webgl       — GPU device: shader/buffer/uniform/call files
 //   /dev/clipboard   — clipboard read/write (secure context + permission)
 //   /dev/cpu         — CPU core count
 //   /dev/mem         — memory info
@@ -18,9 +18,12 @@
 //   /dev/time        — current timestamp
 // -----------------------------------------------------------------
 
+import { WebGLDevice } from "./webgldev.js";
+
 export class DevFS {
   constructor() {
     this.files = new Map();
+    this._webgl = new WebGLDevice();
     this._init();
   }
 
@@ -74,12 +77,6 @@ export class DevFS {
       case "/time":
         return `${Date.now()}\n`;
 
-      case "/webgl":
-        return this._webglInfo();
-
-      case "/webgl/extensions":
-        return this._webglExtensions();
-
       case "/clipboard":
         return await this._clipboardRead();
 
@@ -87,12 +84,32 @@ export class DevFS {
         return "Keyboard device not active. No keys currently pressed.\n";
 
       default:
+        if (norm === "/webgl" || norm.startsWith("/webgl/")) {
+          return this._webgl.read(norm.slice(6) || "/");
+        }
         throw new Error("ENOENT");
     }
   }
 
+  async readBlob(path) {
+    const norm = path.replace(/\/$/, "") || "/";
+    // /dev/webgl/frame reads back as a PNG blob (binary-aware cp)
+    if (norm === "/webgl/frame") {
+      const dataUrl = await this._webgl.read("/frame");
+      if (typeof fetch === "undefined") throw new Error("fetch unavailable");
+      const res = await fetch(dataUrl);
+      return await res.blob();
+    }
+    const text = await this.read(norm);
+    return new Blob([text], { type: "text/plain" });
+  }
+
   async write(path, content) {
     const norm = path.replace(/\/$/, "") || "/";
+
+    if (norm === "/webgl" || norm.startsWith("/webgl/")) {
+      return this._webgl.write(norm.slice(6) || "/", content);
+    }
 
     switch (norm) {
       case "/null":
@@ -127,8 +144,8 @@ export class DevFS {
         "zero",
       ];
     }
-    if (norm === "/webgl") {
-      return ["extensions", "info"];
+    if (norm === "/webgl" || norm.startsWith("/webgl/")) {
+      return this._webgl.list(norm.slice(6) || "/");
     }
     if (norm === "/input") {
       return ["keyboard"];
@@ -139,8 +156,11 @@ export class DevFS {
   async stat(path) {
     const norm = path.replace(/\/$/, "") || "/";
     if (norm === "/") return { type: "dir", size: 0, mtime: undefined };
+    if (norm === "/webgl" || norm.startsWith("/webgl/")) {
+      return this._webgl.stat(norm.slice(6) || "/");
+    }
     // Known virtual directories under /dev
-    if (norm === "/cpu" || norm === "/webgl" || norm === "/input") {
+    if (norm === "/cpu" || norm === "/input") {
       return { type: "dir", size: 0, mtime: undefined };
     }
     // Don't trigger a real clipboard read (permission prompt) just to
@@ -153,6 +173,10 @@ export class DevFS {
   }
 
   async remove(path) {
+    const norm = path.replace(/\/$/, "") || "/";
+    if (norm === "/webgl" || norm.startsWith("/webgl/")) {
+      return this._webgl.remove(norm.slice(6) || "/");
+    }
     throw new Error("EROFS: Cannot remove devices");
   }
 
@@ -190,33 +214,5 @@ export class DevFS {
     }
   }
 
-  _webglInfo() {
-    try {
-      const canvas = document.createElement("canvas");
-      const gl = canvas.getContext("webgl2") || canvas.getContext("webgl");
-      if (!gl) return "WebGL not available\n";
-      return [
-        `vendor: ${gl.getParameter(gl.VENDOR)}`,
-        `renderer: ${gl.getParameter(gl.RENDERER)}`,
-        `version: ${gl.getParameter(gl.VERSION)}`,
-        `shadingLanguageVersion: ${gl.getParameter(gl.SHADING_LANGUAGE_VERSION)}`,
-        `maxTextureSize: ${gl.getParameter(gl.MAX_TEXTURE_SIZE)}`,
-        `maxVertexAttributes: ${gl.getParameter(gl.MAX_VERTEX_ATTRIBS)}`,
-        `maxCombinedTextureImageUnits: ${gl.getParameter(gl.MAX_COMBINED_TEXTURE_IMAGE_UNITS)}`,
-      ].join("\n") + "\n";
-    } catch {
-      return "WebGL error\n";
-    }
-  }
-
-  _webglExtensions() {
-    try {
-      const canvas = document.createElement("canvas");
-      const gl = canvas.getContext("webgl2") || canvas.getContext("webgl");
-      if (!gl) return "WebGL not available\n";
-      return gl.getSupportedExtensions().sort().join("\n") + "\n";
-    } catch {
-      return "WebGL error\n";
-    }
-  }
 }
+

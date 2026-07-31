@@ -1245,6 +1245,8 @@ const builtins = {
 
   /dev/ devices: cat /dev/info · cat /dev/cpu · cat /dev/time
                 cat /dev/webgl · cat /dev/webgl/extensions
+                WebGL GPU: write /dev/webgl/shader/vertex · /dev/webgl/buffer/<name> · /dev/webgl/uniform/2f/uOffset
+                draw via /dev/webgl/call ("clear", "draw arrays triangles 3 0", "swap") · demo: webgldemo
 
   Aliases: nano/emacs = edit · less/more = cat · cls = clear
            dir = ls · ? = help · q/quit = exit
