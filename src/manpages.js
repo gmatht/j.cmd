@@ -64,6 +64,7 @@ const SHORT = {
   locate: "find files anywhere under a directory",
   browse: "open current GitHub/GitLab dir in a new browser tab",
   play: "play an audio file (MP3/WAV/OGG)",
+  arecord: "record microphone audio (arecord-compatible options)",
   more: "page through a file (alias for cat)",
   less: "page through a file (alias for cat)",
   true: "always succeed (exit 0)",
@@ -783,6 +784,52 @@ EXAMPLES
 
 SEE ALSO
      cat (images render inline)
+`,
+  arecord: `NAME
+     arecord — record microphone audio
+
+SYNOPSIS
+     arecord [options] [file]
+
+DESCRIPTION
+     arecord records the browser microphone to the virtual
+     filesystem, with options mirroring the ALSA arecord command:
+     -d duration, -f format, -r rate, -c channels, -t file type and
+     -D device. The browser microphone is a mono source; -c 2
+     duplicates it into both channels, and recordings are resampled
+     to -r.
+
+     With no [file] it records to $HOME/pcm.wav. Use a /pc/ path to
+     download the result (e.g. /pc/rec.wav). A file of "-" prints a
+     base64 data URL (the shell's stdout is text). Recording cannot
+     be interrupted mid-flight: Ctrl+C returns to the prompt, but the
+     recording finishes its -d seconds and still writes the file.
+
+OPTIONS
+     -d, --duration=SECONDS  record for SECONDS (default 10)
+     -f, --format=FORMAT     S16_LE (default), U8, S8, S24_LE, S32_LE,
+                             FLOAT_LE and their _BE twins; cd and dat
+                             are presets (cd: 16-bit 44100 Hz stereo)
+     -r, --rate=HZ           sample rate (default 8000, like arecord)
+     -c, --channels=N        1 (default) or 2 (stereo mix of mono mic)
+     -t, --file-type=TYPE    wav (default), raw or au
+     -D, --device=NAME       microphone: default or a deviceId from
+                             arecord -l
+     -l, --list-devices      list capture hardware
+     -L, --list-pcms         list PCM names
+     -q, --quiet             suppress status lines
+     -v, --verbose           extra diagnostics
+     -h, --help              show help
+
+EXAMPLES
+     arecord -d 5 out.wav
+     arecord -f cd -d 3 song.wav
+     arecord -r 16000 -c 1 -f S16_LE -d 2 clip.wav
+     arecord -d 2 -t raw clip.pcm
+     arecord -l
+
+SEE ALSO
+     play, /dev/audio (audiodemo)
 `,
   more: `NAME
      more — page through a file (alias for cat)

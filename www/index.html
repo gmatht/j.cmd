@@ -2194,6 +2194,7 @@ Loops, conditionals, variables, arithmetic and pipes work:
                 echo 1280x720 > /dev/camera/size · echo off > /dev/camera/off · cat /dev/camera/info
                 Audio: echo 440 > /dev/audio/freq · echo sine > /dev/audio/wave · echo on > /dev/audio/on
                 echo off > /dev/audio/off · echo A4 0.5 > /dev/audio/note · demo: audiodemo
+                Record: arecord -d 5 /home/rec.wav · arecord -f cd -d 3 song.wav · arecord -l
 
   Aliases: nano/emacs = edit · less/more = cat · cls = clear
            dir = ls · ? = help · q/quit = exit
