@@ -108,6 +108,8 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/codemirror.min.js"></script>
 <script type="module">
 import { fs } from "../src/fs/index.js";
+import { WasmRunner } from "../src/wasm.js";
+const wasmRunner = new WasmRunner(fs);
 
 // ─── Terminal Output ───────────────────────────────────────────
 
@@ -395,7 +397,10 @@ async function resolveCommand(name) {
       for (const entry of await fs.list(dir)) {
         const clean = entry.replace(/\/$/, "");
         if (clean === name || clean === name + ".js") {
-          return { type: "file", path: dir + "/" + clean };
+          return { type: "jsfile", path: dir + "/" + clean };
+        }
+        if (clean === name + ".wasm") {
+          return { type: "wasm", path: dir + "/" + clean };
         }
       }
     } catch { /* skip */ }
@@ -441,7 +446,26 @@ async function handleLine(line) {
 
     let output = "";
 
-    if (resolved.type === "builtin") {
+    if (resolved.type === "wasm") {
+      try {
+        const instance = await wasmRunner.run(resolved.path, [cmd, ...args]);
+        output = wasmRunner.getStdout();
+        if (outputRedirect) {
+          await fs.write(outputRedirect, output);
+        } else {
+          stdout.write(output);
+        }
+      } catch (e) {
+        if (e.constructor && e.constructor.name === "WasmExit") {
+          const exitCode = e.code;
+          if (outputRedirect) {
+            await fs.write(outputRedirect, "");
+          }
+        } else {
+          stderr.write(`${cmd}: wasm error: ${e.message}\n`);
+        }
+      }
+    } else if (resolved.type === "builtin") {
       const origWrite = stdout.write;
       const chunks = [];
       if (outputRedirect) {
@@ -653,18 +677,32 @@ input.addEventListener("keydown", async (e) => {
 
 // ─── Welcome ────────────────────────────────────────────────────
 
-write("╔══════════════════════════════════════╗\n", "info");
-write("║     tinysh — browser shell          ║\n", "info");
-write("║     JavaScript is the binary format ║\n", "info");
-write("╚══════════════════════════════════════╝\n", "info");
-write("Type 'help' for available commands.\n\n", "info");
-write("Features: Tab completion · Ctrl+L clear · Up/Down history\n", "info");
-write("          edit <file> — built-in text editor\n", "info");
-write("          vi/vim/nano → edit · less/more → cat · cls → clear\n", "info");
-write("          ls /dev/ · cat /dev/info · cat /dev/cpu\n", "info");
-write("          cat image.png · play music.mp3\n\n", "info");
-updatePrompt();
-input.focus();
+// ─── Init ──────────────────────────────────────────────────────
+
+(async () => {
+  // Load demo WASM binary into /bin/
+  try {
+    const resp = await fetch("demo.wasm");
+    if (resp.ok) {
+      const blob = await resp.blob();
+      await fs.writeBlob("/bin/echo.wasm", blob);
+    }
+  } catch { /* WASM demo unavailable */ }
+
+  write("╔══════════════════════════════════════╗\n", "info");
+  write("║     tinysh — browser shell          ║\n", "info");
+  write("║     JavaScript is the binary format ║\n", "info");
+  write("╚══════════════════════════════════════╝\n", "info");
+  write("Type 'help' for available commands.\n\n", "info");
+  write("Features: Tab completion · Ctrl+L clear · Up/Down history\n", "info");
+  write("          edit <file> — built-in text editor\n", "info");
+  write("          vi/vim/nano → edit · less/more → cat · cls → clear\n", "info");
+  write("          ls /dev/ · cat /dev/info · cat /dev/cpu\n", "info");
+  write("          cat image.png · play music.mp3\n", "info");
+  write("          WASM binaries: /bin/echo.wasm loaded\n\n", "info");
+  updatePrompt();
+  input.focus();
+})();
 </script>
 </body>
 </html>

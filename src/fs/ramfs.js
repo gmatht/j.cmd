@@ -23,12 +23,18 @@ export class RamFS {
 
   async read(path) {
     const norm = path.replace(/\/$/, "") || "/";
-    if (this.dirs.has(norm)) {
-      throw new Error("EISDIR: Is a directory");
-    }
+    if (this.dirs.has(norm)) throw new Error("EISDIR");
     const data = this.files.get(norm);
     if (data === undefined) throw new Error(`ENOENT: ${path}`);
     return new TextDecoder().decode(data);
+  }
+
+  async readBlob(path) {
+    const norm = path.replace(/\/$/, "") || "/";
+    if (this.dirs.has(norm)) throw new Error("EISDIR");
+    const data = this.files.get(norm);
+    if (data === undefined) throw new Error(`ENOENT: ${path}`);
+    return new Blob([data]);
   }
 
   async write(path, content) {
@@ -38,6 +44,13 @@ export class RamFS {
       ? new TextEncoder().encode(content)
       : content;
     this.files.set(norm, encoded);
+  }
+
+  async writeBlob(path, blob) {
+    const norm = path.replace(/\/$/, "") || "/";
+    this._ensureParent(norm);
+    const buffer = await blob.arrayBuffer();
+    this.files.set(norm, new Uint8Array(buffer));
   }
 
   async list(path) {

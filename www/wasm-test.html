@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html><body>
+<h2>WASM Echo Test</h2>
+<pre id="out"></pre>
+<script>
+async function main() {
+  const out = document.getElementById('out');
+  const resp = await fetch('demo.wasm');
+  const wasm = await resp.arrayBuffer();
+  const m = await WebAssembly.instantiate(wasm, { env: {} });
+  
+  const input = 'hello from WASM in browser!';
+  const enc = new TextEncoder();
+  const encoded = enc.encode(input);
+  const mem = new Uint8Array(m.instance.exports.memory.buffer);
+  for (let i = 0; i < encoded.length; i++) mem[i] = encoded[i];
+
+  const ptr = m.instance.exports.echo(0, encoded.length);
+  const len = m.instance.exports.echo_len(0, encoded.length);
+  const result = new TextDecoder().decode(mem.slice(ptr, ptr + len));
+  out.textContent = 'Input: ' + input + '\nOutput: ' + result;
+}
+main();
+</script>
+</body></html>

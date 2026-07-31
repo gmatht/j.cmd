@@ -28,6 +28,11 @@ and device files. It runs in any browser with no build step.
 - [x] Image display: `cat image.png` renders inline in browser terminal
 - [x] Audio playback: `play music.mp3` plays with controls
 - [x] `readBlob` API for binary file reading
+- [x] `writeBlob` API for writing binary files
+- [x] WASM binary support: compile Rust→wasm32-unknown-unknown
+      and run as commands from /bin/echo.wasm
+- [x] Minimal WASI host in JavaScript (stdout, args, clock, random)
+- [ ] Full WASI implementation (file I/O mapped to VirtualFS)
 - [ ] `ls -l` output format (permissions, size, date)
 - [ ] Pipe operator: `cat README.md | head -3`
 - [ ] `grep` builtin or command
@@ -42,6 +47,10 @@ and device files. It runs in any browser with no build step.
 - [ ] IndexedDB FS backend (for files > localStorage 5MB limit)
 - [ ] DownloadFS: write to /pc/ triggers browser download dialog
 - [ ] Read from /pc/ opens file picker
+- [ ] WASM/WASI runtime: compile Rust/C programs to wasm32-wasi,
+      drop them in /bin/, run them as native commands.
+      Needs WASI syscall implementation over VirtualFS.
+      Example: `echo "hello" | grep hello` via real grep compiled to WASM.
 - [ ] Clipboard device: /dev/clipboard read/write
 - [ ] Git FS: mount a git repo as a filesystem (read tree, read blobs)
 - [ ] WebGL device: /dev/webgl with shader/buffer/uniform files

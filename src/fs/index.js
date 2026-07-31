@@ -127,6 +127,7 @@ class VirtualFS {
     this.mount("github", "/mount/github", github);
     this.mount("github", "/github", github);  // convenience alias
     this.mount("dev", "/dev", new DevFS());
+    this.mount("ram", "/bin", new RamFS());
 
     // Initialize default files
     if (hasLocalStorage && !localStorage.getItem("fs:initialized")) {
@@ -227,9 +228,20 @@ class VirtualFS {
     if (m.backend.readBlob) {
       return m.backend.readBlob(m.relative);
     }
-    // Fallback: read as text and wrap in a Blob
     const text = await m.backend.read(m.relative);
     return new Blob([text], { type: "text/plain" });
+  }
+
+  async writeBlob(path, blob) {
+    const r = this._resolve(path);
+    const m = this._findBackend(r);
+    if (!m) throw new Error(`ENOENT: ${path} (no mount for ${r})`);
+    if (m.backend.writeBlob) {
+      return m.backend.writeBlob(m.relative, blob);
+    }
+    // Fallback: read blob as text and write
+    const text = await blob.text();
+    return m.backend.write(m.relative, text);
   }
 
   async write(path, content) {
