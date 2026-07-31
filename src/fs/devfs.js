@@ -11,6 +11,7 @@
 //   /dev/info        — browser and system information
 //   /dev/input       — keyboard state (placeholder)
 //   /dev/webgl       — GPU device: shader/buffer/uniform/call files
+//   /dev/camera      — webcam device: frame capture (on/off/size/device)
 //   /dev/clipboard   — clipboard read/write (secure context + permission)
 //   /dev/cpu         — CPU core count
 //   /dev/mem         — memory info
@@ -19,11 +20,13 @@
 // -----------------------------------------------------------------
 
 import { WebGLDevice } from "./webgldev.js";
+import { CameraDevice } from "./cameradev.js";
 
 export class DevFS {
   constructor() {
     this.files = new Map();
     this._webgl = new WebGLDevice();
+    this._camera = new CameraDevice();
     this._init();
   }
 
@@ -87,6 +90,9 @@ export class DevFS {
         if (norm === "/webgl" || norm.startsWith("/webgl/")) {
           return this._webgl.read(norm.slice(6) || "/");
         }
+        if (norm === "/camera" || norm.startsWith("/camera/")) {
+          return this._camera.read(norm.slice(8) || "/");
+        }
         throw new Error("ENOENT");
     }
   }
@@ -100,6 +106,13 @@ export class DevFS {
       const res = await fetch(dataUrl);
       return await res.blob();
     }
+    if (norm === "/camera/frame") {
+      // PNG blob so `cp /dev/camera/frame /pc/shot.png` downloads a photo
+      const dataUrl = await this._camera.read("/frame");
+      if (typeof fetch === "undefined") throw new Error("fetch unavailable");
+      const res = await fetch(dataUrl);
+      return await res.blob();
+    }
     const text = await this.read(norm);
     return new Blob([text], { type: "text/plain" });
   }
@@ -109,6 +122,9 @@ export class DevFS {
 
     if (norm === "/webgl" || norm.startsWith("/webgl/")) {
       return this._webgl.write(norm.slice(6) || "/", content);
+    }
+    if (norm === "/camera" || norm.startsWith("/camera/")) {
+      return this._camera.write(norm.slice(8) || "/", content);
     }
 
     switch (norm) {
@@ -131,6 +147,7 @@ export class DevFS {
     if (norm === "/") {
       // List all available devices
       return [
+        "camera/",
         "clipboard",
         "cpu/",
         "info",
@@ -147,6 +164,9 @@ export class DevFS {
     if (norm === "/webgl" || norm.startsWith("/webgl/")) {
       return this._webgl.list(norm.slice(6) || "/");
     }
+    if (norm === "/camera" || norm.startsWith("/camera/")) {
+      return this._camera.list(norm.slice(8) || "/");
+    }
     if (norm === "/input") {
       return ["keyboard"];
     }
@@ -158,6 +178,9 @@ export class DevFS {
     if (norm === "/") return { type: "dir", size: 0, mtime: undefined };
     if (norm === "/webgl" || norm.startsWith("/webgl/")) {
       return this._webgl.stat(norm.slice(6) || "/");
+    }
+    if (norm === "/camera" || norm.startsWith("/camera/")) {
+      return this._camera.stat(norm.slice(8) || "/");
     }
     // Known virtual directories under /dev
     if (norm === "/cpu" || norm === "/input") {
@@ -176,6 +199,9 @@ export class DevFS {
     const norm = path.replace(/\/$/, "") || "/";
     if (norm === "/webgl" || norm.startsWith("/webgl/")) {
       return this._webgl.remove(norm.slice(6) || "/");
+    }
+    if (norm === "/camera" || norm.startsWith("/camera/")) {
+      return this._camera.remove(norm.slice(8) || "/");
     }
     throw new Error("EROFS: Cannot remove devices");
   }

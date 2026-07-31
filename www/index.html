@@ -1247,6 +1247,8 @@ const builtins = {
                 cat /dev/webgl · cat /dev/webgl/extensions
                 WebGL GPU: write /dev/webgl/shader/vertex · /dev/webgl/buffer/<name> · /dev/webgl/uniform/2f/uOffset
                 draw via /dev/webgl/call ("clear", "draw arrays triangles 3 0", "swap") · demo: webgldemo
+                Camera: cat /dev/camera/frame (capture → PNG) · cp /dev/camera/frame /pc/shot.png
+                echo 1280x720 > /dev/camera/size · echo off > /dev/camera/off · cat /dev/camera/info
 
   Aliases: nano/emacs = edit · less/more = cat · cls = clear
            dir = ls · ? = help · q/quit = exit
