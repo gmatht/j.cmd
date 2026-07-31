@@ -63,7 +63,7 @@ and device files. It runs in any browser with no build step.
 - [x] Quoted arguments parsing in tinysh (currently splits on spaces blindly)
 - [x] `&&` and `||` conditional chaining
 - [x] Environment variables ($PATH, $HOME, $USER)
-- [ ] `export` command
+- [x] `export` command
 
 ### Medium-term
 

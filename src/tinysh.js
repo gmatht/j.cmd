@@ -110,6 +110,34 @@ const builtins = {
     }
   },
 
+  async export(args) {
+    // export [NAME[=VALUE]...] — set environment variables.
+    // `export` or `export -p` prints all variables in POSIX form.
+    // `export NAME=value` sets NAME to value (split on the first '=');
+    // `export NAME` sets NAME to an empty string, like bash.
+    // Invalid identifiers are reported and skipped; exit status is 1
+    // if any argument was invalid.
+    if (args.length === 0 || (args.length === 1 && args[0] === "-p")) {
+      for (const key of Object.keys(env).sort()) {
+        process.stdout.write(`export ${key}=${env[key]}\n`);
+      }
+      return 0;
+    }
+    let hadError = false;
+    for (const arg of args) {
+      if (arg === "-p") continue; // harmless to accept alongside assignments
+      const eq = arg.indexOf("=");
+      const name = eq === -1 ? arg : arg.slice(0, eq);
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+        hadError = true;
+        process.stderr.write(`export: '${arg}': not a valid identifier\n`);
+        continue;
+      }
+      env[name] = eq === -1 ? "" : arg.slice(eq + 1);
+    }
+    return hadError ? 1 : 0;
+  },
+
   async rm(args) {
     if (args.length === 0) {
       process.stderr.write("rm: missing operand\n");
@@ -567,6 +595,7 @@ Built-in commands:
   echo <text>     Print text
   pwd             Print working directory
   cd [dir]        Change directory
+  export [N=V]... Set environment variables (export NAME prints all)
   rm <file>...    Remove files
   mkdir <dir>...  Create directories
   cp <src> <dst>  Copy files
