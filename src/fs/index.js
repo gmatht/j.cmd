@@ -482,6 +482,23 @@ try {
     if (entries.length === 0) return "";
     if (opts.long) return await this.formatLongList(path, entries);
 
+    // Classify entries for coloring: dirs → blue, executable files
+    // (.js/.mjs/.wasm — the formats this shell runs) → green, other
+    // files → white. stat is best-effort: remote/virtual backends may
+    // not support it, so fall back to the trailing-slash convention.
+    const kinds = [];
+    for (const e of entries) {
+      let kind = "file";
+      try {
+        const st = await this.stat(path + "/" + e);
+        if (st && st.type === "dir") kind = "dir";
+        else if (st && st.type === "file" && isExecutableName(e)) kind = "exe";
+      } catch {
+        if (e.endsWith("/")) kind = "dir";
+      }
+      kinds.push(kind);
+    }
+
     // Column count adapts to the terminal width when the caller passes
     // one (the browser shell does); otherwise default to 4 columns.
     const widths = entries.map(e => e.length);
@@ -493,7 +510,11 @@ try {
     for (let i = 0; i < entries.length; i += cols) {
       rows.push(
         entries.slice(i, i + cols)
-          .map((e, j) => j === cols - 1 ? e : e.padEnd(colW))
+          .map((e, j) => {
+            const name = colorize(e, kinds[i + j]);
+            // Pad on the *visible* length so ANSI codes don't misalign columns
+            return j === cols - 1 ? name : name + " ".repeat(Math.max(0, colW - e.length));
+          })
           .join("")
       );
     }
@@ -515,11 +536,12 @@ try {
       const type = isDir ? "dir" : (st && st.type) || "file";
       const size = st && st.size !== undefined ? st.size : (isDir ? 0 : "-");
       const mtime = st && st.mtime;
+      const exe = type === "file" && isExecutableName(name);
       rows.push({
-        mode: type === "dir" ? "drwxr-xr-x" : "-rw-r--r--",
+        mode: type === "dir" ? "drwxr-xr-x" : exe ? "-rwxr-xr-x" : "-rw-r--r--",
         size,
         date: formatMtime(mtime),
-        name,
+        name: colorize(name, type === "dir" ? "dir" : exe ? "exe" : "file"),
       });
     }
     const sizeW = Math.max(...rows.map(r => String(r.size).length));
@@ -528,6 +550,31 @@ try {
       `${r.mode} 1 tinysh tinysh ${String(r.size).padStart(sizeW)} ${r.date.padEnd(dateW)} ${r.name}`
     ).join("\n") + "\n";
   }
+}
+
+// ─── ls colors ─────────────────────────────────────────────────
+// ANSI SGR codes: directories blue, executable files green, plain
+// files white (the terminal renders the escapes; browsers map them
+// to their palette in www/index.html).
+const ANSI = {
+  blue: "\x1b[34m",
+  green: "\x1b[32m",
+  white: "\x1b[37m",
+  reset: "\x1b[0m",
+};
+
+// An entry is "executable" if the shell can run it directly: .js/.mjs
+// command scripts or .wasm binaries (the virtual machine's native
+// binary format).
+function isExecutableName(name) {
+  return /\.(js|mjs|wasm)$/i.test(name);
+}
+
+// Wrap a name in its color code. Callers pad using the raw (visible)
+// length so the invisible escapes never shift the columns.
+function colorize(name, kind) {
+  const code = kind === "dir" ? ANSI.blue : kind === "exe" ? ANSI.green : ANSI.white;
+  return `${code}${name}${ANSI.reset}`;
 }
 
 // Unix-style date column: "Mon DD HH:MM" for this year, else "Mon DD  YYYY"

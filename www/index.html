@@ -205,11 +205,43 @@ const promptEl = document.getElementById("prompt");
 const statusContext = document.getElementById("status-context");
 const statusHint = document.getElementById("status-hint");
 
+// ANSI SGR palette mapped onto the terminal's colors (used by `ls`:
+// dirs blue, executables green, files white).
+const ansiPalette = {
+  "30": "#333333", "31": "#d6a0a0", "32": "#a0d6a0", "33": "#d6d6a0",
+  "34": "#7ec8e3", "35": "#d6a0d6", "36": "#a0d6d6", "37": "#e0e0e0",
+  "90": "#8b949e", "91": "#d6a0a0", "92": "#a0d6a0", "93": "#d6d6a0",
+  "94": "#7ec8e3", "95": "#d6a0d6", "96": "#a0d6d6", "97": "#e0e0e0",
+};
+
 function write(text, cls = "out") {
-  const span = document.createElement("span");
-  span.className = cls;
-  span.textContent = text;
-  term.appendChild(span);
+  // Fast path: plain text (the common case) — no escape processing.
+  if (!text.includes("\x1b[")) {
+    const plain = document.createElement("span");
+    plain.className = cls;
+    plain.textContent = text;
+    term.appendChild(plain);
+    term.scrollTop = term.scrollHeight;
+    return;
+  }
+  // ANSI SGR sequences (\x1b[<code>m) → colored spans. Only `ls` emits
+  // these today; anything else would have shown the escapes literally.
+  const re = /\x1b\[([0-9;]*)m/g;
+  let last = 0, m, color = "";
+  const appendChunk = (chunk, c) => {
+    const span = document.createElement("span");
+    span.className = cls;
+    if (c) span.style.color = c;
+    span.textContent = chunk;
+    term.appendChild(span);
+  };
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) appendChunk(text.slice(last, m.index), color);
+    const code = m[1] || "0";
+    color = code === "0" ? "" : (ansiPalette[code] || "");
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) appendChunk(text.slice(last), color);
   term.scrollTop = term.scrollHeight;
 }
 
