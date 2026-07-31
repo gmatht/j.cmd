@@ -8,42 +8,46 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/addon/dialog/dialog.min.css">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { background: #1a1a2e; color: #e0e0e0; font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace; font-size: 14px; }
-  
+  body {
+    background: #1a1a2e; color: #e0e0e0;
+    font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+    font-size: 14px;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
+  }
+
   #terminal {
-    width: 100vw;
-    height: calc(100vh - 48px);
+    flex: 1;
+    min-height: 0;  /* allow shrink so flex layout works */
     padding: 16px;
     overflow-y: auto;
     white-space: pre-wrap;
     word-wrap: break-word;
   }
-  
+
   /* ─── Status bar ──────────────────────────────────── */
   #status-bar {
     display: flex;
+    flex-wrap: wrap;
     padding: 2px 16px;
     background: #0d1117;
     color: #8b949e;
     font-size: 11px;
-    position: fixed;
-    bottom: 48px; left: 0; right: 0;
-    height: 22px;
     align-items: center;
     border-top: 1px solid #21262d;
-    gap: 16px;
-    overflow: hidden;
-    white-space: nowrap;
+    gap: 4px 16px;
+    flex-shrink: 0;
   }
-  #status-hint { flex: 1; }
+  #status-hint { flex: 1; min-width: 0; }
   #status-context { color: #7ec8e3; }
   
   #input-line {
     display: flex;
     padding: 4px 16px 16px;
     background: #1a1a2e;
-    position: fixed; bottom: 0; left: 0; right: 0;
-    height: 48px;
+    flex-shrink: 0;
   }
   
   #prompt {
@@ -167,6 +171,7 @@ import { fs } from "../src/fs/index.js";
 import { WasmRunner } from "../src/wasm.js";
 import { WasmerRegistry } from "../src/wasmer.js";
 import { env, expandRef } from "../src/env.js";
+import { watToWasm } from "../src/wabt-loader.js";
 const wasmRunner = new WasmRunner(fs);
 const wasmerReg = new WasmerRegistry(fs);
 
@@ -1075,6 +1080,35 @@ const builtins = {
     }
   },
 
+  async wat2wasm(args) {
+    // wat2wasm <file.wat> [-o out.wasm]
+    if (args.length === 0) { stderr.write("wat2wasm: missing input file\n"); return 2; }
+    let input = args[0];
+    let output = null;
+    for (let i = 1; i < args.length; i++) {
+      if (args[i] === "-o" && args[i + 1]) {
+        output = args[++i];
+      } else {
+        stderr.write(`wat2wasm: unexpected argument '${args[i]}'\n`);
+        return 2;
+      }
+    }
+    if (!output) {
+      // Default output: input with .wasm extension
+      output = input.replace(/\.wat$/i, "") + ".wasm";
+    }
+    try {
+      const wat = await fs.read(input);
+      const bytes = await watToWasm(wat, input);
+      await fs.writeBlob(output, new Blob([bytes], { type: "application/wasm" }));
+      stdout.write(`${output}: ${bytes.length} bytes\n`);
+      return 0;
+    } catch (e) {
+      stderr.write(`wat2wasm: ${e.message}\n`);
+      return 1;
+    }
+  },
+
   async browse(args) {
     const target = args[0] || fs.cwd;
     const r = fs._resolve(target);
@@ -1630,10 +1664,44 @@ async function runSegment(segmentText, stdin, isLast) {
           }
         }
 
+        // cc [-o out.wasm] prog.c — the compiler emits WAT; convert to a
+        // .wasm binary when -o (or a .wasm output) is requested.
+        let ccOutput = null;  // WASM output path, if any
+        if ((cmd === "cc" || cmd === "compiler") && args.length > 0) {
+          let srcFile = null;
+          if (args[0] === "-o" && args[1]) {
+            ccOutput = args[1];
+            srcFile = args[2];
+            wasmArgs = [cmd, srcFile];
+          } else {
+            srcFile = args[0];
+            // If the first arg is already a .wasm output (cc out.wasm in.c)
+            if (args[0].endsWith(".wasm") && args[1]) {
+              ccOutput = args[0];
+              srcFile = args[1];
+              wasmArgs = [cmd, srcFile];
+            }
+          }
+        }
+
         await wasmRunner.run(resolved.path, wasmArgs, stdin);
         const exitCode = wasmRunner.getExitCode();
-        const wasmOut = wasmRunner.getStdout();
+        let wasmOut = wasmRunner.getStdout();
         const wasmErr = wasmRunner.getStderr();
+
+        // Convert WAT → WASM binary for cc -o / cc out.wasm
+        if (ccOutput && exitCode === 0) {
+          try {
+            const bytes = await watToWasm(wasmOut, "cc-output.wat");
+            await fs.writeBlob(ccOutput, new Blob([bytes], { type: "application/wasm" }));
+            stdout.write(`${ccOutput}: ${bytes.length} bytes\n`);
+            wasmOut = "";  // binary written to file, not stdout
+          } catch (e) {
+            stderr.write(`cc: ${e.message}\n`);
+            return { ok: false, code: 1, output: "" };
+          }
+        }
+
         if (outputRedirect) {
           await fs.write(outputRedirect, wasmOut);
         } else if (isLast) {
