@@ -1307,7 +1307,20 @@ async function runSegment(segmentText, stdin, isLast) {
     if (resolved.type === "wasm") {
       // Run a wasm32-wasi binary (full WASI via @wasmer/wasi, filesystem
       // bridged to our VirtualFS via @wasmer/wasmfs)
-      await wasmRunner.run(resolved.path, [cmd, ...args], stdin);
+      let wasmArgs = [cmd, ...args];
+      // cc/compiler reads its C source via WASI at the VFS root — resolve
+      // relative paths ("t.c") against the shell cwd first (/home/t.c)
+      if ((cmd === "cc" || cmd === "compiler") && args.length > 0) {
+        const resolve = (p) => (p && p.startsWith("/") ? p : fs._resolve(p));
+        if (args[0] === "-o" && args[1]) {
+          wasmArgs = [cmd, resolve(args[2])];
+        } else if (args[0] === "-S") {
+          wasmArgs = [cmd, resolve(args[1])];
+        } else {
+          wasmArgs = [cmd, resolve(args[0])];
+        }
+      }
+      await wasmRunner.run(resolved.path, wasmArgs, stdin);
       const wasmOut = wasmRunner.getStdout();
       const wasmErr = wasmRunner.getStderr();
       if (outputRedirect) {

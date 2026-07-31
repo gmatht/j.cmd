@@ -2439,25 +2439,30 @@ async function runSegment(segmentText, stdin, isLast) {
         //   cc prog.c            → writes a.wasm (like gcc's a.out)
         //   cc -o out.wasm prog.c → writes out.wasm
         //   cc -S prog.c          → emits WAT to stdout (assembly)
+        //
+        // The compiler (compiler.wasm) sees the WASI filesystem rooted at
+        // '/', so relative paths like 't.c' must be resolved to absolute
+        // VFS paths (/home/t.c) or it looks for /t.c and fails.
         let ccOutput = null;
         let ccWatOnly = false;
         if ((cmd === "cc" || cmd === "compiler") && args.length > 0) {
           let srcFile = null;
+          const resolveSrc = (p) => (p && p.startsWith("/") ? p : fs._resolve(p));
           if (args[0] === "-o" && args[1]) {
-            ccOutput = args[1];
-            srcFile = args[2];
+            ccOutput = resolveSrc(args[1]);
+            srcFile = resolveSrc(args[2]);
             wasmArgs = [cmd, srcFile];
           } else if (args[0] === "-S") {
             ccWatOnly = true;
-            srcFile = args[1];
+            srcFile = resolveSrc(args[1]);
             wasmArgs = [cmd, srcFile];
           } else if (args[0].endsWith(".wasm") && args[1]) {
-            ccOutput = args[0];
-            srcFile = args[1];
+            ccOutput = resolveSrc(args[0]);
+            srcFile = resolveSrc(args[1]);
             wasmArgs = [cmd, srcFile];
           } else {
-            ccOutput = "a.wasm";  // default, like gcc's a.out
-            srcFile = args[0];
+            ccOutput = resolveSrc("a.wasm");  // default, like gcc's a.out
+            srcFile = resolveSrc(args[0]);
             wasmArgs = [cmd, srcFile];
           }
         }
