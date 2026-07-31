@@ -2200,6 +2200,8 @@ Loops, conditionals, variables, arithmetic and pipes work:
            dir = ls · ? = help · q/quit = exit
 
   Any other command runs a .js file from /bin/.
+  screen: split the terminal into panes — screen · screen -n 4
+         (buttons: + split · x close · C clear · = reset · q exit)
   `);
   },
 
@@ -2729,6 +2731,38 @@ async function runNestedCommand(cmdLine, stdin = "") {
   }
   return { out: captured, err: capturedErr, code };
 }
+
+// ─── Per-pane command runner (used by /bin/screen.js) ───────────
+// screen.js splits the terminal into tmux-style panes, each a mini-
+// shell with its own working directory and output. It calls this hook
+// to run a line the way the shell would, but routed to per-pane
+// writers. The pane's cwd is captured after the run (commands may cd)
+// and the main shell's cwd is restored.
+window.shellPaneRun = async (line, opts = {}) => {
+  const saveCwd = fs.cwd;
+  const paneCwd = opts.cwd || saveCwd;
+  const out = opts.out || null;
+  const err = opts.err || null;
+  fs.cwd = paneCwd;
+  env.PWD = paneCwd;
+  const origOut = stdout.write;
+  const origErr = stderr.write;
+  stdout.write = (chunk) => { if (out) out(chunk); return true; };
+  stderr.write = (chunk) => { if (err) err(chunk); return true; };
+  let code = 0;
+  try {
+    code = (await handleLine(line)) ?? 0;
+  } catch (e) {
+    code = 1;
+  } finally {
+    stdout.write = origOut;
+    stderr.write = origErr;
+  }
+  const newCwd = fs.cwd;
+  fs.cwd = saveCwd;
+  env.PWD = saveCwd;
+  return { code, cwd: newCwd };
+};
 
 // Execute one pipeline segment. `stdin` carries the previous segment's
 // stdout. Returns { ok, code, output } — `code` is the command's exit
@@ -3567,19 +3601,19 @@ async function onCommand() {
 // never select-and-copy terminal output.
 let justSelected = false;
 document.addEventListener("mousedown", (e) => {
-  if (e.target.closest("#editor-container") || e.target.closest(".xterm-window")) return;
+  if (e.target.closest("#editor-container") || e.target.closest(".xterm-window") || e.target.closest(".screen-root")) return;
   justSelected = false;
   // Drop stale selections so they can't block the next click's focus.
   const sel = window.getSelection();
   if (sel && sel.rangeCount) sel.removeAllRanges();
 });
 document.addEventListener("mouseup", (e) => {
-  if (e.target.closest("#editor-container") || e.target.closest(".xterm-window")) return;
+  if (e.target.closest("#editor-container") || e.target.closest(".xterm-window") || e.target.closest(".screen-root")) return;
   const sel = window.getSelection();
   if (sel && !sel.isCollapsed) justSelected = true;
 });
 document.addEventListener("click", (e) => {
-  if (e.target.closest("#editor-container") || e.target.closest(".xterm-window")) return;
+  if (e.target.closest("#editor-container") || e.target.closest(".xterm-window") || e.target.closest(".screen-root")) return;
   if (justSelected) return;  // user selected text — keep it
   input.focus();
 });
@@ -3618,7 +3652,7 @@ document.addEventListener("keydown", (e) => {
   if (e.isComposing) return;
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.key.length !== 1) return;  // printable characters only
-  if (e.target && e.target.closest && (e.target.closest("#editor-container") || e.target.closest(".xterm-window"))) return;
+  if (e.target && e.target.closest && (e.target.closest("#editor-container") || e.target.closest(".xterm-window") || e.target.closest(".screen-root"))) return;
   if (document.activeElement === input) return;  // normal typing path
   e.preventDefault();
   const sel = window.getSelection();
@@ -3670,11 +3704,12 @@ term.addEventListener("drop", async (e) => {
 // released outside), give focus back or typing silently goes nowhere.
 const refocusAfterDrag = () => {
   if (editorContainer.classList.contains("active")) return;  // editor owns focus
+  if (document.querySelector(".screen-root")) return;      // screen mode owns focus
   input.focus();
 };
 document.addEventListener("dragend", refocusAfterDrag);
 document.addEventListener("drop", (e) => {
-  if (e.target.closest("#editor-container") || e.target.closest(".xterm-window")) return;  // editor owns focus
+  if (e.target.closest("#editor-container") || e.target.closest(".xterm-window") || e.target.closest(".screen-root")) return;  // editor owns focus
   refocusAfterDrag();
 });
 

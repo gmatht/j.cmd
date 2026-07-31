@@ -65,6 +65,7 @@ const SHORT = {
   browse: "open current GitHub/GitLab dir in a new browser tab",
   play: "play an audio file (MP3/WAV/OGG)",
   arecord: "record microphone audio (arecord-compatible options)",
+  screen: "split the terminal into panes (tmux-style, browser)",
   more: "page through a file (alias for cat)",
   less: "page through a file (alias for cat)",
   true: "always succeed (exit 0)",
@@ -830,6 +831,42 @@ EXAMPLES
 
 SEE ALSO
      play, /dev/audio (audiodemo)
+`,
+  screen: `NAME
+     screen — split the terminal into panes
+
+SYNOPSIS
+     screen [-n N] [-S name]
+
+DESCRIPTION
+     screen takes over the browser terminal with a tmux-style pane
+     layout. Each pane is its own mini-shell: its own working
+     directory, its own output area and its own input line. Commands
+     run in a pane exactly as they would in the main shell (builtins,
+     .js command files, wasm binaries), but their output stays inside
+     the pane.
+
+     Browser keyboards make tmux hotkeys unreliable, so every action
+     is a button: + adds a pane, x closes one, C clears its output,
+     = resets to a single pane, q (or Esc) leaves screen mode. Click
+     a pane to focus it; Enter or Run runs its line. Commands run one
+     at a time across panes, and a command that cd's changes only its
+     own pane. Full-screen commands (edit, vi, play, browse, the
+     python REPL) are refused in panes.
+
+OPTIONS
+     -n, --panes=N     start with N panes (default 1, max 16)
+     -S, --session=N   session name shown in the toolbar (default tinysh)
+     -h, --help        show this help
+
+EXAMPLES
+     screen               one pane, split it with the + button
+     screen -n 4          2x2 grid of panes
+     screen 4             same as -n 4
+     screen -S work -n 2  session named work with two panes
+
+SEE ALSO
+     arecord, play
 `,
   more: `NAME
      more — page through a file (alias for cat)

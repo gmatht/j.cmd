@@ -1238,6 +1238,494 @@ return 0;
       })
       .catch(() => syncWrite(this._getBackend("/bin/arecord.js"), "/arecord.js", arecordContent));
 
+
+    // screen — tmux-style pane layout for the browser terminal.
+    // Uses the window.shellPaneRun hook from www/index.html to run
+    // commands per-pane (own cwd, own output). Version-gated (v2
+    // marker) so updates reach existing installs.
+    const screenContent = `// screen v2 — tmux/screen-style panes for tinysh (browser)
+//
+// NAME
+//      screen — split the terminal into panes (like tmux / GNU screen)
+//
+// SYNOPSIS
+//      screen [-n N] [-S name]
+//
+// DESCRIPTION
+//      screen takes over the terminal with a tmux-style pane layout.
+//      Each pane is its own mini-shell: its own working directory, its
+//      own output area and its own input line. Commands run in a pane
+//      exactly as they would in the main shell (builtins, .js command
+//      files, wasm binaries), but their output stays inside the pane.
+//
+//      Browser keyboards make tmux hotkeys unreliable, so every action
+//      is a button:
+//        [+]     add a pane (split)
+//        [x]     close the pane
+//        [C]     clear the pane's output
+//        [=]     reset to a single pane
+//        [q]     leave screen mode (Esc works too)
+//      Click a pane to focus it; Enter or the Run button runs its
+//      line. Ctrl+C in a pane input clears the line (a running command
+//      finishes in the background, like the main shell's interrupt).
+//      Commands run one at a time across panes (the shell is single
+//      threaded), and a command that cd's changes only its own pane.
+//
+//      Full-screen commands (edit, vi, play, browse, the python REPL)
+//      are refused in panes; use the main shell for those.
+//
+// OPTIONS
+//      -n, --panes=N     start with N panes (default 1, max 16)
+//      -S, --session=N   session name shown in the toolbar (default tinysh)
+//      -h, --help        show this help
+//
+// EXAMPLES
+//      screen               one pane, split it with the + button
+//      screen -n 4          2x2 grid of panes
+//      screen 4             same as -n 4 (positional count)
+//      screen -S work -n 2  session named work with two panes
+//
+// SEE ALSO
+//      arecord, play
+
+// ─── parse options ───
+var NL = String.fromCharCode(10);
+var sessionName = "tinysh";
+var paneCount = 1;
+var i = 0;
+var posCount = null;
+while (i < args.length) {
+  var a = args[i];
+  var opt = a;
+  var inline = null;
+  var eq = a.indexOf("=");
+  if (a.length > 1 && a.charAt(0) === "-" && eq !== -1) {
+    opt = a.slice(0, eq);
+    inline = a.slice(eq + 1);
+  }
+  var val;
+  if (opt === "-h" || opt === "--help") {
+    console.log("screen — tmux-style panes for tinysh (browser)");
+    console.log("usage: screen [-n N] [-S name]");
+    console.log("");
+    console.log("  -n, --panes=N    start with N panes (default 1, max 16)");
+    console.log("  -S, --session=N  session name (default tinysh)");
+    console.log("  -h, --help       this help");
+    console.log("");
+    console.log("buttons: + split · x close · C clear · = reset · q/Esc exit");
+    console.log("(browser keyboards make hotkeys unreliable, so everything is a button)");
+    return 0;
+  }
+  if (opt === "-n" || opt === "--panes") {
+    val = inline !== null ? inline : args[++i];
+    if (val === undefined) { console.log("screen: option " + opt + " needs an argument"); return 2; }
+    posCount = parseInt(val, 10);
+    if (!isFinite(posCount) || posCount < 1) {
+      console.log("screen: invalid pane count '" + val + "'");
+      return 2;
+    }
+    i++;
+    continue;
+  }
+  if (opt === "-S" || opt === "--session") {
+    val = inline !== null ? inline : args[++i];
+    if (val === undefined) { console.log("screen: option " + opt + " needs an argument"); return 2; }
+    sessionName = val;
+    i++;
+    continue;
+  }
+  if (a.charAt(0) === "-" && a.length > 1) {
+    console.log("screen: unrecognized option '" + a + "'");
+    console.log("usage: screen [-n N] [-S name]  (try: screen -h)");
+    return 2;
+  }
+  // positional argument: a pane count (screen 4 == screen -n 4)
+  if (posCount === null) {
+    posCount = parseInt(a, 10);
+    if (!isFinite(posCount) || posCount < 1) {
+      console.log("screen: invalid pane count '" + a + "'");
+      return 2;
+    }
+  }
+  i++;
+}
+if (posCount !== null) paneCount = posCount;
+if (paneCount > 16) {
+  console.log("screen: too many panes (max 16)");
+  return 2;
+}
+
+// ─── environment check ───
+if (typeof document === "undefined" || typeof window === "undefined" ||
+    typeof window.shellPaneRun !== "function") {
+  console.log("screen: needs the browser shell (www/index.html) with pane support");
+  console.log("(the Node CLI has no terminal to split; run this in the browser)");
+  return 1;
+}
+
+// ─── UI helpers ────────────────────────────────────────────────
+
+function mkButton(label, tip, fn) {
+  var b = document.createElement("button");
+  b.className = "screen-btn";
+  b.textContent = label;
+  b.title = tip || "";
+  b.addEventListener("click", function () {
+    fn();
+    if (focused) focused.input.focus();
+  });
+  return b;
+}
+
+function stripAnsi(s) {
+  var out = "";
+  var i = 0;
+  while (i < s.length) {
+    if (s.charCodeAt(i) === 27) {
+      i++;
+      if (i < s.length && s.charAt(i) === "[") {
+        i++;
+        while (i < s.length) {
+          var b = s.charAt(i);
+          if (b >= "@" && b <= "~") break;
+          i++;
+        }
+        i++;
+      }
+    } else {
+      out += s.charAt(i);
+      i++;
+    }
+  }
+  return out;
+}
+
+// ─── state ───
+var root = null;
+var grid = null;
+var status = null;
+var styleEl = null;
+var panes = [];
+var focused = null;
+var cmdCount = 0;
+var queue = Promise.resolve();
+var exitResolve = null;
+var exiting = false;
+var input = document.getElementById("hidden-input");
+var statusHint = document.getElementById("status-hint");
+var hadDisabled = input ? input.disabled : false;
+var prevHint = statusHint ? statusHint.textContent : "";
+
+var GUI_CMDS = ["edit", "vi", "vim", "play", "browse", "mail"];
+
+function guardLine(text) {
+  var first = String(text).trim().split(" ")[0];
+  if (first === "screen") return "screen is already running — press q to leave, then run it again";
+  if (first === "python" && text.trim() === "python") {
+    return "the python REPL can't run in a pane — use python -c with inline code instead";
+  }
+  if (GUI_CMDS.indexOf(first) !== -1) {
+    return first + " is a full-screen browser command — it can't run inside a pane";
+  }
+  return null;
+}
+
+// ─── pane helpers ──────────────────────────────────────────────
+
+function paneAppend(pane, text, isErr) {
+  var clean = stripAnsi(String(text));
+  if (!clean) return;
+  var span = document.createElement("span");
+  span.className = isErr ? "err" : "out";
+  span.textContent = clean;
+  pane.out.appendChild(span);
+  while (pane.out.childNodes.length > 600) pane.out.removeChild(pane.out.firstChild);
+  pane.out.scrollTop = pane.out.scrollHeight;
+}
+
+function banner(pane, text) {
+  var span = document.createElement("span");
+  span.className = "out";
+  span.style.color = "#8b949e";
+  span.textContent = "[screen] " + text + NL;
+  pane.out.appendChild(span);
+  pane.out.scrollTop = pane.out.scrollHeight;
+}
+
+function panePrompt(pane) {
+  var dir = pane.cwd === "/" ? "/" : pane.cwd;
+  pane.prompt.textContent = pane.idx + ":" + dir + "$ ";
+  pane.title.textContent = "pane " + pane.idx + " · " + dir + (pane.busy ? " (busy)" : "");
+}
+
+function focusPane(pane) {
+  if (focused && focused !== pane) focused.el.classList.remove("focused");
+  focused = pane;
+  pane.el.classList.add("focused");
+  pane.input.focus();
+}
+
+function relayout() {
+  var n = panes.length;
+  if (n === 0) {
+    grid.style.gridTemplateColumns = "1fr";
+    grid.style.gridTemplateRows = "1fr";
+    return;
+  }
+  var cols = 1;
+  while (cols * cols < n) cols++;
+  var rows = Math.ceil(n / cols);
+  grid.style.gridTemplateColumns = "repeat(" + cols + ", 1fr)";
+  grid.style.gridTemplateRows = "repeat(" + rows + ", 1fr)";
+}
+
+function updateStatus() {
+  var busy = 0;
+  for (var k = 0; k < panes.length; k++) if (panes[k].busy) busy++;
+  status.textContent = "session " + sessionName + " · " + panes.length +
+    " pane(s) · " + cmdCount + " command(s)" +
+    (busy ? " · " + busy + " running" : "") +
+    " · click a pane to focus · q/Esc exits";
+}
+
+function runLine(pane, raw) {
+  var text = String(raw || "").trim();
+  if (!text) return;
+  var g = guardLine(text);
+  if (g) {
+    paneAppend(pane, g + NL, true);
+    return;
+  }
+  paneAppend(pane, pane.prompt.textContent + text + NL);
+  pane.input.value = "";
+  pane.busy = true;
+  pane.runBtn.disabled = true;
+  pane.input.disabled = true;
+  panePrompt(pane);
+  cmdCount++;
+  var p = queue.then(function () {
+    return window.shellPaneRun(text, {
+      cwd: pane.cwd,
+      out: function (chunk) { paneAppend(pane, chunk, false); },
+      err: function (chunk) { paneAppend(pane, chunk, true); },
+    }).then(function (res) {
+      if (res && res.cwd) pane.cwd = res.cwd;
+      pane.busy = false;
+      pane.runBtn.disabled = false;
+      pane.input.disabled = false;
+      panePrompt(pane);
+      updateStatus();
+      if (focused === pane) pane.input.focus();
+    });
+  });
+  queue = p.catch(function () {});
+  updateStatus();
+}
+
+function addPane(cwd, focusIt) {
+  var idx = panes.length;
+  var el = document.createElement("div");
+  el.className = "screen-pane";
+  var head = document.createElement("div");
+  head.className = "screen-pane-head";
+  var title = document.createElement("span");
+  title.className = "screen-pane-title";
+  var btnClear = mkButton("C", "clear this pane's output", function () { pane.out.textContent = ""; });
+  var btnClose = mkButton("x", "close this pane", function () { removePane(pane); });
+  btnClose.className += " screen-btn-close";
+  head.appendChild(title);
+  head.appendChild(btnClear);
+  head.appendChild(btnClose);
+  var out = document.createElement("div");
+  out.className = "screen-pane-out";
+  var row = document.createElement("div");
+  row.className = "screen-pane-inputrow";
+  var prompt = document.createElement("span");
+  prompt.className = "screen-pane-prompt";
+  var inp = document.createElement("input");
+  inp.className = "screen-pane-input";
+  inp.type = "text";
+  inp.autocomplete = "off";
+  inp.spellcheck = false;
+  inp.placeholder = "type a command, Enter or Run";
+  var runBtn = mkButton("Run", "run this line in the pane", function () { runLine(pane, inp.value); });
+  row.appendChild(prompt);
+  row.appendChild(inp);
+  row.appendChild(runBtn);
+  el.appendChild(head);
+  el.appendChild(out);
+  el.appendChild(row);
+  var pane = {
+    idx: idx, el: el, title: title, out: out,
+    input: inp, prompt: prompt, runBtn: runBtn,
+    cwd: cwd || fs.cwd, busy: false,
+  };
+  panePrompt(pane);
+  el.addEventListener("click", function () { focusPane(pane); });
+  inp.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      runLine(pane, inp.value);
+    } else if (e.ctrlKey && (e.key === "c" || e.key === "C")) {
+      e.preventDefault();
+      paneAppend(pane, "^C" + NL, false);
+      inp.value = "";
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      exitScreen();
+    }
+  });
+  panes.push(pane);
+  grid.appendChild(el);
+  relayout();
+  banner(pane, "pane " + idx + " ready — + split · x close · C clear · q/Esc exits");
+  if (focusIt) focusPane(pane);
+  updateStatus();
+  return pane;
+}
+
+function removePane(pane) {
+  var idx = panes.indexOf(pane);
+  if (idx === -1) return;
+  panes.splice(idx, 1);
+  if (focused === pane) focused = null;
+  if (pane.el.parentNode) pane.el.parentNode.removeChild(pane.el);
+  for (var k = 0; k < panes.length; k++) {
+    panes[k].idx = k;
+    panePrompt(panes[k]);
+  }
+  relayout();
+  updateStatus();
+  if (panes.length === 0) {
+    exitScreen();
+  } else if (!focused) {
+    focusPane(panes[panes.length - 1]);
+  }
+}
+
+function resetPanes() {
+  var keepCwd = focused ? focused.cwd : (panes.length ? panes[0].cwd : fs.cwd);
+  while (panes.length) {
+    var p = panes.pop();
+    if (p.el.parentNode) p.el.parentNode.removeChild(p.el);
+  }
+  focused = null;
+  addPane(keepCwd, true);
+}
+
+// ─── lifecycle ─────────────────────────────────────────────────
+
+function cleanup() {
+  if (root && root.parentNode) root.parentNode.removeChild(root);
+  if (styleEl && styleEl.parentNode) styleEl.parentNode.removeChild(styleEl);
+  if (input) input.disabled = hadDisabled;
+  if (statusHint) statusHint.textContent = prevHint;
+  root = null;
+  panes = [];
+  focused = null;
+}
+
+function exitScreen() {
+  if (exiting) return;
+  exiting = true;
+  if (statusHint) statusHint.textContent = "screen: waiting for pane commands to finish...";
+  queue.catch(function () {}).then(function () {
+    cleanup();
+    if (exitResolve) exitResolve(0);
+  });
+}
+
+// ─── CSS ───────────────────────────────────────────────────────
+
+var css = ".screen-root{position:fixed;top:0;left:0;right:0;bottom:48px;z-index:12;background:#0d1117;color:#e0e0e0;display:flex;flex-direction:column;font-family:'Cascadia Code','Fira Code','JetBrains Mono',monospace;}" +
+  ".screen-toolbar{display:flex;align-items:center;gap:6px;padding:6px 10px;background:#161b22;border-bottom:1px solid #30363d;font-size:12px;color:#8b949e;}" +
+  ".screen-title{font-weight:bold;color:#7ec8e3;}" +
+  ".screen-btn{background:#21262d;color:#e0e0e0;border:1px solid #30363d;border-radius:4px;padding:3px 10px;cursor:pointer;font-size:12px;}" +
+  ".screen-btn:hover{background:#30363d;}" +
+  ".screen-btn-close{background:#3d2222;border-color:#5a2e2e;padding:3px 8px;}" +
+  ".screen-btn-exit{background:#1f6feb;border-color:#1f6feb;color:#fff;font-weight:bold;}" +
+  ".screen-spacer{flex:1;}" +
+  ".screen-grid{flex:1;display:grid;gap:6px;padding:8px;overflow:hidden;}" +
+  ".screen-pane{display:flex;flex-direction:column;background:#0d1117;border:1px solid #30363d;border-radius:6px;overflow:hidden;min-height:0;min-width:0;}" +
+  ".screen-pane.focused{border-color:#7ec8e3;box-shadow:0 0 0 1px #7ec8e3;}" +
+  ".screen-pane-head{display:flex;align-items:center;gap:6px;padding:3px 8px;background:#161b22;border-bottom:1px solid #30363d;font-size:11px;color:#8b949e;}" +
+  ".screen-pane-title{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}" +
+  ".screen-pane-out{flex:1;overflow:auto;padding:6px 8px;font-size:13px;line-height:1.35;white-space:pre-wrap;word-break:break-word;min-height:0;}" +
+  ".screen-pane-out .err{color:#d6a0a0;}" +
+  ".screen-pane-inputrow{display:flex;align-items:center;gap:6px;padding:4px 8px;background:#161b22;border-top:1px solid #30363d;}" +
+  ".screen-pane-prompt{color:#a0d6a0;font-size:13px;white-space:nowrap;}" +
+  ".screen-pane-input{flex:1;background:#0d1117;color:#e0e0e0;border:1px solid #30363d;border-radius:4px;padding:3px 6px;font:inherit;font-size:13px;outline:none;}" +
+  ".screen-pane-input:focus{border-color:#7ec8e3;}" +
+  ".screen-pane-input:disabled{opacity:.55;}" +
+  ".screen-status{display:flex;gap:16px;padding:4px 10px;background:#161b22;border-top:1px solid #30363d;font-size:11px;color:#8b949e;}";
+
+styleEl = document.createElement("style");
+styleEl.textContent = css;
+document.head.appendChild(styleEl);
+
+// ─── build the screen UI ───────────────────────────────────────
+
+root = document.createElement("div");
+root.className = "screen-root";
+root.tabIndex = -1;
+
+var toolbar = document.createElement("div");
+toolbar.className = "screen-toolbar";
+var title = document.createElement("span");
+title.className = "screen-title";
+title.textContent = "screen: " + sessionName;
+toolbar.appendChild(title);
+toolbar.appendChild(mkButton("+ split", "add a pane (tmux split-window)", function () {
+  addPane(focused ? focused.cwd : fs.cwd, true);
+}));
+toolbar.appendChild(mkButton("= reset", "collapse to a single pane", function () { resetPanes(); }));
+var spacer = document.createElement("span");
+spacer.className = "screen-spacer";
+toolbar.appendChild(spacer);
+var btnExit = mkButton("q exit", "leave screen mode", function () { exitScreen(); });
+btnExit.className += " screen-btn-exit";
+toolbar.appendChild(btnExit);
+root.appendChild(toolbar);
+
+grid = document.createElement("div");
+grid.className = "screen-grid";
+root.appendChild(grid);
+
+status = document.createElement("div");
+status.className = "screen-status";
+root.appendChild(status);
+
+root.addEventListener("keydown", function (e) {
+  if (e.key === "Escape") {
+    e.preventDefault();
+    exitScreen();
+  }
+});
+root.addEventListener("click", function (e) {
+  if (!e.target.closest(".screen-pane") && focused) focused.input.focus();
+});
+
+if (input) input.disabled = true;
+if (statusHint) statusHint.textContent = "screen: " + sessionName + " · click a pane · + split · q/Esc exits";
+
+document.body.appendChild(root);
+
+for (var k = 0; k < paneCount; k++) addPane(fs.cwd, k === 0);
+
+// ─── run until the user leaves ─────────────────────────────────
+var exitPromise = new Promise(function (res) { exitResolve = res; });
+await exitPromise;
+console.log("screen: session '" + sessionName + "' ended — " + cmdCount + " command(s) ran");
+return 0;
+`;
+    this._getBackend("/bin/screen.js").read("/screen.js")
+      .then((existing) => {
+        if (!existing.includes("screen v2")) {
+          syncWrite(this._getBackend("/bin/screen.js"), "/screen.js", screenContent);
+        }
+      })
+      .catch(() => syncWrite(this._getBackend("/bin/screen.js"), "/screen.js", screenContent));
+
     // sh2js.js — debashl toolchain command (uses the injected sh2lib facade).
     // Version-gated (v2 marker) so file/pipe support reaches existing installs.
     const sh2jsjsContent = `async function sh2src() {
@@ -1540,18 +2028,20 @@ return 0;
       })
       .catch(() => syncWrite(this._getBackend("/bin/xeyes.js"), "/xeyes.js", xeyesjsContent));
 
-    // xterm.js — floating terminal running the shell itself (xterm.js).
-    // Written only when absent, so user edits survive reloads.
-    const xtermjsContent = `// xterm — a floating terminal (xterm.js) running the shell itself.
+    // xterm.js — floating, draggable terminal that is its own shell session
+    // (own cwd/env, shared filesystem). Version-gated (v2 marker).
+    const xtermjsContent = `// xterm v2 — a floating, draggable terminal (xterm.js) that is its own
+// shell session: own cwd and own environment, sharing the filesystem.
 //   xterm            open the floating terminal; type exit to close
-// Every line you type is run through the shell's own machinery, so the
-// floating terminal sees the same builtins, PATH and filesystem.
+// Each line runs through the shell's machinery with the session's cwd
+// and env overlaid; cd/export inside never touch the main shell.
 var NL = String.fromCharCode(10);
 var BS = String.fromCharCode(8);
 var DEL = String.fromCharCode(127);
 var ETX = String.fromCharCode(3);   // Ctrl+C
 var FF = String.fromCharCode(12);   // Ctrl+L
 var CR = String.fromCharCode(13);   // Enter
+var ESC = String.fromCharCode(27);  // escape (arrow keys)
 if (typeof document === "undefined") {
   console.log("xterm: needs a browser (run in the web shell)");
   return 1;
@@ -1582,14 +2072,15 @@ if (!document.querySelector('link[href="/node_modules/xterm/css/xterm.css"]')) {
   link.href = "/node_modules/xterm/css/xterm.css";
   document.head.appendChild(link);
 }
-// ── floating window ──
+// ── floating window (draggable by the title bar) ──
 var win = document.createElement("div");
 win.className = "xterm-window";
-win.style.cssText = "position:fixed;top:10%;left:15%;width:70%;height:60%;background:#0d1117;border:1px solid #30363d;border-radius:8px;z-index:60;display:flex;flex-direction:column;box-shadow:0 10px 40px rgba(0,0,0,.5);";
+win.style.cssText = "position:fixed;left:15%;top:10%;width:70%;height:60%;background:#0d1117;border:1px solid #30363d;border-radius:8px;z-index:60;display:flex;flex-direction:column;box-shadow:0 10px 40px rgba(0,0,0,.5);";
 var bar = document.createElement("div");
-bar.style.cssText = "display:flex;justify-content:space-between;align-items:center;padding:6px 12px;background:#161b22;color:#8b949e;font:12px monospace;border-bottom:1px solid #30363d;border-radius:8px 8px 0 0;";
+bar.className = "xterm-bar";
+bar.style.cssText = "display:flex;justify-content:space-between;align-items:center;padding:6px 12px;background:#161b22;color:#8b949e;font:12px monospace;border-bottom:1px solid #30363d;border-radius:8px 8px 0 0;cursor:move;user-select:none;";
 var title = document.createElement("span");
-title.textContent = "xterm — floating shell (type exit to close)";
+title.textContent = "xterm — floating shell (drag me · exit to close)";
 var closeBtn = document.createElement("button");
 closeBtn.textContent = "x";
 closeBtn.style.cssText = "background:#21262d;color:#d6a0a0;border:1px solid #30363d;border-radius:4px;cursor:pointer;padding:0 9px;font:bold 14px monospace;";
@@ -1600,6 +2091,20 @@ body.style.cssText = "flex:1;padding:8px;overflow:hidden;";
 win.appendChild(bar);
 win.appendChild(body);
 document.body.appendChild(win);
+var dragState = null;
+function onBarDown(e) {
+  dragState = { dx: e.clientX - win.offsetLeft, dy: e.clientY - win.offsetTop };
+  e.preventDefault();
+}
+function onDocMove(e) {
+  if (!dragState) return;
+  win.style.left = (e.clientX - dragState.dx) + "px";
+  win.style.top = (e.clientY - dragState.dy) + "px";
+}
+function onDocUp() { dragState = null; }
+bar.addEventListener("mousedown", onBarDown);
+document.addEventListener("mousemove", onDocMove);
+document.addEventListener("mouseup", onDocUp);
 // ── terminal ──
 var term = new Terminal({
   cursorBlink: true,
@@ -1614,15 +2119,59 @@ term.open(body);
 fit.fit();
 var onResize = function () { try { fit.fit(); } catch (e) {} };
 window.addEventListener("resize", onResize);
-// ── line editing + routing through the shell ──
+// ── the session: own cwd + own env, shared filesystem ──
+var termCwd = fs.cwd;
+var termEnv = {};
+var EXCLUDE = { PWD: 1, COLUMNS: 1, LINES: 1, SHELL: 1 };
+function runSession(cmd) {
+  var mainCwd = fs.cwd;
+  // Snapshot the WHOLE shared env before touching it — the session's
+  // exports must be reverted afterwards, and pre-existing vars (PATH,
+  // HOME, ...) must never be captured as if the session exported them.
+  var envSnapshot = {};
+  for (var k in env) envSnapshot[k] = env[k];
+  var tKeys = Object.keys(termEnv);
+  for (var i = 0; i < tKeys.length; i++) env[tKeys[i]] = termEnv[tKeys[i]];
+  fs.cwd = termCwd;
+  return shell.runLine(cmd).then(function (res) {
+    // capture what the run exported or changed into the session env
+    for (var k in env) {
+      if (!EXCLUDE[k] && (envSnapshot[k] === undefined || env[k] !== envSnapshot[k])) termEnv[k] = env[k];
+    }
+    for (var j = 0; j < tKeys.length; j++) {
+      if (!(tKeys[j] in env)) delete termEnv[tKeys[j]];
+    }
+    if (fs.cwd !== mainCwd) termCwd = fs.cwd;   // cd inside follows the session
+    fs.cwd = mainCwd;                            // main shell unaffected
+    env.PWD = mainCwd;
+    // revert every key the session env touches (overlay + new exports)
+    var sKeys = Object.keys(termEnv);
+    for (var m = 0; m < sKeys.length; m++) {
+      var k3 = sKeys[m];
+      if (envSnapshot[k3] === undefined) delete env[k3];
+      else env[k3] = envSnapshot[k3];
+    }
+    return res;
+  });
+}
+// ── line editing + history ──
 var line = "";
-function prompt() { term.write("tinysh:" + fs.cwd + "$ "); }
+var history = [];
+var histIdx = 0;
+function prompt() { term.write("tinysh:" + termCwd + "$ "); }
+function setLine(s) {
+  while (line.length > 0) { line = line.slice(0, -1); term.write(BS + " " + BS); }
+  line = s;
+  term.write(s);
+}
 function submit() {
   var cmd = line;
   line = "";
   term.write(NL);
   if (cmd.trim() === "exit" || cmd.trim() === "quit") { closeIt(); return; }
-  shell.runLine(cmd).then(function (res) {
+  if (cmd.trim()) history.push(cmd);
+  histIdx = history.length;
+  runSession(cmd).then(function (res) {
     var out = (res && res.out ? res.out : "") + (res && res.err ? res.err : "");
     if (out) term.write(out);
     if (!out.endsWith(NL)) term.write(NL);
@@ -1632,7 +2181,20 @@ function submit() {
     prompt();
   });
 }
+function histPrev() {
+  if (history.length === 0) return;
+  histIdx = Math.max(0, histIdx - 1);
+  setLine(history[histIdx]);
+}
+function histNext() {
+  if (histIdx < history.length) {
+    histIdx++;
+    setLine(histIdx === history.length ? "" : history[histIdx]);
+  }
+}
 function onData(data) {
+  if (data === ESC + "[A") { histPrev(); return; }
+  if (data === ESC + "[B") { histNext(); return; }
   for (var i = 0; i < data.length; i++) {
     var ch = data[i];
     if (ch === CR) submit();
@@ -1651,6 +2213,9 @@ function cleanup() {
   if (done) return;
   done = true;
   window.removeEventListener("resize", onResize);
+  document.removeEventListener("mousemove", onDocMove);
+  document.removeEventListener("mouseup", onDocUp);
+  bar.removeEventListener("mousedown", onBarDown);
   try { term.dispose(); } catch (e) {}
   win.remove();
 }
@@ -1658,7 +2223,7 @@ var waitResolve = null;
 var wait = new Promise(function (r) { waitResolve = r; });
 function closeIt() { cleanup(); waitResolve(); }
 closeBtn.onclick = closeIt;
-term.write("tinysh floating terminal — commands run through the shell" + NL);
+term.write("tinysh floating session — own cwd and env, shared filesystem" + NL);
 prompt();
 term.focus();
 try {
@@ -1669,6 +2234,11 @@ try {
 return 0;
 `;
     this._getBackend("/bin/xterm.js").read("/xterm.js")
+      .then((existing) => {
+        if (!existing.includes("xterm v2")) {
+          syncWrite(this._getBackend("/bin/xterm.js"), "/xterm.js", xtermjsContent);
+        }
+      })
       .catch(() => syncWrite(this._getBackend("/bin/xterm.js"), "/xterm.js", xtermjsContent));
 
     // Sample content for new users
