@@ -8,6 +8,14 @@ and device files. It runs in any browser with no build step.
 
 ## Recently Done
 
+- [x] Inline prompt editing: the prompt, typed text and a blinking block
+      cursor live inside the terminal scrollback (last line), like a real
+      shell — no more fixed bottom input bar. Printable chars, backspace,
+      arrows, Home/End, Ctrl+A/E/U/K/W, Tab completion and history all
+      edit the inline line; a hidden input captures keys + mobile
+      keyboards. asciinema recording stays faithful (prompts, typed chars,
+      backspaces as \x08, mid-line edits as \r+line+ESC[K redraws)
+
 - [x] Path-based command execution: `./a.wasm`, `/home/x.js`, `../y.mjs`
       run files by path like /bin/sh (exit 126 for non-executable files),
       and WASI programs now run with the shell's cwd as their cwd so
