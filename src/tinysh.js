@@ -338,7 +338,7 @@ const builtins = {
 
     // Remote mounts would require crawling the network; refuse that and
     // only grep them when a specific file is named.
-    const REMOTE = ["/http/", "/github/", "/mount/github/", "/gitlab/", "/mount/gitlab/"];
+    const REMOTE = ["/http/", "/github/", "/mount/github/", "/gitlab/", "/mount/gitlab/", "/git/", "/mount/git/"];
     const isRemote = (p) => REMOTE.some(pre => p === pre.slice(0, -1) || p.startsWith(pre));
 
     const showLabel = files.length > 1 || recursive;
@@ -453,7 +453,7 @@ const builtins = {
 
     // Remote mounts would require crawling the network; refuse that and
     // only match them when a specific file is named.
-    const REMOTE = ["/http/", "/github/", "/mount/github/", "/gitlab/", "/mount/gitlab/"];
+    const REMOTE = ["/http/", "/github/", "/mount/github/", "/gitlab/", "/mount/gitlab/", "/git/", "/mount/git/"];
     const isRemote = (p) => REMOTE.some(pre => p === pre.slice(0, -1) || p.startsWith(pre));
 
     // Build a regex from a shell glob (* and ? wildcards)

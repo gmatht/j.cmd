@@ -157,6 +157,8 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/codemirror.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/addon/dialog/dialog.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/keymap/vim.min.js"></script>
+<!-- pako (zlib): git object inflation for GitFS (served from node_modules by serve.py) -->
+<script src="../node_modules/pako/dist/pako_inflate.min.js"></script>
 <!-- Bare-specifier resolution for the WASM runtime packages (served from node_modules by serve.py) -->
 <script type="importmap">
 {
@@ -790,7 +792,7 @@ const builtins = {
 
     // Remote mounts would require crawling the network; refuse that and
     // only grep them when a specific file is named.
-    const REMOTE = ["/http/", "/github/", "/mount/github/", "/gitlab/", "/mount/gitlab/"];
+    const REMOTE = ["/http/", "/github/", "/mount/github/", "/gitlab/", "/mount/gitlab/", "/git/", "/mount/git/"];
     const isRemote = (p) => REMOTE.some(pre => p === pre.slice(0, -1) || p.startsWith(pre));
 
     const showLabel = files.length > 1 || recursive;
@@ -905,7 +907,7 @@ const builtins = {
 
     // Remote mounts would require crawling the network; refuse that and
     // only match them when a specific file is named.
-    const REMOTE = ["/http/", "/github/", "/mount/github/", "/gitlab/", "/mount/gitlab/"];
+    const REMOTE = ["/http/", "/github/", "/mount/github/", "/gitlab/", "/mount/gitlab/", "/git/", "/mount/git/"];
     const isRemote = (p) => REMOTE.some(pre => p === pre.slice(0, -1) || p.startsWith(pre));
 
     // Build a regex from a shell glob (* and ? wildcards)
@@ -1122,6 +1124,10 @@ const builtins = {
       url = `https://${base}/${repoMatch[1]}/${repoMatch[2]}`;
     } else if (r.startsWith("/http/")) {
       url = "https://" + r.slice(6);
+    } else if (r.startsWith("/git/") || r.startsWith("/mount/git/")) {
+      const backend = fs._getBackend("/git/");
+      const rel = r.startsWith("/git/") ? r.slice(4) : r.slice("/mount/git/".length);
+      if (backend && backend.browseUrl) url = await backend.browseUrl(rel);
     } else if (r.startsWith("/mount/github/")) {
       const m = r.match(/^\/mount\/github\/([^\/]+)\/([^\/]+)/);
       if (m) url = `https://github.com/${m[1]}/${m[2]}`;
@@ -1229,7 +1235,8 @@ const builtins = {
     cat image.png    — renders inline
     play music.mp3   — plays with audio controls
     /big/            — IndexedDB storage, no 5MB limit (cp big files here)
-    /pc/             — download to your machine (cp file /pc)
+    /pc/             — bridge to your machine: cp file /pc downloads,
+                    cp /pc/file uploads (file picker)
 
   Environment:
     $PATH  /commands:/usr/bin:/bin · $HOME /home · $USER tinysh · $PWD current dir
@@ -1317,7 +1324,7 @@ const builtins = {
 
     // 3. GitHub/GitLab visited-path cache — can't enumerate all of GitHub,
     //    so search what has actually been browsed in this session.
-    const remote = ["/github", "/gitlab"];
+    const remote = ["/github", "/gitlab", "/git"];
     let remoteSearched = false;
     for (const mount of remote) {
       try {
@@ -2238,6 +2245,8 @@ function updateStatusBar() {
     statusHint.textContent = "Browse any GitHub repo. 'browse' opens in tab.";
   } else if (cwd.startsWith("/gitlab") || cwd.startsWith("/mount/gitlab")) {
     statusHint.textContent = "Browse any GitLab project. 'browse' opens in tab.";
+  } else if (cwd.startsWith("/git") || cwd.startsWith("/mount/git")) {
+    statusHint.textContent = "Any git repo as a filesystem (real git protocol). 'browse' opens it.";
   } else if (cwd.startsWith("/http")) {
     statusHint.textContent = "CORS-enabled fetch. Public CDNs and APIs only. 'browse' opens URL.";
   } else if (cwd.startsWith("/dev")) {
@@ -2409,7 +2418,7 @@ input.addEventListener("keydown", async (e) => {
   write("          apt/yum/pip → wasmer · wasmer install <pkg>\n", "info");
   write("          python, echoc — auto-loaded from /wasm-bin/\n", "info");
   write("          history — persisted across refreshes\n", "info");
-  write("          cp file /pc — download to your machine\n", "info");
+  write("          cp file /pc — download · cp /pc/file — upload\n", "info");
   write("          /big/ — IndexedDB storage (no 5MB limit)\n\n", "info");
   write("          echo $HOME · $PATH · $USER — environment variables\n\n", "info");
   updatePrompt();

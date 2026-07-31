@@ -11,6 +11,8 @@
 //   /commands/    → LocalStorageFS(persistent user commands)
 //   /http/        → HttpFS        (CORS fetch access)
 //   /mount/github → GitHubFS      (GitHub API as a filesystem)
+//   /mount/gitlab → GitLabFS      (GitLab API as a filesystem)
+//   /mount/git    → GitFS         (real git wire protocol over HTTP)
 // -------------------------------------------------------------------
 
 import { RamFS } from "./ramfs.js";
@@ -19,6 +21,7 @@ import { IndexedDBFS } from "./indexeddbfs.js";
 import { HttpFS } from "./httpfs.js";
 import { GitHubFS } from "./githubfs.js";
 import { GitLabFS } from "./gitlabfs.js";
+import { GitFS } from "./gitfs.js";
 import { DevFS } from "./devfs.js";
 import { DownloadFS } from "./downloadfs.js";
 
@@ -152,6 +155,12 @@ class VirtualFS {
     const gitlab = new GitLabFS();
     this.mount("gitlab", "/mount/gitlab", gitlab);
     this.mount("gitlab", "/gitlab", gitlab);  // convenience alias
+    // GitFS — real git over HTTP (smart or dumb). Path format:
+    //   /mount/git/{host}/{repo-path}/{file-path}
+    // e.g. /mount/git/github.com/torvalds/linux/README
+    const git = new GitFS();
+    this.mount("git", "/mount/git", git);
+    this.mount("git", "/git", git);  // convenience alias
     this.mount("dev", "/dev", new DevFS());
     this.mount("download", "/pc", new DownloadFS());
     // IndexedDB-backed persistent store for large files — unlike
