@@ -130,6 +130,7 @@
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/codemirror.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/keymap/vim.min.js"></script>
 <script type="module">
 import { fs } from "../src/fs/index.js";
 import { WasmRunner } from "../src/wasm.js";
@@ -219,6 +220,115 @@ function closeEditor(save) {
   input.focus();
 }
 
+// ─── Vi-like editor (CodeMirror vim keymap) ─────────────────────
+
+let viState = {
+  filepath: null,
+  callback: null,
+  mode: "normal",
+  dirty: false,
+};
+
+function updateViModeDisplay() {
+  const modeLabel = document.getElementById("editor-mode");
+  if (modeLabel) {
+    modeLabel.textContent = viState.mode.toUpperCase();
+    modeLabel.style.color = viState.mode === "insert" ? "#a0d6a0" : "#7ec8e3";
+  }
+}
+
+function openViEditor(filepath, initialContent, onSave) {
+  viState.filepath = filepath;
+  viState.callback = onSave;
+  viState.mode = "normal";
+  viState.dirty = false;
+
+  editorFilename.textContent = `Editing: ${filepath}`;
+  editorContainer.classList.add("active");
+  input.disabled = true;
+
+  // Ensure the mode indicator element exists in the header
+  const headerRight = document.querySelector("#editor-header span:last-child");
+  if (headerRight) {
+    headerRight.textContent = "";
+    const mode = document.createElement("span");
+    mode.id = "editor-mode";
+    mode.textContent = "NORMAL";
+    mode.style.marginLeft = "12px";
+    mode.style.fontWeight = "bold";
+    mode.style.color = "#7ec8e3";
+    headerRight.appendChild(mode);
+  }
+
+  cm = CodeMirror.fromTextArea(editorTextarea, {
+    value: initialContent,
+    mode: "text/plain",
+    theme: "monokai",
+    lineNumbers: true,
+    indentUnit: 2,
+    tabSize: 2,
+    indentWithTabs: false,
+    lineWrapping: false,
+    keyMap: "vim",
+  });
+
+  // Track mode changes
+  cm.on("vim-mode-change", (m) => {
+    viState.mode = m.mode || "normal";
+    updateViModeDisplay();
+  });
+
+  // Track dirty state
+  cm.on("change", () => { viState.dirty = true; });
+
+  cm.setValue(initialContent);
+  cm.focus();
+  cm.setCursor(0, 0);
+  updateViModeDisplay();
+}
+
+function saveViFile() {
+  const content = cm.getValue();
+  if (viState.callback) {
+    viState.callback(content);
+  }
+  viState.dirty = false;
+  write(`[saved] ${viState.filepath}\n`, "info");
+}
+
+function closeViEditor() {
+  if (cm) cm.toTextArea();
+  cm = null;
+  editorContainer.classList.remove("active");
+  input.disabled = false;
+  const filepath = viState.filepath;
+  viState = { filepath: null, callback: null, mode: "normal", dirty: false };
+  write(`[vi closed] ${filepath}\n`, "info");
+  input.focus();
+}
+
+// Register vim ex commands (:w, :q, :wq, :x, :q!)
+function registerViExCommands() {
+  if (!CodeMirror.Vim) return;
+  const ex = CodeMirror.Vim.exCommands;
+
+  ex["w"] = (cm2) => saveViFile();
+  ex["wq"] = (cm2) => { saveViFile(); closeViEditor(); };
+  ex["x"] = (cm2) => { saveViFile(); closeViEditor(); };
+  ex["q"] = (cm2) => {
+    if (viState.dirty) {
+      write("E37: No write since last change (use :q! to discard)\n", "err");
+    } else {
+      closeViEditor();
+    }
+  };
+  ex["q!"] = (cm2) => closeViEditor();
+  ex["quit"] = ex["q"];
+}
+
+// Call after CodeMirror + vim keymap load
+registerViExCommands();
+
 // ─── Built-in Commands ─────────────────────────────────────────
 
 const builtins = {
@@ -283,6 +393,21 @@ const builtins = {
     } catch (e) {
       stderr.write(`cd: ${dir}: ${e.message}\n`);
     }
+  },
+
+  async vi(args) {
+    if (args.length === 0) { stderr.write("vi: missing filename\n"); return; }
+    const filepath = args[0];
+    let content = "";
+    try {
+      content = await fs.read(filepath);
+    } catch {}
+    await new Promise((resolve) => {
+      openViEditor(filepath, content, async (newContent) => {
+        await fs.write(filepath, newContent);
+        resolve();
+      });
+    });
   },
 
   async edit(args) {
@@ -455,7 +580,8 @@ const builtins = {
     echo <text>     Print text
     pwd             Print working directory
     cd [dir]        Change directory
-    edit <file>     Edit a file (Ctrl+S save, Esc cancel)
+    vi <file>       Vi editor (hjkl, i, dd, u, :wq)
+    edit <file>     Simple editor (Ctrl+S save, Esc cancel)
     rm <file>...    Remove files
     mkdir <dir>...  Create directories
     cp <src> <dst>  Copy files
@@ -463,6 +589,10 @@ const builtins = {
     help            This help
     clear           Clear terminal
     exit            Exit the shell
+
+  Vi editor keys:
+    h j k l         move · i a o insert · x dd delete
+    u undo · /search · :w save · :q quit · :wq save+quit
 
   Features:
     Tab completion   — complete commands and file paths
@@ -475,7 +605,7 @@ const builtins = {
   /dev/ devices: cat /dev/info · cat /dev/cpu · cat /dev/time
                 cat /dev/webgl · cat /dev/webgl/extensions
 
-  Aliases: vi/vim/nano = edit · less/more = cat · cls = clear
+  Aliases: nano/emacs = edit · less/more = cat · cls = clear
            dir = ls · ? = help · q/quit = exit
 
   Any other command runs a .js file from /commands/.
@@ -495,6 +625,8 @@ const builtins = {
 // ─── Command Resolution ─────────────────────────────────────────
 
 async function resolveCommand(name) {
+  // vim is an alias for vi
+  if (name === "vim") name = "vi";
   if (builtins[name]) return { type: "builtin", fn: builtins[name] };
   const searchPaths = ["/commands", "/usr/bin", "/bin"];
   for (const dir of searchPaths) {
@@ -546,7 +678,7 @@ async function handleLine(line) {
     const resolved = await resolveCommand(cmd);
     if (!resolved) {
       const hints = {
-        "vi": "edit", "vim": "edit", "nano": "edit", "emacs": "edit",
+        "nano": "edit", "emacs": "edit",
         "more": "cat", "less": "cat",
         "cls": "clear", "quit": "exit", "q": "exit",
         "?": "help", "dir": "ls", "ll": "ls", "la": "ls",
@@ -1063,7 +1195,8 @@ input.addEventListener("keydown", async (e) => {
   write("Type 'help' for available commands.\n\n", "info");
   write("Features: Tab completion · Ctrl+L clear · Up/Down history\n", "info");
   write("          edit <file> — built-in text editor\n", "info");
-  write("          vi/vim/nano → edit · less/more → cat · cls → clear\n", "info");
+  write("          vi <file> — vim-style editor (hjkl, :wq)\n", "info");
+  write("          nano/emacs → edit · less/more → cat · cls → clear\n", "info");
   write("          ls /dev/ · cat /dev/info · cat /dev/cpu\n", "info");
   write("          cat image.png · play music.mp3\n", "info");
   write("          browse /github/user/repo — open in tab\n", "info");

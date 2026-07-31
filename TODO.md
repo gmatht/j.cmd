@@ -40,6 +40,8 @@ and device files. It runs in any browser with no build step.
 - [x] `browse` command: opens current GitHub/GitLab dir in new browser tab
 - [x] Language hints: python/node/gcc/java/rustc → wasmer
       (WASM is the native binary format, compilers run via WASM)
+- [x] Vi-like editor: CodeMirror vim keymap + :w/:q/:wq/:x/:q! ex commands
+      vi <file> opens editor; vim is an alias; mode indicator in header
 - [x] GitLabFS: browse gitlab.com projects as a filesystem
       (mount at /gitlab and /mount/gitlab)
 - [ ] Replace WASI stub with @wasmer/wasi (full spec-compliant WASI)
