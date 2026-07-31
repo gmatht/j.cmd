@@ -9,7 +9,8 @@
 //   3. Add an entry in REGISTRY below
 //
 // Repo build scripts: build-wasm-compiler.sh (C→WASM compiler),
-// build-wasm-grep.sh (real busybox grep as wasm32-wasi).
+// build-wasm-grep.sh (real busybox grep as wasm32-wasi),
+// build-wasm-sh2perl.sh (gmatht/sh2perl shell→Perl transpiler).
 //
 // Usage in tinysh:
 //   wasmer list              → list available packages
@@ -53,6 +54,10 @@ const REGISTRY = {
   "make": {
     url: "wasm-bin/make.wasm",
     desc: "Build tool (Makefile runner)",
+  },
+  "sh2perl": {
+    url: "wasm-bin/sh2perl.wasm",
+    desc: "Shell→Perl transpiler (gmatht/sh2perl debashc CLI, wasm32-wasip1 — see build-wasm-sh2perl.sh). Usage: sh2perl parse --perl 'echo hi'",
   },
   "compiler": {
     url: "wasm-bin/compiler.wasm",
