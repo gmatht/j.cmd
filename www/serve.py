@@ -21,6 +21,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # Cross-origin isolation: required for SharedArrayBuffer
         self.send_header("Cross-Origin-Opener-Policy", "same-origin")
         self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
+        # No caching — we're developing, stale files cause confusing bugs
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
         # WASM MIME type
         if self.path.endswith(".wasm"):
             self.send_header("Content-Type", "application/wasm")

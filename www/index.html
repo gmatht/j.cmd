@@ -627,6 +627,72 @@ const builtins = {
     });
   },
 
+  async locate(args) {
+    if (args.length === 0) { stderr.write("locate: missing pattern\n"); return; }
+    const pattern = args[0];
+    // Build a regex from the pattern (support * and ? wildcards)
+    let reStr = "";
+    for (const ch of pattern) {
+      if (ch === "*") reStr += ".*";
+      else if (ch === "?") reStr += ".";
+      else reStr += ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+    const re = new RegExp(reStr, "i");
+
+    const results = [];
+    const visited = new Set();
+
+    async function walk(dir) {
+      if (visited.has(dir)) return;
+      visited.add(dir);
+      let entries;
+      try { entries = await fs.list(dir); } catch { return; }
+      for (const entry of entries) {
+        const full = (dir === "/" ? "/" : dir + "/") + entry.replace(/\/$/, "");
+        if (re.test(entry.replace(/\/$/, ""))) {
+          results.push(full + (entry.endsWith("/") ? "/" : ""));
+        }
+        if (entry.endsWith("/")) {
+          await walk(full);
+        }
+      }
+    }
+
+    // Search from all top-level mounts
+    const tops = ["/tmp", "/home", "/commands", "/bin", "/dev", "/http", "/github", "/gitlab"];
+    for (const top of tops) {
+      await walk(top);
+    }
+
+    if (results.length === 0) {
+      stdout.write(`locate: no files matching "${pattern}"\n`);
+      return;
+    }
+    stdout.write(results.join("\n") + "\n");
+  },
+
+  async more(args) {
+    if (args.length === 0) { stderr.write("more: missing filename\n"); return; }
+    try {
+      const content = await fs.read(args[0]);
+      const lines = content.split("\n");
+      startPager(lines, args[0], "more");
+    } catch (e) {
+      stderr.write(`more: ${args[0]}: ${e.message}\n`);
+    }
+  },
+
+  async less(args) {
+    if (args.length === 0) { stderr.write("less: missing filename\n"); return; }
+    try {
+      const content = await fs.read(args[0]);
+      const lines = content.split("\n");
+      startPager(lines, args[0], "less");
+    } catch (e) {
+      stderr.write(`less: ${args[0]}: ${e.message}\n`);
+    }
+  },
+
   async exit(args) {
     write("Goodbye.\n", "info");
     input.disabled = true;
