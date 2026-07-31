@@ -70,7 +70,7 @@ and device files. It runs in any browser with no build step.
 - [x] IndexedDB FS backend (for files > localStorage 5MB limit)
 - [x] DownloadFS: write to /pc/ triggers browser download
       cp file /pc · echo text > /pc/name.txt · binary via writeBlob
-- [ ] WASM/WASI runtime: compile Rust/C programs to wasm32-wasi,
+- [x] WASM/WASI runtime: compile Rust/C programs to wasm32-wasi,
       drop them in /bin/, run them as native commands.
       Needs WASI syscall implementation over VirtualFS.
       Example: `echo "hello" | grep hello` via real grep compiled to WASM.

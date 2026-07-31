@@ -14,9 +14,11 @@
 import { createInterface } from "readline";
 import { fs } from "./fs/index.js";
 import { WasmRunner } from "./wasm.js";
+import { WasmerRegistry } from "./wasmer.js";
 import { env, expandRef } from "./env.js";
 
 const wasmRunner = new WasmRunner(fs);
+const wasmerReg = new WasmerRegistry(fs);
 
 // Pipe input for the current command — the previous pipeline segment's
 // captured stdout. Builtins that read stdin (head, ...) consume this.
@@ -586,6 +588,70 @@ const builtins = {
     return hadError ? 1 : 0;
   },
 
+  async wasmer(args) {
+    // wasmer list | install <pkg> | search <term> — WASM package
+    // manager. The browser fetches the same prebuilt binaries over
+    // HTTP; the CLI reads them from the repo's www/wasm-bin/ dir.
+    if (!args[0] || args[0] === "help") {
+      process.stdout.write(`wasmer — WASM package manager for browser shell
+
+wasmer list                    — list available packages
+wasmer search <term>           — search packages
+wasmer install <name>          — copy package to /bin/
+wasmer help                    — this help
+
+Packages are pre-compiled wasm32-wasi binaries served from
+www/wasm-bin/ (see build-wasm-compiler.sh, build-wasm-grep.sh).
+Once installed they run as native commands:
+  wasmer install grep
+  echo "hello" | grep hello
+`);
+      return 0;
+    }
+    if (args[0] === "list") {
+      for (const { name, desc } of wasmerReg.list()) {
+        process.stdout.write(`  ${name.padEnd(12)} ${desc}\n`);
+      }
+      return 0;
+    }
+    if (args[0] === "search") {
+      const results = wasmerReg.search(args[1] || "");
+      if (results.length === 0) {
+        process.stdout.write(`No packages match "${args[1]}".\n`);
+        return 1;
+      }
+      for (const { name, desc } of results) {
+        process.stdout.write(`  ${name.padEnd(12)} ${desc}\n`);
+      }
+      return 0;
+    }
+    if (args[0] === "install") {
+      const name = args[1];
+      if (!name) {
+        process.stderr.write("wasmer: install needs a package name\n");
+        return 2;
+      }
+      if (!wasmerReg.list().some((p) => p.name === name)) {
+        process.stderr.write(`wasmer: Package '${name}' not found. Try 'wasmer list' first.\n`);
+        return 1;
+      }
+      let buf;
+      try {
+        const { readFile } = await import("node:fs/promises");
+        buf = await readFile(new URL(`../www/wasm-bin/${name}.wasm`, import.meta.url));
+      } catch {
+        process.stderr.write(`wasmer: ${name}.wasm not built — run the repo's build script (e.g. ./build-wasm-grep.sh)\n`);
+        return 1;
+      }
+      const destPath = `/bin/${name}.wasm`;
+      await fs.writeBlob(destPath, new Blob([buf]));
+      process.stdout.write(`Installed ${name} → ${destPath} (${buf.length} bytes)\n`);
+      return 0;
+    }
+    process.stderr.write(`wasmer: unknown command '${args[0]}' (list, install, search, help)\n`);
+    return 2;
+  },
+
   async help(args) {
     process.stdout.write(`tinysh — minimal shell for the virtual filesystem
 
@@ -606,6 +672,7 @@ Built-in commands:
                   -l files with matches · -r recursive · -e PATTERN)
   find [path...] [expr]  Find files by name/type
                  (-name PAT · -iname PAT · -type f|d · -maxdepth N · -mindepth N)
+  wasmer          WASM package manager (list / install <pkg> / search <term>)
   true            Always succeeds (exit 0)
   false           Always fails (exit 1)
   help            This help
@@ -647,10 +714,25 @@ Write new commands by creating .js files in /commands/.
 // ─── Command Resolution ─────────────────────────────────────────
 
 async function resolveCommand(name) {
+  // A wasm32-wasi binary in the command path is a "native command" and
+  // shadows the builtin of the same name — so `wasmer install grep`
+  // (which drops /bin/grep.wasm) makes `grep` run real grep compiled
+  // to WASM instead of the JS fallback.
+  const searchPaths = env.PATH.split(":").filter(Boolean);
+  for (const dir of searchPaths) {
+    try {
+      const entries = await fs.list(dir);
+      if (entries.includes(name + ".wasm")) {
+        return { type: "wasm", path: dir + "/" + name + ".wasm" };
+      }
+    } catch {
+      // Directory doesn't exist, skip
+    }
+  }
+
   if (builtins[name]) return { type: "builtin", fn: builtins[name] };
 
   // Walk the command path from $PATH (colon-separated, like POSIX)
-  const searchPaths = env.PATH.split(":").filter(Boolean);
   for (const dir of searchPaths) {
     try {
       const entries = await fs.list(dir);

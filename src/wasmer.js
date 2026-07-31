@@ -8,6 +8,9 @@
 //   2. Copy the .wasm file to www/wasm-bin/<name>.wasm
 //   3. Add an entry in REGISTRY below
 //
+// Repo build scripts: build-wasm-compiler.sh (C→WASM compiler),
+// build-wasm-grep.sh (real busybox grep as wasm32-wasi).
+//
 // Usage in tinysh:
 //   wasmer list              → list available packages
 //   wasmer install echo      → install from /wasm-bin/echo.wasm
@@ -25,7 +28,7 @@ const REGISTRY = {
   },
   "grep": {
     url: "wasm-bin/grep.wasm",
-    desc: "Search text with patterns",
+    desc: "Search text with patterns (real busybox grep compiled to wasm32-wasi — see build-wasm-grep.sh)",
   },
   "hexdump": {
     url: "wasm-bin/hexdump.wasm",

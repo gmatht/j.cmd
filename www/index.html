@@ -1386,9 +1386,22 @@ const builtins = {
 async function resolveCommand(name) {
   // vim is an alias for vi
   if (name === "vim") name = "vi";
+  // A wasm32-wasi binary in the command path is a "native command" and
+  // shadows the builtin of the same name — so `wasmer install grep`
+  // (which drops /bin/grep.wasm) makes `grep` run real grep compiled
+  // to WASM instead of the JS fallback.
+  const searchPaths = env.PATH.split(":").filter(Boolean);
+  for (const dir of searchPaths) {
+    try {
+      const entries = await fs.list(dir);
+      if (entries.includes(name + ".wasm")) {
+        return { type: "wasm", path: dir + "/" + name + ".wasm" };
+      }
+    } catch {}
+  }
+
   if (builtins[name]) return { type: "builtin", fn: builtins[name] };
   // Walk the command path from $PATH (colon-separated, like POSIX)
-  const searchPaths = env.PATH.split(":").filter(Boolean);
   for (const dir of searchPaths) {
     try {
       for (const entry of await fs.list(dir)) {
