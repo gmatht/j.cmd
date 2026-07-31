@@ -11,7 +11,7 @@
 //   /dev/info        — browser and system information
 //   /dev/input       — keyboard state (placeholder)
 //   /dev/webgl       — WebGL info (placeholder)
-//   /dev/clipboard   — clipboard access (placeholder)
+//   /dev/clipboard   — clipboard read/write (secure context + permission)
 //   /dev/cpu         — CPU core count
 //   /dev/mem         — memory info
 //   /dev/ua          — user agent string
@@ -81,7 +81,7 @@ export class DevFS {
         return this._webglExtensions();
 
       case "/clipboard":
-        return "Clipboard requires user gesture. Use 'edit' command instead.\n";
+        return await this._clipboardRead();
 
       case "/input/keyboard":
         return "Keyboard device not active. No keys currently pressed.\n";
@@ -98,11 +98,7 @@ export class DevFS {
       case "/null":
         return;  // silently discard
       case "/clipboard":
-        try {
-          await navigator.clipboard.writeText(content);
-        } catch {
-          throw new Error("Clipboard write denied");
-        }
+        await this._clipboardWrite(content);
         return;
       case "/time":
         // Time write is a no-op (you can't set browser time)
@@ -118,6 +114,7 @@ export class DevFS {
     if (norm === "/") {
       // List all available devices
       return [
+        "clipboard",
         "cpu/",
         "info",
         "input/",
@@ -146,6 +143,11 @@ export class DevFS {
     if (norm === "/cpu" || norm === "/webgl" || norm === "/input") {
       return { type: "dir", size: 0, mtime: undefined };
     }
+    // Don't trigger a real clipboard read (permission prompt) just to
+    // stat the file; report a fixed size instead.
+    if (norm === "/clipboard") {
+      return { type: "file", size: 0, mtime: undefined };
+    }
     const content = await this.read(norm);
     return { type: "file", size: content.length, mtime: undefined };
   }
@@ -155,6 +157,38 @@ export class DevFS {
   }
 
   // ─── Helpers ───────────────────────────────────────────────
+
+  // ─── Clipboard ────────────────────────────────────────────
+  // Plan 9-style /dev/clipboard: read returns the browser clipboard
+  // text, write replaces it. The Clipboard API is only available in
+  // secure contexts (https or localhost) and reads/writes may require
+  // the clipboard-read/clipboard-write permissions (or a user gesture
+  // in some browsers). Failures surface as readable errors so the
+  // shell can show them via cat/redirect error handling.
+
+  async _clipboardRead() {
+    if (typeof navigator === "undefined" || !navigator.clipboard ||
+        typeof navigator.clipboard.readText !== "function") {
+      throw new Error("Clipboard API not available (needs secure context: https or localhost)");
+    }
+    try {
+      return await navigator.clipboard.readText();
+    } catch (err) {
+      throw new Error(`Clipboard read denied: ${err.message || err}`);
+    }
+  }
+
+  async _clipboardWrite(content) {
+    if (typeof navigator === "undefined" || !navigator.clipboard ||
+        typeof navigator.clipboard.writeText !== "function") {
+      throw new Error("Clipboard API not available (needs secure context: https or localhost)");
+    }
+    try {
+      await navigator.clipboard.writeText(content);
+    } catch (err) {
+      throw new Error(`Clipboard write denied: ${err.message || err}`);
+    }
+  }
 
   _webglInfo() {
     try {
