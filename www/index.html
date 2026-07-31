@@ -568,7 +568,29 @@ async function handleLine(line) {
 
     if (resolved.type === "wasm") {
       try {
-        const instance = await wasmRunner.run(resolved.path, [cmd, ...args]);
+        // Interactive interpreters (python without args) enter a REPL.
+        // We implement it at the shell level using session replay: each
+        // line re-runs all previous snippets (preserving state) with a
+        // marker, then we split the output at the marker to show only
+        // the new output.
+        if (cmd === "python" && args.length === 0) {
+          enterPythonRepl();
+          return;
+        }
+
+        // python /path/to/script.py → read file from VirtualFS, run as -c
+        let wasmArgs = [cmd, ...args];
+        if (cmd === "python" && args.length === 1 && !args[0].startsWith("-")) {
+          try {
+            const script = await fs.read(args[0]);
+            wasmArgs = [cmd, "-c", script];
+          } catch (e) {
+            stderr.write(`python: ${args[0]}: ${e.message}\n`);
+            return;
+          }
+        }
+
+        const instance = await wasmRunner.run(resolved.path, wasmArgs);
         output = wasmRunner.getStdout();
         if (outputRedirect) {
           await fs.write(outputRedirect, output);
@@ -710,9 +732,107 @@ let lastTabPress = 0;
 let lastPrefix = "";
 let lastMatches = [];
 
+// ─── Python REPL (session replay) ──────────────────────────────
+
+const replState = {
+  active: false,
+  snippets: [],
+  pending: [],   // current multi-line snippet being typed
+};
+
+function enterPythonRepl() {
+  replState.active = true;
+  replState.snippets = [];
+  replState.pending = [];
+  stdout.write("MicroPython REPL — type code, Ctrl-D or exit() to leave\n");
+  updatePrompt();
+}
+
+function exitPythonRepl() {
+  replState.active = false;
+  replState.snippets = [];
+  replState.pending = [];
+  stdout.write("\nLeaving Python REPL.\n");
+  updatePrompt();
+}
+
+// Check if a Python snippet is syntactically complete
+function isComplete(source) {
+  try {
+    // Heuristic: balanced parens/brackets/braces means it might be complete.
+    // MicroPython decides this too; we use a simple approximation.
+    let depth = 0;
+    for (const ch of source) {
+      if ("([{".includes(ch)) depth++;
+      if (")]}".includes(ch)) depth--;
+    }
+    // Also check for trailing colon (block opener) — needs continuation
+    const lines = source.split("\n");
+    const last = lines[lines.length - 1].trimEnd();
+    if (last.endsWith(":")) return false;
+    return depth <= 0;
+  } catch {
+    return true;
+  }
+}
+
+async function runPythonReplLine(line) {
+  // Exit conditions
+  if (line.trim() === "exit()" || line.trim() === "quit()") {
+    exitPythonRepl();
+    return;
+  }
+
+  // Accumulate multi-line input
+  replState.pending.push(line);
+  const source = replState.pending.join("\n");
+
+  if (!isComplete(source)) {
+    updatePrompt();  // shows "... " continuation prompt
+    return;
+  }
+  replState.pending = [];
+
+  // Build the transcript: all prior snippets + marker + new code
+  const marker = `__repl_marker_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}__`;
+  const transcript = [
+    ...replState.snippets,
+    `import sys as __rs; __rs.stdout.write(${JSON.stringify(marker)} + "\n")`,
+    source,
+  ].join("\n");
+
+  try {
+    await wasmRunner.run("/bin/python.wasm", ["python", "-c", transcript]);
+    let output = wasmRunner.getStdout();
+
+    // Split at the marker: only show output after it
+    const idx = output.indexOf(marker + "\n");
+    if (idx !== -1) {
+      output = output.slice(idx + marker.length + 1);
+    }
+    // Also strip any microPython banner noise
+    stdout.write(output);
+
+    // Keep the snippet for future replays
+    replState.snippets.push(source);
+  } catch (e) {
+    stderr.write(`python: ${e.message}\n`);
+  }
+
+  updatePrompt();
+}
+
+// ─── Status bar ─────────────────────────────────────────────────
+
 function updateStatusBar() {
   const cwd = fs.cwd;
   statusContext.textContent = cwd;
+
+  // REPL mode hint
+  if (replState.active) {
+    statusHint.textContent = "Python REPL · exit() or Ctrl-D to leave";
+    return;
+  }
 
   // Context-sensitive hints
   if (cwd.startsWith("/github") || cwd.startsWith("/mount/github")) {
@@ -737,13 +857,28 @@ function updateStatusBar() {
 }
 
 function updatePrompt() {
-  promptEl.textContent = `tinysh:${fs.cwd}$ `;
+  if (replState.active) {
+    // >>> for fresh input, ... for continuation
+    promptEl.textContent = replState.pending.length > 0 ? "... " : ">>> ";
+  } else {
+    promptEl.textContent = `tinysh:${fs.cwd}$ `;
+  }
   updateStatusBar();
 }
 
 async function onCommand() {
   const line = input.value;
   input.value = "";
+
+  // In REPL mode, send the line to the interpreter
+  if (replState.active) {
+    const promptText = replState.pending.length > 0 ? "... " : ">>> ";
+    write(`${promptText}${line}\n`, "prompt");
+    await runPythonReplLine(line);
+    input.focus();
+    return;
+  }
+
   if (line.trim()) history.push(line);
   historyIndex = history.length;
 
@@ -787,6 +922,13 @@ input.addEventListener("keydown", async (e) => {
       write(`${promptEl.textContent}${input.value}`, "prompt");
       lastPrefix = input.value;
     }
+    return;
+  }
+
+  // Ctrl+D — exit REPL (EOF)
+  if (e.ctrlKey && e.key === "d" && replState.active) {
+    e.preventDefault();
+    exitPythonRepl();
     return;
   }
 
