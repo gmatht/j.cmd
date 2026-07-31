@@ -508,8 +508,20 @@ async function resolveCommand(name) {
           return { type: "wasm", path: dir + "/" + clean };
         }
       }
-    } catch { /* skip */ }
+    } catch {}
   }
+
+  // Auto-load WASM binary from local server on first use
+  try {
+    const resp = await fetch("wasm-bin/" + name + ".wasm");
+    if (resp.ok) {
+      const blob = await resp.blob();
+      const destPath = "/bin/" + name + ".wasm";
+      await fs.writeBlob(destPath, blob);
+      return { type: "wasm", path: destPath };
+    }
+  } catch {}
+
   return null;
 }
 
@@ -815,24 +827,6 @@ input.addEventListener("keydown", async (e) => {
 // ─── Init ──────────────────────────────────────────────────────
 
 (async () => {
-  // Load demo WASM binary into /bin/
-  try {
-    const resp = await fetch("demo.wasm");
-    if (resp.ok) {
-      const blob = await resp.blob();
-      await fs.writeBlob("/bin/echo.wasm", blob);
-    }
-  } catch {}
-  
-  // Load python.wasm if available on server
-  try {
-    const resp = await fetch("wasm-bin/python.wasm");
-    if (resp.ok) {
-      const blob = await resp.blob();
-      await fs.writeBlob("/bin/python.wasm", blob);
-    }
-  } catch {}
-
   write("╔══════════════════════════════════════╗\n", "info");
   write("║     tinysh — browser shell          ║\n", "info");
   write("║     JavaScript is the binary format ║\n", "info");
@@ -845,7 +839,7 @@ input.addEventListener("keydown", async (e) => {
   write("          cat image.png · play music.mp3\n", "info");
   write("          browse /github/user/repo — open in tab\n", "info");
   write("          apt/yum/pip → wasmer · wasmer install <pkg>\n", "info");
-  write("          python -c 'print(2+2)' — MicroPython in WASM\n\n", "info");
+  write("          python, echoc — auto-loaded from /wasm-bin/\n\n", "info");
   updatePrompt();
   input.focus();
 })();
