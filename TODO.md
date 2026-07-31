@@ -57,7 +57,7 @@ and device files. It runs in any browser with no build step.
       2. Cross-compile with wasi-sdk
       Alternative: use tcc-wasm or wasm2c path.
 - [x] `ls -l` output format (permissions, size, date)
-- [ ] Pipe operator: `cat README.md | head -3`
+- [x] Pipe operator: `cat README.md | head -3`
 - [ ] `grep` builtin or command
 - [ ] `find` builtin or command
 - [ ] Quoted arguments parsing in tinysh (currently splits on spaces blindly)

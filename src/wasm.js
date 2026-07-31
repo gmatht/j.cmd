@@ -87,7 +87,7 @@ export class WasmRunner {
 
   // ─── Run a wasm32-wasi binary ─────────────────────────────
 
-  async run(path, args) {
+  async run(path, args, stdin = "") {
     await this._ensureInit();
 
     let module = this.cache.get(path);
@@ -106,6 +106,8 @@ export class WasmRunner {
       env: this._buildEnv(),
       preopens: { ".": "/" },
     });
+    // Pipe support: feed the previous command's output as this program's stdin
+    if (stdin) wasi.setStdinString(stdin);
 
     // Wire @wasmer/wasmfs to our VirtualFS: seed a WasmFs mirror from
     // the shell's files, then copy it into the WASI filesystem.
