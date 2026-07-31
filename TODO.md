@@ -79,7 +79,7 @@ and device files. It runs in any browser with no build step.
 - [x] WebGL device: /dev/webgl with shader/buffer/uniform files
 - [x] /dev/camera frame capture
 - [x] Audio device: /dev/audio oscillator
-- [ ] /proc/ filesystem (process info, browser stats)
+- [x] /proc/ filesystem (process info, browser stats)
 - [ ] Mount command: `mount github:user/repo /mymount`
 
 ### Integration with sh2perl
