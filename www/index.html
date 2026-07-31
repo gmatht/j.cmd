@@ -245,7 +245,7 @@ const ansiPalette = {
 let lastCharNewline = true;
 
 function write(text, cls = "out", opts = {}) {
-  if (opts.record !== false) recordOutput(text);  // asciinema capture (no-op unless recording)
+  if (opts.record !== false) recordOutput(sgrWrap(text, cls));  // asciinema capture (no-op unless recording)
   const appendSpan = (span) => {
     // Output goes before the prompt line so it stays the last visible line
     term.insertBefore(span, promptLine);
@@ -310,7 +310,7 @@ function writeShellPrompt() {
   currentLine = "";
   cursorPos = 0;
   // Keep asciinema recordings faithful: the prompt is visible on screen
-  recordOutput(getPromptStr());
+  recordOutput(sgrWrap(getPromptStr(), "prompt"));
   renderInput();
   updateStatusBar();
 }
@@ -328,7 +328,63 @@ const recording = {
   events: [],
   width: 80,
   height: 24,
+  editor: null,  // GUI editor buffer rendered into the cast as a TUI region
 };
+
+// Map write classes to ANSI SGR colours so casts keep the shell's
+// colours when played on a real terminal / asciinema.org: the prompt is
+// blue (#7ec8e3 ≈ 34), errors red (31), notices gray (90).
+const castSgr = { prompt: "34", err: "31", info: "90", out: "" };
+function sgrWrap(text, cls) {
+  const code = castSgr[cls] || "";
+  return code ? `\x1b[${code}m${text}\x1b[0m` : text;
+}
+
+// ── GUI editor → cast rendering ─────────────────────────────────
+// The vi/edit editors are browser GUI overlays, so a recording would
+// otherwise show just a silent gap. While recording, we render the
+// buffer into the cast as a TUI-style region (the way a real terminal
+// editor would): on open the buffer is printed, and on every CodeMirror
+// change the region is redrawn with ANSI cursor-up + erase sequences.
+// The browser screen itself is untouched — this is cast-only.
+// Region layout: buffer lines L1..Ln, each followed by \r\n, then the
+// cursor parks on the empty row below (the "parking row"). A redraw
+// moves up n rows, rewrites the lines with \x1b[K per line, then erases
+// everything below (\x1b[J) to remove shrunken leftovers.
+function recordEditorOpen(content) {
+  if (!recording.active) return;
+  const width = Number(env.COLUMNS) || 80;
+  const height = Number(env.LINES) || 24;
+  recording.editor = {
+    active: true,
+    lines: [],
+    width,
+    maxVis: Math.max(2, height - 3),  // leave room for prompt + parking row
+  };
+  recordEditorRedraw(content);
+}
+
+function recordEditorRedraw(content) {
+  const ed = recording.editor;
+  if (!recording.active || !ed || !ed.active) return;
+  const lines = (content || "").split("\n");
+  if (lines[lines.length - 1] === "") lines.pop();
+  // Truncate to the visible area; over-long lines would wrap and break
+  // the row math of the redraws.
+  const truncated = lines.slice(0, ed.maxVis).map(l =>
+    l.length >= ed.width ? l.slice(0, ed.width - 1) : l);
+  const n = ed.lines.length;
+  let out = "";
+  if (n > 0) out += `\x1b[${n}A\r`;  // up to the first buffer row
+  for (const l of truncated) out += l + "\x1b[K\r\n";
+  out += "\x1b[J";  // erase leftovers below (shrinks, old parking row)
+  recordOutput(out);
+  ed.lines = truncated;
+}
+
+function recordEditorClose() {
+  if (recording.editor) recording.editor = null;
+}
 
 function startRecording(filepath) {
   recording.active = true;
@@ -362,6 +418,7 @@ function recordOutput(text) {
 function stopRecording() {
   if (!recording.active) return null;
   recording.active = false;
+  recording.editor = null;
   const cast = {
     version: 2,
     width: recording.width,
@@ -698,14 +755,17 @@ const editorFilename = document.getElementById("editor-filename");
 
 let editorFilepath = null;
 let editorCallback = null;
+let editorOnClose = null;
 let cm = null;
 
-function openEditor(filepath, initialContent, onSave) {
+function openEditor(filepath, initialContent, onSave, onClose) {
   editorFilepath = filepath;
   editorCallback = onSave;
+  editorOnClose = onClose;
   editorFilename.textContent = `Editing: ${filepath}`;
   editorContainer.classList.add("active");
   input.disabled = true;
+  if (recording.active) recordEditorOpen(initialContent);
 
   // Initialize CodeMirror on the textarea
   cm = CodeMirror.fromTextArea(editorTextarea, {
@@ -730,6 +790,11 @@ function openEditor(filepath, initialContent, onSave) {
       }
     }
   });
+  // Render buffer changes into the cast while recording (skip the
+  // initial setValue — recordEditorOpen already drew the buffer)
+  cm.on("change", (cm2, change) => {
+    if (recording.active && change.origin !== "setValue") recordEditorRedraw(cm.getValue());
+  });
   cm.setValue(initialContent);
   cm.focus();
   cm.setCursor(0, 0);
@@ -744,9 +809,13 @@ function closeEditor(save) {
     }
     editorContainer.classList.remove("active");
     input.disabled = false;
+    const onClose = editorOnClose;
     editorFilepath = null;
     editorCallback = null;
+    editorOnClose = null;
+    recordEditorClose();
     write(`[editor closed] ${save ? "saved" : "cancelled"}\n`, "info");
+    if (onClose) onClose();
     input.focus();
   };
 
@@ -767,6 +836,7 @@ function closeEditor(save) {
 let viState = {
   filepath: null,
   callback: null,
+  onClose: null,
   mode: "normal",
   dirty: false,
 };
@@ -779,15 +849,17 @@ function updateViModeDisplay() {
   }
 }
 
-function openViEditor(filepath, initialContent, onSave) {
+function openViEditor(filepath, initialContent, onSave, onClose) {
   viState.filepath = filepath;
   viState.callback = onSave;
+  viState.onClose = onClose;
   viState.mode = "normal";
   viState.dirty = false;
 
   editorFilename.textContent = `Editing: ${filepath}`;
   editorContainer.classList.add("active");
   input.disabled = true;
+  if (recording.active) recordEditorOpen(initialContent);
 
   // Ensure the mode indicator element exists in the header
   const headerRight = document.querySelector("#editor-header span:last-child");
@@ -822,7 +894,10 @@ function openViEditor(filepath, initialContent, onSave) {
 
   // Track dirty state — ignore the initial setValue (it's not a user edit)
   cm.on("change", (cm2, change) => {
-    if (change.origin !== "setValue") viState.dirty = true;
+    if (change.origin !== "setValue") {
+      viState.dirty = true;
+      if (recording.active) recordEditorRedraw(cm.getValue());
+    }
   });
 
   cm.setValue(initialContent);
@@ -850,8 +925,11 @@ function closeViEditor() {
   editorContainer.classList.remove("active");
   input.disabled = false;
   const filepath = viState.filepath;
-  viState = { filepath: null, callback: null, mode: "normal", dirty: false };
+  const onClose = viState.onClose;
+  viState = { filepath: null, callback: null, onClose: null, mode: "normal", dirty: false };
+  recordEditorClose();
   write(`[vi closed] ${filepath}\n`, "info");
+  if (onClose) onClose();
   input.focus();
 }
 
@@ -1102,9 +1180,9 @@ const builtins = {
     } catch {}
     await new Promise((resolve) => {
       openViEditor(filepath, content, async (newContent) => {
-        await fs.write(filepath, newContent);
-        resolve();
-      });
+        // :w — save only; the command completes when the editor closes
+        if (newContent !== null) await fs.write(filepath, newContent);
+      }, resolve);
     });
   },
 
@@ -1120,9 +1198,9 @@ const builtins = {
     // Open the editor — it blocks the shell until closed
     await new Promise((resolve) => {
       openEditor(filepath, content, async (newContent) => {
-        await fs.write(filepath, newContent);
-        resolve();
-      });
+        // Ctrl+S — save only; the command completes when the editor closes
+        if (newContent !== null) await fs.write(filepath, newContent);
+      }, resolve);
     });
   },
 
@@ -2028,6 +2106,10 @@ Loops, conditionals, variables, arithmetic and pipes work:
     // asciinema stop              — stop recording, save the cast
     // asciinema play <file.cast>  — replay a cast with real timing
     // asciinema cat <file.cast>   — dump the raw cast JSON
+    //
+    // Casts keep the shell's colours (ANSI SGR) and, while recording,
+    // vi/edit sessions render their buffer into the cast as a TUI-style
+    // terminal region so editors aren't a silent gap.
     const sub = args[0];
 
     if (sub === "rec" || sub === "record") {
@@ -3230,12 +3312,12 @@ function recordTypedChar(ch) {
 // cursor moves...) — \r back to column 0, the prompt + line, then erase
 // to end of line, exactly what a real terminal would emit.
 function recordLineRedraw() {
-  if (recording.active) recordOutput("\r" + getPromptStr() + currentLine + "\x1b[K");
+  if (recording.active) recordOutput("\r" + sgrWrap(getPromptStr(), "prompt") + currentLine + "\x1b[K");
 }
 
 // Record the REPL prompt when it is drawn (">>> "/"... ").
 function recordReplPrompt() {
-  if (recording.active) recordOutput(getPromptStr());
+  if (recording.active) recordOutput(sgrWrap(getPromptStr(), "prompt"));
 }
 
 // Insert a character at the cursor position and re-render.
