@@ -5,6 +5,7 @@
 <title>tinysh — browser shell</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/codemirror.min.css">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/theme/monokai.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/addon/dialog/dialog.min.css">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { background: #1a1a2e; color: #e0e0e0; font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace; font-size: 14px; }
@@ -97,6 +98,26 @@
   .cm-s-monokai .CodeMirror-cursor {
     border-color: #7ec8e3;
   }
+  /* Vim command line — pin to bottom like real vim, not top */
+  .CodeMirror-dialog {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: #161b22;
+    color: #e0e0e0;
+    border-top: 1px solid #30363d;
+    padding: 4px 8px;
+    z-index: 15;
+  }
+  .CodeMirror-dialog input {
+    border: none;
+    background: transparent;
+    color: #7ec8e3;
+    outline: none;
+    font-family: inherit;
+    width: 90%;
+  }
   .out { color: #a0d6a0; }
   .err { color: #d6a0a0; }
   .info { color: #7ec8e3; }
@@ -130,6 +151,7 @@
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/codemirror.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/addon/dialog/dialog.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/keymap/vim.min.js"></script>
 <script type="module">
 import { fs } from "../src/fs/index.js";
@@ -316,14 +338,16 @@ function registerViExCommands() {
   vim.defineEx("write", "w", () => saveViFile());
   vim.defineEx("wq", "wq", () => { saveViFile(); closeViEditor(); });
   vim.defineEx("xit", "x", () => { saveViFile(); closeViEditor(); });
-  vim.defineEx("quit", "q", () => {
-    if (viState.dirty) {
+  vim.defineEx("quit", "q", (cm2, params) => {
+    // :q! is parsed as command 'q' with '!' as an argument — detect it
+    // by inspecting the full input string.
+    const isForce = params && params.input && params.input.trim().endsWith("!");
+    if (viState.dirty && !isForce) {
       write("E37: No write since last change (use :q! to discard)\n", "err");
     } else {
       closeViEditor();
     }
   });
-  vim.defineEx("q!", "q!", () => closeViEditor());
 }
 
 // Call after CodeMirror + vim keymap load
