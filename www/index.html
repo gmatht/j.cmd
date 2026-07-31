@@ -478,9 +478,10 @@ const builtins = {
     if (args.length < 2) { stderr.write("cp: missing operand\n"); return; }
     const src = args[0];
     let dest = args[1];
-    // If dest is a directory (ends with /), append source basename
-    if (dest.endsWith("/")) {
-      dest = dest + src.split("/").pop();
+    // If dest is a directory (ends with /) or is a bare mount point
+    // like /pc, append source basename
+    if (dest.endsWith("/") || dest === "/pc") {
+      dest = dest.endsWith("/") ? dest + src.split("/").pop() : dest + "/" + src.split("/").pop();
     }
     try {
       // Binary-aware copy: use readBlob/writeBlob when the backend supports it
