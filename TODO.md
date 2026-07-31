@@ -44,7 +44,7 @@ and device files. It runs in any browser with no build step.
       vi <file> opens editor; vim is an alias; mode indicator in header
 - [x] GitLabFS: browse gitlab.com projects as a filesystem
       (mount at /gitlab and /mount/gitlab)
-- [ ] Replace WASI stub with @wasmer/wasi (full spec-compliant WASI)
+- [x] Replace WASI stub with @wasmer/wasi (full spec-compliant WASI)
       https://www.npmjs.com/package/@wasmer/wasi
       - Wire @wasmer/wasmfs to our VirtualFS
       - Then any wasm32-wasi binary works as a command:
