@@ -18,6 +18,7 @@ import { WasmerRegistry } from "./wasmer.js";
 import { env, expandRef } from "./env.js";
 import { procfs } from "./fs/procfs.js";
 import { bashToJS, runBash } from "./bash2js.js";
+import { getManPage, manIndex, searchManPages, MAN_PAGES } from "./manpages.js";
 
 const wasmRunner = new WasmRunner(fs);
 const wasmerReg = new WasmerRegistry(fs);
@@ -937,6 +938,49 @@ Loops, conditionals, variables, arithmetic and pipes work:
     return missing ? 1 : 0;
   },
 
+  async man(args) {
+    // man [command]       — show the manual page for a command
+    // man -k <keyword>    — search manual pages (like apropos)
+    // man                 — index of all manual pages
+    if (args.length === 0) {
+      process.stdout.write("Manual pages available in this shell:\n\n");
+      for (const line of manIndex()) process.stdout.write("  " + line + "\n");
+      process.stdout.write(`\nUse "man <command>" for a command's page, "man -k <word>" to search.\n`);
+      return 0;
+    }
+    if (args[0] === "-k" || args[0] === "--apropos") {
+      const term = args[1];
+      if (!term) {
+        process.stderr.write("man: what manual page do you want? (man -k <keyword>)\n");
+        return 2;
+      }
+      const results = searchManPages(term);
+      if (results.length === 0) {
+        process.stdout.write(`Nothing appropriate for "${term}".\n`);
+        return 1;
+      }
+      for (const line of results) process.stdout.write("  " + line + "\n");
+      return 0;
+    }
+    if (args[0] === "-h" || args[0] === "--help") {
+      process.stdout.write(MAN_PAGES.man + "\n");
+      return 0;
+    }
+    if (args.length > 1 && args[0] !== "-k") {
+      process.stderr.write(`man: too many arguments (try: man <command> or man -k <keyword>)\n`);
+      return 2;
+    }
+    const page = await getManPage(args[0], { fs, wasmerReg });
+    if (!page) {
+      process.stderr.write(`man: no manual entry for ${args[0]}\n`);
+      process.stderr.write(`(see the index: "man" alone, or search with "man -k <keyword>")`);
+      process.stderr.write("\n");
+      return 1;
+    }
+    process.stdout.write(page.text + "\n");
+    return 0;
+  },
+
   async help(args) {
     process.stdout.write(`tinysh — minimal shell for the virtual filesystem
 
@@ -967,6 +1011,8 @@ Built-in commands:
   false           Always fails (exit 1)
   which <cmd>...  Show the path (or builtin) the shell would run
                   (wasm binary → builtin → .js/.mjs/.wasm files in $PATH)
+  man [cmd]       Manual page for a command (man alone: index;
+                  man -k <word>: search pages, like apropos)
   help            This help
   exit            Exit the shell
 
