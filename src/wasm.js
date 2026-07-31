@@ -24,7 +24,7 @@
 // reads/writes hit the shell's own filesystem.
 // -----------------------------------------------------------------
 
-import { init, WASI } from "@wasmer/wasi";
+import { init, WASI, MemFS } from "@wasmer/wasi";
 import { WasmFs } from "@wasmer/wasmfs";
 import { env } from "./env.js";
 
@@ -125,20 +125,43 @@ export class WasmRunner {
       return instance;
     }
 
-    const wasi = new WASI({
-      args,
-      env: this._buildEnv(),
-      preopens: { ".": "/" },
-    });
-    // Pipe support: feed the previous command's output as this program's stdin
-    if (stdin) wasi.setStdinString(stdin);
-    this._stdin = stdin || "";
-
     // Wire @wasmer/wasmfs to our VirtualFS: seed a WasmFs mirror from
     // the shell's files, then copy it into the WASI filesystem.
     const wasmfs = new WasmFs();
     await this._seedWasmFs(wasmfs);
-    this._copyWasmFsToWasi(wasmfs, wasi.fs);
+
+    // Build the WASI filesystem (a MemFS) and populate it BEFORE the
+    // WASI instance exists — the WASI constructor preopens dirs and
+    // needs them to already exist (map_dirs stats each preopen path).
+    const wasiFs = new MemFS();
+    this._copyWasmFsToWasi(wasmfs, wasiFs);
+
+    // The WASI program's cwd is the shell's cwd, so relative file
+    // args — `grep pat file`, `./a.wasm ./audiodemo.js`, `make` reading
+    // ./Makefile — resolve the way a real shell's programs would.
+    //
+    // Preopen rules (wasmer-wasi): each preopen maps a guest path to a
+    // dir in the sandbox, the "." preopen (last entry wins) becomes the
+    // guest cwd, and a "/" preopen shadows the sandbox root. So we
+    // preopen the seeded dirs by name and put "." → cwd last. When the
+    // shell is somewhere unseeded (e.g. /mount/github), fall back to
+    // "." → "/" (the original behaviour).
+    const seededDirs = ["/home", "/tmp", "/commands"];
+    const sandboxCwd = this.vfs.cwd || "/home";
+    const preopenCwd = seededDirs.includes(sandboxCwd) ? sandboxCwd : "/";
+    const preopens = {};
+    for (const dir of seededDirs) preopens[dir] = dir;
+    preopens["."] = preopenCwd; // last entry → the guest's cwd
+
+    const wasi = new WASI({
+      args,
+      env: this._buildEnv(),
+      fs: wasiFs,
+      preopens,
+    });
+    // Pipe support: feed the previous command's output as this program's stdin
+    if (stdin) wasi.setStdinString(stdin);
+    this._stdin = stdin || "";
 
     // Instantiate (merging custom imports such as micropython_wasm) and
     // run _start. wasmer's WASI handles proc_exit by returning the code.

@@ -58,30 +58,42 @@
   #status-hint { flex: 1; min-width: 0; }
   #status-context { color: #7ec8e3; }
   
-  #input-line {
-    display: flex;
-    padding: 4px 16px 16px;
-    background: #1a1a2e;
-    flex-shrink: 0;
+  #prompt-line {
+    white-space: pre-wrap;
+    word-wrap: break-word;
   }
-  
   #prompt {
-    color: #7ec8e3; white-space: pre;
-    padding: 4px 0;
-    flex-shrink: 0;
+    color: #7ec8e3;
   }
-  
-  #input {
-    flex: 1;
-    background: #16213e;
-    border: 1px solid #2a2a4a;
-    color: #e0e0e0;
-    font-family: inherit; font-size: inherit;
-    padding: 4px 8px;
+  #input-span .cursor {
+    display: inline-block;
+    width: 0.6em;
+    background: #7ec8e3;
+    color: #1a1a2e;
+    animation: cursor-blink 1s steps(1) infinite;
+  }
+  /* When the hidden input isn't focused the shell is idle — the cursor
+     stops blinking (like a real terminal's focus cursor) */
+  #terminal:not(.focused) .cursor {
+    animation: none;
+    opacity: 0.35;
+  }
+  @keyframes cursor-blink {
+    50% { opacity: 0; }
+  }
+  #hidden-input {
+    position: fixed;
+    top: -100px;
+    left: 0;
+    opacity: 0;
+    width: 1px;
+    height: 1px;
+    border: none;
     outline: none;
-    border-radius: 4px;
+    background: transparent;
+    color: transparent;
+    caret-color: transparent;
   }
-  #input:focus { border-color: #7ec8e3; }
 
   /* ─── Editor mode ─────────────────────────────────── */
   #editor-container {
@@ -147,7 +159,9 @@
 </head>
 <body>
 
-<div id="terminal"></div>
+<div id="terminal">
+  <div id="prompt-line"><span id="prompt" class="prompt"></span><span id="input-span"></span></div>
+</div>
 
 <div id="status-bar">
   <span id="status-context">/home</span>
@@ -164,10 +178,7 @@
   </div>
 </div>
 
-<div id="input-line">
-  <span id="prompt"></span>
-  <input id="input" type="text" autofocus spellcheck="false" autocomplete="off" />
-</div>
+<input id="hidden-input" type="text" autofocus spellcheck="false" autocomplete="off" aria-hidden="true" />
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/codemirror.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/addon/dialog/dialog.min.js"></script>
@@ -207,10 +218,18 @@ let stdinBuffer = "";
 // ─── Terminal Output ───────────────────────────────────────────
 
 const term = document.getElementById("terminal");
-const input = document.getElementById("input");
+const input = document.getElementById("hidden-input");
+const promptLine = document.getElementById("prompt-line");
 const promptEl = document.getElementById("prompt");
+const inputSpan = document.getElementById("input-span");
 const statusContext = document.getElementById("status-context");
 const statusHint = document.getElementById("status-hint");
+
+// Inline line editing (like a real shell): the prompt + typed line + a
+// blinking block cursor live in #prompt-line, the last child of the
+// terminal. Typing updates currentLine; Enter commits it.
+let currentLine = "";
+let cursorPos = 0;
 
 // ANSI SGR palette mapped onto the terminal's colors (used by `ls`:
 // dirs blue, executables green, files white).
@@ -225,15 +244,19 @@ const ansiPalette = {
 // newline — used so the next prompt line always starts on a fresh row.
 let lastCharNewline = true;
 
-function write(text, cls = "out") {
-  recordOutput(text);  // asciinema capture (no-op unless recording)
+function write(text, cls = "out", opts = {}) {
+  if (opts.record !== false) recordOutput(text);  // asciinema capture (no-op unless recording)
+  const appendSpan = (span) => {
+    // Output goes before the prompt line so it stays the last visible line
+    term.insertBefore(span, promptLine);
+    term.scrollTop = term.scrollHeight;
+  };
   // Fast path: plain text (the common case) — no escape processing.
   if (!text.includes("\x1b[")) {
     const plain = document.createElement("span");
     plain.className = cls;
     plain.textContent = text;
-    term.appendChild(plain);
-    term.scrollTop = term.scrollHeight;
+    appendSpan(plain);
     lastCharNewline = text.endsWith("\n");
     return;
   }
@@ -246,7 +269,7 @@ function write(text, cls = "out") {
     span.className = cls;
     if (c) span.style.color = c;
     span.textContent = chunk;
-    term.appendChild(span);
+    appendSpan(span);
   };
   while ((m = re.exec(text)) !== null) {
     if (m.index > last) appendChunk(text.slice(last, m.index), color);
@@ -259,11 +282,37 @@ function write(text, cls = "out") {
   lastCharNewline = text.endsWith("\n");
 }
 
+// The prompt string for the current mode (shell / REPL / pager).
+function getPromptStr() {
+  if (pagerState.active) return "";       // pager draws its own marker
+  if (replState.active) return ">>> ";
+  if (replReplayState.active) return replReplayState.pending.length > 0 ? "... " : ">>> ";
+  return `tinysh:${fs.cwd}$ `;
+}
+
+// Redraw the inline input line: prompt + typed text + blinking cursor.
+function renderInput() {
+  promptEl.textContent = getPromptStr();
+  inputSpan.textContent = "";
+  const before = document.createTextNode(currentLine.slice(0, cursorPos));
+  const cursor = document.createElement("span");
+  cursor.className = "cursor";
+  cursor.textContent = currentLine[cursorPos] || " ";
+  const after = document.createTextNode(currentLine.slice(cursorPos + 1));
+  inputSpan.append(before, cursor, after);
+  term.scrollTop = term.scrollHeight;
+}
+
 // Print a fresh shell prompt line into the scrollback, so it's clear
 // the previous command finished and the shell is ready again.
 function writeShellPrompt() {
   if (!lastCharNewline) write("\n");
-  write(`tinysh:${fs.cwd}$ `, "prompt");
+  currentLine = "";
+  cursorPos = 0;
+  // Keep asciinema recordings faithful: the prompt is visible on screen
+  recordOutput(getPromptStr());
+  renderInput();
+  updateStatusBar();
 }
 
 // ─── asciinema recording (v2 cast format) ──────────────────────
@@ -364,8 +413,10 @@ async function playCast(content) {
   const csi = (seq) => {
     const m = seq.match(/^([0-9;]*)([A-Za-z])$/);
     if (!m) return;
-    const params = m[1] ? m[1].split(";").map(Number) : [1];
-    const n = params[0] || 1;
+    const params = m[1] ? m[1].split(";").map(Number) : [];
+    // Default parameter: K/J erase default to 0 (to end), the rest to 1
+    const def = (m[2] === "K" || m[2] === "J") ? 0 : 1;
+    const n = params.length ? (params[0] || def) : def;
     switch (m[2]) {
       case "m": // SGR — record the raw code (e.g. "31"), reset on 0
         cur = m[1] === "" || m[1] === "0" ? "" : m[1];
@@ -483,16 +534,18 @@ function clearViewport() {
   }
   if (first === -1) return;
 
-  // Remove the visible lines (newest first so indices stay valid).
+  // Remove the visible lines (newest first so indices stay valid),
+  // but never the prompt line itself.
   for (let i = last; i >= first; i--) {
-    children[i].remove();
+    if (children[i] !== promptLine) children[i].remove();
   }
 
   // Pad below the scrollback with a blank area so the bottom of the
   // terminal looks empty; scroll up to reach the preserved history.
+  // The spacer goes before the prompt line, which stays last.
   const spacer = document.createElement("div");
   spacer.style.height = term.clientHeight + "px";
-  term.appendChild(spacer);
+  term.insertBefore(spacer, promptLine);
   term.scrollTop = term.scrollHeight;
 }
 
@@ -589,9 +642,9 @@ function handleInterrupt() {
     return;
   }
   // Idle — cancel the current input line and redraw the prompt.
-  input.value = "";
+  currentLine = "";
+  cursorPos = 0;
   write("^C\n", "info");
-  updatePrompt();
   writeShellPrompt();
   input.focus();
   lastMatches = [];
@@ -952,7 +1005,7 @@ const builtins = {
             : `<audio controls src="${url}" style="width: 100%; max-width: 400px; margin: 4px 0;"></audio>`;
           const span = document.createElement("span");
           span.innerHTML = el;
-          term.appendChild(span);
+          term.insertBefore(span, promptLine);
           term.scrollTop = term.scrollHeight;
           // Revoke blob URL after a delay to free memory
           setTimeout(() => URL.revokeObjectURL(url), 60000);
@@ -1648,7 +1701,7 @@ const builtins = {
         el.style.width = "100%";
         el.style.maxWidth = "400px";
         el.style.margin = "4px 0";
-        term.appendChild(el);
+        term.insertBefore(el, promptLine);
         term.scrollTop = term.scrollHeight;
         setTimeout(() => URL.revokeObjectURL(url), 60000);
       } catch (e) {
@@ -2171,6 +2224,37 @@ Loops, conditionals, variables, arithmetic and pipes work:
 async function resolveCommand(name) {
   // vim is an alias for vi
   if (name === "vim") name = "vi";
+
+  // A name containing a "/" is an explicit path, like in /bin/sh: it is
+  // resolved against the cwd and run directly (./a.wasm, /home/x.js,
+  // ../run.mjs) instead of being looked up in $PATH. Bare names never
+  // fall back to the cwd — that's what the leading ./ is for.
+  if (name.includes("/")) {
+    const resolved = fs._resolve(name);
+    let st;
+    try {
+      st = await fs.stat(resolved);
+    } catch {
+      return null; // no such file
+    }
+    if (!st) return null;
+    if (st.type === "dir") {
+      return { type: "badpath", path: resolved, err: "Is a directory" };
+    }
+    if (/\.wasm$/i.test(resolved)) {
+      return { type: "wasm", path: resolved };
+    }
+    if (/\.(js|mjs)$/i.test(resolved)) {
+      return { type: "jsfile", path: resolved };
+    }
+    // The file exists but the shell can't run it (no interpreter here).
+    return {
+      type: "badpath",
+      path: resolved,
+      err: "cannot execute: only .js/.mjs/.wasm files are runnable",
+    };
+  }
+
   // A wasm32-wasi binary in the command path is a "native command" and
   // shadows the builtin of the same name — so `wasmer install grep`
   // (which drops /bin/grep.wasm) makes `grep` run real grep compiled
@@ -2203,6 +2287,8 @@ async function resolveCommand(name) {
 
   // Auto-load WASM binary from local server on first use.
   // cc is an alias for the compiler binary.
+  // (Explicit paths like ./a.wasm are never auto-loaded.)
+  if (name.includes("/")) return null;
   let wasmName = name;
   if (name === "cc") wasmName = "compiler";
   try {
@@ -2442,6 +2528,12 @@ async function runSegment(segmentText, stdin, isLast) {
   let output = "";
 
   const resolved = await resolveCommand(cmd);
+  if (resolved && resolved.type === "badpath") {
+    // The path exists but can't be executed (a directory, or not a
+    // .js/.mjs/.wasm file) — exit 126, POSIX "found but not executable".
+    stderr.write(`${cmd}: ${resolved.err}\n`);
+    return { ok: false, code: 126, output: "" };
+  }
   if (!resolved) {
     const hints = {
       "nano": "edit", "emacs": "edit",
@@ -2852,6 +2944,7 @@ async function enterPythonRepl() {
   }
 
   updatePrompt();
+  recordReplPrompt();
 }
 
 function exitPythonRepl() {
@@ -2901,6 +2994,7 @@ function enterPythonReplReplay() {
   replReplayState.pending = [];
   stdout.write("MicroPython REPL (session replay) — exit() to leave\n");
   updatePrompt();
+  recordReplPrompt();
 }
 
 function exitPythonReplReplay() {
@@ -2939,6 +3033,7 @@ async function runPythonReplReplayLine(line) {
 
   if (!isComplete(source)) {
     updatePrompt();
+    recordReplPrompt();
     return;
   }
   replReplayState.pending = [];
@@ -2962,6 +3057,7 @@ async function runPythonReplReplayLine(line) {
   }
 
   updatePrompt();
+  recordReplPrompt();
 }
 
 // ─── Pager (more/less) ──────────────────────────────────────────
@@ -3112,30 +3208,68 @@ function updateStatusBar() {
   } else if (cwd.startsWith("/mount")) {
     statusHint.textContent = "Mounted filesystems. ls /mount/github/ for repos.";
   } else {
-    statusHint.textContent = "Tab: complete · Ctrl+L: clear · Ctrl+C: interrupt · Up/Down: history";
+    statusHint.textContent = "Type inline on the prompt · Tab: complete · Ctrl+L: clear · Ctrl+C: interrupt · ↑/↓: history";
   }
 }
 
-function updatePrompt() {
-  if (pagerState.active) {
-    promptEl.textContent = "";
-  } else if (replState.active) {
-    promptEl.textContent = ">>> ";
-  } else if (replReplayState.active) {
-    promptEl.textContent = replReplayState.pending.length > 0 ? "... " : ">>> ";
+// ─── Inline line editing ────────────────────────────────────────
+// The prompt, the typed line and the blinking block cursor all live in
+// #prompt-line, the last child of the terminal — exactly like a real
+// shell, where you type directly on the prompt line in the scrollback.
+// A hidden input element captures keystrokes (and opens the soft
+// keyboard on mobile); every key updates currentLine/cursorPos and
+// re-renders the line.
+
+// Record a plain character appended at the end of the line (the common
+// case) so asciinema playback shows progressive typing.
+function recordTypedChar(ch) {
+  if (recording.active) recordOutput(ch);
+}
+
+// Record a full-line redraw (backspace mid-line, completion, history,
+// cursor moves...) — \r back to column 0, the prompt + line, then erase
+// to end of line, exactly what a real terminal would emit.
+function recordLineRedraw() {
+  if (recording.active) recordOutput("\r" + getPromptStr() + currentLine + "\x1b[K");
+}
+
+// Record the REPL prompt when it is drawn (">>> "/"... ").
+function recordReplPrompt() {
+  if (recording.active) recordOutput(getPromptStr());
+}
+
+// Insert a character at the cursor position and re-render.
+function insertChar(ch) {
+  if (cursorPos === currentLine.length) {
+    currentLine += ch;
+    cursorPos++;
+    recordTypedChar(ch);
   } else {
-    promptEl.textContent = `tinysh:${fs.cwd}$ `;
+    currentLine = currentLine.slice(0, cursorPos) + ch + currentLine.slice(cursorPos);
+    cursorPos++;
+    recordLineRedraw();
   }
+  renderInput();
+}
+
+function updatePrompt() {
+  renderInput();
   updateStatusBar();
 }
 
 async function onCommand() {
-  const line = input.value;
-  input.value = "";
+  const line = currentLine;
+  // Move the committed line into the scrollback: prompt + text + newline.
+  // Recording happens piecewise (prompt when drawn, chars as typed, the
+  // newline here), so the echo itself must not double-record.
+  write(`${getPromptStr()}${line}\n`, "prompt", { record: false });
+  recordOutput("\r\n");
+  currentLine = "";
+  cursorPos = 0;
+  renderInput();
 
   // Pager mode: input is a pager key
   if (pagerState.active) {
-    write(`${line}\n`, "prompt");
     await handlePagerInput(line);
     input.focus();
     return;
@@ -3143,7 +3277,6 @@ async function onCommand() {
 
   // Worker-based REPL: send line to WASM via SAB
   if (replState.active) {
-    write(`>>> ${line}\n`, "prompt");
     if (line.trim() === "exit()" || line.trim() === "quit()") {
       sendPythonEof();
     } else {
@@ -3155,8 +3288,6 @@ async function onCommand() {
 
   // Session-replay REPL (fallback)
   if (replReplayState.active) {
-    const promptText = replReplayState.pending.length > 0 ? "... " : ">>> ";
-    write(`${promptText}${line}\n`, "prompt");
     await runPythonReplReplayLine(line);
     input.focus();
     return;
@@ -3164,11 +3295,7 @@ async function onCommand() {
 
   addHistory(line);
 
-  // The prompt line is already in the scrollback — echo just the command
-  write(`${line}\n`, "prompt");
-
   await runInterruptible(handleLine(line));
-  updatePrompt();
   // Print the next prompt line so it's clear the command finished.
   // Modal modes (pager/REPL) manage their own prompts.
   if (!pagerState.active && !replState.active && !replReplayState.active) {
@@ -3178,10 +3305,139 @@ async function onCommand() {
   lastMatches = [];
 }
 
+// Clicking the terminal (or anywhere outside the editor) focuses the
+// hidden input, so keys keep flowing and mobile keyboards open.
+document.addEventListener("pointerdown", (e) => {
+  if (e.target.closest("#editor-container")) return;
+  input.focus();
+});
+
+// IME composition / pasting lands in the hidden input (those key events
+// can't be intercepted) — take its value into the inline line.
+input.addEventListener("input", () => {
+  if (!input.value) return;
+  currentLine = currentLine.slice(0, cursorPos) + input.value + currentLine.slice(cursorPos);
+  cursorPos += input.value.length;
+  input.value = "";
+  renderInput();
+  recordLineRedraw();
+});
+
+// Focus/blur tracking: the block cursor blinks only while the shell
+// is focused, like a real terminal's focus cursor.
+input.addEventListener("focus", () => term.classList.add("focused"));
+input.addEventListener("blur", () => term.classList.remove("focused"));
+
 input.addEventListener("keydown", async (e) => {
+  if (e.isComposing) return;  // let the input event handle IME text
+
+  // Printable characters (including space) insert at the cursor.
+  if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    e.preventDefault();
+    insertChar(e.key);
+    return;
+  }
+
   if (e.key === "Enter") {
     e.preventDefault();
     await onCommand();
+    return;
+  }
+
+  if (e.key === "Backspace") {
+    e.preventDefault();
+    if (cursorPos === 0) return;
+    currentLine = currentLine.slice(0, cursorPos - 1) + currentLine.slice(cursorPos);
+    cursorPos--;
+    if (cursorPos === currentLine.length) {
+      if (recording.active) recordOutput("\x08");  // plain backspace at end
+    } else {
+      recordLineRedraw();
+    }
+    renderInput();
+    return;
+  }
+
+  if (e.key === "Delete") {
+    e.preventDefault();
+    if (cursorPos >= currentLine.length) return;
+    currentLine = currentLine.slice(0, cursorPos) + currentLine.slice(cursorPos + 1);
+    recordLineRedraw();
+    renderInput();
+    return;
+  }
+
+  // Arrow keys move the cursor; Home/End jump to line start/end.
+  if (e.key === "ArrowLeft") {
+    e.preventDefault();
+    if (cursorPos > 0) { cursorPos--; if (recording.active) recordOutput("\x1b[D"); renderInput(); }
+    return;
+  }
+  if (e.key === "ArrowRight") {
+    e.preventDefault();
+    if (cursorPos < currentLine.length) { cursorPos++; if (recording.active) recordOutput("\x1b[C"); renderInput(); }
+    return;
+  }
+  if (e.key === "Home") {
+    e.preventDefault();
+    cursorPos = 0;
+    renderInput();
+    recordLineRedraw();
+    return;
+  }
+  if (e.key === "End") {
+    e.preventDefault();
+    cursorPos = currentLine.length;
+    renderInput();
+    recordLineRedraw();
+    return;
+  }
+
+  // Ctrl+A / Ctrl+E — start/end of line (readline bindings)
+  if (e.ctrlKey && e.key === "a") {
+    e.preventDefault();
+    cursorPos = 0;
+    renderInput();
+    recordLineRedraw();
+    return;
+  }
+  if (e.ctrlKey && e.key === "e") {
+    e.preventDefault();
+    cursorPos = currentLine.length;
+    renderInput();
+    recordLineRedraw();
+    return;
+  }
+
+  // Ctrl+U — kill text before the cursor; Ctrl+K — kill after
+  if (e.ctrlKey && e.key === "u") {
+    e.preventDefault();
+    currentLine = currentLine.slice(cursorPos);
+    cursorPos = 0;
+    renderInput();
+    recordLineRedraw();
+    return;
+  }
+  if (e.ctrlKey && e.key === "k") {
+    e.preventDefault();
+    currentLine = currentLine.slice(0, cursorPos);
+    renderInput();
+    recordLineRedraw();
+    return;
+  }
+
+  // Ctrl+W — kill the word before the cursor
+  if (e.ctrlKey && e.key === "w") {
+    e.preventDefault();
+    const before = currentLine.slice(0, cursorPos);
+    const m = before.match(/\S+\s*$/);
+    if (m) {
+      const cut = before.length - m[0].length;
+      currentLine = currentLine.slice(0, cut) + currentLine.slice(cursorPos);
+      cursorPos = cut;
+      renderInput();
+      recordLineRedraw();
+    }
     return;
   }
 
@@ -3189,26 +3445,30 @@ input.addEventListener("keydown", async (e) => {
   if (e.key === "Tab") {
     e.preventDefault();
     const now = Date.now();
-    const isDoubleTab = (now - lastTabPress < 500) && lastPrefix === input.value;
+    const isDoubleTab = (now - lastTabPress < 500) && lastPrefix === currentLine;
     lastTabPress = now;
 
-    const result = await complete(input.value, input.selectionStart);
+    const result = await complete(currentLine, cursorPos);
     if (result.matches && result.matches.length > 0 && isDoubleTab) {
       // Double-tab: show all matches
       write("\n" + result.matches.join("  ") + "\n", "info");
-      write(`${promptEl.textContent}${result.line}`, "prompt");
-      input.value = result.line;
-      input.setSelectionRange(result.cursorPos, result.cursorPos);
-    } else if (result.line !== input.value) {
-      input.value = result.line;
-      input.setSelectionRange(result.cursorPos, result.cursorPos);
+      currentLine = result.line;
+      cursorPos = result.cursorPos;
+      renderInput();
+      recordLineRedraw();
+    } else if (result.line !== currentLine) {
+      currentLine = result.line;
+      cursorPos = result.cursorPos;
+      renderInput();
       lastPrefix = result.line;
       lastMatches = result.matches || [];
+      recordLineRedraw();
     } else if (result.matches && result.matches.length > 1) {
       // Single tab with multiple matches: show them
       write("\n" + result.matches.join("  ") + "\n", "info");
-      write(`${promptEl.textContent}${input.value}`, "prompt");
-      lastPrefix = input.value;
+      renderInput();
+      lastPrefix = currentLine;
+      recordLineRedraw();
     }
     return;
   }
@@ -3235,7 +3495,7 @@ input.addEventListener("keydown", async (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === "l") {
     e.preventDefault();
     clearViewport();
-    write(`${promptEl.textContent}${input.value}`, "prompt");
+    renderInput();  // redraw the prompt line (current line is kept)
     return;
   }
 
@@ -3244,7 +3504,10 @@ input.addEventListener("keydown", async (e) => {
     e.preventDefault();
     if (historyIndex > 0) {
       historyIndex--;
-      input.value = history[historyIndex];
+      currentLine = history[historyIndex];
+      cursorPos = currentLine.length;
+      renderInput();
+      recordLineRedraw();
     }
     return;
   }
@@ -3252,10 +3515,16 @@ input.addEventListener("keydown", async (e) => {
     e.preventDefault();
     if (historyIndex < history.length - 1) {
       historyIndex++;
-      input.value = history[historyIndex];
+      currentLine = history[historyIndex];
+      cursorPos = currentLine.length;
+      renderInput();
+      recordLineRedraw();
     } else {
       historyIndex = history.length;
-      input.value = "";
+      currentLine = "";
+      cursorPos = 0;
+      renderInput();
+      recordLineRedraw();
     }
     return;
   }
@@ -3291,7 +3560,6 @@ input.addEventListener("keydown", async (e) => {
   // Read ~/.tinyshrc (persistent config in /home/) before the shell
   // is usable — exports, banner, aliases etc. take effect immediately.
   await loadConfig();
-  updatePrompt();
   writeShellPrompt();  // initial prompt line in the scrollback
   input.focus();
 })();

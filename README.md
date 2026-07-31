@@ -66,11 +66,17 @@ hello
 
 ```
 cd /root/src/sh2runtime
-python3 -m http.server 8080
+python3 www/serve.py
 # → http://localhost:8080/www/
 ```
 
-The same runtime runs in the browser with a DOM-based terminal.
+Use `serve.py` (not bare `http.server`) — it sets COOP/COEP headers
+(required for SharedArrayBuffer, used by the WASI Python REPL) and
+no-cache headers (stale files cause confusing bugs while developing).
+
+Same runtime as the Node CLI, but the terminal is a DOM-based shell
+where you type directly on the prompt line, inline in the scrollback
+— like a real terminal emulator.
 No build step, no bundler — just ES modules served over HTTP.
 
 ## The Plan 9 Connection

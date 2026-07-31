@@ -1051,7 +1051,12 @@ Environment variables:
   Expand with $NAME or \${NAME}: echo $HOME · cd $HOME · cat $HOME/examples/note.txt
   (single quotes or a \$ keep the $ literal: echo '$HOME' prints $HOME)
 
-Any other command runs a .js file from the command path.
+Any other command runs a .js file from the command path, and a command
+containing a / runs that exact file, like /bin/sh:
+  ./a.wasm            run a compiled wasm binary in the cwd
+  /home/x.js          run a script by absolute path
+  ../tool.mjs         or any relative path
+  (exit status 126 if the file exists but isn't .js/.mjs/.wasm)
 Write new commands by creating .js files in /commands/.
 `);
   },
@@ -1069,7 +1074,38 @@ Write new commands by creating .js files in /commands/.
 // makes `grep` run real grep compiled to WASM instead of the JS
 // fallback), then builtins, then command files (.js/.mjs/.wasm) in
 // $PATH. Returns the same shapes as resolveCommand, or null.
+//
+// A name containing a "/" is an explicit path, like in /bin/sh: it is
+// resolved against the cwd and run directly (./a.wasm, /home/x.js,
+// ../run.mjs) instead of being looked up in $PATH. Bare names never
+// fall back to the cwd — that's what the leading ./ is for.
 async function findCommand(name) {
+  if (name.includes("/")) {
+    const resolved = fs._resolve(name);
+    let st;
+    try {
+      st = await fs.stat(resolved);
+    } catch {
+      return null; // no such file
+    }
+    if (!st) return null;
+    if (st.type === "dir") {
+      return { type: "badpath", path: resolved, err: "Is a directory" };
+    }
+    if (/\.wasm$/i.test(resolved)) {
+      return { type: "wasm", path: resolved };
+    }
+    if (/\.(js|mjs)$/i.test(resolved)) {
+      return { type: "file", path: resolved };
+    }
+    // The file exists but the shell can't run it (no interpreter here).
+    return {
+      type: "badpath",
+      path: resolved,
+      err: "cannot execute: only .js/.mjs/.wasm files are runnable",
+    };
+  }
+
   const searchPaths = env.PATH.split(":").filter(Boolean);
   for (const dir of searchPaths) {
     try {
@@ -1110,6 +1146,10 @@ async function findCommand(name) {
 async function resolveCommand(name) {
   const found = await findCommand(name);
   if (found) return found;
+
+  // Explicit paths are never auto-loaded — only bare command names
+  // (cc, grep, python...) pull binaries from wasm-bin/ on first use.
+  if (name.includes("/")) return null;
 
   // Auto-load a wasm binary from the local server's wasm-bin/ on first
   // use (cc is an alias for the compiler binary)
@@ -1265,6 +1305,12 @@ async function runSegment(segmentText, stdin, isLast) {
   let output = "";
 
   const resolved = await resolveCommand(cmd);
+  if (resolved && resolved.type === "badpath") {
+    // The path exists but can't be executed (a directory, or not a
+    // .js/.mjs/.wasm file) — exit 126, POSIX "found but not executable".
+    process.stderr.write(`${cmd}: ${resolved.err}\n`);
+    return { ok: false, code: 126, output: "" };
+  }
   if (!resolved) {
     const hints = {
       "vi": "edit", "vim": "edit", "nano": "edit", "emacs": "edit",

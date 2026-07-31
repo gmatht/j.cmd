@@ -8,6 +8,12 @@ and device files. It runs in any browser with no build step.
 
 ## Recently Done
 
+- [x] Path-based command execution: `./a.wasm`, `/home/x.js`, `../y.mjs`
+      run files by path like /bin/sh (exit 126 for non-executable files),
+      and WASI programs now run with the shell's cwd as their cwd so
+      relative file args (`grep pat file`, `./a.wasm ./audiodemo.js`)
+      resolve naturally
+
 - [x] VirtualFS with mount-based routing (RootFS, RamFS, LocalStorageFS)
 - [x] tinysh — minimal shell REPL (CLI + browser)
 - [x] HttpFS — fetch CORS-enabled URLs as files
