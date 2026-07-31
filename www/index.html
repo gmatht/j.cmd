@@ -293,15 +293,20 @@ function startRecording(filepath) {
 
 function recordOutput(text) {
   if (!recording.active || text.length === 0) return;
+  // Real terminals need \r\n: a bare \n (line feed) moves down WITHOUT
+  // returning the cursor to column 0, so playback would drift right on
+  // every line. The browser DOM doesn't care about \r, but asciinema
+  // playback does — normalize to \r\n here.
+  const data = text.replace(/\r?\n/g, "\r\n");
   const now = Date.now();
   const delta = (now - recording.lastTime) / 1000;
   recording.lastTime = now;
   // Coalesce rapid writes (e.g. per-char prompts) into one event
   const last = recording.events[recording.events.length - 1];
   if (last && last[0] === "o" && delta < 0.05) {
-    last[2] += text;
+    last[2] += data;
   } else {
-    recording.events.push([delta, "o", text]);
+    recording.events.push([delta, "o", data]);
   }
 }
 
