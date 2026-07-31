@@ -9,12 +9,14 @@ export class RamFS {
 
   _parent(path) {
     const p = path.replace(/\/+$/, "");
+    if (p === "" || p === "/") return "/";
     const i = p.lastIndexOf("/");
     return i === 0 ? "/" : p.slice(0, i);
   }
 
   _ensureParent(path) {
     const parent = this._parent(path);
+    if (parent === "/") return;  // root always exists
     if (!this.dirs.has(parent)) {
       this._ensureParent(parent);
       this.dirs.add(parent);

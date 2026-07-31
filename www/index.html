@@ -493,10 +493,11 @@ const builtins = {
     if (args.length < 2) { stderr.write("cp: missing operand\n"); return; }
     const src = args[0];
     let dest = args[1];
-    // If dest is a directory (ends with /) or is a bare mount point
-    // like /pc, append source basename
-    if (dest.endsWith("/") || dest === "/pc") {
-      dest = dest.endsWith("/") ? dest + src.split("/").pop() : dest + "/" + src.split("/").pop();
+    // If dest is a directory (trailing /), a bare mount point like /pc,
+    // or the current dir '.' — append the source basename
+    const base = src.split("/").pop();
+    if (dest.endsWith("/") || dest === "/pc" || dest === "." || dest === "..") {
+      dest = dest.endsWith("/") ? dest + base : dest + "/" + base;
     }
     try {
       // Binary-aware copy: use readBlob/writeBlob when the backend supports it
@@ -694,7 +695,7 @@ const builtins = {
     }
     const re = new RegExp(reStr, "i");
 
-    const results = [];
+    const results = new Set();
     const visited = new Set();
 
     async function walk(dir) {
@@ -703,9 +704,10 @@ const builtins = {
       let entries;
       try { entries = await fs.list(dir); } catch { return; }
       for (const entry of entries) {
-        const full = (dir === "/" ? "/" : dir + "/") + entry.replace(/\/$/, "");
-        if (re.test(entry.replace(/\/$/, ""))) {
-          results.push(full + (entry.endsWith("/") ? "/" : ""));
+        const clean = entry.replace(/\/$/, "");
+        const full = (dir === "/" ? "/" : dir + "/") + clean;
+        if (re.test(clean)) {
+          results.add(full + (entry.endsWith("/") ? "/" : ""));
         }
         if (entry.endsWith("/")) {
           await walk(full);
@@ -713,17 +715,47 @@ const builtins = {
       }
     }
 
-    // Search from all top-level mounts
+    // 1. Walk all top-level mounts
     const tops = ["/tmp", "/home", "/commands", "/bin", "/dev", "/http", "/github", "/gitlab"];
     for (const top of tops) {
       await walk(top);
     }
 
-    if (results.length === 0) {
+    // 2. Raw localStorage scan — catch files not reachable via the dirs
+    //    index (e.g. written to a path whose parent dir wasn't recorded)
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith("fs:file:")) {
+          const p = key.slice("fs:file:".length);
+          const name = p.split("/").pop();
+          if (re.test(name)) {
+            results.add("/home" + p);
+          }
+        }
+      }
+    } catch {}
+
+    // 3. HttpFS cache scan — files fetched via /http/ are cached in a RamFS
+    try {
+      const httpBackend = fs._getBackend("/http/");
+      if (httpBackend && httpBackend.cache) {
+        const cacheEntries = await httpBackend.cache.list("/");
+        for (const entry of cacheEntries) {
+          const clean = entry.replace(/\/$/, "");
+          const name = clean.split("/").pop();
+          if (re.test(name)) {
+            results.add("/http/" + clean);
+          }
+        }
+      }
+    } catch {}
+
+    if (results.size === 0) {
       stdout.write(`locate: no files matching "${pattern}"\n`);
       return;
     }
-    stdout.write(results.join("\n") + "\n");
+    stdout.write([...results].sort().join("\n") + "\n");
   },
 
   async more(args) {

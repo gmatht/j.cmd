@@ -40,12 +40,16 @@ export class LocalStorageFS {
 
   _parent(path) {
     const p = path.replace(/\/+$/, "");
+    // Root or empty → root
+    if (p === "" || p === "/") return "/";
     const i = p.lastIndexOf("/");
     return i === 0 ? "/" : p.slice(0, i);
   }
 
   _ensureParent(path) {
     const parent = this._parent(path);
+    // Stop at root — it's always in the dirs index
+    if (parent === "/") return;
     const dirs = this._dirs();
     if (!dirs.includes(parent)) {
       this._ensureParent(parent);
