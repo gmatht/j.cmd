@@ -1,35 +1,51 @@
 // ─── wasmer install: Download WASM packages into /bin/ ──────────
 //
-// Registry of known WASM binaries compiled to wasm32-wasi.
-// Each entry has a name, URL, and description.
-// URLs should point to .wasm files (preferably from reputable sources).
+// Packages come from the local server's www/wasm-bin/ directory,
+// served alongside the HTML at /wasm-bin/<name>.wasm.
+//
+// To add a new package:
+//   1. Compile your Rust/C program to wasm32-wasip1
+//   2. Copy the .wasm file to www/wasm-bin/<name>.wasm
+//   3. Add an entry in REGISTRY below
 //
 // Usage in tinysh:
-//   wasmer install echo            → download echo.wasm to /bin/
-//   wasmer search grep             → search registry
-//   wasmer list                    → list available packages
+//   wasmer list              → list available packages
+//   wasmer install echo      → install from /wasm-bin/echo.wasm
+//   wasmer search python     → search registry
 // -----------------------------------------------------------------
 
 const REGISTRY = {
   "echo": {
-    url: "echo.wasm",  // local demo file
-    desc: "Echo text back (demo)",
-    source: "sh2runtime demo"
+    url: "wasm-bin/echo.wasm",
+    desc: "Echo text back (demo, compiled from Rust)",
   },
   "grep": {
-    url: "https://github.com/iddm/wasm-grep/releases/download/v0.1.0/wasm-grep.wasm",
+    url: "wasm-bin/grep.wasm",
     desc: "Search text with patterns",
-    source: "github.com/iddm/wasm-grep"
-  },
-  "curl": {
-    url: "https://github.com/wasmerio/wasmer/releases/download/4.3.0/wasmer-curl.wasm",
-    desc: "Fetch URLs (HTTP client)",
-    source: "wasmer.io"
   },
   "hexdump": {
-    url: "https://github.com/wasmerio/wasmer/releases/download/4.3.0/wasmer-hexdump.wasm",
+    url: "wasm-bin/hexdump.wasm",
     desc: "Hex dump file contents",
-    source: "wasmer.io"
+  },
+  "which": {
+    url: "wasm-bin/which.wasm",
+    desc: "Show path of a command",
+  },
+  "curl": {
+    url: "wasm-bin/curl.wasm",
+    desc: "HTTP client (fetch URLs)",
+  },
+  "python": {
+    url: "wasm-bin/python.wasm",
+    desc: "Python interpreter",
+  },
+  "perl": {
+    url: "wasm-bin/perl.wasm",
+    desc: "Perl interpreter",
+  },
+  "make": {
+    url: "wasm-bin/make.wasm",
+    desc: "Build tool (Makefile runner)",
   },
 };
 
@@ -41,17 +57,18 @@ export class WasmerRegistry {
   async install(name) {
     const pkg = REGISTRY[name];
     if (!pkg) {
-      throw new Error(`Package '${name}' not found. Try 'wasmer list' or 'wasmer search <term>'.`);
+      throw new Error(`Package '${name}' not found. Try 'wasmer list' first.`);
     }
 
-    const url = pkg.url;
+    const destPath = `/bin/${name}.wasm`;
 
-    // For local demo files, resolve relative to the HTML page
-    const resp = await fetch(url);
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${url}`);
+    // Try the local server first
+    const resp = await fetch(pkg.url);
+    if (!resp.ok) {
+      throw new Error(`Package '${name}' not available on server (${resp.status}).\n  Compile it: cargo build --target wasm32-wasip1 --release\n  Then copy to www/wasm-bin/${name}.wasm`);
+    }
 
     const blob = await resp.blob();
-    const destPath = `/bin/${name}.wasm`;
     await this.vfs.writeBlob(destPath, blob);
 
     return { name, path: destPath, size: blob.size };
@@ -72,8 +89,6 @@ export class WasmerRegistry {
     return Object.entries(REGISTRY).map(([name, pkg]) => ({
       name,
       desc: pkg.desc,
-      source: pkg.source,
-      installed: false,  // would need to check /bin/
     }));
   }
 }
