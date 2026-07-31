@@ -344,6 +344,7 @@ const builtins = {
     } catch (e) {
       stderr.write(`mv: ${args[0]}: ${e.message}\n`);
     }
+  },
 
   async wasmer(args) {
     const subcmd = args[0] || "help";
@@ -381,7 +382,6 @@ const builtins = {
   Installed packages are available as commands.\n
   Compile your own: Rust/wasm-pack → wasm32-wasi → /bin/\n`);
     }
-  },
   },
 
   async browse(args) {
