@@ -19,6 +19,10 @@ const REGISTRY = {
     url: "wasm-bin/echo.wasm",
     desc: "Echo text back (demo, compiled from Rust)",
   },
+  "echoc": {
+    url: "wasm-bin/echoc.wasm",
+    desc: "Echo text back (compiled from C via wasi-sdk)",
+  },
   "grep": {
     url: "wasm-bin/grep.wasm",
     desc: "Search text with patterns",
@@ -37,7 +41,7 @@ const REGISTRY = {
   },
   "python": {
     url: "wasm-bin/python.wasm",
-    desc: "Python interpreter",
+    desc: "Python interpreter (MicroPython, 363K)",
   },
   "perl": {
     url: "wasm-bin/perl.wasm",

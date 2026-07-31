@@ -32,6 +32,9 @@ and device files. It runs in any browser with no build step.
 - [x] WASM binary support: compile Rust→wasm32-unknown-unknown
       and run as commands from /bin/echo.wasm
 - [x] Minimal WASI host in JavaScript (stdout, args, clock, random)
+- [x] MicroPython WASM: python.wasm (363K) via PyPI — print(2+2) → 4
+- [x] C→WASM via wasi-sdk: echoc.wasm compiles and runs in shell
+- [x] Fixed WasmRunner: detect exported vs imported memory, memRef pattern
 - [x] Status bar: context-sensitive hints based on current directory
       (GitHub: login hint · /dev/: devices · /tmp/: ephemeral)
 - [x] `browse` command: opens current GitHub/GitLab dir in new browser tab
@@ -44,11 +47,13 @@ and device files. It runs in any browser with no build step.
       - Wire @wasmer/wasmfs to our VirtualFS
       - Then any wasm32-wasi binary works as a command:
         grep, curl, python, etc.
-- [ ] C-to-WASM compiler: compile tcc (Tiny C Compiler) or wasi-sdk
-      clang to wasm32-wasi. Place in /bin/cc. Users can write C in
-      the shell and compile it to WASM: 'cc -o hello.wasm hello.c'
-      Then ./hello.wasm runs as a native command.
-      Reference: https://github.com/Trailofbits/tcc-wasm
+- [ ] C-to-WASM compiler: compile steinerkelvin/c-to-wasm-compiler-project
+      to wasm32-wasi. It's a C compiler written in C++ that targets WASM
+      (uses flex/bison, outputs .wasm). Currently has build errors with
+      clang 18 (missing includes, std::transform, type issues). Needs:
+      1. Fix native build (add <cstdint>, <algorithm>, type hierarchy)
+      2. Cross-compile with wasi-sdk
+      Alternative: use tcc-wasm or wasm2c path.
 - [ ] `ls -l` output format (permissions, size, date)
 - [ ] Pipe operator: `cat README.md | head -3`
 - [ ] `grep` builtin or command

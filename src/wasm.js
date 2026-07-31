@@ -20,15 +20,35 @@ export class WasmRunner {
       this.cache.set(path, module);
     }
 
-    const memory = new WebAssembly.Memory({ initial: 256, maximum: 512 });
-    const wasiImports = this._buildWasi(args, memory);
-    const customImports = this._buildCustomImports(memory);
+    // Memory reference — a holder so closures can update their
+    // memory pointer after instantiation (for modules that export
+    // their own memory instead of importing it).
+    const memRef = { memory: null };
 
-    const instance = await WebAssembly.instantiate(module, {
-      "wasi_snapshot_preview1": wasiImports,
-      ...customImports,
-      "env": { memory }
-    });
+    const imports = WebAssembly.Module.imports(module);
+    const needsEnvMem = imports.some(i => i.module === "env" && i.name === "memory");
+
+    if (needsEnvMem) {
+      memRef.memory = new WebAssembly.Memory({ initial: 256, maximum: 512 });
+    }
+
+    const wasi = this._buildWasi(args, memRef);
+    const custom = this._buildCustomImports(memRef);
+
+    const importObj = {
+      "wasi_snapshot_preview1": wasi,
+      ...custom,
+    };
+    if (needsEnvMem && memRef.memory) {
+      importObj["env"] = { memory: memRef.memory };
+    }
+
+    const instance = await WebAssembly.instantiate(module, importObj);
+
+    // If the module exports its own memory, use that
+    if (instance.exports.memory) {
+      memRef.memory = instance.exports.memory;
+    }
 
     if (instance.exports._start) {
       instance.exports._start();
@@ -39,122 +59,88 @@ export class WasmRunner {
     return instance;
   }
 
-  _buildCustomImports(memory) {
-    // Support micropython_wasm custom imports
-    // host_call(name, payload) → JSON response
+  _buildCustomImports(memRef) {
     const runner = this;
-    const encoder = new TextEncoder();
-    const decoder = new TextDecoder();
+    const enc = new TextEncoder();
+    const dec = new TextDecoder();
 
     return {
       "micropython_wasm": {
         host_result_cap: () => 256 * 1024,
-        host_call: (namePtr, nameLen, payloadPtr, payloadLen, resultPtr, resultCap) => {
-          const mem = new Uint8Array(memory.buffer);
-          const name = decoder.decode(mem.slice(namePtr, namePtr + nameLen));
-          const payload = decoder.decode(mem.slice(payloadPtr, payloadPtr + payloadLen));
-
-          // Default: return empty success for unknown calls
-          // In future, this can be extended with host function registration
-          const response = JSON.stringify({ ok: true, value: null });
-          const encoded = encoder.encode(response);
-
-          if (encoded.length > resultCap) {
-            return encoded.length;
-          }
-          mem.set(encoded, resultPtr);
-          return encoded.length;
+        host_call: (np, nl, pp, pl, rp, rc) => {
+          const mem = new Uint8Array(memRef.memory.buffer);
+          const name = dec.decode(mem.slice(np, np + nl));
+          const payload = dec.decode(mem.slice(pp, pp + pl));
+          const resp = JSON.stringify({ ok: true, value: null });
+          const encd = enc.encode(resp);
+          if (encd.length > rc) return encd.length;
+          mem.set(encd, rp);
+          return encd.length;
         }
       }
     };
   }
 
-  _buildWasi(args, memory) {
+  _buildWasi(args, memRef) {
     const runner = this;
-    const encoder = new TextEncoder();
-    const decoder = new TextDecoder();
+    const enc = new TextEncoder();
+    const dec = new TextDecoder();
 
     runner._stdoutBuffer = "";
 
+    function mem() { return new Uint8Array(memRef.memory.buffer); }
+    function view() { return new DataView(memRef.memory.buffer); }
+
     return {
+      // ─── Stdio ────────────────────────────────────────
       fd_write: (fd, iovs, iovsLen, nwritten) => {
-        if (fd === 1 || fd === 2) {
-          const mem = new Uint8Array(memory.buffer);
-          let total = 0;
-          for (let i = 0; i < iovsLen; i++) {
-            const view = new DataView(memory.buffer);
-            const bufPtr = view.getUint32(iovs + i * 8, true);
-            const bufLen = view.getUint32(iovs + i * 8 + 4, true);
-            const chunk = decoder.decode(mem.slice(bufPtr, bufPtr + bufLen));
-            runner._stdoutBuffer += chunk;
-            total += bufLen;
+        if (fd !== 1 && fd !== 2) return 8;
+        const m = mem();
+        let total = 0;
+        for (let i = 0; i < iovsLen; i++) {
+          const v = view();
+          const p = v.getUint32(iovs + i * 8, true);
+          const l = v.getUint32(iovs + i * 8 + 4, true);
+          if (l > 0 && l < 100000) {
+            runner._stdoutBuffer += dec.decode(m.slice(p, p + l));
+            total += l;
           }
-          new Uint32Array(memory.buffer, nwritten, 1)[0] = total;
-          return 0;
         }
-        return 8;
+        new Uint32Array(memRef.memory.buffer, nwritten, 1)[0] = total;
+        return 0;
       },
 
       fd_read: (fd, iovs, iovsLen, nread) => {
-        new Uint32Array(memory.buffer, nread, 1)[0] = 0;
+        new Uint32Array(memRef.memory.buffer, nread, 1)[0] = 0;
         return 0;
       },
 
-      fd_close: (fd) => 0,
-      fd_seek: (fd, offset, whence, newoffset) => 0,
-      fd_prestat_get: (fd, buf) => 8,
-      fd_prestat_dir_name: (fd, path, pathLen) => 8,
-
-      environ_get: (environ, environBuf) => 0,
-      environ_sizes_get: (count, size) => {
-        new Uint32Array(memory.buffer, count, 1)[0] = 0;
-        new Uint32Array(memory.buffer, size, 1)[0] = 0;
-        return 0;
-      },
-
-      args_get: (argv, argvBuf) => {
-        const mem = new Uint8Array(memory.buffer);
-        let offset = argvBuf;
-        for (let i = 0; i < args.length; i++) {
-          new Uint32Array(memory.buffer, argv + i * 4, 1)[0] = offset;
-          const encoded = encoder.encode(args[i] + "\0");
-          mem.set(encoded, offset);
-          offset += encoded.length;
+      // ─── Fd operations ───────────────────────────────
+      fd_close: () => 0,
+      fd_seek: (fd, offset, whence, newoffset) => {
+        if (newoffset !== 0 && newoffset !== undefined) {
+          new BigUint64Array(memRef.memory.buffer, newoffset, 1)[0] = BigInt(0);
         }
-        new Uint32Array(memory.buffer, argv + args.length * 4, 1)[0] = 0;
         return 0;
       },
-
-      args_sizes_get: (argcBuf, sizeBuf) => {
-        new Uint32Array(memory.buffer, argcBuf, 1)[0] = args.length;
-        let total = 0;
-        for (const a of args) total += encoder.encode(a + "\0").length;
-        new Uint32Array(memory.buffer, sizeBuf, 1)[0] = total;
-        return 0;
-      },
-
-      clock_time_get: (id, precision, time) => {
-        new BigUint64Array(memory.buffer, time, 1)[0] = BigInt(Date.now()) * BigInt(1000000);
-        return 0;
-      },
-
-      random_get: (buf, len) => {
-        const random = new Uint8Array(len);
-        crypto.getRandomValues(random);
-        new Uint8Array(memory.buffer).set(random, buf);
-        return 0;
-      },
-
-      proc_exit: (code) => { throw new WasmExit(code); },
-
+      fd_prestat_get: () => 8,   // EBADF — no pre-opened dirs
+      fd_prestat_dir_name: () => 8,
       fd_fdstat_get: (fd, buf) => {
-        new Uint8Array(memory.buffer)[buf] = 2;
+        const m = mem();
+        for (let i = 0; i < 24; i++) m[buf + i] = 0;
+        m[buf] = 2;  // character device
         return 0;
       },
-      fd_fdstat_set_flags: (fd, flags) => 0,
-      fd_readdir: (fd, buf, bufLen, cookie, nread) => { new Uint32Array(memory.buffer, nread, 1)[0] = 0; return 0; },
-      fd_sync: (fd) => 0,
+      fd_fdstat_set_flags: () => 0,
+      fd_readdir: (fd, buf, bufLen, cookie, nread) => {
+        new Uint32Array(memRef.memory.buffer, nread, 1)[0] = 0;
+        return 0;
+      },
+      fd_sync: () => 0,
       sched_yield: () => 0,
+      poll_oneoff: () => 0,
+
+      // ─── Path operations ─────────────────────────────
       path_open: () => 8,
       path_readlink: () => -1,
       path_filestat_get: () => -1,
@@ -163,7 +149,53 @@ export class WasmRunner {
       path_remove_directory: () => -1,
       path_rename: () => -1,
       filestat_get: () => -1,
-      poll_oneoff: () => 0,
+
+      // ─── Environment ────────────────────────────────
+      environ_get: () => 0,
+      environ_sizes_get: (count, size) => {
+        new Uint32Array(memRef.memory.buffer, count, 1)[0] = 0;
+        new Uint32Array(memRef.memory.buffer, size, 1)[0] = 0;
+        return 0;
+      },
+
+      // ─── Args ────────────────────────────────────────
+      args_get: (argv, argvBuf) => {
+        const m = mem();
+        let offset = argvBuf;
+        for (let i = 0; i < args.length; i++) {
+          new Uint32Array(memRef.memory.buffer, argv + i * 4, 1)[0] = offset;
+          const e = enc.encode(args[i] + "\0");
+          m.set(e, offset);
+          offset += e.length;
+        }
+        new Uint32Array(memRef.memory.buffer, argv + args.length * 4, 1)[0] = 0;
+        return 0;
+      },
+      args_sizes_get: (argcBuf, sizeBuf) => {
+        new Uint32Array(memRef.memory.buffer, argcBuf, 1)[0] = args.length;
+        let total = 0;
+        for (const a of args) total += enc.encode(a + "\0").length;
+        new Uint32Array(memRef.memory.buffer, sizeBuf, 1)[0] = total;
+        return 0;
+      },
+
+      // ─── Clock ───────────────────────────────────────
+      clock_time_get: (id, precision, time) => {
+        new BigUint64Array(memRef.memory.buffer, time, 1)[0] =
+          BigInt(Date.now()) * BigInt(1000000);
+        return 0;
+      },
+
+      // ─── Random ──────────────────────────────────────
+      random_get: (buf, len) => {
+        const random = new Uint8Array(len);
+        crypto.getRandomValues(random);
+        mem().set(random, buf);
+        return 0;
+      },
+
+      // ─── Process ─────────────────────────────────────
+      proc_exit: (code) => { throw new WasmExit(code); },
     };
   }
 }
