@@ -59,7 +59,7 @@ and device files. It runs in any browser with no build step.
 - [x] `ls -l` output format (permissions, size, date)
 - [x] Pipe operator: `cat README.md | head -3`
 - [x] `grep` builtin or command
-- [ ] `find` builtin or command
+- [x] `find` builtin or command
 - [ ] Quoted arguments parsing in tinysh (currently splits on spaces blindly)
 - [ ] `&&` and `||` conditional chaining
 - [ ] Environment variables ($PATH, $HOME, $USER)

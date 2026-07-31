@@ -356,6 +356,151 @@ const builtins = {
     }
   },
 
+  async find(args) {
+    // find [path...] [expression]
+    //   -name PATTERN    match basename, * and ? wildcards (repeatable, AND)
+    //   -iname PATTERN   case-insensitive -name
+    //   -type f|d        match files or directories
+    //   -maxdepth N      descend at most N levels below the start points
+    //   -mindepth N      don't apply tests above level N (default 0)
+    //   -print           print matching paths (default action)
+    const paths = [];
+    const namePatterns = [];      // { re } — all must match (AND)
+    const types = new Set();
+    let maxDepth = Infinity, minDepth = 0;
+    let print = true;
+
+    // Remote mounts would require crawling the network; refuse that and
+    // only match them when a specific file is named.
+    const REMOTE = ["/http/", "/github/", "/mount/github/", "/gitlab/", "/mount/gitlab/"];
+    const isRemote = (p) => REMOTE.some(pre => p === pre.slice(0, -1) || p.startsWith(pre));
+
+    // Build a regex from a shell glob (* and ? wildcards)
+    const globToRe = (glob, caseInsensitive) => {
+      let reStr = "";
+      for (const ch of glob) {
+        if (ch === "*") reStr += ".*";
+        else if (ch === "?") reStr += ".";
+        else reStr += ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      }
+      return new RegExp("^" + reStr + "$", caseInsensitive ? "i" : "");
+    };
+
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (a === "-name" || a === "-iname") {
+        if (i + 1 >= args.length) {
+          process.stderr.write(`find: missing argument to '${a}'\n`);
+          return;
+        }
+        namePatterns.push({ re: globToRe(args[++i], a === "-iname") });
+      } else if (a === "-type") {
+        if (i + 1 >= args.length) {
+          process.stderr.write(`find: missing argument to '-type'\n`);
+          return;
+        }
+        const t = args[++i];
+        if (t !== "f" && t !== "d") {
+          process.stderr.write(`find: unknown type '${t}' (use 'f' for file or 'd' for directory)\n`);
+          return;
+        }
+        types.add(t);
+      } else if (a === "-maxdepth" || a === "-mindepth") {
+        if (i + 1 >= args.length) {
+          process.stderr.write(`find: missing argument to '${a}'\n`);
+          return;
+        }
+        const n = parseInt(args[++i], 10);
+        if (isNaN(n) || n < 0) {
+          process.stderr.write(`find: invalid depth '${args[i]}'\n`);
+          return;
+        }
+        if (a === "-maxdepth") maxDepth = n;
+        else minDepth = n;
+      } else if (a === "-print") {
+        print = true;
+      } else if (a === "--") {
+        // Everything after -- is a start path
+        for (const rest of args.slice(i + 1)) paths.push(rest);
+        break;
+      } else if (a.startsWith("-")) {
+        process.stderr.write(`find: unknown option '${a}'\n`);
+        return;
+      } else {
+        paths.push(a);
+      }
+    }
+
+    if (paths.length === 0) paths.push(".");
+
+    // Do tests apply at this depth? (-mindepth/-maxdepth gate traversal
+    // too, so we never descend past -maxdepth)
+    const matched = (name, type, depth) => {
+      if (depth < minDepth) return false;
+      if (types.size > 0 && !types.has(type)) return false;
+      for (const p of namePatterns) {
+        if (!p.re.test(name)) return false;
+      }
+      return true;
+    };
+
+    let skippedRemote = false;
+
+    // Recursive walk. `dir` is a resolved absolute path; `depth` is the
+    // depth of `dir` itself (start points are depth 0).
+    const walk = async (dir, depth) => {
+      if (isRemote(dir)) {
+        if (!skippedRemote) {
+          process.stderr.write(`find: skipping remote mount ${dir} (name specific files to search them)\n`);
+          skippedRemote = true;
+        }
+        return;
+      }
+      let entries;
+      try { entries = await fs.list(dir); } catch (e) {
+        process.stderr.write(`find: ${dir}: ${e.message}\n`);
+        return;
+      }
+      for (const entry of entries) {
+        const isDir = entry.endsWith("/");
+        const name = isDir ? entry.slice(0, -1) : entry;
+        const full = (dir === "/" ? "/" : dir + "/") + name;
+        let st = null;
+        try { st = await fs.stat(full); } catch { /* fall back to entry form */ }
+        const type = isDir || (st && st.type === "dir") ? "d" : "f";
+        if (matched(name, type, depth + 1) && print) {
+          process.stdout.write(full + (type === "d" ? "/" : "") + "\n");
+        }
+        if (type === "d" && depth + 1 < maxDepth) {
+          await walk(full, depth + 1);
+        }
+      }
+    };
+
+    const seen = new Set();
+    for (const path of paths) {
+      const r = fs._resolve(path);
+      if (seen.has(r)) continue;
+      seen.add(r);
+      let st;
+      try { st = await fs.stat(r); } catch (e) {
+        process.stderr.write(`find: ${path}: ${e.message}\n`);
+        continue;
+      }
+      const type = st.type === "dir" ? "d" : "f";
+      const base = r.split("/").pop() || "/";
+      if (matched(base, type, 0) && print) {
+        process.stdout.write((r === "/" ? "/" : r + (type === "d" ? "/" : "")) + "\n");
+      }
+      if (type !== "d") continue;
+      if (isRemote(r)) {
+        process.stderr.write(`find: skipping remote mount ${r} (name specific files to search them)\n`);
+        continue;
+      }
+      if (0 < maxDepth) await walk(r, 0);
+    }
+  },
+
   async help(args) {
     process.stdout.write(`tinysh — minimal shell for the virtual filesystem
 
@@ -373,12 +518,15 @@ Built-in commands:
   grep [opts] <pattern> [file...]  Search files/stdin for pattern
                  (-i ignore case · -n line numbers · -v invert · -c count
                   -l files with matches · -r recursive · -e PATTERN)
+  find [path...] [expr]  Find files by name/type
+                 (-name PAT · -iname PAT · -type f|d · -maxdepth N · -mindepth N)
   help            This help
   exit            Exit the shell
 
 Pipes: cmd1 | cmd2 — cmd1's stdout becomes cmd2's stdin
   Example: cat README.md | head -3
   Example: echo "hello" | grep -i hello
+  Example: find /home -name *.txt | head -5
 
 Aliases: vi/vim/nano = edit · less/more = cat · cls = clear
          dir = ls · ? = help · q/quit = exit
