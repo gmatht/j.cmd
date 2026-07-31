@@ -1540,6 +1540,137 @@ return 0;
       })
       .catch(() => syncWrite(this._getBackend("/bin/xeyes.js"), "/xeyes.js", xeyesjsContent));
 
+    // xterm.js — floating terminal running the shell itself (xterm.js).
+    // Written only when absent, so user edits survive reloads.
+    const xtermjsContent = `// xterm — a floating terminal (xterm.js) running the shell itself.
+//   xterm            open the floating terminal; type exit to close
+// Every line you type is run through the shell's own machinery, so the
+// floating terminal sees the same builtins, PATH and filesystem.
+var NL = String.fromCharCode(10);
+var BS = String.fromCharCode(8);
+var DEL = String.fromCharCode(127);
+var ETX = String.fromCharCode(3);   // Ctrl+C
+var FF = String.fromCharCode(12);   // Ctrl+L
+var CR = String.fromCharCode(13);   // Enter
+if (typeof document === "undefined") {
+  console.log("xterm: needs a browser (run in the web shell)");
+  return 1;
+}
+// Load xterm.js + the fit addon from the local server (node_modules).
+function loadScript(src) {
+  return new Promise(function (resolve, reject) {
+    if (document.querySelector('script[src="' + src + '"]')) return resolve();
+    var s = document.createElement("script");
+    s.src = src;
+    s.onload = function () { resolve(); };
+    s.onerror = function () { reject(new Error("failed to load " + src)); };
+    document.head.appendChild(s);
+  });
+}
+try {
+  await loadScript("/node_modules/xterm/lib/xterm.js");
+  await loadScript("/node_modules/@xterm/addon-fit/lib/addon-fit.js");
+} catch (e) {
+  console.log("xterm: " + e.message);
+  return 1;
+}
+if (!window.Terminal) { console.log("xterm: Terminal not available after load"); return 1; }
+var Terminal = window.Terminal;
+if (!document.querySelector('link[href="/node_modules/xterm/css/xterm.css"]')) {
+  var link = document.createElement("link");
+  link.rel = "stylesheet";
+  link.href = "/node_modules/xterm/css/xterm.css";
+  document.head.appendChild(link);
+}
+// ── floating window ──
+var win = document.createElement("div");
+win.className = "xterm-window";
+win.style.cssText = "position:fixed;top:10%;left:15%;width:70%;height:60%;background:#0d1117;border:1px solid #30363d;border-radius:8px;z-index:60;display:flex;flex-direction:column;box-shadow:0 10px 40px rgba(0,0,0,.5);";
+var bar = document.createElement("div");
+bar.style.cssText = "display:flex;justify-content:space-between;align-items:center;padding:6px 12px;background:#161b22;color:#8b949e;font:12px monospace;border-bottom:1px solid #30363d;border-radius:8px 8px 0 0;";
+var title = document.createElement("span");
+title.textContent = "xterm — floating shell (type exit to close)";
+var closeBtn = document.createElement("button");
+closeBtn.textContent = "x";
+closeBtn.style.cssText = "background:#21262d;color:#d6a0a0;border:1px solid #30363d;border-radius:4px;cursor:pointer;padding:0 9px;font:bold 14px monospace;";
+bar.appendChild(title);
+bar.appendChild(closeBtn);
+var body = document.createElement("div");
+body.style.cssText = "flex:1;padding:8px;overflow:hidden;";
+win.appendChild(bar);
+win.appendChild(body);
+document.body.appendChild(win);
+// ── terminal ──
+var term = new Terminal({
+  cursorBlink: true,
+  fontSize: 14,
+  convertEol: true,
+  scrollback: 1000,
+  theme: { background: "#0d1117", foreground: "#e0e0e0", cursor: "#7ec8e3", selectionBackground: "#264f78" },
+});
+var fit = new window.FitAddon.FitAddon();
+term.loadAddon(fit);
+term.open(body);
+fit.fit();
+var onResize = function () { try { fit.fit(); } catch (e) {} };
+window.addEventListener("resize", onResize);
+// ── line editing + routing through the shell ──
+var line = "";
+function prompt() { term.write("tinysh:" + fs.cwd + "$ "); }
+function submit() {
+  var cmd = line;
+  line = "";
+  term.write(NL);
+  if (cmd.trim() === "exit" || cmd.trim() === "quit") { closeIt(); return; }
+  shell.runLine(cmd).then(function (res) {
+    var out = (res && res.out ? res.out : "") + (res && res.err ? res.err : "");
+    if (out) term.write(out);
+    if (!out.endsWith(NL)) term.write(NL);
+    prompt();
+  }).catch(function (e) {
+    term.write("error: " + e.message + NL);
+    prompt();
+  });
+}
+function onData(data) {
+  for (var i = 0; i < data.length; i++) {
+    var ch = data[i];
+    if (ch === CR) submit();
+    else if (ch === DEL || ch === BS) {
+      if (line.length > 0) { line = line.slice(0, -1); term.write(BS + " " + BS); }
+    }
+    else if (ch === ETX) { line = ""; term.write("^C" + NL); prompt(); }
+    else if (ch === FF) { term.clear(); prompt(); }
+    else if (ch >= " ") { line += ch; term.write(ch); }
+  }
+}
+term.onData(onData);
+// ── close (button, exit command, or shell Ctrl+C) ──
+var done = false;
+function cleanup() {
+  if (done) return;
+  done = true;
+  window.removeEventListener("resize", onResize);
+  try { term.dispose(); } catch (e) {}
+  win.remove();
+}
+var waitResolve = null;
+var wait = new Promise(function (r) { waitResolve = r; });
+function closeIt() { cleanup(); waitResolve(); }
+closeBtn.onclick = closeIt;
+term.write("tinysh floating terminal — commands run through the shell" + NL);
+prompt();
+term.focus();
+try {
+  await wait;
+} finally {
+  cleanup();   // shell Ctrl+C also tears the terminal down
+}
+return 0;
+`;
+    this._getBackend("/bin/xterm.js").read("/xterm.js")
+      .catch(() => syncWrite(this._getBackend("/bin/xterm.js"), "/xterm.js", xtermjsContent));
+
     // Sample content for new users
     syncWrite(this._getBackend("/home/examples/README.txt"), "/examples/README.txt",
       `Welcome to tinysh!\n\n` +

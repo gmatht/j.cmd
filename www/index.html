@@ -2918,7 +2918,7 @@ async function runSegment(segmentText, stdin, isLast) {
 
     // Run a .js command file from /commands/ (or /bin/, /usr/bin/)
     const content = await fs.read(resolved.path);
-    const fn = new Function("args", "fs", "console", "stdin", "env", "sh2", "sh2lib", `
+    const fn = new Function("args", "fs", "console", "stdin", "env", "sh2", "sh2lib", "shell", `
         return (async () => { ${content} })();
       `);
     const logChunks = [];
@@ -2931,7 +2931,10 @@ async function runSegment(segmentText, stdin, isLast) {
       args: args.slice(1),
       argv0: cmd,
     });
-    const ret = await fn(args, fs, fakeConsole, stdin, env, sh2rt.sh2, sh2libFacade);
+    // `shell` — lets commands run lines through the shell itself (the
+    // floating xterm terminal uses this); returns { out, err, code }.
+    const shellApi = { runLine: (cmdLine) => runNestedCommand(cmdLine) };
+    const ret = await fn(args, fs, fakeConsole, stdin, env, sh2rt.sh2, sh2libFacade, shellApi);
     // A command file may return a number to set its exit status
     const code = typeof ret === "number" ? ret : 0;
     output = logChunks.join("");
@@ -3564,19 +3567,19 @@ async function onCommand() {
 // never select-and-copy terminal output.
 let justSelected = false;
 document.addEventListener("mousedown", (e) => {
-  if (e.target.closest("#editor-container")) return;
+  if (e.target.closest("#editor-container") || e.target.closest(".xterm-window")) return;
   justSelected = false;
   // Drop stale selections so they can't block the next click's focus.
   const sel = window.getSelection();
   if (sel && sel.rangeCount) sel.removeAllRanges();
 });
 document.addEventListener("mouseup", (e) => {
-  if (e.target.closest("#editor-container")) return;
+  if (e.target.closest("#editor-container") || e.target.closest(".xterm-window")) return;
   const sel = window.getSelection();
   if (sel && !sel.isCollapsed) justSelected = true;
 });
 document.addEventListener("click", (e) => {
-  if (e.target.closest("#editor-container")) return;
+  if (e.target.closest("#editor-container") || e.target.closest(".xterm-window")) return;
   if (justSelected) return;  // user selected text — keep it
   input.focus();
 });
@@ -3615,7 +3618,7 @@ document.addEventListener("keydown", (e) => {
   if (e.isComposing) return;
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.key.length !== 1) return;  // printable characters only
-  if (e.target && e.target.closest && e.target.closest("#editor-container")) return;
+  if (e.target && e.target.closest && (e.target.closest("#editor-container") || e.target.closest(".xterm-window"))) return;
   if (document.activeElement === input) return;  // normal typing path
   e.preventDefault();
   const sel = window.getSelection();
@@ -3671,7 +3674,7 @@ const refocusAfterDrag = () => {
 };
 document.addEventListener("dragend", refocusAfterDrag);
 document.addEventListener("drop", (e) => {
-  if (e.target.closest("#editor-container")) return;  // editor owns focus
+  if (e.target.closest("#editor-container") || e.target.closest(".xterm-window")) return;  // editor owns focus
   refocusAfterDrag();
 });
 

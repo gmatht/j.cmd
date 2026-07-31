@@ -1461,7 +1461,7 @@ async function runSegment(segmentText, stdin, isLast) {
     // Wrap in async IIFE to support top-level await; stdin is the 4th arg.
     // `sh2` is the bash runtime (saved bash2js output calls sh2.exec & co.),
     // `sh2lib` is the debashl toolchain facade (/bin/sh2js.js etc.).
-    const fn = new Function("args", "fs", "console", "stdin", "env", "sh2", "sh2lib", `
+    const fn = new Function("args", "fs", "console", "stdin", "env", "sh2", "sh2lib", "shell", `
         return (async () => {
           ${content}
         })();
@@ -1476,7 +1476,8 @@ async function runSegment(segmentText, stdin, isLast) {
       args: args.slice(1),
       argv0: cmd,
     });
-    const ret = await fn(args, fs, fakeConsole, stdin, env, sh2rt.sh2, sh2libFacade);
+    const shellApi = { runLine: (cmdLine) => runNestedCommand(cmdLine) };
+    const ret = await fn(args, fs, fakeConsole, stdin, env, sh2rt.sh2, sh2libFacade, shellApi);
     // A command file may return a number to set its exit status
     const code = typeof ret === "number" ? ret : 0;
     output = logChunks.join("");
