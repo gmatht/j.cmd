@@ -69,6 +69,15 @@ export class RamFS {
     return { type: "file", size: data.length, mtime: this.mtimes.get(norm) };
   }
 
+  // Synchronous stat — used by sh2.test file tests (local mounts only).
+  statSync(path) {
+    const norm = path.replace(/\/$/, "") || "/";
+    if (this.dirs.has(norm)) return { type: "dir", size: 0, mtime: this.mtimes.get(norm) };
+    const data = this.files.get(norm);
+    if (data === undefined) throw new Error(`ENOENT: ${path}`);
+    return { type: "file", size: data.length, mtime: this.mtimes.get(norm) };
+  }
+
   async list(path) {
     const norm = path.replace(/\/$/, "") || "/";
     if (!this.dirs.has(norm)) throw new Error(`ENOTDIR: ${path}`);

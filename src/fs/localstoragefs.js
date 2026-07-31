@@ -178,6 +178,24 @@ export class LocalStorageFS {
     return { type: "file", size, mtime: meta && meta.mtime };
   }
 
+  // Synchronous stat — used by sh2.test file tests (local mounts only).
+  statSync(path) {
+    const norm = path.replace(/\/$/, "") || "/";
+    const dirs = this._dirs();
+    if (dirs.includes(norm)) {
+      const meta = this._meta()[norm];
+      return { type: "dir", size: 0, mtime: meta && meta.mtime };
+    }
+    const key = KEY_PREFIX + "file:" + norm;
+    const data = localStorage.getItem(key);
+    if (data === null) throw new Error("ENOENT");
+    const size = data.startsWith(B64_MARKER)
+      ? base64ToBytes(data.slice(B64_MARKER.length)).length
+      : data.length;
+    const meta = this._meta()[norm];
+    return { type: "file", size, mtime: meta && meta.mtime };
+  }
+
   async list(path) {
     const norm = path.replace(/\/$/, "") || "/";
     const dirs = this._dirs();

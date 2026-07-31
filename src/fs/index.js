@@ -281,6 +281,18 @@ class OverlayFS {
     }
     return this.backend.stat ? this.backend.stat(path) : null;
   }
+
+  // Synchronous stat — overlay writes first, then the backend's statSync
+  // (local mounts only; sh2.test file tests use this).
+  statSync(path) {
+    if (this.files.has(path)) {
+      const c = this.files.get(path);
+      if (c === WHITEOUT) throw new Error("ENOENT");
+      const text = c.startsWith(B64) ? c.slice(B64.length) : c;
+      return { type: "file", size: text.length, mtime: Date.now() };
+    }
+    return this.backend.statSync ? this.backend.statSync(path) : null;
+  }
 }
 
 // ─── VirtualFS ─────────────────────────────────────────────────
@@ -691,6 +703,88 @@ try {
 `;
     syncWrite(this._getBackend("/bin/audiodemo.js"), "/audiodemo.js", audioDemoContent);
 
+    // sh2js.js — debashl toolchain command (uses the injected sh2lib facade).
+    // Written only when absent, so user edits survive reloads.
+    const sh2jsjsContent = `// sh2js — transpile bash to JavaScript via debashl (ESTree path).
+//   sh2js 'echo hi'        → generated JS source (sh2.* runtime)
+//   sh2js -e 'echo hi'     → ESTree JSON (the debashl contract)
+const src = args.join(" ");
+if (!src) { console.log("usage: sh2js '<bash source>'   (sh2js -e '...' for ESTree JSON)"); return 2; }
+if (args[0] === "-e") {
+  const ast = await sh2lib.toEstree(args.slice(1).join(" "));
+  console.log(JSON.stringify(ast, null, 2));
+  return 0;
+}
+try {
+  console.log(await sh2lib.bashToJs(src));
+} catch (e) {
+  console.log("sh2js: " + e.message);
+  return 1;
+}
+return 0;
+`;
+    this._getBackend("/bin/sh2js.js").read("/sh2js.js")
+      .catch(() => syncWrite(this._getBackend("/bin/sh2js.js"), "/sh2js.js", sh2jsjsContent));
+
+    // sh2perl.js — debashl toolchain command (uses the injected sh2lib facade).
+    // Written only when absent, so user edits survive reloads.
+    const sh2perljsContent = `// sh2perl — transpile bash to Perl via debashl.
+//   sh2perl 'echo hi'   → Perl source
+const src = args.join(" ");
+if (!src) { console.log("usage: sh2perl '<bash source>'"); return 2; }
+try {
+  console.log(await sh2lib.toPerl(src));
+} catch (e) {
+  console.log("sh2perl: " + e.message);
+  return 1;
+}
+return 0;
+`;
+    this._getBackend("/bin/sh2perl.js").read("/sh2perl.js")
+      .catch(() => syncWrite(this._getBackend("/bin/sh2perl.js"), "/sh2perl.js", sh2perljsContent));
+
+    // debashc.js — debashl toolchain command (uses the injected sh2lib facade).
+    // Written only when absent, so user edits survive reloads.
+    const debashcjsContent = `// debashc — the bash compiler CLI (debashl reactor): parse → ESTree or Perl.
+//   debashc parse 'echo hi'          → ESTree JSON
+//   debashc parse --perl 'echo hi'   → Perl source
+//   debashc file --estree x.sh       → ESTree for a script file
+//   debashc file --perl x.sh         → Perl for a script file
+if (!args.length || args[0] === "-h" || args[0] === "--help") {
+  console.log("debashc — bash compiler (debashl)");
+  console.log("  debashc parse 'echo hi'              ESTree JSON");
+  console.log("  debashc parse --perl 'echo hi'       Perl source");
+  console.log("  debashc file --estree x.sh           ESTree for a file");
+  console.log("  debashc file --perl x.sh             Perl for a file");
+  return args.length ? 0 : 2;
+}
+const mode = args[0];
+if (mode === "parse") {
+  if (args[1] === "--perl") { console.log(await sh2lib.toPerl(args.slice(2).join(" "))); return 0; }
+  console.log(JSON.stringify(await sh2lib.toEstree(args.slice(1).join(" ")), null, 2));
+  return 0;
+}
+if (mode === "file") {
+  const flag = args[1];
+  const file = args[2];
+  if (!file) { console.log("debashc: file mode needs a file name"); return 2; }
+  try {
+    const content = await fs.read(file);
+    if (flag === "--perl") console.log(await sh2lib.toPerl(content));
+    else console.log(JSON.stringify(await sh2lib.toEstree(content), null, 2));
+  } catch (e) {
+    console.log("debashc: " + e.message);
+    return 1;
+  }
+  return 0;
+}
+console.log(JSON.stringify(await sh2lib.toEstree(args.join(" ")), null, 2));
+return 0;
+`;
+    this._getBackend("/bin/debashc.js").read("/debashc.js")
+      .catch(() => syncWrite(this._getBackend("/bin/debashc.js"), "/debashc.js", debashcjsContent));
+
+
     // Sample content for new users
     syncWrite(this._getBackend("/home/examples/README.txt"), "/examples/README.txt",
       `Welcome to tinysh!\n\n` +
@@ -932,6 +1026,19 @@ try {
         return { type: "dir", size: 0, mtime: undefined };
       }
       throw e;
+    }
+  }
+
+  // Synchronous stat, or null when the backend can't do it synchronously
+  // (remote mounts, missing file). sh2.test's file tests rely on this.
+  statSync(path) {
+    try {
+      const r = this._resolve(path);
+      const m = this._findBackend(r);
+      if (!m || !m.backend.statSync) return null;
+      return m.backend.statSync(m.relative);
+    } catch {
+      return null;
     }
   }
 

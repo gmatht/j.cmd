@@ -18,10 +18,12 @@ import { WasmRunner } from "./wasm.js";
 import { WasmerRegistry } from "./wasmer.js";
 import { env, expandRef } from "./env.js";
 import { procfs } from "./fs/procfs.js";
-import { bashToJS, runBash } from "./bash2js.js";
+import { bashToJS, runBash, buildSh2LibFacade } from "./bash2js.js";
+import { createSh2Runtime } from "./sh2runtime.js";
 import { getManPage, manIndex, searchManPages, MAN_PAGES } from "./manpages.js";
 
 const wasmRunner = new WasmRunner(fs);
+const sh2libFacade = buildSh2LibFacade(fs);  // debashl toolchain, injected into .js commands
 const wasmerReg = new WasmerRegistry(fs);
 
 // Pipe input for the current command — the previous pipeline segment's
@@ -805,7 +807,8 @@ Usage:
   bash2js -f script.sh         transpile a file from the virtual FS
   cat script.sh | bash2js      transpile from a pipe
 
-Pipeline:  bash → Perl (sh2perl.wasm) → JS (perl2js)
+Pipeline:  bash → ESTree (debashl.wasm) → JS (sh2.* runtime);
+         falls back to sh2perl → perl2js if debashl is unavailable
 The generated JS targets the rt runtime + env; save it to a .js file
 and run it as a command.
 `);
@@ -851,7 +854,8 @@ and run it as a command.
     // cat script.sh | bash    — execute from a pipe
     //
     // Type bash, get generated JS executed:
-    //   bash → Perl (sh2perl.wasm) → JS (perl2js) → run in the shell
+    //   bash → ESTree (debashl.wasm) → JS (sh2.* runtime) — with a
+//   fallback to the Perl path (sh2perl.wasm → perl2js) → run in the shell
     if (args[0] === "-h" || args[0] === "--help") {
       process.stdout.write(`bash — run bash commands by transpiling them to JS
 
@@ -862,7 +866,8 @@ Usage:
   cat script.sh | bash     execute from a pipe
   bash -                   execute from a pipe (explicit)
 
-Pipeline:  bash → Perl (sh2perl.wasm) → JS (perl2js) → executed
+Pipeline:  bash → ESTree (debashl.wasm) → JS (sh2.* runtime);
+         falls back to sh2perl → perl2js if debashl is unavailable → executed
 Loops, conditionals, variables, arithmetic and pipes work:
   bash 'for i in 1 2 3; do echo $i; done'
   bash 'x=1; while [ $x -lt 3 ]; do echo $x; x=$((x+1)); done'
@@ -912,16 +917,22 @@ Loops, conditionals, variables, arithmetic and pipes work:
         process.stderr.write(`bash: ${file}: No such file or directory\n`);
         return 1;
       } else {
-        source = args.join(" ");
+        // Inline source: the first arg is the script; the rest are the
+        // positional parameters ($1, $2, ...) like `bash -c '...' a b`.
+        source = args[0];
       }
     } else {
       source = args.join(" ");
     }
     try {
+      const scriptArgs = args[0] === "-c" || args[0] === "-e" ? args.slice(1) : args.slice(1);
       return await runBash(fs, source, {
         wasmRunner,
         stdout: process.stdout,
+        stderr: process.stderr,
         runCmd: runNestedCommand,
+        args: scriptArgs,
+        argv0: args[0] && !args[0].startsWith("-") ? args[0] : "bash",
       });
     } catch (e) {
       if (e instanceof InterruptError) throw e;
@@ -1440,15 +1451,25 @@ async function runSegment(segmentText, stdin, isLast) {
 
     // Run a .js command file from the virtual filesystem
     const content = await fs.read(resolved.path);
-    // Wrap in async IIFE to support top-level await; stdin is the 4th arg
-    const fn = new Function("args", "fs", "console", "stdin", "env", `
+    // Wrap in async IIFE to support top-level await; stdin is the 4th arg.
+    // `sh2` is the bash runtime (saved bash2js output calls sh2.exec & co.),
+    // `sh2lib` is the debashl toolchain facade (/bin/sh2js.js etc.).
+    const fn = new Function("args", "fs", "console", "stdin", "env", "sh2", "sh2lib", `
         return (async () => {
           ${content}
         })();
       `);
     const logChunks = [];
     const fakeConsole = { log: (...msgs) => logChunks.push(msgs.join(" ") + "\n") };
-    const ret = await fn(args, fs, fakeConsole, stdin, env);
+    const sh2rt = createSh2Runtime({
+      fs, env,
+      shellExec: runNestedCommand,
+      stdout: process.stdout,
+      stderr: process.stderr,
+      args: args.slice(1),
+      argv0: cmd,
+    });
+    const ret = await fn(args, fs, fakeConsole, stdin, env, sh2rt.sh2, sh2libFacade);
     // A command file may return a number to set its exit status
     const code = typeof ret === "number" ? ret : 0;
     output = logChunks.join("");
@@ -1522,9 +1543,9 @@ function splitConditionals(line) {
 // Run one pipeline (`|`-separated commands), feeding each command's
 // stdout to the next command's stdin. Returns the pipeline's exit
 // status: the first failing command's status, else the last one's.
-async function runPipeline(pipelineText) {
+async function runPipeline(pipelineText, initialStdin = "") {
   const segments = splitPipe(pipelineText);
-  let stdin = "";
+  let stdin = initialStdin;
   let exitCode = 0;
   for (let i = 0; i < segments.length; i++) {
     if (!segments[i].trim()) {
@@ -1545,23 +1566,30 @@ async function runPipeline(pipelineText) {
 // rt.pipe / rt.pipeCond in the generated JS call: sh2perl shells out
 // to 'bash -c "..."' for pipes, and we route that back through the
 // shell's own pipeline machinery.
-async function runNestedCommand(cmdLine) {
+async function runNestedCommand(cmdLine, stdin = "") {
   let captured = "";
+  let capturedErr = "";
   const origWrite = process.stdout.write;
+  const origErrWrite = process.stderr.write;
   process.stdout.write = (chunk) => {
     captured += chunk;
     return true;
   };
+  process.stderr.write = (chunk) => {
+    capturedErr += chunk;
+    return true;
+  };
   let code = 0;
   try {
-    code = (await handleLine(cmdLine)) ?? 0;
+    code = (await handleLine(cmdLine, stdin)) ?? 0;
   } finally {
     process.stdout.write = origWrite;
+    process.stderr.write = origErrWrite;
   }
-  return { out: captured, code };
+  return { out: captured, err: capturedErr, code };
 }
 
-async function handleLine(line) {
+async function handleLine(line, initialStdin) {
   const trimmed = line.trim();
   if (!trimmed) return;
 
@@ -1593,7 +1621,7 @@ async function handleLine(line) {
       if (parts[i].op === "&&" && exitCode !== 0) continue;
       if (parts[i].op === "||" && exitCode === 0) continue;
     }
-    exitCode = await runPipeline(parts[i].text);
+    exitCode = await runPipeline(parts[i].text, initialStdin);
   }
   return exitCode;
 }
