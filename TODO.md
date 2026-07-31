@@ -56,7 +56,7 @@ and device files. It runs in any browser with no build step.
       1. Fix native build (add <cstdint>, <algorithm>, type hierarchy)
       2. Cross-compile with wasi-sdk
       Alternative: use tcc-wasm or wasm2c path.
-- [ ] `ls -l` output format (permissions, size, date)
+- [x] `ls -l` output format (permissions, size, date)
 - [ ] Pipe operator: `cat README.md | head -3`
 - [ ] `grep` builtin or command
 - [ ] `find` builtin or command
