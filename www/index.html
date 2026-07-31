@@ -542,10 +542,6 @@ async function handleLine(line) {
         "apt": "wasmer", "apt-get": "wasmer", "yum": "wasmer",
         "dnf": "wasmer", "brew": "wasmer", "pacman": "wasmer",
         "apk": "wasmer", "pip": "wasmer", "npm": "wasmer install",
-        "python": "wasmer", "python3": "wasmer", "node": "wasmer",
-        "ruby": "wasmer", "go": "wasmer", "gcc": "wasmer",
-        "rustc": "wasmer", "java": "wasmer", "deno": "wasmer",
-        "cargo": "wasmer", "make": "wasmer",
       };
       const hint = hints[cmd];
       if (hint) {
@@ -826,7 +822,16 @@ input.addEventListener("keydown", async (e) => {
       const blob = await resp.blob();
       await fs.writeBlob("/bin/echo.wasm", blob);
     }
-  } catch { /* WASM demo unavailable */ }
+  } catch {}
+  
+  // Load python.wasm if available on server
+  try {
+    const resp = await fetch("wasm-bin/python.wasm");
+    if (resp.ok) {
+      const blob = await resp.blob();
+      await fs.writeBlob("/bin/python.wasm", blob);
+    }
+  } catch {}
 
   write("╔══════════════════════════════════════╗\n", "info");
   write("║     tinysh — browser shell          ║\n", "info");
@@ -839,7 +844,8 @@ input.addEventListener("keydown", async (e) => {
   write("          ls /dev/ · cat /dev/info · cat /dev/cpu\n", "info");
   write("          cat image.png · play music.mp3\n", "info");
   write("          browse /github/user/repo — open in tab\n", "info");
-  write("          apt/yum/pip → wasmer · wasmer install <pkg>\n\n", "info");
+  write("          apt/yum/pip → wasmer · wasmer install <pkg>\n", "info");
+  write("          python -c 'print(2+2)' — MicroPython in WASM\n\n", "info");
   updatePrompt();
   input.focus();
 })();
