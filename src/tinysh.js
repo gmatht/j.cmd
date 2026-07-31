@@ -196,6 +196,166 @@ const builtins = {
     }
   },
 
+  async grep(args) {
+    // grep [-i] [-n] [-v] [-c] [-l] [-r] [-e PATTERN] [--] PATTERN [FILE...]
+    // With no FILE arguments, searches stdin (pipe input).
+    let ignoreCase = false, lineNumber = false, invert = false;
+    let count = false, filesWithMatches = false, recursive = false;
+    let pattern = null, patternExplicit = false;
+    const patterns = [];
+    const files = [];
+    let optsDone = false;
+
+    const shortFlags = {
+      i: () => ignoreCase = true,
+      n: () => lineNumber = true,
+      v: () => invert = true,
+      c: () => count = true,
+      l: () => filesWithMatches = true,
+      r: () => recursive = true,
+      R: () => recursive = true,
+    };
+
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (a === "--" && !optsDone) { optsDone = true; continue; }
+      if (!optsDone && (a === "-i" || a === "--ignore-case")) ignoreCase = true;
+      else if (!optsDone && (a === "-n" || a === "--line-number")) lineNumber = true;
+      else if (!optsDone && (a === "-v" || a === "--invert-match")) invert = true;
+      else if (!optsDone && (a === "-c" || a === "--count")) count = true;
+      else if (!optsDone && (a === "-l" || a === "--files-with-matches")) filesWithMatches = true;
+      else if (!optsDone && (a === "-r" || a === "-R" || a === "--recursive")) recursive = true;
+      else if (!optsDone && (a === "-e" || a === "--regexp")) {
+        if (i + 1 >= args.length) {
+          process.stderr.write(`grep: option requires an argument -- '${a}'\n`);
+          return;
+        }
+        pattern = args[++i];
+        patterns.push(pattern);
+        patternExplicit = true;
+      } else if (!optsDone && a.startsWith("--")) {
+        process.stderr.write(`grep: unrecognized option '${a}'\n`);
+        return;
+      } else if (!optsDone && a.startsWith("-") && a.length > 1) {
+        // Bundled short flags, e.g. -in or -cv
+        let ok = true;
+        for (const ch of a.slice(1)) {
+          if (shortFlags[ch]) shortFlags[ch]();
+          else { ok = false; break; }
+        }
+        if (!ok) {
+          process.stderr.write(`grep: invalid option -- '${a}'\n`);
+          return;
+        }
+      } else if (!patternExplicit && pattern === null) {
+        pattern = a;
+        patterns.push(a);
+      } else {
+        files.push(a);
+      }
+    }
+
+    if (patterns.length === 0) {
+      process.stderr.write("grep: missing pattern\n");
+      return;
+    }
+    // Multiple -e patterns match if ANY of them matches (OR)
+    const patternSource = patterns.map(p => `(?:${p})`).join("|");
+
+    let re;
+    try {
+      re = new RegExp(patternSource, ignoreCase ? "i" : "");
+    } catch (e) {
+      process.stderr.write(`grep: invalid regular expression: '${patterns.join("', '")}'\n`);
+      return;
+    }
+
+    // Remote mounts would require crawling the network; refuse that and
+    // only grep them when a specific file is named.
+    const REMOTE = ["/http/", "/github/", "/mount/github/", "/gitlab/", "/mount/gitlab/"];
+    const isRemote = (p) => REMOTE.some(pre => p === pre.slice(0, -1) || p.startsWith(pre));
+
+    const showLabel = files.length > 1 || recursive;
+
+    const processContent = (content, label) => {
+      const lines = content.split("\n");
+      if (lines[lines.length - 1] === "") lines.pop(); // drop trailing newline
+      const hits = [];
+      for (let i = 0; i < lines.length; i++) {
+        if (re.test(lines[i]) !== invert) hits.push({ num: i + 1, text: lines[i] });
+      }
+      if (count) {
+        process.stdout.write((showLabel ? label + ":" : "") + hits.length + "\n");
+      } else if (filesWithMatches) {
+        if (hits.length > 0) process.stdout.write(label + "\n");
+      } else {
+        for (const h of hits) {
+          process.stdout.write(
+            (showLabel ? label + ":" : "") +
+            (lineNumber ? h.num + ":" : "") +
+            h.text + "\n"
+          );
+        }
+      }
+    };
+
+    if (files.length === 0) {
+      processContent(stdinBuffer, "(standard input)");
+      return;
+    }
+
+    // Recursively collect files under a directory
+    const walk = async (dir) => {
+      if (isRemote(dir)) {
+        process.stderr.write(`grep: skipping remote mount ${dir} (name specific files to search them)\n`);
+        return;
+      }
+      let entries;
+      try { entries = await fs.list(dir); } catch (e) {
+        process.stderr.write(`grep: ${dir}: ${e.message}\n`);
+        return;
+      }
+      for (const entry of entries) {
+        const clean = entry.replace(/\/$/, "");
+        const full = (dir === "/" ? "/" : dir + "/") + clean;
+        let st;
+        try { st = await fs.stat(full); } catch { continue; }
+        if (st.type === "dir") await walk(full);
+        else {
+          try {
+            const content = await fs.read(full);
+            processContent(content, full);
+          } catch (e) {
+            process.stderr.write(`grep: ${full}: ${e.message}\n`);
+          }
+        }
+      }
+    };
+
+    const seen = new Set();
+    for (const file of files) {
+      const r = fs._resolve(file);
+      if (seen.has(r)) continue;
+      seen.add(r);
+      if (recursive && isRemote(r)) {
+        process.stderr.write(`grep: skipping remote mount ${r} (name specific files to search them)\n`);
+        continue;
+      }
+      try {
+        const st = await fs.stat(file);
+        if (st.type === "dir") {
+          if (recursive) await walk(r);
+          else process.stderr.write(`grep: ${file}: Is a directory\n`);
+          continue;
+        }
+        const content = await fs.read(file);
+        processContent(content, r);
+      } catch (e) {
+        process.stderr.write(`grep: ${file}: ${e.message}\n`);
+      }
+    }
+  },
+
   async help(args) {
     process.stdout.write(`tinysh — minimal shell for the virtual filesystem
 
@@ -210,11 +370,15 @@ Built-in commands:
   cp <src> <dst>  Copy files
   mv <src> <dst>  Move files
   head [-n N] [file...]  Print first N lines (default 10; stdin if no file)
+  grep [opts] <pattern> [file...]  Search files/stdin for pattern
+                 (-i ignore case · -n line numbers · -v invert · -c count
+                  -l files with matches · -r recursive · -e PATTERN)
   help            This help
   exit            Exit the shell
 
 Pipes: cmd1 | cmd2 — cmd1's stdout becomes cmd2's stdin
   Example: cat README.md | head -3
+  Example: echo "hello" | grep -i hello
 
 Aliases: vi/vim/nano = edit · less/more = cat · cls = clear
          dir = ls · ? = help · q/quit = exit
