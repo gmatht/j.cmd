@@ -207,6 +207,7 @@ class VirtualFS {
       `Try these commands:\n` +
       `  ls /mount/github/gmatht/sh2perl  -- browse a GitHub repo\n` +
       `  cat /mount/github/gmatht/sh2perl/README.md  -- read a file\n` +
+      `  ls /git/github.com/torvalds/linux/  -- real git protocol, any repo\n` +
       `  cat /home/examples/hello.sh      -- a sample script\n` +
       `  edit /home/examples/note.txt     -- edit a file\n` +
       `  ls /dev/                         -- browser devices\n` +

@@ -484,7 +484,21 @@ class SmartHttpTransport {
   }
 
   async uploadPack(wants, { filter, caps } = {}) {
-    const resp = await fetch(this._url("/git-upload-pack"), {
+    let base = this.gitSuffix ? this.baseUrl + ".git" : this.baseUrl;
+    let resp = await this._post(base, wants, { filter, caps });
+    // Some hosts (GitLab) 301/422 the plain URL and only serve the
+    // wire protocol from the ".git" endpoint.
+    if ((resp.status === 301 || resp.status === 302 || resp.status === 307 ||
+         resp.status === 308 || resp.status === 404 || resp.status === 422) && !this.gitSuffix) {
+      this.gitSuffix = true;
+      resp = await this._post(this.baseUrl + ".git", wants, { filter, caps });
+    }
+    if (!resp.ok) throw new Error(`git-upload-pack: HTTP ${resp.status}`);
+    return extractPack(new Uint8Array(await resp.arrayBuffer()));
+  }
+
+  async _post(base, wants, { filter, caps }) {
+    return fetch(base + "/git-upload-pack", {
       method: "POST",
       headers: {
         "Content-Type": "application/x-git-upload-pack-request",
@@ -492,8 +506,6 @@ class SmartHttpTransport {
       },
       body: uploadPackRequest(wants, { filter, caps }),
     });
-    if (!resp.ok) throw new Error(`git-upload-pack: HTTP ${resp.status}`);
-    return extractPack(new Uint8Array(await resp.arrayBuffer()));
   }
 }
 
@@ -599,13 +611,13 @@ class GitRepo {
     return ad.head;
   }
 
-  // Capabilities to ask for in a want line, limited to what the server
-  // advertised. allow-tip-sha1-in-want lets us want arbitrary object ids
-  // (trees/blobs), which is what makes per-object lazy fetching possible.
+  // Capabilities to ask for in a want line. allow-tip-sha1-in-want lets us
+  // want arbitrary object ids (trees/blobs) — the basis of per-object lazy
+  // fetching. It is only sent for per-object wants, never for a full-branch
+  // fetch (a ref is always allowed, and some servers mis-handle the cap).
   _wantCaps() {
-    const caps = [];
-    if (this.ad && this.ad.caps.has("allow-tip-sha1-in-want")) caps.push("allow-tip-sha1-in-want");
-    return caps;
+    if (!this.lazyObjects) return [];
+    return ["allow-tip-sha1-in-want"];
   }
 
   peekObject(sha) {
@@ -628,12 +640,19 @@ class GitRepo {
     // Servers that advertise allow-tip-sha1-in-want (GitHub does) let us
     // want any object id — fetch trees/blobs one tiny pack at a time.
     if (this.transport instanceof SmartHttpTransport && this.lazyObjects) {
-      const pack = await this.transport.uploadPack([sha], { caps: this._wantCaps() });
-      const objs = await parsePack(pack, (baseSha) => this.readObject(baseSha));
-      for (const o of objs) this.objects.set(o.sha, o);
-      const want = this.objects.get(sha);
-      if (!want) throw new Error(`object not in pack: ${sha}`);
-      return want;
+      try {
+        const pack = await this.transport.uploadPack([sha], { caps: this._wantCaps() });
+        const objs = await parsePack(pack, (baseSha) => this.readObject(baseSha));
+        for (const o of objs) this.objects.set(o.sha, o);
+        const want = this.objects.get(sha);
+        if (!want) throw new Error(`object not in pack: ${sha}`);
+        return want;
+      } catch (e) {
+        // Some servers (GitLab) advertise allow-tip-sha1-in-want but reject
+        // it anyway ("not our ref"); fall back to a full-branch fetch, which
+        // needs no special capabilities and works on every server.
+        this.lazyObjects = false;
+      }
     }
     // Otherwise fetch the whole branch once (all reachable objects), which
     // works on every server; subsequent reads hit the cache.
@@ -641,7 +660,7 @@ class GitRepo {
       const head = await this.headSha();
       let pack;
       if (this.transport instanceof SmartHttpTransport) {
-        pack = await this.transport.uploadPack([head], { caps: this._wantCaps() });
+        pack = await this.transport.uploadPack([head]);
       } else {
         // Dumb HTTP: try loose object first (recent objects are loose),
         // else pull every packfile.
