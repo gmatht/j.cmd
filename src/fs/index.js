@@ -704,19 +704,39 @@ try {
     syncWrite(this._getBackend("/bin/audiodemo.js"), "/audiodemo.js", audioDemoContent);
 
     // sh2js.js — debashl toolchain command (uses the injected sh2lib facade).
-    // Written only when absent, so user edits survive reloads.
-    const sh2jsjsContent = `// sh2js — transpile bash to JavaScript via debashl (ESTree path).
-//   sh2js 'echo hi'        → generated JS source (sh2.* runtime)
-//   sh2js -e 'echo hi'     → ESTree JSON (the debashl contract)
-const src = args.join(" ");
-if (!src) { console.log("usage: sh2js '<bash source>'   (sh2js -e '...' for ESTree JSON)"); return 2; }
+    // Version-gated (v2 marker) so file/pipe support reaches existing installs.
+    const sh2jsjsContent = `async function sh2src() {
+  if (args[0] === "-f" || args[0] === "--file") {
+    if (!args[1]) throw new Error("-f needs a file name");
+    return await fs.read(args[1]);
+  }
+  if (args[0] === "<") {
+    if (!args[1]) throw new Error("'<' needs a file name");
+    return await fs.read(args[1]);
+  }
+  if (args[0] === "-" || (args.length === 0 && stdin)) return stdin;
+  if (args.length === 1 && !args[0].startsWith("-")) {
+    try { return await fs.read(args[0]); } catch { return args[0]; }
+  }
+  return args.join(" ");
+}
+// sh2js v2 — transpile bash to JavaScript (debashl ESTree path).
+//   sh2js 'echo hi'        inline source
+//   sh2js script.sh        bash script file
+//   sh2js -f script.sh     bash script file (explicit)
+//   cat script.sh | sh2js  from a pipe (or: sh2js -)
+//   sh2js -e 'echo hi'     ESTree JSON
 if (args[0] === "-e") {
   const ast = await sh2lib.toEstree(args.slice(1).join(" "));
   console.log(JSON.stringify(ast, null, 2));
   return 0;
 }
+if (args.length === 0 && !stdin) {
+  console.log("usage: sh2js '<bash source>' | script.sh | -f FILE | pipe");
+  return 2;
+}
 try {
-  console.log(await sh2lib.bashToJs(src));
+  console.log(await sh2lib.bashToJs(await sh2src()));
 } catch (e) {
   console.log("sh2js: " + e.message);
   return 1;
@@ -724,16 +744,41 @@ try {
 return 0;
 `;
     this._getBackend("/bin/sh2js.js").read("/sh2js.js")
+      .then((existing) => {
+        if (!existing.includes(" v2")) {
+          syncWrite(this._getBackend("/bin/sh2js.js"), "/sh2js.js", sh2jsjsContent);
+        }
+      })
       .catch(() => syncWrite(this._getBackend("/bin/sh2js.js"), "/sh2js.js", sh2jsjsContent));
 
     // sh2perl.js — debashl toolchain command (uses the injected sh2lib facade).
-    // Written only when absent, so user edits survive reloads.
-    const sh2perljsContent = `// sh2perl — transpile bash to Perl via debashl.
-//   sh2perl 'echo hi'   → Perl source
-const src = args.join(" ");
-if (!src) { console.log("usage: sh2perl '<bash source>'"); return 2; }
+    // Version-gated (v2 marker) so file/pipe support reaches existing installs.
+    const sh2perljsContent = `async function sh2src() {
+  if (args[0] === "-f" || args[0] === "--file") {
+    if (!args[1]) throw new Error("-f needs a file name");
+    return await fs.read(args[1]);
+  }
+  if (args[0] === "<") {
+    if (!args[1]) throw new Error("'<' needs a file name");
+    return await fs.read(args[1]);
+  }
+  if (args[0] === "-" || (args.length === 0 && stdin)) return stdin;
+  if (args.length === 1 && !args[0].startsWith("-")) {
+    try { return await fs.read(args[0]); } catch { return args[0]; }
+  }
+  return args.join(" ");
+}
+// sh2perl v2 — transpile bash to Perl via debashl.
+//   sh2perl 'echo hi'      inline source
+//   sh2perl script.sh      bash script file
+//   sh2perl -f script.sh   bash script file (explicit)
+//   cat script.sh | sh2perl  from a pipe (or: sh2perl -)
+if (args.length === 0 && !stdin) {
+  console.log("usage: sh2perl '<bash source>' | script.sh | -f FILE | pipe");
+  return 2;
+}
 try {
-  console.log(await sh2lib.toPerl(src));
+  console.log(await sh2lib.toPerl(await sh2src()));
 } catch (e) {
   console.log("sh2perl: " + e.message);
   return 1;
@@ -741,47 +786,63 @@ try {
 return 0;
 `;
     this._getBackend("/bin/sh2perl.js").read("/sh2perl.js")
+      .then((existing) => {
+        if (!existing.includes(" v2")) {
+          syncWrite(this._getBackend("/bin/sh2perl.js"), "/sh2perl.js", sh2perljsContent);
+        }
+      })
       .catch(() => syncWrite(this._getBackend("/bin/sh2perl.js"), "/sh2perl.js", sh2perljsContent));
 
     // debashc.js — debashl toolchain command (uses the injected sh2lib facade).
-    // Written only when absent, so user edits survive reloads.
-    const debashcjsContent = `// debashc — the bash compiler CLI (debashl reactor): parse → ESTree or Perl.
-//   debashc parse 'echo hi'          → ESTree JSON
-//   debashc parse --perl 'echo hi'   → Perl source
-//   debashc file --estree x.sh       → ESTree for a script file
-//   debashc file --perl x.sh         → Perl for a script file
+    // Version-gated (v2 marker) so file/pipe support reaches existing installs.
+    const debashcjsContent = `// debashc v2 — the bash compiler CLI (debashl reactor): parse → ESTree or Perl.
+//   debashc parse 'echo hi'          ESTree JSON
+//   debashc parse --perl 'echo hi'   Perl source
+//   debashc file --estree x.sh       ESTree for a script file
+//   debashc file --perl x.sh         Perl for a script file
+//   debashc x.sh                     ESTree for a script file
 if (!args.length || args[0] === "-h" || args[0] === "--help") {
   console.log("debashc — bash compiler (debashl)");
   console.log("  debashc parse 'echo hi'              ESTree JSON");
   console.log("  debashc parse --perl 'echo hi'       Perl source");
   console.log("  debashc file --estree x.sh           ESTree for a file");
   console.log("  debashc file --perl x.sh             Perl for a file");
+  console.log("  debashc x.sh                         ESTree for a file");
   return args.length ? 0 : 2;
 }
-const mode = args[0];
-if (mode === "parse") {
-  if (args[1] === "--perl") { console.log(await sh2lib.toPerl(args.slice(2).join(" "))); return 0; }
-  console.log(JSON.stringify(await sh2lib.toEstree(args.slice(1).join(" ")), null, 2));
-  return 0;
-}
-if (mode === "file") {
-  const flag = args[1];
-  const file = args[2];
-  if (!file) { console.log("debashc: file mode needs a file name"); return 2; }
-  try {
-    const content = await fs.read(file);
-    if (flag === "--perl") console.log(await sh2lib.toPerl(content));
-    else console.log(JSON.stringify(await sh2lib.toEstree(content), null, 2));
-  } catch (e) {
-    console.log("debashc: " + e.message);
-    return 1;
+async function readSource() {
+  if (args[0] === "file") {
+    const file = args[2];
+    if (!file) throw new Error("file mode needs a file name");
+    return await fs.read(file);
   }
-  return 0;
+  if (args[0] === "<") {
+    if (!args[1]) throw new Error("'<' needs a file name");
+    return await fs.read(args[1]);
+  }
+  if (args.length === 1 && !args[0].startsWith("-")) {
+    try { return await fs.read(args[0]); } catch { return args[0]; }
+  }
+  return args.slice(1).join(" ");
 }
-console.log(JSON.stringify(await sh2lib.toEstree(args.join(" ")), null, 2));
+try {
+  const src = await readSource();
+  if (args[0] === "parse" && args[1] === "--perl") { console.log(await sh2lib.toPerl(src)); return 0; }
+  if (args[0] === "file" && args[1] === "--perl") { console.log(await sh2lib.toPerl(src)); return 0; }
+  if (args[0] === "parse") { console.log(JSON.stringify(await sh2lib.toEstree(src), null, 2)); return 0; }
+  console.log(JSON.stringify(await sh2lib.toEstree(src), null, 2));
+} catch (e) {
+  console.log("debashc: " + e.message);
+  return 1;
+}
 return 0;
 `;
     this._getBackend("/bin/debashc.js").read("/debashc.js")
+      .then((existing) => {
+        if (!existing.includes(" v2")) {
+          syncWrite(this._getBackend("/bin/debashc.js"), "/debashc.js", debashcjsContent);
+        }
+      })
       .catch(() => syncWrite(this._getBackend("/bin/debashc.js"), "/debashc.js", debashcjsContent));
 
 
