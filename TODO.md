@@ -91,7 +91,7 @@ and device files. It runs in any browser with no build step.
 
 ### Polish
 
-- [ ] `clear` respects scrollback
+- [x] `clear` respects scrollback
 - [ ] Resizable terminal
 - [ ] Color output for `ls` (dirs in blue, files in white, executables in green)
 - [ ] Ctrl+C interrupt handling
