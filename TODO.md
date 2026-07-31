@@ -78,7 +78,7 @@ and device files. It runs in any browser with no build step.
 - [x] Git FS: mount a git repo as a filesystem (read tree, read blobs)
 - [x] WebGL device: /dev/webgl with shader/buffer/uniform files
 - [x] /dev/camera frame capture
-- [ ] Audio device: /dev/audio oscillator
+- [x] Audio device: /dev/audio oscillator
 - [ ] /proc/ filesystem (process info, browser stats)
 - [ ] Mount command: `mount github:user/repo /mymount`
 

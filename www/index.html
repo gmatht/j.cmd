@@ -1249,6 +1249,8 @@ const builtins = {
                 draw via /dev/webgl/call ("clear", "draw arrays triangles 3 0", "swap") · demo: webgldemo
                 Camera: cat /dev/camera/frame (capture → PNG) · cp /dev/camera/frame /pc/shot.png
                 echo 1280x720 > /dev/camera/size · echo off > /dev/camera/off · cat /dev/camera/info
+                Audio: echo 440 > /dev/audio/freq · echo sine > /dev/audio/wave · echo on > /dev/audio/on
+                echo off > /dev/audio/off · echo A4 0.5 > /dev/audio/note · demo: audiodemo
 
   Aliases: nano/emacs = edit · less/more = cat · cls = clear
            dir = ls · ? = help · q/quit = exit
@@ -2254,7 +2256,7 @@ function updateStatusBar() {
   } else if (cwd.startsWith("/http")) {
     statusHint.textContent = "CORS-enabled fetch. Public CDNs and APIs only. 'browse' opens URL.";
   } else if (cwd.startsWith("/dev")) {
-    statusHint.textContent = "Browser devices: info, cpu, webgl, clipboard, random...";
+    statusHint.textContent = "Browser devices: info, cpu, webgl, camera, audio, clipboard...";
   } else if (cwd.startsWith("/tmp")) {
     statusHint.textContent = "Ephemeral — lost on reload.";
   } else if (cwd.startsWith("/home")) {
