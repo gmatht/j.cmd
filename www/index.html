@@ -310,20 +310,21 @@ function closeViEditor() {
 // Register vim ex commands (:w, :q, :wq, :x, :q!)
 function registerViExCommands() {
   if (!CodeMirror.Vim) return;
-  const ex = CodeMirror.Vim.exCommands;
+  const vim = CodeMirror.Vim;
 
-  ex["w"] = (cm2) => saveViFile();
-  ex["wq"] = (cm2) => { saveViFile(); closeViEditor(); };
-  ex["x"] = (cm2) => { saveViFile(); closeViEditor(); };
-  ex["q"] = (cm2) => {
+  // defineEx(name, prefix, func) — name is the full command, prefix is
+  // the abbreviated form allowed (e.g. 'wq' accepts ':wq' only).
+  vim.defineEx("write", "w", () => saveViFile());
+  vim.defineEx("writequit", "wq", () => { saveViFile(); closeViEditor(); });
+  vim.defineEx("xit", "x", () => { saveViFile(); closeViEditor(); });
+  vim.defineEx("quit", "q", () => {
     if (viState.dirty) {
       write("E37: No write since last change (use :q! to discard)\n", "err");
     } else {
       closeViEditor();
     }
-  };
-  ex["q!"] = (cm2) => closeViEditor();
-  ex["quit"] = ex["q"];
+  });
+  vim.defineEx("quit!", "q!", () => closeViEditor());
 }
 
 // Call after CodeMirror + vim keymap load
