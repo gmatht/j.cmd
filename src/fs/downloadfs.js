@@ -35,6 +35,16 @@ function mimeHint(path) {
 
 export class DownloadFS {
   async read(path) {
+    const file = await this._pickFile(path);
+    return await file.text();
+  }
+
+  async readBlob(path) {
+    // Return the File directly — File extends Blob and preserves bytes
+    return await this._pickFile(path);
+  }
+
+  async _pickFile(path) {
     const name = path.replace(/^\//, "");
     const mime = mimeHint(name);
 
@@ -47,16 +57,14 @@ export class DownloadFS {
       }
       try {
         const [handle] = await window.showOpenFilePicker(options);
-        const file = await handle.getFile();
-        return await file.text();
+        return await handle.getFile();
       } catch (e) {
         throw new Error(`file picker cancelled: ${e.message}`);
       }
     }
 
     // Fallback (Firefox/Safari): hidden <input type=file>
-    const file = await this._pickViaInput(mime);
-    return await file.text();
+    return await this._pickViaInput(mime);
   }
 
   _pickViaInput(mime) {

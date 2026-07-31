@@ -8,6 +8,25 @@
 // -----------------------------------------------------------------
 
 const KEY_PREFIX = "fs:";
+// Marker prefix for base64-encoded binary content stored in localStorage
+const B64_MARKER = "\u0001b64:";
+
+// Encode bytes to base64 (browser-safe, no atob/btoa chunk issues)
+function bytesToBase64(bytes) {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+function base64ToBytes(b64) {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
 
 export class LocalStorageFS {
   constructor() {
@@ -66,13 +85,42 @@ export class LocalStorageFS {
     const key = KEY_PREFIX + "file:" + norm;
     const data = localStorage.getItem(key);
     if (data === null) throw new Error("ENOENT");
+    // Decode binary content back to original form
+    if (data.startsWith(B64_MARKER)) {
+      return new TextDecoder().decode(base64ToBytes(data.slice(B64_MARKER.length)));
+    }
     return data;
+  }
+
+  async readBlob(path) {
+    const norm = path.replace(/\/$/, "") || "/";
+    const dirs = this._dirs();
+    if (dirs.includes(norm)) throw new Error("EISDIR");
+
+    const key = KEY_PREFIX + "file:" + norm;
+    const data = localStorage.getItem(key);
+    if (data === null) throw new Error("ENOENT");
+    if (data.startsWith(B64_MARKER)) {
+      return new Blob([base64ToBytes(data.slice(B64_MARKER.length))]);
+    }
+    return new Blob([data], { type: "text/plain" });
   }
 
   async write(path, content) {
     const norm = path.replace(/\/$/, "") || "/";
     this._ensureParent(norm);
     localStorage.setItem(KEY_PREFIX + "file:" + norm, content);
+  }
+
+  async writeBlob(path, blob) {
+    const norm = path.replace(/\/$/, "") || "/";
+    this._ensureParent(norm);
+    // Store binary as base64 with a marker so readBlob can recover bytes
+    const buffer = await blob.arrayBuffer();
+    localStorage.setItem(
+      KEY_PREFIX + "file:" + norm,
+      B64_MARKER + bytesToBase64(new Uint8Array(buffer))
+    );
   }
 
   async list(path) {

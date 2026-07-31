@@ -391,7 +391,18 @@ const builtins = {
       if (isImage || isAudio) {
         try {
           const blob = await fs.readBlob(file);
-          const url = URL.createObjectURL(blob);
+          // Set a proper MIME type so the browser renders correctly
+          const extMime = {
+            png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
+            gif: "image/gif", svg: "image/svg+xml", webp: "image/webp",
+            bmp: "image/bmp", ico: "image/x-icon",
+            mp3: "audio/mpeg", wav: "audio/wav", ogg: "audio/ogg",
+            m4a: "audio/mp4", flac: "audio/flac", wma: "audio/x-ms-wma",
+          }[ext];
+          const typedBlob = blob.type
+            ? blob
+            : new Blob([blob], { type: extMime || "application/octet-stream" });
+          const url = URL.createObjectURL(typedBlob);
           const el = isImage
             ? `<img src="${url}" style="max-width: 80vw; max-height: 60vh; border-radius: 4px; margin: 4px 0;" />`
             : `<audio controls src="${url}" style="width: 100%; max-width: 400px; margin: 4px 0;"></audio>`;
