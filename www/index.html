@@ -3531,7 +3531,10 @@ term.addEventListener("dragover", (e) => {
 term.addEventListener("drop", async (e) => {
   e.preventDefault();
   const files = [...(e.dataTransfer ? e.dataTransfer.files : [])];
-  if (files.length === 0) return;
+  if (files.length === 0) {
+    input.focus();  // text drag, not files — just give focus back
+    return;
+  }
   const destDir = (env.HOME || "/home").replace(/\/+$/, "") + "/uploads";
   let uploaded = [];
   for (const file of files) {
@@ -3552,6 +3555,20 @@ term.addEventListener("drop", async (e) => {
                             : `uploaded ${uploaded.length} files to ~/uploads/`;
   }
   input.focus();
+});
+
+// Starting a drag (of text or files) steals focus from the hidden input,
+// and the term drop handler only runs when the drop lands on us — so
+// after any drag that ends elsewhere (dropped on the page, cancelled,
+// released outside), give focus back or typing silently goes nowhere.
+const refocusAfterDrag = () => {
+  if (editorContainer.classList.contains("active")) return;  // editor owns focus
+  input.focus();
+};
+document.addEventListener("dragend", refocusAfterDrag);
+document.addEventListener("drop", (e) => {
+  if (e.target.closest("#editor-container")) return;  // editor owns focus
+  refocusAfterDrag();
 });
 
 // IME composition / pasting lands in the hidden input (those key events
