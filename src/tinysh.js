@@ -17,7 +17,7 @@ import { WasmRunner } from "./wasm.js";
 import { WasmerRegistry } from "./wasmer.js";
 import { env, expandRef } from "./env.js";
 import { procfs } from "./fs/procfs.js";
-import { bashToJS } from "./bash2js.js";
+import { bashToJS, runBash } from "./bash2js.js";
 
 const wasmRunner = new WasmRunner(fs);
 const wasmerReg = new WasmerRegistry(fs);
@@ -776,6 +776,91 @@ and run it as a command.
     }
   },
 
+  async bash(args) {
+    // bash 'echo hello world' — transpile AND execute bash source
+    // bash script.sh          — execute a bash script from the VFS
+    // bash -c 'echo hi'       — same as inline (-c accepted for familiarity)
+    // cat script.sh | bash    — execute from a pipe
+    //
+    // Type bash, get generated JS executed:
+    //   bash → Perl (sh2perl.wasm) → JS (perl2js) → run in the shell
+    if (args[0] === "-h" || args[0] === "--help") {
+      process.stdout.write(`bash — run bash commands by transpiling them to JS
+
+Usage:
+  bash 'echo hello world'  transpile + execute inline bash
+  bash -c 'echo hi'        same as inline
+  bash script.sh           execute a bash script file from the virtual FS
+  cat script.sh | bash     execute from a pipe
+  bash -                   execute from a pipe (explicit)
+
+Pipeline:  bash → Perl (sh2perl.wasm) → JS (perl2js) → executed
+Loops, conditionals, variables, arithmetic and pipes work:
+  bash 'for i in 1 2 3; do echo $i; done'
+  bash 'x=1; while [ $x -lt 3 ]; do echo $x; x=$((x+1)); done'
+  bash 'echo hi | grep h'
+`);
+      return 0;
+    }
+    let source = null;
+    if (args[0] === "-c" || args[0] === "-e") {
+      source = args.slice(1).join(" ");
+    } else if (args[0] === "-f" || args[0] === "--file") {
+      const file = args[1];
+      if (!file) {
+        process.stderr.write("bash: -f needs a file name\n");
+        return 2;
+      }
+      try {
+        source = await fs.read(file);
+      } catch (e) {
+        process.stderr.write(`bash: ${file}: ${e.message}\n`);
+        return 1;
+      }
+    } else if (args.length === 0 || args[0] === "-") {
+      if (stdinBuffer) {
+        source = stdinBuffer; // piped in
+      } else {
+        process.stderr.write("bash: no script given (pass one as an argument, use -f FILE, or pipe it in)\n");
+        return 2;
+      }
+    } else if (!args[0].startsWith("-")) {
+      // A file name runs the script from the VFS (`bash script.sh`);
+      // anything else is inline bash source (`bash 'echo hi'`).
+      // A word that looks like a script path but doesn't exist is an
+      // error; multi-word source (paths inside it, like `if [ -f /x`) is
+      // always treated as inline bash.
+      const file = args[0];
+      let fileSource = null;
+      try {
+        fileSource = await fs.read(file);
+      } catch {
+        // not a file — fall through to inline source
+      }
+      const looksLikePath = !/\s/.test(file) && (file.includes("/") || /\.sh$/.test(file));
+      if (fileSource !== null) {
+        source = fileSource;
+      } else if (looksLikePath) {
+        process.stderr.write(`bash: ${file}: No such file or directory\n`);
+        return 1;
+      } else {
+        source = args.join(" ");
+      }
+    } else {
+      source = args.join(" ");
+    }
+    try {
+      return await runBash(fs, source, {
+        wasmRunner,
+        stdout: process.stdout,
+        runCmd: runNestedCommand,
+      });
+    } catch (e) {
+      process.stderr.write(`bash: ${e.message}\n`);
+      return 1;
+    }
+  },
+
   async help(args) {
     process.stdout.write(`tinysh — minimal shell for the virtual filesystem
 
@@ -800,6 +885,8 @@ Built-in commands:
   unmount <path>   Detach a user-created mount
   wasmer          WASM package manager (list / install <pkg> / search <term>)
   bash2js         Transpile bash to JavaScript (sh2perl → perl2js)
+  bash            Run bash commands: transpile to JS and execute
+                  (bash 'echo hi' · bash script.sh · cat s.sh | bash)
   true            Always succeeds (exit 0)
   false           Always fails (exit 1)
   help            This help
@@ -1039,6 +1126,7 @@ async function runSegment(segmentText, stdin, isLast) {
       "apk": "wasmer", "pip": "wasmer", "npm": "wasmer install",
       "umount": "unmount",
       "wasmer": "wasmer coming soon — WASM package manager for browser shell",
+      "sh": "bash",
     };
     const hint = hints[cmd];
     if (hint) {
@@ -1205,6 +1293,26 @@ async function runPipeline(pipelineText) {
     exitCode = result.code ?? 0;
   }
   return exitCode;
+}
+
+// Run a nested command line from generated JS (pipelines and command
+// substitution inside a `bash` script) through the shell itself, and
+// return its captured stdout. This is what rt.exec / rt.system in the
+// generated JS call: sh2perl shells out to 'bash -c "..."' for pipes,
+// and we route that back through the shell's own pipeline machinery.
+async function runNestedCommand(cmdLine) {
+  let captured = "";
+  const origWrite = process.stdout.write;
+  process.stdout.write = (chunk) => {
+    captured += chunk;
+    return true;
+  };
+  try {
+    await handleLine(cmdLine);
+  } finally {
+    process.stdout.write = origWrite;
+  }
+  return captured;
 }
 
 async function handleLine(line) {

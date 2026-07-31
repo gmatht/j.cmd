@@ -20,6 +20,7 @@
 
 import { WasmRunner } from "./wasm.js";
 import { perlToJS } from "./perl2js.js";
+import { env } from "./env.js";
 
 const BANNER_RE = /^Converting to Perl:\n=+\n([\s\S]*?)\n=+\n$/;
 
@@ -151,4 +152,26 @@ export async function bashToJS(fs, bashSource, { wasmRunner } = {}) {
     escapeJsComment(bashSource) + "\n";
   const js = header + buildRuntimePreamble() + "// ── transpiled statements ─────────────────────────────\n" + perlToJS(perl);
   return { js, perl };
+}
+
+// ─── runBash: transpile AND execute in one call ────────────────
+// The "type bash, get generated JS executed" entry point: transpiles
+// the source with bashToJS and runs the generated JS in a shell
+// context where `fs`, `env`, `stdout` and `__runCmd` (the shell's
+// own command runner — used for pipelines and command substitution)
+// are in scope. Returns the script's exit code.
+//
+// The generated JS is wrapped in an async IIFE, so loops, sleeps and
+// await-requiring helpers (rt.test, rt.exec, ...) all work, and the
+// script's exit status (bash `exit N` / the implicit 0) comes back
+// as the return value.
+export async function runBash(fs, source, { wasmRunner, stdout, runCmd } = {}) {
+  const { js } = await bashToJS(fs, source, { wasmRunner });
+  const fn = new Function("args", "fs", "env", "stdout", "stdin", "__runCmd", `
+    return (async () => {
+      ${js}
+    })();
+  `);
+  const code = await fn([], fs, env, stdout, "", runCmd);
+  return typeof code === "number" ? code : 0;
 }
