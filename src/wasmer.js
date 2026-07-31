@@ -80,7 +80,7 @@ export class WasmerRegistry {
       throw new Error(`Package '${name}' not found. Try 'wasmer list' first.`);
     }
 
-    const destPath = `/bin/${name}.wasm`;
+    const destPath = `/usr/bin/${name}.wasm`;
 
     // Try the local server first
     const resp = await fetch(pkg.url);

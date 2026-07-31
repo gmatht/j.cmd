@@ -135,7 +135,7 @@ function escapeJsComment(text) {
 // straight from the repo; the browser fetches it from the server.
 async function ensureSh2perl(fs) {
   try {
-    await fs.stat("/bin/sh2perl.wasm");
+    await fs.stat("/usr/bin/sh2perl.wasm");
     return;
   } catch {
     // not installed yet
@@ -155,7 +155,7 @@ async function ensureSh2perl(fs) {
       throw new Error("sh2perl.wasm not found — run ./build-wasm-sh2perl.sh or serve www/wasm-bin/");
     }
   }
-  await fs.writeBlob("/bin/sh2perl.wasm", new Blob([buf]));
+  await fs.writeBlob("/usr/bin/sh2perl.wasm", new Blob([buf]));
 }
 
 // ─── bashToJS: the one-call entry point ─────────────────────────
@@ -164,7 +164,7 @@ async function ensureSh2perl(fs) {
 export async function bashToJS(fs, bashSource, { wasmRunner } = {}) {
   const runner = wasmRunner || new WasmRunner(fs);
   await ensureSh2perl(fs);
-  await runner.run("/bin/sh2perl.wasm", ["sh2perl", "parse", "--perl", bashSource]);
+  await runner.run("/usr/bin/sh2perl.wasm", ["sh2perl", "parse", "--perl", bashSource]);
   const stdout = runner.getStdout();
   const m = BANNER_RE.exec(stdout);
   const perl = m ? m[1] : stdout;

@@ -245,7 +245,7 @@ DESCRIPTION
 
 EXAMPLES
      export EDITOR=edit
-     export PATH=/commands:/usr/bin:/bin
+     export PATH=/bin:/usr/bin
      export          print all variables
      echo $EDITOR    edit
 
@@ -381,7 +381,7 @@ EXAMPLES
      echo "hello world" | grep -i hello
      grep -rn "mount" /home
      grep -c "^#" ~/.tinyshrc        count comment lines in config
-     grep -l wasm /commands/*.js
+     grep -l wasm /bin/*.js
 
 SEE ALSO
      find, cat, head
@@ -411,7 +411,7 @@ EXAMPLES
      find /home -name "*.txt"
      find . -name "*.js" -maxdepth 2
      find / -type d -name tmp
-     find /commands -type f | head
+     find /bin -type f | head
 
 SEE ALSO
      grep, ls
@@ -470,7 +470,7 @@ SYNOPSIS
 DESCRIPTION
      wasmer manages pre-compiled wasm32-wasi binaries. Packages are
      built by the repo's build-*.sh scripts and served from
-     www/wasm-bin/. Once installed into /bin/, a package runs as a
+     www/wasm-bin/. Once installed into /usr/bin/, a package runs as a
      native command through the full WASI runtime (@wasmer/wasi), so
      real grep, python, curl etc. become shell commands.
 
@@ -581,9 +581,9 @@ DESCRIPTION
      unknown names. Exit status is 1 if any name was not found.
 
 EXAMPLES
-     which grep        /bin/grep.wasm (after "wasmer install grep")
+     which grep        /usr/bin/grep.wasm (after "wasmer install grep")
      which ls          ls: shell builtin
-     which sl          which: no sl in (/commands:/usr/bin:/bin)
+     which sl          which: no sl in (/bin:/usr/bin)
 
 SEE ALSO
      wasmer, help
@@ -742,7 +742,7 @@ DESCRIPTION
 EXAMPLES
      locate wasm
      locate note /home
-     locate .js /commands
+     locate .js /bin
 
 SEE ALSO
      find, grep
@@ -949,7 +949,7 @@ export async function getManPage(name, { fs, wasmerReg } = {}) {
 
   // .js command files often start with a doc comment — use it.
   if (fs && typeof fs.read === "function") {
-    for (const dir of ["/commands", "/bin", "/usr/bin", "/home/examples", "."]) {
+    for (const dir of ["/bin", "/usr/bin", "/home/examples", "."]) {
       try {
         const content = await fs.read(`${dir}/${name}.js`);
         const page = commentToManPage(content);
@@ -977,7 +977,7 @@ export async function getManPage(name, { fs, wasmerReg } = {}) {
     if (pkg) {
       return {
         name,
-        source: `/bin/${name}.wasm`,
+        source: `/usr/bin/${name}.wasm`,
         text: `NAME
      ${name} — ${pkg.desc}
 

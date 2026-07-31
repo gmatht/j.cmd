@@ -8,9 +8,13 @@
 //   /tmp/         → RamFS         (ephemeral, in-memory)
 //   /home/        → LocalStorageFS(persistent across reloads, ~5MB limit)
 //   /big/         → IndexedDBFS   (persistent, no practical size limit)
-//   /commands/    → LocalStorageFS(persistent user commands)
+//   /bin/         → LocalStorageFS(.js commands — the shell's binaries)
+//   /commands/    → (alias of /bin — legacy name)
+//   /usr/bin/     → RamFS         (WASM binaries: wasmer install, auto-load)
 //   /http/        → HttpFS        (CORS fetch access)
 //   /proc/        → ProcFS        (process info + browser stats)
+//   /dev/         → DevFS         (browser devices)
+//   /pc/          → DownloadFS    (downloads)
 //   /mount/github → GitHubFS      (GitHub API as a filesystem)
 //   /mount/gitlab → GitLabFS      (GitLab API as a filesystem)
 //   /mount/git    → GitFS         (real git wire protocol over HTTP)
@@ -300,8 +304,16 @@ class VirtualFS {
     this.mount("ram", "/tmp", new RamFS());
     this.mount(hasLocalStorage ? "localStorage" : "ram", "/home",
       hasLocalStorage ? new LocalStorageFS() : new RamFS());
-    this.mount(hasLocalStorage ? "localStorage" : "ram", "/commands",
-      hasLocalStorage ? new LocalStorageFS() : new RamFS());
+    // /bin — the shell's binaries. JavaScript is the binary format, so
+    // user/system .js commands live here (persistent). /commands is kept
+    // as an alias mount so old paths and existing files keep working.
+    const commands = hasLocalStorage ? new LocalStorageFS() : new RamFS();
+    this.mount(hasLocalStorage ? "localStorage" : "ram", "/bin", commands);
+    this.mount(hasLocalStorage ? "localStorage" : "ram", "/commands", commands);
+    // /usr/bin — real WASM binaries (wasmer install, auto-load). RamFS:
+    // python.wasm etc. would blow the ~5MB localStorage quota, and they
+    // re-download from the local server on boot anyway.
+    this.mount("ram", "/usr/bin", new RamFS());
     this.mount("http", "/http", new OverlayFS(new HttpFS(), "http", "fs:ovl:http:"));
     const github = new OverlayFS(new GitHubFS(), "github", "fs:ovl:github:");
     this.mount("github", "/mount/github", github);
@@ -328,7 +340,6 @@ class VirtualFS {
     // size limit, so /big/ is where files that outgrow /home/ belong.
     this.mount(hasIndexedDB ? "indexedDB" : "ram", "/big",
       hasIndexedDB ? new IndexedDBFS() : new RamFS());
-    this.mount("ram", "/bin", new RamFS());
 
     // Initialize default files
     if (hasLocalStorage && !localStorage.getItem("fs:initialized")) {
@@ -350,7 +361,7 @@ class VirtualFS {
       "# Each line is run as a shell command; '#' starts a comment.\n" +
       "# Uncomment to try:\n" +
       "# export EDITOR=edit\n" +
-      "# export PATH=/commands:/usr/bin:/bin\n" +
+      "# export PATH=/bin:/usr/bin\n" +
       "# echo \"Welcome back to tinysh!\"\n";
     syncWrite(this._getBackend("/home/.tinyshrc"), "/.tinyshrc", sampleRc);
     syncWrite(this._getBackend("/tmp/README"), "/README",
@@ -369,8 +380,8 @@ class VirtualFS {
     // Pre-populate commands
     const helloContent = `const name = args[0] || "world";\nconsole.log("Hello, " + name + "!");\n`;
     const counterContent = `const counterPath = "/tmp/counter.txt";\nlet count;\ntry {\n  const raw = await fs.read(counterPath);\n  count = parseInt(raw.trim(), 10) || 0;\n} catch { count = 0; }\ncount++;\nawait fs.write(counterPath, String(count));\nconsole.log("Invocation #" + count);\n`;
-    syncWrite(this._getBackend("/commands/sayhello.js"), "/sayhello.js", helloContent);
-    syncWrite(this._getBackend("/commands/counter.js"), "/counter.js", counterContent);
+    syncWrite(this._getBackend("/bin/sayhello.js"), "/sayhello.js", helloContent);
+    syncWrite(this._getBackend("/bin/counter.js"), "/counter.js", counterContent);
     // mail — compose email via mailto: in a new tab. Written only if
     // absent so user edits survive reloads (the samples above overwrite).
     const mailContent = `// mail — compose email via mailto: in a new tab (browser) or printed URL (CLI).
@@ -537,8 +548,8 @@ return 0;
 `;
     // Only write mail.js when absent, so user edits survive reloads (the
     // samples above overwrite every boot).
-    this._getBackend("/commands/mail.js").read("/mail.js")
-      .catch(() => syncWrite(this._getBackend("/commands/mail.js"), "/mail.js", mailContent));
+    this._getBackend("/bin/mail.js").read("/mail.js")
+      .catch(() => syncWrite(this._getBackend("/bin/mail.js"), "/mail.js", mailContent));
 
     // WebGL device demo — draws a bouncing colored triangle via /dev/webgl.
     // Browser only: needs a WebGL context (run `webgldemo` in the shell).
@@ -580,7 +591,7 @@ try {
   return 1;
 }
 `;
-    syncWrite(this._getBackend("/commands/webgldemo.js"), "/webgldemo.js", webglDemoContent);
+    syncWrite(this._getBackend("/bin/webgldemo.js"), "/webgldemo.js", webglDemoContent);
 
     // Audio device demo — plays a C-major scale + 440Hz drone via
     // /dev/audio. Browser only: needs a Web Audio API (run `audiodemo`).
@@ -605,7 +616,7 @@ try {
   return 1;
 }
 `;
-    syncWrite(this._getBackend("/commands/audiodemo.js"), "/audiodemo.js", audioDemoContent);
+    syncWrite(this._getBackend("/bin/audiodemo.js"), "/audiodemo.js", audioDemoContent);
 
     // Sample content for new users
     syncWrite(this._getBackend("/home/examples/README.txt"), "/examples/README.txt",

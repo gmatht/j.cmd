@@ -48,7 +48,7 @@ and device files. It runs in any browser with no build step.
 - [x] `readBlob` API for binary file reading
 - [x] `writeBlob` API for writing binary files
 - [x] WASM binary support: compile Rust→wasm32-unknown-unknown
-      and run as commands from /bin/echo.wasm
+      and run as commands from /usr/bin/echo.wasm
 - [x] Minimal WASI host in JavaScript (stdout, args, clock, random)
 - [x] MicroPython WASM: python.wasm (363K) via PyPI — print(2+2) → 4
 - [x] C→WASM via wasi-sdk: echoc.wasm compiles and runs in shell
@@ -89,7 +89,7 @@ and device files. It runs in any browser with no build step.
 - [x] DownloadFS: write to /pc/ triggers browser download
       cp file /pc · echo text > /pc/name.txt · binary via writeBlob
 - [x] WASM/WASI runtime: compile Rust/C programs to wasm32-wasi,
-      drop them in /bin/, run them as native commands.
+      drop them in /usr/bin/, run them as native commands.
       Needs WASI syscall implementation over VirtualFS.
       Example: `echo "hello" | grep hello` via real grep compiled to WASM.
 - [x] Clipboard device: /dev/clipboard read/write

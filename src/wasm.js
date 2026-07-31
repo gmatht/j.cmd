@@ -14,7 +14,7 @@
 // The WASI program sees an in-memory filesystem (wasi.fs, the Rust
 // MemFS) preopened at "/". We bridge it to the shell's VirtualFS using
 // @wasmer/wasmfs (WasmFs, a JS memfs):
-//   seed     — mirror the local, writable mounts (/home /tmp /commands)
+//   seed     — mirror the local, writable mounts (/home /tmp /bin)
 //              from VirtualFS into WasmFs, then copy into wasi.fs
 //   harvest  — after the run, read back everything the program wrote
 //   flush    — write the harvested tree back into the VirtualFS
@@ -49,8 +49,10 @@ if (typeof globalThis.Buffer === "undefined") {
 // (would need an async crawl) and device files.
 const SKIP_MOUNTS = new Set(["http", "github", "gitlab", "dev", "download"]);
 
-// Local, writable directories seeded into the WASI filesystem.
-const SEED_DIRS = ["/home", "/tmp", "/commands"];
+// Local, writable directories seeded into the WASI filesystem. /usr/bin
+// (WASM binaries) is deliberately excluded — binaries aren't shipped into
+// the sandbox, and an empty preopen would fail to stat.
+const SEED_DIRS = ["/home", "/tmp", "/bin"];
 
 export class WasmExit extends Error {
   constructor(code) {
@@ -146,7 +148,7 @@ export class WasmRunner {
     // preopen the seeded dirs by name and put "." → cwd last. When the
     // shell is somewhere unseeded (e.g. /mount/github), fall back to
     // "." → "/" (the original behaviour).
-    const seededDirs = ["/home", "/tmp", "/commands"];
+    const seededDirs = ["/home", "/tmp", "/bin"];
     const sandboxCwd = this.vfs.cwd || "/home";
     const preopenCwd = seededDirs.includes(sandboxCwd) ? sandboxCwd : "/";
     const preopens = {};

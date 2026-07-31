@@ -25,7 +25,8 @@ that imports this library and calls its virtual filesystem API.
 └──────────────────────────────────────────┘
 ```
 
-- **RamFS**: In-memory filesystem at `/tmp/`, `/home/`, `/commands/`
+- **RamFS**: In-memory filesystem at `/tmp/`, `/usr/bin/` (WASM tools)
+- **LocalStorageFS**: Persistent user files at `/home/`, `.js` commands at `/bin/`
 - **HttpFS**: Read-only fetch-backed filesystem at `/http/` (for CORS APIs)
 - **More to come**: localStorage, IndexedDB, WebGL, GitHub API, clipboard
 
@@ -52,12 +53,12 @@ tinysh:/home$ help
 ### Running .js Files as Commands
 
 Any command that isn't a builtin is looked up as a `.js` file in the
-virtual filesystem's command path (`/commands/`, `/usr/bin/`, `/bin/`).
+virtual filesystem's command path (`/bin/`, `/usr/bin/`).
 
 These are the "compiled binaries" of this architecture:
 
 ```
-tinysh:/home$ echo "console.log(args[0])" > /commands/echo.js
+tinysh:/home$ echo "console.log(args[0])" > /bin/echo.js
 tinysh:/home$ echo hello
 hello
 ```

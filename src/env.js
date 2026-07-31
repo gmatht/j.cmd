@@ -14,7 +14,7 @@
 // -----------------------------------------------------------------
 
 export const env = {
-  PATH: "/commands:/usr/bin:/bin",
+  PATH: "/bin:/usr/bin",
   HOME: "/home",
   USER: "tinysh",
   PWD: "/home",

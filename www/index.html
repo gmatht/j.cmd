@@ -1801,11 +1801,11 @@ const builtins = {
   Usage:\n
     wasmer list                    — list available packages\n
     wasmer search <term>           — search packages\n
-    wasmer install <name>          — download package to /bin/\n
+    wasmer install <name>          — download package to /usr/bin/\n
     wasmer help                    — this help\n
 \n
   Installed packages are available as commands.\n
-  Compile your own: Rust/wasm-pack → wasm32-wasi → /bin/\n`);
+  Compile your own: Rust/wasm-pack → wasm32-wasi → /usr/bin/\n`);
     }
   },
 
@@ -2154,7 +2154,7 @@ Loops, conditionals, variables, arithmetic and pipes work:
                     cp /pc/file uploads (file picker)
 
   Environment:
-    $PATH  /commands:/usr/bin:/bin · $HOME /home · $USER tinysh · $PWD current dir
+    $PATH  /bin:/usr/bin · $HOME /home · $USER tinysh · $PWD current dir
     $COLUMNS × $LINES — terminal size (auto-updates on window resize)
     Expand with $NAME or \${NAME}: echo $HOME · cd $HOME
     Tilde: ~ expands to $HOME — cat ~/file · cd ~/Downloads
@@ -2176,7 +2176,7 @@ Loops, conditionals, variables, arithmetic and pipes work:
   Aliases: nano/emacs = edit · less/more = cat · cls = clear
            dir = ls · ? = help · q/quit = exit
 
-  Any other command runs a .js file from /commands/.
+  Any other command runs a .js file from /bin/.
   `);
   },
 
@@ -2331,7 +2331,7 @@ Loops, conditionals, variables, arithmetic and pipes work:
     // 1. Walk local mounts only — /github & /gitlab would trigger a
     //    network crawl of every repo; remote content is searched via
     //    the visited-cache below instead.
-    const tops = ["/tmp", "/home", "/commands", "/bin", "/dev", "/http"];
+    const tops = ["/tmp", "/home", "/bin", "/usr/bin", "/dev", "/http"];
     for (const top of tops) {
       await walk(top);
     }
@@ -2493,7 +2493,7 @@ async function resolveCommand(name) {
     const resp = await fetch("wasm-bin/" + wasmName + ".wasm");
     if (resp.ok) {
       const blob = await resp.blob();
-      const destPath = "/bin/" + name + ".wasm";
+      const destPath = "/usr/bin/" + name + ".wasm";
       await fs.writeBlob(destPath, blob);
       return { type: "wasm", path: destPath };
     }
@@ -3038,16 +3038,18 @@ async function complete(line, cursorPos) {
     // Command completion
     matches.push(...Object.keys(builtins).filter(name => name.startsWith(prefix)));
 
-    // Search command paths
-    try {
-      const cmdEntries = await fs.list("/commands");
-      for (const e of cmdEntries) {
-        const name = e.replace(/\/$/, "").replace(/\.js$/, "");
-        if (name.startsWith(prefix) && !matches.includes(name)) {
-          matches.push(name);
+    // Search command paths: /bin (.js commands) and /usr/bin (.wasm)
+    for (const dir of ["/bin", "/usr/bin"]) {
+      try {
+        const cmdEntries = await fs.list(dir);
+        for (const e of cmdEntries) {
+          const name = e.replace(/\/$/, "").replace(/\.(js|wasm)$/, "");
+          if (name.startsWith(prefix) && !matches.includes(name)) {
+            matches.push(name);
+          }
         }
-      }
-    } catch { /* /commands doesn't exist */ }
+      } catch { /* dir doesn't exist */ }
+    }
   }
 
   matches = [...new Set(matches)].sort();
@@ -3246,7 +3248,7 @@ async function runPythonReplReplayLine(line) {
   ].join("\n");
 
   try {
-    await wasmRunner.run("/bin/python.wasm", ["python", "-c", transcript]);
+    await wasmRunner.run("/usr/bin/python.wasm", ["python", "-c", transcript]);
     let output = wasmRunner.getStdout();
     const idx = output.indexOf(marker + "\n");
     if (idx !== -1) output = output.slice(idx + marker.length + 1);
@@ -3404,8 +3406,8 @@ function updateStatusBar() {
     statusHint.textContent = "Ephemeral — lost on reload.";
   } else if (cwd.startsWith("/home")) {
     statusHint.textContent = "Persistent storage (localStorage). edit: text editor.";
-  } else if (cwd.startsWith("/bin") || cwd.startsWith("/commands")) {
-    statusHint.textContent = "Executable commands. .js and .wasm files.";
+  } else if (cwd.startsWith("/bin") || cwd.startsWith("/usr/bin") || cwd.startsWith("/commands")) {
+    statusHint.textContent = "Executable commands. .js (in /bin/) and .wasm (in /usr/bin/) files.";
   } else if (cwd.startsWith("/mount")) {
     statusHint.textContent = "Mounted filesystems. ls /mount/github/ for repos.";
   } else {

@@ -735,7 +735,7 @@ unmount /mymount
 
 wasmer list                    — list available packages
 wasmer search <term>           — search packages
-wasmer install <name>          — copy package to /bin/
+wasmer install <name>          — copy package to /usr/bin/
 wasmer help                    — this help
 
 Packages are pre-compiled wasm32-wasi binaries served from
@@ -781,7 +781,7 @@ Once installed they run as native commands:
         process.stderr.write(`wasmer: ${name}.wasm not built — run the repo's build script (e.g. ./build-wasm-grep.sh)\n`);
         return 1;
       }
-      const destPath = `/bin/${name}.wasm`;
+      const destPath = `/usr/bin/${name}.wasm`;
       await fs.writeBlob(destPath, new Blob([buf]));
       process.stdout.write(`Installed ${name} → ${destPath} (${buf.length} bytes)\n`);
       return 0;
@@ -1062,7 +1062,7 @@ Aliases: vi/vim/nano = edit · less/more = cat · cls = clear
          apt/yum/brew/pip = wasmer (WASM packages)
 
 Environment variables:
-  $PATH  /commands:/usr/bin:/bin   command search path
+  $PATH  /bin:/usr/bin   command search path
   $HOME  /home                     default directory (bare cd goes there)
   $USER  tinysh                    current user
   $PWD   current directory
@@ -1075,7 +1075,7 @@ containing a / runs that exact file, like /bin/sh:
   /home/x.js          run a script by absolute path
   ../tool.mjs         or any relative path
   (exit status 126 if the file exists but isn't .js/.mjs/.wasm)
-Write new commands by creating .js files in /commands/.
+Write new commands by creating .js files in /bin/.
 `);
   },
 
@@ -1177,7 +1177,7 @@ async function resolveCommand(name) {
     const resp = await fetch("wasm-bin/" + wasmName + ".wasm");
     if (resp.ok) {
       const blob = await resp.blob();
-      const destPath = "/bin/" + name + ".wasm";
+      const destPath = "/usr/bin/" + name + ".wasm";
       await fs.writeBlob(destPath, blob);
       return { type: "wasm", path: destPath };
     }
@@ -1634,7 +1634,7 @@ async function loadConfig() {
 //       /mount/github/g<Tab> → /mount/github/gmatht/
 //     (or the shared prefix of all matches; a second Tab lists them).
 //   otherwise            → command completion: builtins plus .js/.mjs/
-//     .wasm executables found in $PATH (/commands:/usr/bin:/bin).
+//     .wasm executables found in $PATH (/bin:/usr/bin).
 function tabComplete(line, callback) {
   const wordStart = Math.max(line.lastIndexOf(" ") + 1, 0);
   const word = line.slice(wordStart);
