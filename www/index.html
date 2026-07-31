@@ -1369,9 +1369,12 @@ async function resolveCommand(name) {
     } catch {}
   }
 
-  // Auto-load WASM binary from local server on first use
+  // Auto-load WASM binary from local server on first use.
+  // cc is an alias for the compiler binary.
+  let wasmName = name;
+  if (name === "cc") wasmName = "compiler";
   try {
-    const resp = await fetch("wasm-bin/" + name + ".wasm");
+    const resp = await fetch("wasm-bin/" + wasmName + ".wasm");
     if (resp.ok) {
       const blob = await resp.blob();
       const destPath = "/bin/" + name + ".wasm";

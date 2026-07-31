@@ -670,6 +670,21 @@ async function resolveCommand(name) {
       // Directory doesn't exist, skip
     }
   }
+  // Auto-load a wasm binary from the local server's wasm-bin/ on first
+  // use (cc is an alias for the compiler binary)
+  let wasmName = name;
+  if (name === "cc") wasmName = "compiler";
+  try {
+    const resp = await fetch("wasm-bin/" + wasmName + ".wasm");
+    if (resp.ok) {
+      const blob = await resp.blob();
+      const destPath = "/bin/" + name + ".wasm";
+      await fs.writeBlob(destPath, blob);
+      return { type: "wasm", path: destPath };
+    }
+  } catch {
+    // Not available — fall through
+  }
   return null;
 }
 
