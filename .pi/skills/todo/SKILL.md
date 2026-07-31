@@ -1,6 +1,6 @@
 ---
 name: todo
-description: Task management for sh2runtime development. Add items, list them, mark done, work through them one by one.
+description: Task management for sh2runtime development. Add items, list them, mark done, and run them one by one automatically.
 ---
 
 # TODO Skill
@@ -24,8 +24,7 @@ echo "Done: $(grep -c '\- \[x\]' /root/src/sh2runtime/TODO.md)"
 ### Add a new item
 
 ```
-## Add to the "Short-term" section (or specify which section)
-## Edit TODO.md and add: - [ ] description
+## Add to the appropriate section in TODO.md: - [ ] description
 ```
 
 ### Mark item done
@@ -35,21 +34,26 @@ echo "Done: $(grep -c '\- \[x\]' /root/src/sh2runtime/TODO.md)"
 sed -i 's/- \[ \] description/- [x] description/' /root/src/sh2runtime/TODO.md
 ```
 
-### Show next item
+## Auto-run: work through all items
 
+The script `/root/src/sh2runtime/todo-runner.sh` drives pi through every
+pending item, one at a time:
+
+```bash
+cd /root/src/sh2runtime
+./todo-runner.sh              # run ALL pending items, one after another
+./todo-runner.sh --limit 5    # run at most 5 items
+./todo-runner.sh --dry-run    # preview items without running pi
 ```
-## Show the first unchecked item
-grep -A0 '\- \[ \]' /root/src/sh2runtime/TODO.md | head -3
-```
 
-## Workflow
-
-1. User says "add: implement X"
-2. Skill adds `- [ ] implement X` to the appropriate section in TODO.md
-3. User says "do the next thing" or "work through the list"
-4. Skill picks the first `[ ]` item, reads context, implements it
-5. On completion, marks as `[x]` and commits
-6. Repeats until all items are done or user stops
+For each item it:
+1. Picks the next unchecked item (multi-line descriptions included)
+2. Invokes `pi -p` (non-interactive) with the item text
+3. After pi finishes, git-adds new source files (`.gitignore` filters
+   build artifacts: `*.wasm`, `build/`, `node_modules/`, etc.)
+4. Commits the item's changes
+5. Marks the item `[x]` in TODO.md
+6. Continues to the next item until none remain
 
 ## Project root
 

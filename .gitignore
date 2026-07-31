@@ -2,3 +2,21 @@ node_modules/
 *.wasm
 www/demo.wasm
 www/wasm-test.html
+
+# Build artifacts (C compiler, Rust, etc.)
+build/
+build-wasm/
+build-wasm-*/
+target/
+*.o
+*.a
+*.class
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Editor / OS
+.DS_Store
+*.swp
