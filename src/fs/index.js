@@ -16,6 +16,7 @@ import { RamFS } from "./ramfs.js";
 import { LocalStorageFS } from "./localstoragefs.js";
 import { HttpFS } from "./httpfs.js";
 import { GitHubFS } from "./githubfs.js";
+import { GitLabFS } from "./gitlabfs.js";
 import { DevFS } from "./devfs.js";
 
 // ─── RootFS: A virtual directory that shows mount points ───────
@@ -125,7 +126,10 @@ class VirtualFS {
     this.mount("http", "/http", new HttpFS());
     const github = new GitHubFS();
     this.mount("github", "/mount/github", github);
-    this.mount("github", "/github", github);  // convenience alias
+    this.mount("github", "/github", github);
+    const gitlab = new GitLabFS();
+    this.mount("gitlab", "/mount/gitlab", gitlab);
+    this.mount("gitlab", "/gitlab", gitlab);  // convenience alias
     this.mount("dev", "/dev", new DevFS());
     this.mount("ram", "/bin", new RamFS());
 

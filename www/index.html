@@ -350,9 +350,11 @@ const builtins = {
     let url = null;
 
     // Map virtual paths to real URLs
-    const repoMatch = r.match(/^\/github\/([^\/]+)\/([^\/]+)/);
+    const repoMatch = r.match(/^\/(?:github|mount\/github|gitlab|mount\/gitlab)\/([^\/]+)\/([^\/]+)/);
     if (repoMatch) {
-      url = `https://github.com/${repoMatch[1]}/${repoMatch[2]}`;
+      const base = (r.startsWith("/gitlab") || r.startsWith("/mount/gitlab"))
+        ? "gitlab.com" : "github.com";
+      url = `https://${base}/${repoMatch[1]}/${repoMatch[2]}`;
     } else if (r.startsWith("/http/")) {
       url = "https://" + r.slice(6);
     } else if (r.startsWith("/mount/github/")) {
@@ -360,11 +362,15 @@ const builtins = {
       if (m) url = `https://github.com/${m[1]}/${m[2]}`;
     }
 
-    // Fallback: user/org page for bare /github/{user}
+    // Fallback: user/org page for bare /github/{user} or /gitlab/{user}
     if (!url) {
-      const userMatch = r.match(/^\/(?:github|mount\/github)\/([^\/]+)/);
+      const userMatch = r.match(/^\/(?:github|mount\/github|gitlab|mount\/gitlab)\/([^\/]+)/);
       if (userMatch) {
         url = `https://github.com/${userMatch[1]}`;
+        // If it's a gitlab path, use gitlab URL
+        if (r.startsWith("/gitlab") || r.startsWith("/mount/gitlab")) {
+          url = `https://gitlab.com/${userMatch[1]}`;
+        }
       }
     }
 
@@ -658,7 +664,9 @@ function updateStatusBar() {
 
   // Context-sensitive hints
   if (cwd.startsWith("/github") || cwd.startsWith("/mount/github")) {
-    statusHint.textContent = "Browse any repo. Login: GITHUB_AUTHKEY for private repos. 'browse' opens in tab.";
+    statusHint.textContent = "Browse any GitHub repo. 'browse' opens in tab.";
+  } else if (cwd.startsWith("/gitlab") || cwd.startsWith("/mount/gitlab")) {
+    statusHint.textContent = "Browse any GitLab project. 'browse' opens in tab.";
   } else if (cwd.startsWith("/http")) {
     statusHint.textContent = "CORS-enabled fetch. Public CDNs and APIs only. 'browse' opens URL.";
   } else if (cwd.startsWith("/dev")) {

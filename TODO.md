@@ -34,7 +34,9 @@ and device files. It runs in any browser with no build step.
 - [x] Minimal WASI host in JavaScript (stdout, args, clock, random)
 - [x] Status bar: context-sensitive hints based on current directory
       (GitHub: login hint · /dev/: devices · /tmp/: ephemeral)
-- [x] `browse` command: opens current GitHub dir in new browser tab
+- [x] `browse` command: opens current GitHub/GitLab dir in new browser tab
+- [x] GitLabFS: browse gitlab.com projects as a filesystem
+      (mount at /gitlab and /mount/gitlab)
 - [ ] Replace WASI stub with @wasmer/wasi (full spec-compliant WASI)
       https://www.npmjs.com/package/@wasmer/wasi
       - Wire @wasmer/wasmfs to our VirtualFS
