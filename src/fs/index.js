@@ -10,6 +10,7 @@
 //   /big/         → IndexedDBFS   (persistent, no practical size limit)
 //   /commands/    → LocalStorageFS(persistent user commands)
 //   /http/        → HttpFS        (CORS fetch access)
+//   /proc/        → ProcFS        (process info + browser stats)
 //   /mount/github → GitHubFS      (GitHub API as a filesystem)
 //   /mount/gitlab → GitLabFS      (GitLab API as a filesystem)
 //   /mount/git    → GitFS         (real git wire protocol over HTTP)
@@ -24,6 +25,7 @@ import { GitLabFS } from "./gitlabfs.js";
 import { GitFS } from "./gitfs.js";
 import { DevFS } from "./devfs.js";
 import { DownloadFS } from "./downloadfs.js";
+import { procfs } from "./procfs.js";
 
 // ─── RootFS: A virtual directory that shows mount points ───────
 
@@ -163,6 +165,12 @@ class VirtualFS {
     this.mount("git", "/git", git);  // convenience alias
     this.mount("dev", "/dev", new DevFS());
     this.mount("download", "/pc", new DownloadFS());
+    // /proc/ — process info + browser stats. ProcFS keeps a registry of
+    // every command tinysh runs (procfs.start/finish) and generates the
+    // rest of the files from browser APIs (hardwareConcurrency, device-
+    // Memory, performance.memory, navigation timing, mount table, ...).
+    this.mount("proc", "/proc", procfs);
+    procfs.setVfs(this);
     // IndexedDB-backed persistent store for large files — unlike
     // localStorage's ~5MB per-origin quota, IndexedDB has no practical
     // size limit, so /big/ is where files that outgrow /home/ belong.
@@ -278,7 +286,9 @@ try {
       `  cat /home/examples/hello.sh      -- a sample script\n` +
       `  edit /home/examples/note.txt     -- edit a file\n` +
       `  ls /dev/                         -- browser devices\n` +
-      `  cat /dev/info                    -- system info\n`);
+      `  cat /dev/info                    -- system info\n` +
+      `  ls /proc/                        -- processes + browser stats\n` +
+      `  cat /proc/uptime · cat /proc/meminfo · cat /proc/browser\n`);
     syncWrite(this._getBackend("/home/examples/hello.sh"), "/examples/hello.sh",
       `echo "Hello from the browser shell!"\n` +
       `name="world"\n` +

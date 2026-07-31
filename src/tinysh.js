@@ -16,6 +16,7 @@ import { fs } from "./fs/index.js";
 import { WasmRunner } from "./wasm.js";
 import { WasmerRegistry } from "./wasmer.js";
 import { env, expandRef } from "./env.js";
+import { procfs } from "./fs/procfs.js";
 
 const wasmRunner = new WasmRunner(fs);
 const wasmerReg = new WasmerRegistry(fs);
@@ -921,6 +922,13 @@ async function runSegment(segmentText, stdin, isLast) {
     return { ok: false, code: 127, output: "" };
   }
 
+  // Register this command as a process in /proc/ so `ls /proc` shows
+  // shell activity and /proc/<pid>/cmdline shows the command that ran.
+  const pid = procfs.start(cmd, [cmd, ...args], {
+    kind: resolved.type,
+    path: resolved.type === "wasm" ? resolved.path : null,
+  });
+
   // Make pipe input available to builtins (head etc.)
   stdinBuffer = stdin;
 
@@ -944,8 +952,10 @@ async function runSegment(segmentText, stdin, isLast) {
       const exitCode = wasmRunner.getExitCode();
       if (exitCode !== 0) {
         process.stderr.write(`${cmd}: exited with code ${exitCode}\n`);
+        procfs.finish(pid, exitCode);
         return { ok: false, code: exitCode, output: "" };
       }
+      procfs.finish(pid, 0);
       return { ok: true, code: 0, output };
     }
 
@@ -970,6 +980,7 @@ async function runSegment(segmentText, stdin, isLast) {
           else output = captured;
         }
       }
+      procfs.finish(pid, code);
       return { ok: code === 0, code, output };
     }
 
@@ -994,9 +1005,11 @@ async function runSegment(segmentText, stdin, isLast) {
       process.stdout.write(output);
       output = "";
     }
+    procfs.finish(pid, code);
     return { ok: code === 0, code, output };
   } catch (e) {
     process.stderr.write(`${cmd}: error: ${e.message}\n`);
+    procfs.finish(pid, 1);
     return { ok: false, code: 1, output: "" };
   }
 }
