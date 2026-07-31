@@ -26,6 +26,55 @@ const wasmerReg = new WasmerRegistry(fs);
 // captured stdout. Builtins that read stdin (head, ...) consume this.
 let stdinBuffer = "";
 
+// ─── Ctrl+C (SIGINT) interruption ──────────────────────────────
+// A real shell delivers SIGINT to the foreground process; here that
+// means: abort the running command and return to the prompt with
+// status 130 (128 + SIGINT). JS can't hard-kill an in-flight async
+// function, so we race the command against an interrupt signal and
+// abandon it — remaining output from the aborted command is dropped
+// (suppressOutput) until a newer command takes over the terminal.
+// At an idle prompt, Ctrl+C cancels the current input line.
+class InterruptError extends Error {
+  constructor() { super("interrupt"); this.name = "InterruptError"; }
+}
+let running = false;        // a command is executing right now
+let interruptSignal = null; // rejects the running command's race
+let suppressOutput = false; // drop output from an aborted command
+let runId = 0;              // bumped per command — stale aborts don't linger
+
+// Run a command's promise so that Ctrl+C can abort it. Returns the
+// command's exit code (130 if interrupted).
+async function runInterruptible(promise) {
+  const myId = ++runId;
+  suppressOutput = false;
+  running = true;
+  let rejectFn = null;
+  interruptSignal = () => { if (rejectFn) rejectFn(new InterruptError()); };
+  const interruptible = new Promise((_, reject) => { rejectFn = reject; });
+
+  let code = 0;
+  try {
+    code = await Promise.race([promise, interruptible]);
+  } catch (e) {
+    if (e instanceof InterruptError) {
+      code = 130; // 128 + SIGINT, like a real shell
+      suppressOutput = true;
+      // The aborted command keeps running in the background; its
+      // output stays suppressed until it settles (unless a newer
+      // command has taken over the terminal).
+      Promise.resolve(promise).catch(() => {}).finally(() => {
+        if (runId === myId) suppressOutput = false;
+      });
+    } else {
+      throw e;
+    }
+  } finally {
+    running = false;
+    interruptSignal = null;
+  }
+  return code;
+}
+
 // ─── Built-in Commands ─────────────────────────────────────────
 
 const builtins = {
@@ -856,6 +905,7 @@ Loops, conditionals, variables, arithmetic and pipes work:
         runCmd: runNestedCommand,
       });
     } catch (e) {
+      if (e instanceof InterruptError) throw e;
       process.stderr.write(`bash: ${e.message}\n`);
       return 1;
     }
@@ -1147,6 +1197,17 @@ async function runSegment(segmentText, stdin, isLast) {
   // Make pipe input available to builtins (head etc.)
   stdinBuffer = stdin;
 
+  // While the command runs, route stdout/stderr through suppression
+  // guards so an aborted command can't keep spraying output after
+  // Ctrl+C. Restore only if we're still the active guard (a nested
+  // or newer run may have replaced it).
+  const realOut = process.stdout.write;
+  const realErr = process.stderr.write;
+  const guardedOut = (chunk) => (suppressOutput ? true : realOut.call(process.stdout, chunk));
+  const guardedErr = (chunk) => (suppressOutput ? true : realErr.call(process.stderr, chunk));
+  process.stdout.write = guardedOut;
+  process.stderr.write = guardedErr;
+
   try {
     if (resolved.type === "wasm") {
       // Run a wasm32-wasi binary (full WASI via @wasmer/wasi, filesystem
@@ -1223,9 +1284,14 @@ async function runSegment(segmentText, stdin, isLast) {
     procfs.finish(pid, code);
     return { ok: code === 0, code, output };
   } catch (e) {
+    if (e instanceof InterruptError) throw e;
     process.stderr.write(`${cmd}: error: ${e.message}\n`);
     procfs.finish(pid, 1);
     return { ok: false, code: 1, output: "" };
+  } finally {
+    // Restore the real writers only if no newer run replaced them.
+    if (process.stdout.write === guardedOut) process.stdout.write = realOut;
+    if (process.stderr.write === guardedErr) process.stderr.write = realErr;
   }
 }
 
@@ -1365,10 +1431,26 @@ const rl = createInterface({
 
 if (process.stdin.isTTY) {
   rl.on("line", async (line) => {
-    await handleLine(line);
+    await runInterruptible(handleLine(line));
     rl.setPrompt(`tinysh:${fs.cwd}$ `);
     rl.prompt();
   });
+
+  // Ctrl+C: registering a SIGINT listener takes over from readline's
+  // default (which would close the shell). While a command runs we
+  // abort it (exit 130); at the prompt we cancel the current line.
+  rl.on("SIGINT", () => {
+    process.stdout.write("^C\n");
+    if (running) {
+      if (interruptSignal) interruptSignal();
+      return;
+    }
+    // Cancel the partially typed line and redraw the prompt.
+    rl.write(null, { ctrl: true, name: "u" });
+    rl.setPrompt(`tinysh:${fs.cwd}$ `);
+    rl.prompt();
+  });
+
   rl.on("close", () => {
     process.stdout.write("\n");
     process.exit(0);

@@ -93,11 +93,25 @@ while true; do
   fi
 
   # Let pi implement this single item (script is already cd'd to $REPO)
-  pi -p \
+  # Retry on transient API errors (503 failover_exhausted etc.)
+  MAX_RETRIES=5
+  attempt=0
+  while true; do
+    attempt=$((attempt + 1))
+    if pi -p \
     "You are working on the sh2runtime project (a browser shell). Complete THIS ONE TODO item: \"$TEXT\". \
      Make the change, run a quick sanity check, commit with a descriptive message, \
      then mark the item done in TODO.md by replacing '- [ ]' with '- [x]' on line $LINE. \
-     Respect .gitignore (do NOT commit build artifacts). Do not stop until this single item is done."
+     Respect .gitignore (do NOT commit build artifacts). Do not stop until this single item is done."; then
+      break  # success
+    fi
+    if (( attempt >= MAX_RETRIES )); then
+      echo "  ✗ pi failed after $MAX_RETRIES attempts (API error?) — moving on" >&2
+      break
+    fi
+    echo "  retry $attempt/$MAX_RETRIES after pi failure (API hiccup?)..." >&2
+    sleep $((attempt * 15))
+  done
 
   # Ensure new source files are staged (gitignore filters build artifacts)
   commit_if_changes "todo: $TEXT"

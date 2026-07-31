@@ -286,8 +286,105 @@ function clearViewport() {
   term.scrollTop = term.scrollHeight;
 }
 
-const stdout = { write: (s) => write(s, "out") };
-const stderr = { write: (s) => write(s, "err") };
+const stdout = { write: (s) => { if (!suppressOutput) write(s, "out"); } };
+const stderr = { write: (s) => { if (!suppressOutput) write(s, "err"); } };
+
+// ─── Ctrl+C (SIGINT) interruption ──────────────────────────────
+// A real shell delivers SIGINT to the foreground process; here that
+// means: abort the running command and return to the prompt with
+// status 130 (128 + SIGINT). JavaScript can't hard-kill an in-flight
+// async function, so we race the command against an interrupt signal
+// and abandon it — remaining output from the aborted command is
+// suppressed until it settles (or a newer command takes over), and
+// the shell is immediately usable again. At an idle prompt, Ctrl+C
+// cancels the current input line.
+class InterruptError extends Error {
+  constructor() { super("interrupt"); this.name = "InterruptError"; }
+}
+let running = false;        // a command is executing right now
+let interruptSignal = null; // rejects the running command's race
+let suppressOutput = false; // drop output from an aborted command
+let runId = 0;              // bumped per command — stale aborts don't linger
+
+// Run a command's promise so that Ctrl+C can abort it. Returns the
+// command's exit code (130 if interrupted).
+async function runInterruptible(promise) {
+  const myId = ++runId;
+  suppressOutput = false;
+  running = true;
+  let rejectFn = null;
+  interruptSignal = () => { if (rejectFn) rejectFn(new InterruptError()); };
+  const interruptible = new Promise((_, reject) => { rejectFn = reject; });
+
+  let code = 0;
+  try {
+    code = await Promise.race([promise, interruptible]);
+  } catch (e) {
+    if (e instanceof InterruptError) {
+      code = 130; // 128 + SIGINT, like a real shell
+      suppressOutput = true;
+      // The aborted command is still winding down in the background;
+      // drop its remaining output until it settles (unless a newer
+      // command has already started and taken over the terminal).
+      Promise.resolve(promise).catch(() => {}).finally(() => {
+        if (runId === myId) suppressOutput = false;
+      });
+    } else {
+      throw e;
+    }
+  } finally {
+    running = false;
+    interruptSignal = null;
+  }
+  return code;
+}
+
+// Ctrl+C entry point — what happens depends on what's on screen:
+// a pager exits, the Python REPLs bail out, a running command is
+// aborted, and an idle prompt just gets a fresh line.
+function handleInterrupt() {
+  if (pagerState.active) {
+    write("^C\n", "info");
+    exitPager();
+    input.focus();
+    return;
+  }
+  if (replState.active) {
+    // Worker-based Python REPL: the only way to stop a busy WASM
+    // worker is to terminate it (it may be blocked in Atomics.wait
+    // or busy computing — either way it can't receive a message).
+    write("^C\n", "info");
+    if (replState.worker) {
+      replState.worker.terminate();
+      replState.worker = null;
+    }
+    write("KeyboardInterrupt\n", "err");
+    exitPythonRepl();
+    input.focus();
+    return;
+  }
+  if (replReplayState.active) {
+    write("^C\n", "info");
+    write("KeyboardInterrupt\n", "err");
+    exitPythonReplReplay();
+    input.focus();
+    return;
+  }
+  if (running) {
+    // Abort the foreground command: print ^C, then reject its race.
+    write("^C\n", "info");
+    suppressOutput = true;
+    if (interruptSignal) interruptSignal();
+    input.focus();
+    return;
+  }
+  // Idle — cancel the current input line and redraw the prompt.
+  input.value = "";
+  write("^C\n", "info");
+  updatePrompt();
+  input.focus();
+  lastMatches = [];
+}
 
 // ─── Terminal size (COLUMNS × LINES) ────────────────────────────
 // Like a real tty, the terminal is a monospace character grid. We
@@ -1436,6 +1533,7 @@ Loops, conditionals, variables, arithmetic and pipes work:
         runCmd: runNestedCommand,
       });
     } catch (e) {
+      if (e instanceof InterruptError) throw e;
       stderr.write(`bash: ${e.message}\n`);
       return 1;
     }
@@ -1497,6 +1595,7 @@ Loops, conditionals, variables, arithmetic and pipes work:
   Features:
     Tab completion   — complete commands and file paths
     Ctrl+L           — clear terminal
+    Ctrl+C           — interrupt running command / cancel the line
     Up/Down          — command history
     Resizable terminal — COLUMNS/LINES track the window; ls reflows to fit
     edit <file>      — built-in text editor
@@ -2066,6 +2165,7 @@ async function runSegment(segmentText, stdin, isLast) {
         }
         return { ok: true, code: 0, output };
       } catch (e) {
+        if (e instanceof InterruptError) throw e;
         stderr.write(`${cmd}: wasm error: ${e.message}\n`);
         return { ok: false, code: 1, output: "" };
       }
@@ -2112,6 +2212,7 @@ async function runSegment(segmentText, stdin, isLast) {
     }
     return { ok: code === 0, code, output };
   } catch (e) {
+    if (e instanceof InterruptError) throw e;
     stderr.write(`${cmd}: error: ${e.message}\n`);
     return { ok: false, code: 1, output: "" };
   }
@@ -2582,7 +2683,7 @@ function updateStatusBar() {
   } else if (cwd.startsWith("/mount")) {
     statusHint.textContent = "Mounted filesystems. ls /mount/github/ for repos.";
   } else {
-    statusHint.textContent = "Tab: complete · Ctrl+L: clear · Up/Down: history";
+    statusHint.textContent = "Tab: complete · Ctrl+L: clear · Ctrl+C: interrupt · Up/Down: history";
   }
 }
 
@@ -2636,7 +2737,7 @@ async function onCommand() {
 
   write(`tinysh:${fs.cwd}$ ${line}\n`, "prompt");
 
-  await handleLine(line);
+  await runInterruptible(handleLine(line));
   updatePrompt();
   input.focus();
   lastMatches = [];
@@ -2674,6 +2775,13 @@ input.addEventListener("keydown", async (e) => {
       write(`${promptEl.textContent}${input.value}`, "prompt");
       lastPrefix = input.value;
     }
+    return;
+  }
+
+  // Ctrl+C — interrupt the running command / cancel the current line
+  if (e.ctrlKey && (e.key === "c" || e.key === "C")) {
+    e.preventDefault();
+    handleInterrupt();
     return;
   }
 
@@ -2731,7 +2839,7 @@ input.addEventListener("keydown", async (e) => {
   write("║     JavaScript is the binary format ║\n", "info");
   write("╚══════════════════════════════════════╝\n", "info");
   write("Type 'help' for available commands.\n\n", "info");
-  write("Features: Tab completion · Ctrl+L clear · Up/Down history\n", "info");
+  write("Features: Tab completion · Ctrl+L clear · Ctrl+C interrupt · Up/Down history\n", "info");
   write("          edit <file> — built-in text editor\n", "info");
   write("          vi <file> — vim-style editor (hjkl, :wq)\n", "info");
   write("          nano/emacs → edit · less/more → cat · cls → clear\n", "info");
