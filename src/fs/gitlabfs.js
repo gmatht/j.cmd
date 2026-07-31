@@ -70,6 +70,9 @@ export class GitLabFS {
         name: "GitLab",
         limit: Number(limit) || 0,
         remaining: Number(remaining) || 0,
+        // GitLab.com throttles unauthenticated API per-minute, not
+        // per-hour like GitHub's REST API.
+        period: "this minute",
       };
     }
   }
@@ -101,15 +104,16 @@ export class GitLabFS {
     if (cached) return cached.data;  // fresh cache — no API call
 
     try {
-      // GitLab API: /users/{user}/projects or /groups/{group}/projects
+      // GitLab API: /users/{user}/projects or /groups/{group}/projects.
+      // GitLab uses order_by/sort, NOT GitHub's sort=updated.
       let data;
       try {
         data = await this._fetchAPI(
-          `https://gitlab.com/api/v4/users/${encodeURIComponent(owner)}/projects?per_page=20&sort=updated`
+          `https://gitlab.com/api/v4/users/${encodeURIComponent(owner)}/projects?per_page=20&order_by=updated_at&sort=desc`
         );
       } catch {
         data = await this._fetchAPI(
-          `https://gitlab.com/api/v4/groups/${encodeURIComponent(owner)}/projects?per_page=20&sort=updated`
+          `https://gitlab.com/api/v4/groups/${encodeURIComponent(owner)}/projects?per_page=20&order_by=updated_at&sort=desc`
         );
       }
       if (!Array.isArray(data)) return [];
@@ -182,8 +186,13 @@ export class GitLabFS {
 
     this.visited.add(`/${p.owner}/${p.repo}/${p.filePath}`);
 
-    const rawUrl = `https://gitlab.com/${p.owner}/${p.repo}/-/raw/${this.branch}/${p.filePath}`;
-    const resp = await fetch(rawUrl);
+    const rawUrl = `https://gitlab.com/${p.owner}/${p.repo}/-/raw/${this.branch}/${p.filePath.split("/").map(encodeURIComponent).join("/")}`;
+    let resp = await fetch(rawUrl);
+    if (!resp.ok && this.branch === "main") {
+      // Old projects still use master as the default branch (GNOME/gtk,
+      // ...). Retry once — same fallback as GitHubFS.read().
+      resp = await fetch(rawUrl.replace("/raw/main/", "/raw/master/"));
+    }
     if (!resp.ok) throw new Error("ENOENT");
     return resp.text();
   }
@@ -194,8 +203,12 @@ export class GitLabFS {
 
     this.visited.add(`/${p.owner}/${p.repo}/${p.filePath}`);
 
-    const rawUrl = `https://gitlab.com/${p.owner}/${p.repo}/-/raw/${this.branch}/${p.filePath}`;
-    const resp = await fetch(rawUrl);
+    const rawUrl = `https://gitlab.com/${p.owner}/${p.repo}/-/raw/${this.branch}/${p.filePath.split("/").map(encodeURIComponent).join("/")}`;
+    let resp = await fetch(rawUrl);
+    if (!resp.ok && this.branch === "main") {
+      // Same master-branch fallback as read() (GNOME/gtk, ...)
+      resp = await fetch(rawUrl.replace("/raw/main/", "/raw/master/"));
+    }
     if (!resp.ok) throw new Error("ENOENT");
     return resp.blob();
   }

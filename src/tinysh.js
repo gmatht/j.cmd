@@ -116,7 +116,7 @@ const builtins = {
           const rate = await fs.rateInfo(dir);
           if (rate && rate.limit > 0) {
             const used = Math.max(0, rate.limit - rate.remaining);
-            process.stdout.write(`  (${rate.name}: ${used}/${rate.limit} API requests used this hour)\n`);
+            process.stdout.write(`  (${rate.name}: ${used}/${rate.limit} API requests used ${rate.period})\n`);
           }
         }
       } catch (e) {

@@ -78,6 +78,7 @@ export class GitHubFS {
         name: "GitHub",
         limit: Number(limit) || 0,
         remaining: Number(remaining) || 0,
+        period: "this hour",  // GitHub REST: 60 req/hr per IP
       };
     }
   }
