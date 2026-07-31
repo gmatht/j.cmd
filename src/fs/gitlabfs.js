@@ -28,6 +28,18 @@ export class GitLabFS {
   constructor(branch = "main") {
     this.branch = branch;
     this.visited = new Set();
+    this.cache = new Map();  // key → { entries, time } — 60s TTL
+  }
+
+  _cached(key) {
+    const hit = this.cache.get(key);
+    if (hit && Date.now() - hit.time < 60000) return hit.entries;
+    this.cache.delete(key);
+    return null;
+  }
+
+  _cacheSet(key, entries) {
+    this.cache.set(key, { entries, time: Date.now() });
   }
 
   // Return visited paths as a flat list, for locate
@@ -71,6 +83,10 @@ export class GitLabFS {
   }
 
   async _listProjects(owner) {
+    const cacheKey = `projects:${owner}`;
+    const cached = this._cached(cacheKey);
+    if (cached) return cached;
+
     try {
       // GitLab API: /users/{user}/projects or /groups/{group}/projects
       let data;
@@ -84,7 +100,9 @@ export class GitLabFS {
         );
       }
       if (!Array.isArray(data)) return [];
-      return data.map(p => p.path + "/").sort();
+      const entries = data.map(p => p.path + "/").sort();
+      this._cacheSet(cacheKey, entries);
+      return entries;
     } catch {
       const repos = FEATURED.filter(f => f.owner === owner).map(f => f.repo + "/");
       return repos.length ? repos : [];
@@ -93,6 +111,10 @@ export class GitLabFS {
 
   async _listContents(owner, repo, path) {
     this.visited.add(`/${owner}/${repo}/${path}`.replace(/\/$/, "") + "/");
+
+    const cacheKey = `contents:${owner}/${repo}/${path || ""}`;
+    const cached = this._cached(cacheKey);
+    if (cached) return cached;
 
     const projectPath = `${encodeURIComponent(owner)}%2F${encodeURIComponent(repo)}`;
     let apiUrl = `https://gitlab.com/api/v4/projects/${projectPath}/repository/tree`;
@@ -104,9 +126,11 @@ export class GitLabFS {
       for (const item of data) {
         this.visited.add(`/${owner}/${repo}/${path ? path + "/" : ""}${item.name}` + (item.type === "tree" ? "/" : ""));
       }
-      return data
+      const entries = data
         .map(item => item.type === "tree" ? item.name + "/" : item.name)
         .sort();
+      this._cacheSet(cacheKey, entries);
+      return entries;
     } catch {
       return [];
     }
