@@ -236,7 +236,25 @@ class OverlayFS {
         if (name) entries.add(name);
       }
     }
-    return [...entries].sort();
+    // "..." marks a truncated listing (rate-limited API) — force it to
+    // the end so it reads like "and so on" rather than leading the list.
+    return [...entries].sort((a, b) => {
+      const ea = a === "..." ? 1 : 0;
+      const eb = b === "..." ? 1 : 0;
+      return (ea - eb) || (a < b ? -1 : a > b ? 1 : 0);
+    });
+  }
+
+  // Cache metadata for a listing, if the wrapped backend caches (used by
+  // the shells to print "cached X ago" next to remote listings).
+  cacheInfo(path) {
+    return this.backend.cacheInfo ? this.backend.cacheInfo(path) : null;
+  }
+
+  // Rolling-hour API usage after a fresh listing (from the API's own
+  // RateLimit headers), or null when served from cache.
+  rateInfo() {
+    return this.backend.rateInfo ? this.backend.rateInfo() : null;
   }
 
   async remove(path) {
@@ -585,6 +603,36 @@ try {
     const m = this._findBackend(r);
     if (!m) throw new Error(`ENOENT: ${path} (no mount for ${r})`);
     return m.backend.list(m.relative);
+  }
+
+  // Cache metadata ({ age, stale }) for a path's listing, or null if the
+  // backend doesn't cache / has nothing cached. `ls` uses this to say
+  // "cached 3h ago" instead of leaving the user guessing.
+  async cacheInfo(path) {
+    let r;
+    try {
+      r = this._resolve(path);
+    } catch {
+      return null;
+    }
+    const m = this._findBackend(r);
+    if (!m || !m.backend.cacheInfo) return null;
+    return m.backend.cacheInfo(m.relative);
+  }
+
+  // API rate-limit usage ({ name, limit, remaining }) for a path's
+  // backend, or null. Only meaningful right after a fresh (network)
+  // listing — cached listings return null.
+  async rateInfo(path) {
+    let r;
+    try {
+      r = this._resolve(path);
+    } catch {
+      return null;
+    }
+    const m = this._findBackend(r);
+    if (!m || !m.backend.rateInfo) return null;
+    return m.backend.rateInfo();
   }
 
   async remove(path) {

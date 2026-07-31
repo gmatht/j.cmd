@@ -13,6 +13,7 @@
 
 import { createInterface } from "readline";
 import { fs } from "./fs/index.js";
+import { formatAge } from "./fs/lscache.js";
 import { WasmRunner } from "./wasm.js";
 import { WasmerRegistry } from "./wasmer.js";
 import { env, expandRef } from "./env.js";
@@ -101,6 +102,23 @@ const builtins = {
         if (!output) continue;
         if (dirs.length > 1) process.stdout.write(`${dir}:\n`);
         process.stdout.write(output);
+        // Note when a remote listing came from the persistent ls cache
+        // (24h TTL) — "cached 3h ago" beats a silent, unexplained list.
+        const cacheNote = await fs.cacheInfo(dir);
+        if (cacheNote && cacheNote.age >= 60000) {
+          const tag = cacheNote.stale
+            ? `cached ${formatAge(cacheNote.age)} — API unavailable, stale`
+            : `cached ${formatAge(cacheNote.age)}`;
+          process.stdout.write(`  (${tag})\n`);
+        } else {
+          // Fresh request — report the API's rolling-hour usage from the
+          // response headers (exact for the IP, not an estimate).
+          const rate = await fs.rateInfo(dir);
+          if (rate && rate.limit > 0) {
+            const used = Math.max(0, rate.limit - rate.remaining);
+            process.stdout.write(`  (${rate.name}: ${used}/${rate.limit} API requests used this hour)\n`);
+          }
+        }
       } catch (e) {
         hadError = true;
         process.stderr.write(`ls: ${dir}: ${e.message}\n`);

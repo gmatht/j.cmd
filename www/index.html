@@ -197,6 +197,7 @@
 </script>
 <script type="module">
 import { fs } from "../src/fs/index.js";
+import { formatAge } from "../src/fs/lscache.js";
 import { WasmRunner } from "../src/wasm.js";
 import { WasmerRegistry } from "../src/wasmer.js";
 import { env, expandRef } from "../src/env.js";
@@ -248,8 +249,10 @@ let lastCharNewline = true;
 function write(text, cls = "out", opts = {}) {
   if (opts.record !== false) recordOutput(sgrWrap(text, cls));  // asciinema capture (no-op unless recording)
   const appendSpan = (span) => {
-    // Output goes before the prompt line so it stays the last visible line
-    term.insertBefore(span, promptLine);
+    // Output goes before the prompt line so it stays the last visible line.
+    // While a command is running, output goes above the busy spinner
+    // instead, so the spinner always sits where the next prompt will be.
+    term.insertBefore(span, spinner.active ? spinner.el : promptLine);
     term.scrollTop = term.scrollHeight;
   };
   // Fast path: plain text (the common case) — no escape processing.
@@ -314,6 +317,57 @@ function writeShellPrompt() {
   recordOutput(sgrWrap(getPromptStr(), "prompt"));
   renderInput();
   updateStatusBar();
+}
+
+// ─── Busy spinner ──────────────────────────────────────────────
+// Slow commands (ls /github/..., cat of a remote file, ...) take a
+// visible while — the GitHub API call alone is a network round-trip.
+// While one runs we draw an ASCII spinner where the next prompt will
+// appear and only draw the prompt once the command's output has been
+// printed, so the shell never looks idle mid-command. Fast commands
+// finish before the debounce and never flicker. The spinner is pure
+// DOM — it is not recorded into asciinema casts (it isn't real
+// terminal output).
+const spinner = {
+  active: false,
+  el: null,
+  timer: null,
+  interval: null,
+  token: 0,
+  frame: 0,
+  label: "",
+  frames: ["/", "|", "\\", "-"],
+};
+
+// Begin the spinner for a command; debounced so quick commands
+// (echo, cd, ...) don't flash a frame.
+function spinnerStart(label) {
+  const token = ++spinner.token;
+  spinner.label = (label || "").slice(0, 40);
+  spinner.frame = 0;
+  spinner.timer = setTimeout(() => {
+    if (spinner.token !== token) return;
+    spinner.active = true;
+    const el = document.createElement("span");
+    el.className = "info";
+    el.textContent = spinner.frames[0] + " " + spinner.label;
+    term.insertBefore(el, promptLine);
+    spinner.el = el;
+    spinner.interval = setInterval(() => {
+      if (spinner.token !== token) return;
+      spinner.frame = (spinner.frame + 1) % spinner.frames.length;
+      if (spinner.el) spinner.el.textContent = spinner.frames[spinner.frame] + " " + spinner.label;
+    }, 100);
+  }, 120);
+}
+
+// End the spinner: invalidate any pending timers and remove the line.
+function spinnerStop() {
+  spinner.token++;  // stale start/interval callbacks bail out
+  if (spinner.timer) { clearTimeout(spinner.timer); spinner.timer = null; }
+  if (spinner.interval) { clearInterval(spinner.interval); spinner.interval = null; }
+  if (spinner.el) { spinner.el.remove(); spinner.el = null; }
+  spinner.active = false;
 }
 
 // ─── asciinema recording (v2 cast format) ──────────────────────
@@ -802,6 +856,7 @@ let editorOnClose = null;
 let cm = null;
 
 function openEditor(filepath, initialContent, onSave, onClose) {
+  spinnerStop();  // editor is a modal overlay — nothing to spin behind it
   editorFilepath = filepath;
   editorCallback = onSave;
   editorOnClose = onClose;
@@ -893,6 +948,7 @@ function updateViModeDisplay() {
 }
 
 function openViEditor(filepath, initialContent, onSave, onClose) {
+  spinnerStop();  // editor is a modal overlay — nothing to spin behind it
   viState.filepath = filepath;
   viState.callback = onSave;
   viState.onClose = onClose;
@@ -1085,6 +1141,23 @@ const builtins = {
         if (!output) continue;
         if (dirs.length > 1) stdout.write(`${dir}:\n`);
         stdout.write(output);
+        // Note when a remote listing came from the persistent ls cache
+        // (24h TTL) — "cached 3h ago" beats a silent, unexplained list.
+        const cacheNote = await fs.cacheInfo(dir);
+        if (cacheNote && cacheNote.age >= 60000) {
+          const tag = cacheNote.stale
+            ? `cached ${formatAge(cacheNote.age)} — API unavailable, stale`
+            : `cached ${formatAge(cacheNote.age)}`;
+          write(`  (${tag})\n`, "info");
+        } else {
+          // Fresh request — report the API's rolling-hour usage from the
+          // response headers (exact for the IP, not an estimate).
+          const rate = await fs.rateInfo(dir);
+          if (rate && rate.limit > 0) {
+            const used = Math.max(0, rate.limit - rate.remaining);
+            write(`  (${rate.name}: ${used}/${rate.limit} API requests used this hour)\n`, "info");
+          }
+        }
       } catch (e) {
         hadError = true;
         stderr.write(`ls: ${dir}: ${e.message}\n`);
@@ -3036,6 +3109,7 @@ function sabAvailable() {
 }
 
 async function enterPythonRepl() {
+  spinnerStop();  // modal mode takes over the prompt slot
   if (!sabAvailable()) {
     stderr.write("SharedArrayBuffer unavailable — serve with www/serve.py (COOP/COEP).\n");
     stderr.write("Falling back to session-replay REPL...\n");
@@ -3114,6 +3188,7 @@ const replReplayState = {
 };
 
 function enterPythonReplReplay() {
+  spinnerStop();  // modal mode takes over the prompt slot
   replReplayState.active = true;
   replReplayState.snippets = [];
   replReplayState.pending = [];
@@ -3197,6 +3272,7 @@ const pagerState = {
 };
 
 function startPager(lines, filename, name) {
+  spinnerStop();  // modal mode takes over the prompt slot
   pagerState.active = true;
   pagerState.lines = lines;
   pagerState.pos = 0;
@@ -3420,7 +3496,12 @@ async function onCommand() {
 
   addHistory(line);
 
+  // Slow commands (ls /github/..., remote reads) get a spinner where
+  // the next prompt will be; the prompt itself is only drawn after the
+  // command's output has been printed.
+  spinnerStart(line.trim());
   await runInterruptible(handleLine(line));
+  spinnerStop();
   // Print the next prompt line so it's clear the command finished.
   // Modal modes (pager/REPL) manage their own prompts.
   if (!pagerState.active && !replState.active && !replReplayState.active) {

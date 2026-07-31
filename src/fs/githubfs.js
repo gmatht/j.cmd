@@ -9,7 +9,11 @@
 //
 // Lists via: GET api.github.com
 // Reads via: GET raw.githubusercontent.com
+// Listings are cached persistently (LsCache, 24h TTL) so repeat `ls`
+// calls are instant and don't burn the API rate limit.
 // -----------------------------------------------------------------
+
+import { LsCache, LS_TTL } from "./lscache.js";
 
 const FEATURED = [
   { owner: "gmatht", repo: "sh2perl", desc: "the sh2perl transpiler" },
@@ -27,7 +31,7 @@ const FEATURED = [
 export class GitHubFS {
   constructor(branch = "main") {
     this.branch = branch;
-    this.cache = new Map();
+    this.lsCache = new LsCache("github");
     // Paths the user has actually visited (dirs end with '/', files don't).
     // locate uses this to search what's been fetched without enumerating
     // all of GitHub.
@@ -58,8 +62,31 @@ export class GitHubFS {
     const resp = await fetch(url, {
       headers: { "Accept": "application/vnd.github.v3+json" }
     });
+    this._noteRate(resp);
     if (!resp.ok) throw new Error(`GitHub API ${resp.status}`);
     return resp.json();
+  }
+
+  // Remember the API's rolling-hour usage from the response headers so
+  // the shell can report "52/60 requests used this hour" after a fresh
+  // fetch — the header is exact for the IP, not an estimate.
+  _noteRate(resp) {
+    const remaining = resp.headers && resp.headers.get("X-RateLimit-Remaining");
+    const limit = resp.headers && resp.headers.get("X-RateLimit-Limit");
+    if (remaining != null && limit != null) {
+      this.apiRate = {
+        name: "GitHub",
+        limit: Number(limit) || 0,
+        remaining: Number(remaining) || 0,
+      };
+    }
+  }
+
+  // Rolling-hour API usage from the most recent response — but only when
+  // the last listing actually hit the network (not the cache).
+  rateInfo() {
+    if (this._lastListServedFromCache) return null;
+    return this.apiRate || null;
   }
 
   // ─── Directory listing ──────────────────────────────────────
@@ -72,8 +99,8 @@ export class GitHubFS {
       const owners = [...new Set(FEATURED.map(f => f.owner))].sort();
       return [
         ...owners.map(o => o + "/"),
-        "...",
         "README.md",
+        "...",
       ];
     }
 
@@ -86,29 +113,68 @@ export class GitHubFS {
     return await this._listContents(p.owner, p.repo, p.filePath);
   }
 
+  // Cache metadata for a listing ({ age, stale }) or null — `ls` prints
+  // "cached X ago" from this. Mirrors the cache keys of _listRepos and
+  // _listContents.
+  cacheInfo(relative) {
+    const p = this._parse(relative || "/");
+    let key = null;
+    if (p.root || p.file) return null;   // static root/README — not cached
+    if (!p.repo) key = `repos:${p.owner}`;
+    else key = `contents:${p.owner}/${p.repo}/${p.filePath || ""}`;
+    const age = this.lsCache.age(key);
+    if (age === null) return null;
+    return { age, stale: age > LS_TTL };
+  }
+
   async _listRepos(owner) {
+    const key = `repos:${owner}`;
+    const cached = this.lsCache.get(key);
+    this._lastListServedFromCache = !!cached;
+    if (cached) return cached.data;  // fresh cache — no API call
+
     try {
       const data = await this._fetchAPI(
         `https://api.github.com/users/${owner}/repos?per_page=20&sort=updated&type=owner`
       );
       if (!Array.isArray(data)) return [];
-      return data.map(r => r.name + "/").sort();
+      const entries = data.map(r => r.name + "/").sort();
+      this.lsCache.set(key, entries);
+      return entries;
     } catch {
-      // Fallback: show featured repos for this owner
+      // API rate-limited / offline — stale cache first, then degrade to
+      // the featured-repos list for this owner. "..." marks the
+      // truncation (same convention as the root listing).
+      const stale = this.lsCache.getStale(key);
+      if (stale) return stale.data;
       const repos = FEATURED.filter(f => f.owner === owner).map(f => f.repo + "/");
-      return repos.length ? repos : [];
+      return [...repos, "..."];
     }
+  }
+
+  // Fetch (and cache) the contents API response for a path. The same
+  // endpoint serves both directory listings and stat probes, so one
+  // cache entry backs ls output, its dir/file coloring, and completion.
+  async _fetchContents(owner, repo, path) {
+    const key = `contents:${owner}/${repo}/${path || ""}`;
+    const cached = this.lsCache.get(key);
+    if (cached) return cached.data;  // fresh cache — no API call
+    let apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents`;
+    if (path) apiUrl += "/" + path;
+    const data = await this._fetchAPI(apiUrl);
+    this.lsCache.set(key, data);
+    return data;
   }
 
   async _listContents(owner, repo, path) {
     // Record the visited directory
     this.visited.add(`/${owner}/${repo}/${path}`.replace(/\/$/, "") + "/");
 
-    let apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents`;
-    if (path) apiUrl += "/" + path;
+    const key = `contents:${owner}/${repo}/${path || ""}`;
+    this._lastListServedFromCache = !!this.lsCache.get(key);
 
     try {
-      const data = await this._fetchAPI(apiUrl);
+      const data = await this._fetchContents(owner, repo, path);
       if (!Array.isArray(data)) {
         // It's a single file — return its name
         this.visited.add(`/${owner}/${repo}/${path}`);
@@ -122,7 +188,11 @@ export class GitHubFS {
         .map(item => item.type === "dir" ? item.name + "/" : item.name)
         .sort();
     } catch {
-      return [];
+      // API rate-limited / offline — stale cache if we have one, else
+      // "..." marks that the listing is truncated, not empty.
+      const stale = this.lsCache.getStale(`contents:${owner}/${repo}/${path || ""}`);
+      if (stale && Array.isArray(stale.data)) return stale.data;
+      return ["..."];
     }
   }
 
@@ -143,7 +213,13 @@ export class GitHubFS {
     this.visited.add(`/${p.owner}/${p.repo}/${p.filePath}`);
 
     const rawUrl = `https://raw.githubusercontent.com/${p.owner}/${p.repo}/${this.branch}/${p.filePath}`;
-    const resp = await fetch(rawUrl);
+    let resp = await fetch(rawUrl);
+    if (!resp.ok && this.branch === "main") {
+      // Old repos still use master as the default branch (torvalds/linux,
+      // ...). Retry once — raw reads aren't API-rate-limited, so this
+      // stays fast even when api.github.com is exhausted.
+      resp = await fetch(rawUrl.replace("/main/", "/master/"));
+    }
     if (!resp.ok) throw new Error("ENOENT");
     return resp.text();
   }
@@ -155,7 +231,11 @@ export class GitHubFS {
     this.visited.add(`/${p.owner}/${p.repo}/${p.filePath}`);
 
     const rawUrl = `https://raw.githubusercontent.com/${p.owner}/${p.repo}/${this.branch}/${p.filePath}`;
-    const resp = await fetch(rawUrl);
+    let resp = await fetch(rawUrl);
+    if (!resp.ok && this.branch === "main") {
+      // Same master-branch fallback as read() (torvalds/linux, ...)
+      resp = await fetch(rawUrl.replace("/main/", "/master/"));
+    }
     if (!resp.ok) throw new Error("ENOENT");
     return resp.blob();
   }
@@ -173,10 +253,8 @@ export class GitHubFS {
   }
 
   async _statPath(owner, repo, path) {
-    let apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents`;
-    if (path) apiUrl += "/" + path;
     try {
-      const data = await this._fetchAPI(apiUrl);
+      const data = await this._fetchContents(owner, repo, path);
       if (Array.isArray(data)) {
         return { type: "dir", size: 0, mtime: undefined };
       }
@@ -240,11 +318,23 @@ export class GitHubRepoFS extends GitHubFS {
     return this._listContents(this.owner, this.repo, this._rel(path));
   }
 
+  // Same cache metadata, mapped onto the pinned repo's keys.
+  cacheInfo(relative) {
+    const rel = this._rel(relative || "/");
+    const age = this.lsCache.age(`contents:${this.owner}/${this.repo}/${rel}`);
+    if (age === null) return null;
+    return { age, stale: age > LS_TTL };
+  }
+
   async read(path) {
     const filePath = this._rel(path);
     if (!filePath) throw new Error("EISDIR: Is a directory");
     const rawUrl = `https://raw.githubusercontent.com/${this.owner}/${this.repo}/${this.branch}/${filePath}`;
-    const resp = await fetch(rawUrl);
+    let resp = await fetch(rawUrl);
+    if (!resp.ok && this.branch === "main") {
+      // Same master-branch fallback as read() (torvalds/linux, ...)
+      resp = await fetch(rawUrl.replace("/main/", "/master/"));
+    }
     if (!resp.ok) throw new Error("ENOENT");
     return resp.text();
   }
@@ -253,7 +343,11 @@ export class GitHubRepoFS extends GitHubFS {
     const filePath = this._rel(path);
     if (!filePath) throw new Error("EISDIR: Is a directory");
     const rawUrl = `https://raw.githubusercontent.com/${this.owner}/${this.repo}/${this.branch}/${filePath}`;
-    const resp = await fetch(rawUrl);
+    let resp = await fetch(rawUrl);
+    if (!resp.ok && this.branch === "main") {
+      // Same master-branch fallback as read() (torvalds/linux, ...)
+      resp = await fetch(rawUrl.replace("/main/", "/master/"));
+    }
     if (!resp.ok) throw new Error("ENOENT");
     return resp.blob();
   }

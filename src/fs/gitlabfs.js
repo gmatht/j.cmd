@@ -9,7 +9,10 @@
 //
 // Lists via: GET gitlab.com/api/v4
 // Reads via: GET gitlab.com/{owner}/{repo}/-/raw/{branch}/{path}
+// Listings are cached persistently (LsCache, 24h TTL) like GitHubFS.
 // -----------------------------------------------------------------
+
+import { LsCache, LS_TTL } from "./lscache.js";
 
 const FEATURED = [
   { owner: "gitlab-org", repo: "gitlab", desc: "GitLab itself" },
@@ -28,18 +31,7 @@ export class GitLabFS {
   constructor(branch = "main") {
     this.branch = branch;
     this.visited = new Set();
-    this.cache = new Map();  // key → { entries, time } — 60s TTL
-  }
-
-  _cached(key) {
-    const hit = this.cache.get(key);
-    if (hit && Date.now() - hit.time < 60000) return hit.entries;
-    this.cache.delete(key);
-    return null;
-  }
-
-  _cacheSet(key, entries) {
-    this.cache.set(key, { entries, time: Date.now() });
+    this.lsCache = new LsCache("gitlab");  // replaces the old 60s in-memory cache
   }
 
   // Return visited paths as a flat list, for locate
@@ -63,8 +55,28 @@ export class GitLabFS {
     const resp = await fetch(url, {
       headers: { "Accept": "application/json" }
     });
+    this._noteRate(resp);
     if (!resp.ok) throw new Error(`GitLab API ${resp.status}`);
     return resp.json();
+  }
+
+  // GitLab sends RateLimit-* headers (unauthenticated IP limits) — keep
+  // them so the shell can report usage after a fresh fetch.
+  _noteRate(resp) {
+    const remaining = resp.headers && resp.headers.get("RateLimit-Remaining");
+    const limit = resp.headers && resp.headers.get("RateLimit-Limit");
+    if (remaining != null && limit != null) {
+      this.apiRate = {
+        name: "GitLab",
+        limit: Number(limit) || 0,
+        remaining: Number(remaining) || 0,
+      };
+    }
+  }
+
+  rateInfo() {
+    if (this._lastListServedFromCache) return null;
+    return this.apiRate || null;
   }
 
   async list(path) {
@@ -72,7 +84,7 @@ export class GitLabFS {
 
     if (p.root || p.file) {
       const owners = [...new Set(FEATURED.map(f => f.owner))].sort();
-      return [...owners.map(o => o + "/"), "...", "README.md"];
+      return [...owners.map(o => o + "/"), "README.md", "..."];
     }
 
     if (!p.repo) {
@@ -83,9 +95,10 @@ export class GitLabFS {
   }
 
   async _listProjects(owner) {
-    const cacheKey = `projects:${owner}`;
-    const cached = this._cached(cacheKey);
-    if (cached) return cached;
+    const key = `projects:${owner}`;
+    const cached = this.lsCache.get(key);
+    this._lastListServedFromCache = !!cached;
+    if (cached) return cached.data;  // fresh cache — no API call
 
     try {
       // GitLab API: /users/{user}/projects or /groups/{group}/projects
@@ -101,20 +114,25 @@ export class GitLabFS {
       }
       if (!Array.isArray(data)) return [];
       const entries = data.map(p => p.path + "/").sort();
-      this._cacheSet(cacheKey, entries);
+      this.lsCache.set(key, entries);
       return entries;
     } catch {
+      // API rate-limited / offline — stale cache first, then degrade to
+      // the featured-projects list. "..." marks the truncation.
+      const stale = this.lsCache.getStale(key);
+      if (stale) return stale.data;
       const repos = FEATURED.filter(f => f.owner === owner).map(f => f.repo + "/");
-      return repos.length ? repos : [];
+      return [...repos, "..."];
     }
   }
 
   async _listContents(owner, repo, path) {
     this.visited.add(`/${owner}/${repo}/${path}`.replace(/\/$/, "") + "/");
 
-    const cacheKey = `contents:${owner}/${repo}/${path || ""}`;
-    const cached = this._cached(cacheKey);
-    if (cached) return cached;
+    const key = `contents:${owner}/${repo}/${path || ""}`;
+    const cached = this.lsCache.get(key);
+    this._lastListServedFromCache = !!cached;
+    if (cached) return cached.data;  // fresh cache — no API call
 
     const projectPath = `${encodeURIComponent(owner)}%2F${encodeURIComponent(repo)}`;
     let apiUrl = `https://gitlab.com/api/v4/projects/${projectPath}/repository/tree`;
@@ -129,11 +147,28 @@ export class GitLabFS {
       const entries = data
         .map(item => item.type === "tree" ? item.name + "/" : item.name)
         .sort();
-      this._cacheSet(cacheKey, entries);
+      this.lsCache.set(key, entries);
       return entries;
     } catch {
-      return [];
+      // API rate-limited / offline — stale cache if we have one, else
+      // "..." marks that the listing is truncated, not empty.
+      const stale = this.lsCache.getStale(key);
+      if (stale) return stale.data;
+      return ["..."];
     }
+  }
+
+  // Cache metadata for a listing ({ age, stale }) or null — `ls` prints
+  // "cached X ago" from this.
+  cacheInfo(relative) {
+    const p = this._parse(relative || "/");
+    let key = null;
+    if (p.root || p.file) return null;   // static root/README — not cached
+    if (!p.repo) key = `projects:${p.owner}`;
+    else key = `contents:${p.owner}/${p.repo}/${p.filePath || ""}`;
+    const age = this.lsCache.age(key);
+    if (age === null) return null;
+    return { age, stale: age > LS_TTL };
   }
 
   async read(path) {
