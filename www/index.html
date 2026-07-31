@@ -205,12 +205,34 @@ const builtins = {
   async cat(args) {
     if (args.length === 0) { stderr.write("cat: missing operand\n"); return; }
     for (const file of args) {
-      try {
-        let content = await fs.read(file);
-        stdout.write(content);
-        if (!content.endsWith("\n")) stdout.write("\n");
-      } catch (e) {
-        stderr.write(`cat: ${file}: ${e.message}\n`);
+      const ext = file.split(".").pop().toLowerCase();
+      const isImage = ["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "ico"].includes(ext);
+      const isAudio = ["mp3", "wav", "ogg", "m4a", "flac", "wma"].includes(ext);
+
+      if (isImage || isAudio) {
+        try {
+          const blob = await fs.readBlob(file);
+          const url = URL.createObjectURL(blob);
+          const el = isImage
+            ? `<img src="${url}" style="max-width: 80vw; max-height: 60vh; border-radius: 4px; margin: 4px 0;" />`
+            : `<audio controls src="${url}" style="width: 100%; max-width: 400px; margin: 4px 0;"></audio>`;
+          const span = document.createElement("span");
+          span.innerHTML = el;
+          term.appendChild(span);
+          term.scrollTop = term.scrollHeight;
+          // Revoke blob URL after a delay to free memory
+          setTimeout(() => URL.revokeObjectURL(url), 60000);
+        } catch (e) {
+          stderr.write(`cat: ${file}: ${e.message}\n`);
+        }
+      } else {
+        try {
+          let content = await fs.read(file);
+          stdout.write(content);
+          if (!content.endsWith("\n")) stdout.write("\n");
+        } catch (e) {
+          stderr.write(`cat: ${file}: ${e.message}\n`);
+        }
       }
     }
   },
@@ -294,12 +316,35 @@ const builtins = {
     }
   },
 
+  async play(args) {
+    if (args.length === 0) { stderr.write("play: missing filename\n"); return; }
+    for (const file of args) {
+      try {
+        const blob = await fs.readBlob(file);
+        const url = URL.createObjectURL(blob);
+        const el = document.createElement("audio");
+        el.controls = true;
+        el.autoplay = true;
+        el.src = url;
+        el.style.width = "100%";
+        el.style.maxWidth = "400px";
+        el.style.margin = "4px 0";
+        term.appendChild(el);
+        term.scrollTop = term.scrollHeight;
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
+      } catch (e) {
+        stderr.write(`play: ${file}: ${e.message}\n`);
+      }
+    }
+  },
+
   async help(args) {
     stdout.write(`tinysh — browser shell
 
   Built-in commands:
     ls [dir]        List directory contents
-    cat <file>...   Print file contents
+    cat <file>...   Print file contents  (PNG/JPG/GIF renders inline)
+    play <file>     Play audio file (MP3/WAV/OGG)
     echo <text>     Print text
     pwd             Print working directory
     cd [dir]        Change directory
@@ -317,6 +362,8 @@ const builtins = {
     Ctrl+L           — clear terminal
     Up/Down          — command history
     edit <file>      — built-in text editor
+    cat image.png    — renders inline
+    play music.mp3   — plays with audio controls
 
   /dev/ devices: cat /dev/info · cat /dev/cpu · cat /dev/time
                 cat /dev/webgl · cat /dev/webgl/extensions
@@ -614,7 +661,8 @@ write("Type 'help' for available commands.\n\n", "info");
 write("Features: Tab completion · Ctrl+L clear · Up/Down history\n", "info");
 write("          edit <file> — built-in text editor\n", "info");
 write("          vi/vim/nano → edit · less/more → cat · cls → clear\n", "info");
-write("          ls /dev/ · cat /dev/info · cat /dev/cpu\n\n", "info");
+write("          ls /dev/ · cat /dev/info · cat /dev/cpu\n", "info");
+write("          cat image.png · play music.mp3\n\n", "info");
 updatePrompt();
 input.focus();
 </script>

@@ -25,6 +25,9 @@ and device files. It runs in any browser with no build step.
 
 ### Short-term (single session)
 
+- [x] Image display: `cat image.png` renders inline in browser terminal
+- [x] Audio playback: `play music.mp3` plays with controls
+- [x] `readBlob` API for binary file reading
 - [ ] `ls -l` output format (permissions, size, date)
 - [ ] Pipe operator: `cat README.md | head -3`
 - [ ] `grep` builtin or command

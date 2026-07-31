@@ -220,6 +220,18 @@ class VirtualFS {
     return m.backend.read(m.relative);
   }
 
+  async readBlob(path) {
+    const r = this._resolve(path);
+    const m = this._findBackend(r);
+    if (!m) throw new Error(`ENOENT: ${path} (no mount for ${r})`);
+    if (m.backend.readBlob) {
+      return m.backend.readBlob(m.relative);
+    }
+    // Fallback: read as text and wrap in a Blob
+    const text = await m.backend.read(m.relative);
+    return new Blob([text], { type: "text/plain" });
+  }
+
   async write(path, content) {
     const r = this._resolve(path);
     const m = this._findBackend(r);

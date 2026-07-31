@@ -7,34 +7,41 @@ import { RamFS } from "./ramfs.js";
 
 export class HttpFS {
   constructor() {
-    this.cache = new RamFS();  // Cache previously fetched files
+    this.cache = new RamFS();
   }
 
-  async read(path) {
-    // Try cache first
-    try {
-      return await this.cache.read(path);
-    } catch {
-      // Cache miss — fetch
-    }
-
-    // Strip leading slash, build URL
+  _url(path) {
     let url = path.replace(/^\//, "");
-    // If it doesn't look like a URL, assume it's a path under /http/
     if (!url.startsWith("http://") && !url.startsWith("https://")) {
       url = "https://" + url;
     }
+    return url;
+  }
 
+  async read(path) {
     try {
-      const resp = await fetch(url);
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${url}`);
-      const text = await resp.text();
-      // Cache it
+      return await this.cache.read(path);
+    } catch {}
+
+    const url = this._url(path);
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${url}`);
+    const text = await resp.text();
+    await this.cache.write(path, text);
+    return text;
+  }
+
+  async readBlob(path) {
+    const url = this._url(path);
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${url}`);
+    const blob = await resp.blob();
+    // Also cache text version for read()
+    try {
+      const text = await blob.text();
       await this.cache.write(path, text);
-      return text;
-    } catch (e) {
-      throw new Error(`ENOENT: ${url} (${e.message})`);
-    }
+    } catch {}
+    return blob;
   }
 
   async list(path) {

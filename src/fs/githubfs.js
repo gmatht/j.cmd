@@ -115,22 +115,28 @@ export class GitHubFS {
   async read(path) {
     const p = this._parse(path);
 
-    // Root-level files (README.md, etc.)
     if (p.file === "README.md" || p.file === ".readme") {
       return await this._readme();
     }
-
-    // If this looks like a root-level file but we don't know it, error
     if (!p.owner && p.file) {
       throw new Error("ENOENT: not a file path");
     }
-
     if (!p.owner || !p.repo) throw new Error("ENOENT: not a file path");
 
     const rawUrl = `https://raw.githubusercontent.com/${p.owner}/${p.repo}/${this.branch}/${p.filePath}`;
     const resp = await fetch(rawUrl);
     if (!resp.ok) throw new Error("ENOENT");
     return resp.text();
+  }
+
+  async readBlob(path) {
+    const p = this._parse(path);
+    if (!p.owner || !p.repo) throw new Error("ENOENT");
+
+    const rawUrl = `https://raw.githubusercontent.com/${p.owner}/${p.repo}/${this.branch}/${p.filePath}`;
+    const resp = await fetch(rawUrl);
+    if (!resp.ok) throw new Error("ENOENT");
+    return resp.blob();
   }
 
   async _readme() {
