@@ -215,7 +215,12 @@ const ansiPalette = {
   "94": "#7ec8e3", "95": "#d6a0d6", "96": "#a0d6d6", "97": "#e0e0e0",
 };
 
+// Tracks whether the last thing written to the terminal ended with a
+// newline — used so the next prompt line always starts on a fresh row.
+let lastCharNewline = true;
+
 function write(text, cls = "out") {
+  recordOutput(text);  // asciinema capture (no-op unless recording)
   // Fast path: plain text (the common case) — no escape processing.
   if (!text.includes("\x1b[")) {
     const plain = document.createElement("span");
@@ -223,6 +228,7 @@ function write(text, cls = "out") {
     plain.textContent = text;
     term.appendChild(plain);
     term.scrollTop = term.scrollHeight;
+    lastCharNewline = text.endsWith("\n");
     return;
   }
   // ANSI SGR sequences (\x1b[<code>m) → colored spans. Only `ls` emits
@@ -244,6 +250,91 @@ function write(text, cls = "out") {
   }
   if (last < text.length) appendChunk(text.slice(last), color);
   term.scrollTop = term.scrollHeight;
+  lastCharNewline = text.endsWith("\n");
+}
+
+// Print a fresh shell prompt line into the scrollback, so it's clear
+// the previous command finished and the shell is ready again.
+function writeShellPrompt() {
+  if (!lastCharNewline) write("\n");
+  write(`tinysh:${fs.cwd}$ `, "prompt");
+}
+
+// ─── asciinema recording (v2 cast format) ──────────────────────
+// Hooks write() to capture terminal output with timing deltas, so a
+// session can be replayed later. Native JS is far better here than
+// compiling the Python asciinema to WASM — it sees the shell's actual
+// output stream directly.
+const recording = {
+  active: false,
+  filepath: null,
+  startTime: null,
+  lastTime: null,
+  events: [],
+  width: 80,
+  height: 24,
+};
+
+function startRecording(filepath) {
+  recording.active = true;
+  recording.filepath = filepath;
+  recording.startTime = Date.now();
+  recording.lastTime = Date.now();
+  recording.events = [];
+  recording.width = Number(env.COLUMNS) || 80;
+  recording.height = Number(env.LINES) || 24;
+}
+
+function recordOutput(text) {
+  if (!recording.active || text.length === 0) return;
+  const now = Date.now();
+  const delta = (now - recording.lastTime) / 1000;
+  recording.lastTime = now;
+  // Coalesce rapid writes (e.g. per-char prompts) into one event
+  const last = recording.events[recording.events.length - 1];
+  if (last && last[0] === "o" && delta < 0.05) {
+    last[2] += text;
+  } else {
+    recording.events.push([delta, "o", text]);
+  }
+}
+
+function stopRecording() {
+  if (!recording.active) return null;
+  recording.active = false;
+  const cast = {
+    version: 2,
+    width: recording.width,
+    height: recording.height,
+    timestamp: Math.floor(recording.startTime / 1000),
+    env: { SHELL: "/bin/tinysh" },
+  };
+  const lines = [JSON.stringify(cast)];
+  for (const ev of recording.events) lines.push(JSON.stringify(ev));
+  const result = { filepath: recording.filepath, content: lines.join("\n") };
+  recording.filepath = null;
+  recording.events = [];
+  return result;
+}
+
+// Replay a v2 cast file's output events with their real timing.
+async function playCast(content) {
+  const lines = content.trim().split("\n");
+  if (lines.length === 0) return;
+  const header = JSON.parse(lines[0]);
+  if (header.version !== 2) {
+    throw new Error("only v2 cast files are supported");
+  }
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    let ev;
+    try { ev = JSON.parse(line); } catch { continue; }
+    if (ev[1] !== "o") continue;
+    const delta = Math.max(0, Number(ev[0]) || 0);
+    if (delta > 0) await new Promise((r) => setTimeout(r, delta * 1000));
+    write(String(ev[2]), "out");
+  }
 }
 
 function clearViewport() {
@@ -383,6 +474,7 @@ function handleInterrupt() {
   input.value = "";
   write("^C\n", "info");
   updatePrompt();
+  writeShellPrompt();
   input.focus();
   lastMatches = [];
 }
@@ -1616,6 +1708,7 @@ Loops, conditionals, variables, arithmetic and pipes work:
                     man -k <word>: search pages, like apropos)
     help            This help
     history         Show command history (persists across refreshes)
+    asciinema       Record/replay sessions: rec <file.cast> · stop · play
     clear           Clear terminal
     resize          Report terminal size (COLUMNS × LINES)
     stty size       Report terminal size ("rows cols")
@@ -1712,6 +1805,78 @@ Loops, conditionals, variables, arithmetic and pipes work:
     history.forEach((cmd, i) => {
       stdout.write(`${String(i + 1).padStart(4)}  ${cmd}\n`);
     });
+  },
+
+  async asciinema(args) {
+    // asciinema rec <file.cast>   — record this session
+    // asciinema stop              — stop recording, save the cast
+    // asciinema play <file.cast>  — replay a cast with real timing
+    // asciinema cat <file.cast>   — dump the raw cast JSON
+    const sub = args[0];
+
+    if (sub === "rec" || sub === "record") {
+      const file = args[1];
+      if (!file) { stderr.write("asciinema: rec needs a file name (foo.cast)\n"); return 2; }
+      if (recording.active) { stderr.write("asciinema: already recording\n"); return 1; }
+      // Banner first (not captured), then start recording
+      write(`asciinema: recording to ${file} — type 'asciinema stop' to finish\n`, "info");
+      startRecording(file);
+      return 0;
+    }
+
+    if (sub === "stop") {
+      if (!recording.active) { stderr.write("asciinema: not recording\n"); return 1; }
+      const result = stopRecording();
+      if (!result) return 1;
+      try {
+        await fs.write(result.filepath, result.content);
+        stdout.write(`asciinema: recording saved to ${result.filepath}\n`);
+        return 0;
+      } catch (e) {
+        stderr.write(`asciinema: ${e.message}\n`);
+        return 1;
+      }
+    }
+
+    if (sub === "play") {
+      const file = args[1];
+      if (!file) { stderr.write("asciinema: play needs a file name\n"); return 2; }
+      try {
+        const content = await fs.read(file);
+        await playCast(content);
+        return 0;
+      } catch (e) {
+        stderr.write(`asciinema: ${e.message}\n`);
+        return 1;
+      }
+    }
+
+    if (sub === "cat") {
+      const file = args[1];
+      if (!file) { stderr.write("asciinema: cat needs a file name\n"); return 2; }
+      try {
+        stdout.write(await fs.read(file));
+        return 0;
+      } catch (e) {
+        stderr.write(`asciinema: ${e.message}\n`);
+        return 1;
+      }
+    }
+
+    if (sub === "-h" || sub === "--help" || sub === undefined) {
+      stdout.write(`asciinema — record and replay terminal sessions\n\n`);
+      stdout.write(`  asciinema rec <file.cast>   record this session to a cast file\n`);
+      stdout.write(`  asciinema stop              stop recording and save\n`);
+      stdout.write(`  asciinema play <file.cast>  replay a recording with real timing\n`);
+      stdout.write(`  asciinema cat <file.cast>   dump the raw cast JSON (v2 format)\n`);
+      stdout.write(`\n  Recordings are standard asciinema v2 cast files:\n`);
+      stdout.write(`  a JSON header (version, width, height, timestamp) followed by\n`);
+      stdout.write(`  [delay, "o", text] events — viewable with real 'asciinema play'.\n`);
+      return 0;
+    }
+
+    stderr.write(`asciinema: unknown subcommand '${sub}' (try: asciinema --help)\n`);
+    return 2;
   },
 
   async locate(args) {
@@ -2509,6 +2674,7 @@ function exitPythonRepl() {
   replState.sab = null;
   stdout.write("\nLeaving Python REPL.\n");
   updatePrompt();
+  writeShellPrompt();
 }
 
 function sendPythonLine(line) {
@@ -2554,6 +2720,7 @@ function exitPythonReplReplay() {
   replReplayState.pending = [];
   stdout.write("\nLeaving Python REPL.\n");
   updatePrompt();
+  writeShellPrompt();
 }
 
 function isComplete(source) {
@@ -2650,6 +2817,7 @@ function exitPager() {
   pagerState.search = null;
   stdout.write("\n");
   updatePrompt();
+  writeShellPrompt();
 }
 
 async function handlePagerInput(line) {
@@ -2807,10 +2975,16 @@ async function onCommand() {
 
   addHistory(line);
 
-  write(`tinysh:${fs.cwd}$ ${line}\n`, "prompt");
+  // The prompt line is already in the scrollback — echo just the command
+  write(`${line}\n`, "prompt");
 
   await runInterruptible(handleLine(line));
   updatePrompt();
+  // Print the next prompt line so it's clear the command finished.
+  // Modal modes (pager/REPL) manage their own prompts.
+  if (!pagerState.active && !replState.active && !replReplayState.active) {
+    writeShellPrompt();
+  }
   input.focus();
   lastMatches = [];
 }
@@ -2928,6 +3102,7 @@ input.addEventListener("keydown", async (e) => {
   // is usable — exports, banner, aliases etc. take effect immediately.
   await loadConfig();
   updatePrompt();
+  writeShellPrompt();  // initial prompt line in the scrollback
   input.focus();
 })();
 </script>
