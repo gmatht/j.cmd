@@ -27,6 +27,7 @@ class RootFS {
     this.vfs = vfs;
     this.files = new Map();
     this.dirs = new Set(["/"]);
+    this.mtimes = new Map();  // path → epoch ms of last write
   }
 
   _parent(path) {
@@ -40,6 +41,7 @@ class RootFS {
     if (!this.dirs.has(parent)) {
       this._ensureParent(parent);
       this.dirs.add(parent);
+      this.mtimes.set(parent, Date.now());
     }
   }
 
@@ -55,6 +57,17 @@ class RootFS {
     const norm = path.replace(/\/$/, "") || "/";
     this._ensureParent(norm);
     this.files.set(norm, new TextEncoder().encode(content));
+    this.mtimes.set(norm, Date.now());
+  }
+
+  async stat(path) {
+    const norm = path.replace(/\/$/, "") || "/";
+    if (this.dirs.has(norm)) {
+      return { type: "dir", size: 0, mtime: this.mtimes.get(norm) };
+    }
+    const data = this.files.get(norm);
+    if (data === undefined) throw new Error("ENOENT");
+    return { type: "file", size: data.length, mtime: this.mtimes.get(norm) };
   }
 
   async list(path) {
@@ -84,7 +97,7 @@ class RootFS {
         if (name) entries.add(name + "/");
       }
     }
-    return [...entries].sort();
+    return [...entries].sort().filter((e, i, arr) => !(e + "/" === arr[i + 1]));
   }
 
   async remove(path) {
@@ -94,6 +107,9 @@ class RootFS {
       if (key.startsWith(norm + "/")) this.files.delete(key);
     }
     this.dirs.delete(norm);
+    for (const key of [...this.mtimes.keys()]) {
+      if (key === norm || key.startsWith(norm + "/")) this.mtimes.delete(key);
+    }
   }
 }
 
@@ -280,9 +296,37 @@ class VirtualFS {
     }
   }
 
-  async formatList(path) {
+  // ─── stat: metadata for a single path ───────────────────────
+  // Returns { type: "file"|"dir", size: number, mtime: ms|undefined }.
+  // Backends may implement their own stat(); otherwise we fall back
+  // to reading the file (dirs throw EISDIR/ENOTDIR).
+
+  async stat(path) {
+    const r = this._resolve(path);
+    const m = this._findBackend(r);
+    if (!m) throw new Error(`ENOENT: ${path} (no mount for ${r})`);
+    if (m.backend.stat) {
+      return m.backend.stat(m.relative);
+    }
+    try {
+      const content = await m.backend.read(m.relative);
+      return { type: "file", size: content.length, mtime: undefined };
+    } catch (e) {
+      const msg = e.message || "";
+      if (msg.includes("EISDIR") || msg.includes("ENOTDIR")) {
+        return { type: "dir", size: 0, mtime: undefined };
+      }
+      throw e;
+    }
+  }
+
+  // ─── formatList: human-readable directory listing ───────────
+
+  async formatList(path, opts = {}) {
     const entries = await this.list(path);
     if (entries.length === 0) return "";
+    if (opts.long) return await this.formatLongList(path, entries);
+
     const cols = 4;
     const widths = entries.map(e => e.length);
     const colW = Math.max(...widths) + 2;
@@ -296,6 +340,51 @@ class VirtualFS {
     }
     return rows.join("\n") + "\n";
   }
+
+  // Long format: permissions, nlink, owner, group, size, date, name
+  async formatLongList(path, entries) {
+    const rows = [];
+    for (const entry of entries) {
+      const isDir = entry.endsWith("/");
+      const name = isDir ? entry.slice(0, -1) : entry;
+      let st = null;
+      try {
+        st = await this.stat(path + "/" + entry);
+      } catch {
+        st = null;  // remote/virtual backends without metadata
+      }
+      const type = isDir ? "dir" : (st && st.type) || "file";
+      const size = st && st.size !== undefined ? st.size : (isDir ? 0 : "-");
+      const mtime = st && st.mtime;
+      rows.push({
+        mode: type === "dir" ? "drwxr-xr-x" : "-rw-r--r--",
+        size,
+        date: formatMtime(mtime),
+        name,
+      });
+    }
+    const sizeW = Math.max(...rows.map(r => String(r.size).length));
+    const dateW = Math.max(...rows.map(r => r.date.length));
+    return rows.map(r =>
+      `${r.mode} 1 tinysh tinysh ${String(r.size).padStart(sizeW)} ${r.date.padEnd(dateW)} ${r.name}`
+    ).join("\n") + "\n";
+  }
+}
+
+// Unix-style date column: "Mon DD HH:MM" for this year, else "Mon DD  YYYY"
+function formatMtime(ms) {
+  if (!ms) return "-";
+  const d = new Date(ms);
+  const months = ["Jan","Feb","Mar","Apr","May","Jun",
+                  "Jul","Aug","Sep","Oct","Nov","Dec"];
+  const mon = months[d.getMonth()];
+  const day = String(d.getDate()).padStart(2);
+  if (d.getFullYear() === new Date().getFullYear()) {
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    return `${mon} ${day} ${hh}:${mm}`;
+  }
+  return `${mon} ${day}  ${d.getFullYear()}`;
 }
 
 // Singleton

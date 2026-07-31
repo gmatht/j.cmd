@@ -10,6 +10,8 @@
 const KEY_PREFIX = "fs:";
 // Marker prefix for base64-encoded binary content stored in localStorage
 const B64_MARKER = "\u0001b64:";
+// Metadata key (mtime per path) for ls -l support
+const META_KEY = KEY_PREFIX + "meta";
 
 // Encode bytes to base64 (browser-safe, no atob/btoa chunk issues)
 function bytesToBase64(bytes) {
@@ -57,6 +59,38 @@ export class LocalStorageFS {
     }
   }
 
+  // ─── Metadata (mtime per path, for ls -l) ──────────────────
+
+  _meta() {
+    try {
+      return JSON.parse(localStorage.getItem(META_KEY) || "{}");
+    } catch {
+      return {};
+    }
+  }
+
+  _saveMeta(meta) {
+    localStorage.setItem(META_KEY, JSON.stringify(meta));
+  }
+
+  _touch(path, mtime = Date.now()) {
+    const meta = this._meta();
+    meta[path] = { mtime };
+    this._saveMeta(meta);
+  }
+
+  _dropMeta(path) {
+    const meta = this._meta();
+    let changed = false;
+    for (const key of Object.keys(meta)) {
+      if (key === path || key.startsWith(path + "/")) {
+        delete meta[key];
+        changed = true;
+      }
+    }
+    if (changed) this._saveMeta(meta);
+  }
+
   _parent(path) {
     const p = path.replace(/\/+$/, "");
     // Root or empty → root
@@ -74,6 +108,7 @@ export class LocalStorageFS {
       this._ensureParent(parent);
       dirs.push(parent);
       this._saveDirs(dirs);
+      this._touch(parent);
     }
   }
 
@@ -110,6 +145,7 @@ export class LocalStorageFS {
     const norm = path.replace(/\/$/, "") || "/";
     this._ensureParent(norm);
     localStorage.setItem(KEY_PREFIX + "file:" + norm, content);
+    this._touch(norm);
   }
 
   async writeBlob(path, blob) {
@@ -121,6 +157,25 @@ export class LocalStorageFS {
       KEY_PREFIX + "file:" + norm,
       B64_MARKER + bytesToBase64(new Uint8Array(buffer))
     );
+    this._touch(norm);
+  }
+
+  async stat(path) {
+    const norm = path.replace(/\/$/, "") || "/";
+    const dirs = this._dirs();
+    if (dirs.includes(norm)) {
+      const meta = this._meta()[norm];
+      return { type: "dir", size: 0, mtime: meta && meta.mtime };
+    }
+
+    const key = KEY_PREFIX + "file:" + norm;
+    const data = localStorage.getItem(key);
+    if (data === null) throw new Error("ENOENT");
+    const size = data.startsWith(B64_MARKER)
+      ? base64ToBytes(data.slice(B64_MARKER.length)).length
+      : data.length;
+    const meta = this._meta()[norm];
+    return { type: "file", size, mtime: meta && meta.mtime };
   }
 
   async list(path) {
@@ -153,7 +208,7 @@ export class LocalStorageFS {
       }
     }
 
-    return [...entries].sort();
+    return [...entries].sort().filter((e, i, arr) => !(e + "/" === arr[i + 1]));
   }
 
   async remove(path) {
@@ -173,5 +228,6 @@ export class LocalStorageFS {
     } else {
       localStorage.removeItem(KEY_PREFIX + "file:" + norm);
     }
+    this._dropMeta(norm);
   }
 }

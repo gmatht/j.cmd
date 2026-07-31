@@ -5,6 +5,7 @@ export class RamFS {
   constructor() {
     this.files = new Map();      // path → Uint8Array
     this.dirs = new Set(["/"]);  // path strings that are directories
+    this.mtimes = new Map();     // path → epoch ms of last write
   }
 
   _parent(path) {
@@ -20,6 +21,7 @@ export class RamFS {
     if (!this.dirs.has(parent)) {
       this._ensureParent(parent);
       this.dirs.add(parent);
+      this.mtimes.set(parent, Date.now());
     }
   }
 
@@ -46,6 +48,7 @@ export class RamFS {
       ? new TextEncoder().encode(content)
       : content;
     this.files.set(norm, encoded);
+    this.mtimes.set(norm, Date.now());
   }
 
   async writeBlob(path, blob) {
@@ -53,6 +56,17 @@ export class RamFS {
     this._ensureParent(norm);
     const buffer = await blob.arrayBuffer();
     this.files.set(norm, new Uint8Array(buffer));
+    this.mtimes.set(norm, Date.now());
+  }
+
+  async stat(path) {
+    const norm = path.replace(/\/$/, "") || "/";
+    if (this.dirs.has(norm)) {
+      return { type: "dir", size: 0, mtime: this.mtimes.get(norm) };
+    }
+    const data = this.files.get(norm);
+    if (data === undefined) throw new Error(`ENOENT: ${path}`);
+    return { type: "file", size: data.length, mtime: this.mtimes.get(norm) };
   }
 
   async list(path) {
@@ -74,7 +88,7 @@ export class RamFS {
         if (name) entries.add(name + "/");
       }
     }
-    return [...entries].sort();
+    return [...entries].sort().filter((e, i, arr) => !(e + "/" === arr[i + 1]));
   }
 
   async remove(path) {
@@ -90,6 +104,9 @@ export class RamFS {
       this.dirs.delete(norm);
     } else {
       this.files.delete(norm);
+    }
+    for (const key of [...this.mtimes.keys()]) {
+      if (key === norm || key.startsWith(norm + "/")) this.mtimes.delete(key);
     }
   }
 }

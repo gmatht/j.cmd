@@ -398,12 +398,29 @@ function looksBinary(text) {
 
 const builtins = {
   async ls(args) {
-    const dir = args[0] || ".";
-    try {
-      const output = await fs.formatList(dir);
-      stdout.write(output);
-    } catch (e) {
-      stderr.write(`ls: ${dir}: ${e.message}\n`);
+    // Parse flags: -l (long format with permissions/size/date)
+    let long = false;
+    const dirs = [];
+    for (const a of args) {
+      if (a === "-l" || a === "--long" || a === "-la" || a === "-al") {
+        long = true;
+      } else if (a.startsWith("-")) {
+        stderr.write(`ls: invalid option -- '${a}'\n`);
+        return;
+      } else {
+        dirs.push(a);
+      }
+    }
+    if (dirs.length === 0) dirs.push(".");
+    for (const dir of dirs) {
+      try {
+        const output = await fs.formatList(dir, { long });
+        if (!output) continue;
+        if (dirs.length > 1) stdout.write(`${dir}:\n`);
+        stdout.write(output);
+      } catch (e) {
+        stderr.write(`ls: ${dir}: ${e.message}\n`);
+      }
     }
   },
 

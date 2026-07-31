@@ -21,12 +21,29 @@ const wasmRunner = new WasmRunner(fs);
 
 const builtins = {
   async ls(args) {
-    const dir = args[0] || ".";
-    try {
-      const output = await fs.formatList(dir);
-      process.stdout.write(output);
-    } catch (e) {
-      process.stderr.write(`ls: ${dir}: ${e.message}\n`);
+    // Parse flags: -l (long format with permissions/size/date)
+    let long = false;
+    const dirs = [];
+    for (const a of args) {
+      if (a === "-l" || a === "--long" || a === "-la" || a === "-al") {
+        long = true;
+      } else if (a.startsWith("-")) {
+        process.stderr.write(`ls: invalid option -- '${a}'\n`);
+        return;
+      } else {
+        dirs.push(a);
+      }
+    }
+    if (dirs.length === 0) dirs.push(".");
+    for (const dir of dirs) {
+      try {
+        const output = await fs.formatList(dir, { long });
+        if (!output) continue;
+        if (dirs.length > 1) process.stdout.write(`${dir}:\n`);
+        process.stdout.write(output);
+      } catch (e) {
+        process.stderr.write(`ls: ${dir}: ${e.message}\n`);
+      }
     }
   },
 
@@ -129,7 +146,7 @@ const builtins = {
     process.stdout.write(`tinysh — minimal shell for the virtual filesystem
 
 Built-in commands:
-  ls [dir]        List directory contents
+  ls [dir]        List directory contents (ls -l: long format)
   cat <file>...   Print file contents
   echo <text>     Print text
   pwd             Print working directory

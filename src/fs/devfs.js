@@ -139,6 +139,17 @@ export class DevFS {
     throw new Error("ENOTDIR");
   }
 
+  async stat(path) {
+    const norm = path.replace(/\/$/, "") || "/";
+    if (norm === "/") return { type: "dir", size: 0, mtime: undefined };
+    // Known virtual directories under /dev
+    if (norm === "/cpu" || norm === "/webgl" || norm === "/input") {
+      return { type: "dir", size: 0, mtime: undefined };
+    }
+    const content = await this.read(norm);
+    return { type: "file", size: content.length, mtime: undefined };
+  }
+
   async remove(path) {
     throw new Error("EROFS: Cannot remove devices");
   }
