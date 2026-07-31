@@ -1442,8 +1442,9 @@ return 0;
     this._getBackend("/bin/xclip.js").read("/xclip.js")
       .catch(() => syncWrite(this._getBackend("/bin/xclip.js"), "/xclip.js", xclipjsContent));
 
-    // xeyes.js — browser toy/utility command (written only when absent).
-    const xeyesjsContent = `// xeyes — the classic X11 eyes that follow the cursor (browser edition).
+    // xeyes.js — browser toy/utility command. Version-gated so the
+    // v2 launch-guard fix reaches installs that got the buggy v1.
+    const xeyesjsContent = `// xeyes v2 — the classic X11 eyes that follow the cursor (browser edition).
 //   xeyes          show the eyes; close with any key, a click, or Ctrl+C
 if (typeof document === "undefined") {
   console.log("xeyes: needs a browser (run in the web shell)");
@@ -1503,6 +1504,10 @@ var blinkTimer = setInterval(function () {
   }, 120);
 }, 3200);
 
+// v2: ignore any key delivered by the launch gesture itself (Edge can
+// report the Enter that started us differently), so the eyes don't
+// self-close the instant they appear.
+var launchGuard = Date.now() + 400;
 var done = false;
 function cleanup() {
   if (done) return;
@@ -1514,8 +1519,8 @@ function cleanup() {
 }
 var waitResolve = null;
 var wait = new Promise(function (r) { waitResolve = r; });
-function onKey(e) {
-  if (e && e.key === "Enter") return;  // the Enter that launched us — don't self-close
+function onKey() {
+  if (Date.now() < launchGuard) return;  // launch gesture — don't self-close
   cleanup();
   waitResolve();
 }
@@ -1528,6 +1533,11 @@ try {
 return 0;
 `;
     this._getBackend("/bin/xeyes.js").read("/xeyes.js")
+      .then((existing) => {
+        if (!existing.includes("xeyes v2")) {
+          syncWrite(this._getBackend("/bin/xeyes.js"), "/xeyes.js", xeyesjsContent);
+        }
+      })
       .catch(() => syncWrite(this._getBackend("/bin/xeyes.js"), "/xeyes.js", xeyesjsContent));
 
     // Sample content for new users
