@@ -133,7 +133,9 @@
 <script type="module">
 import { fs } from "../src/fs/index.js";
 import { WasmRunner } from "../src/wasm.js";
+import { WasmerRegistry } from "../src/wasmer.js";
 const wasmRunner = new WasmRunner(fs);
+const wasmerReg = new WasmerRegistry(fs);
 
 // ─── Terminal Output ───────────────────────────────────────────
 
@@ -342,6 +344,44 @@ const builtins = {
     } catch (e) {
       stderr.write(`mv: ${args[0]}: ${e.message}\n`);
     }
+
+  async wasmer(args) {
+    const subcmd = args[0] || "help";
+    
+    if (subcmd === "list") {
+      stdout.write("Available WASM packages:\n");
+      for (const [name, pkg] of Object.entries(wasmerReg.list())) {
+        stdout.write(`  ${pkg.name}  — ${pkg.desc}\n`);
+      }
+    } else if (subcmd === "search" && args[1]) {
+      const results = wasmerReg.search(args[1]);
+      if (results.length === 0) {
+        stdout.write(`No packages matching "${args[1]}"\n`);
+      } else {
+        stdout.write(`Packages matching "${args[1]}":\n`);
+        for (const r of results) {
+          stdout.write(`  ${r.name}  — ${r.desc} (${r.source})\n`);
+        }
+      }
+    } else if (subcmd === "install" && args[1]) {
+      try {
+        const result = await wasmerReg.install(args[1]);
+        stdout.write(`Installed ${result.name} (${result.size} bytes) → ${result.path}\n`);
+      } catch (e) {
+        stderr.write(`install: ${e.message}\n`);
+      }
+    } else {
+      stdout.write(`wasmer — WASM package manager for browser shell\n\n
+  Usage:\n
+    wasmer list                    — list available packages\n
+    wasmer search <term>           — search packages\n
+    wasmer install <name>          — download package to /bin/\n
+    wasmer help                    — this help\n
+\n
+  Installed packages are available as commands.\n
+  Compile your own: Rust/wasm-pack → wasm32-wasi → /bin/\n`);
+    }
+  },
   },
 
   async browse(args) {
@@ -506,7 +546,6 @@ async function handleLine(line) {
         "ruby": "wasmer", "go": "wasmer", "gcc": "wasmer",
         "rustc": "wasmer", "java": "wasmer", "deno": "wasmer",
         "cargo": "wasmer", "make": "wasmer",
-        "wasmer": "wasmer coming soon — WASM package manager for browser shell",
       };
       const hint = hints[cmd];
       if (hint) {
@@ -800,7 +839,7 @@ input.addEventListener("keydown", async (e) => {
   write("          ls /dev/ · cat /dev/info · cat /dev/cpu\n", "info");
   write("          cat image.png · play music.mp3\n", "info");
   write("          browse /github/user/repo — open in tab\n", "info");
-  write("          apt/yum → wasmer · pip/npm → wasmer install\n\n", "info");
+  write("          apt/yum/pip → wasmer · wasmer install <pkg>\n\n", "info");
   updatePrompt();
   input.focus();
 })();
