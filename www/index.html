@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>tinysh — browser shell</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%92%BB%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/codemirror.min.css">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/theme/monokai.min.css">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/addon/dialog/dialog.min.css">
@@ -316,15 +317,16 @@ function writeShellPrompt() {
 }
 
 // ─── asciinema recording (v2 cast format) ──────────────────────
-// Hooks write() to capture terminal output with timing deltas, so a
-// session can be replayed later. Native JS is far better here than
-// compiling the Python asciinema to WASM — it sees the shell's actual
-// output stream directly.
+// Hooks write() to capture terminal output with cumulative timestamps
+// (seconds since the recording started — the v2 spec; the asciinema
+// player derives per-event delays from these), so a session can be
+// replayed later. Native JS is far better here than compiling the
+// Python asciinema to WASM — it sees the shell's actual output stream
+// directly.
 const recording = {
   active: false,
   filepath: null,
   startTime: null,
-  lastTime: null,
   events: [],
   width: 80,
   height: 24,
@@ -390,7 +392,6 @@ function startRecording(filepath) {
   recording.active = true;
   recording.filepath = filepath;
   recording.startTime = Date.now();
-  recording.lastTime = Date.now();
   recording.events = [];
   recording.width = Number(env.COLUMNS) || 80;
   recording.height = Number(env.LINES) || 24;
@@ -403,15 +404,17 @@ function recordOutput(text) {
   // every line. The browser DOM doesn't care about \r, but asciinema
   // playback does — normalize to \r\n here.
   const data = text.replace(/\r?\n/g, "\r\n");
-  const now = Date.now();
-  const delta = (now - recording.lastTime) / 1000;
-  recording.lastTime = now;
+  // v2 cast timestamps are cumulative: seconds since the recording
+  // started. (The asciinema player computes delays between consecutive
+  // events itself — feeding it per-event durations makes every delay
+  // after the first negative, i.e. instant playback.)
+  const t = (Date.now() - recording.startTime) / 1000;
   // Coalesce rapid writes (e.g. per-char prompts) into one event
   const last = recording.events[recording.events.length - 1];
-  if (last && last[0] === "o" && delta < 0.05) {
+  if (last && last[1] === "o" && t - last[0] < 0.05) {
     last[2] += data;
   } else {
-    recording.events.push([delta, "o", data]);
+    recording.events.push([t, "o", data]);
   }
 }
 
@@ -528,39 +531,79 @@ async function playCast(content) {
     }
   };
 
+  // v2 cast timestamps are cumulative (seconds since recording start)
+  // — the delay between consecutive events is what we wait for.
+  let prevTime = 0;
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line) continue;
     let ev;
     try { ev = JSON.parse(line); } catch { continue; }
     if (ev[1] !== "o") continue;
-    const delta = Math.max(0, Number(ev[0]) || 0);
+    const t = Math.max(0, Number(ev[0]) || 0);
+    const delta = t - prevTime;
+    prevTime = t;
     if (delta > 0) await new Promise((r) => setTimeout(r, delta * 1000));
     feed(String(ev[2]));
   }
 
-  // Paint the final screen: each row as plain text with SGR codes so
-  // the normal ANSI-aware write() colours it.
-  const out = [];
+  // Paint the final screen as DOM, with a blinking block cursor on the
+  // cell where the terminal cursor ended up — asciinema playback shows
+  // the cursor too. Rows carry SGR codes; we split them into coloured
+  // spans exactly like write() would.
+  let lastCode = null, buf = "";
+  const flushBuf = () => {
+    if (!buf) return;
+    const span = document.createElement("span");
+    span.className = "out";
+    if (lastCode && ansiPalette[lastCode]) span.style.color = ansiPalette[lastCode];
+    span.textContent = buf;
+    term.insertBefore(span, promptLine);
+    buf = "";
+  };
+  const setCode = (code) => { if (code !== lastCode) { flushBuf(); lastCode = code; } };
+  const newline = () => {
+    flushBuf();
+    const nl = document.createElement("span");
+    nl.className = "out";
+    nl.textContent = "\n";
+    term.insertBefore(nl, promptLine);
+  };
+  const isCursorCell = (r, c) => (r === row && c === col);
+
+  // Trim trailing blank rows (and rows below the cursor) so playback
+  // doesn't leave a stack of empty lines.
+  let lastRow = 0;
   for (let r = 0; r < H; r++) {
-    // Trim trailing blanks (real terminals don't show them)
     let end = W - 1;
     while (end >= 0 && screen[r][end].ch === " ") end--;
-    if (end < 0) { out.push(""); continue; }
-    let rowText = "", lastCode = null;
-    for (let c = 0; c <= end; c++) {
-      const cell = screen[r][c];
-      if (cell.code !== lastCode) {
-        if (cell.code !== "") rowText += `\x1b[${cell.code}m`;
-        else if (lastCode !== null && lastCode !== "") rowText += "\x1b[0m";
-        lastCode = cell.code;
-      }
-      rowText += cell.ch;
-    }
-    if (lastCode !== "" && lastCode !== null) rowText += "\x1b[0m";
-    out.push(rowText);
+    if (end >= 0 || isCursorCell(r, 0)) lastRow = r;
   }
-  write(out.join("\n") + "\n", "out");
+  for (let r = 0; r <= lastRow; r++) {
+    let end = W - 1;
+    while (end >= 0 && screen[r][end].ch === " ") end--;
+    const rowEnd = isCursorCell(r, 0)
+      ? Math.max(end, Math.min(W - 1, col))
+      : end;
+    for (let c = 0; c <= rowEnd; c++) {
+      const cell = screen[r][c];
+      if (isCursorCell(r, c)) {
+        setCode(cell.code);
+        flushBuf();
+        const cur = document.createElement("span");
+        cur.className = "cursor";
+        cur.textContent = cell.ch === " " ? " " : cell.ch;
+        term.insertBefore(cur, promptLine);
+      } else {
+        setCode(cell.code);
+        buf += cell.ch;
+      }
+    }
+    setCode("");
+    newline();
+  }
+  term.scrollTop = term.scrollHeight;
+  lastCharNewline = true;
 }
 
 function clearViewport() {
