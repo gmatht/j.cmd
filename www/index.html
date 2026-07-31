@@ -350,14 +350,22 @@ const builtins = {
     let url = null;
 
     // Map virtual paths to real URLs
-    const githubMatch = r.match(/^\/github\/([^\/]+)\/([^\/]+)/);
-    if (githubMatch) {
-      url = `https://github.com/${githubMatch[1]}/${githubMatch[2]}`;
+    const repoMatch = r.match(/^\/github\/([^\/]+)\/([^\/]+)/);
+    if (repoMatch) {
+      url = `https://github.com/${repoMatch[1]}/${repoMatch[2]}`;
     } else if (r.startsWith("/http/")) {
       url = "https://" + r.slice(6);
     } else if (r.startsWith("/mount/github/")) {
       const m = r.match(/^\/mount\/github\/([^\/]+)\/([^\/]+)/);
       if (m) url = `https://github.com/${m[1]}/${m[2]}`;
+    }
+
+    // Fallback: user/org page for bare /github/{user}
+    if (!url) {
+      const userMatch = r.match(/^\/(?:github|mount\/github)\/([^\/]+)/);
+      if (userMatch) {
+        url = `https://github.com/${userMatch[1]}`;
+      }
     }
 
     if (url) {
