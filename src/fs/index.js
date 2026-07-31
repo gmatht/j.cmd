@@ -190,6 +190,17 @@ class VirtualFS {
       syncWrite(this._getBackend("/home/hello.txt"), "/hello.txt",
         "Hello from RamFS! Contents lost on restart.\n");
     }
+    // Sample startup config — read by the shell at startup (interactive
+    // mode). All lines here are commented out so first-run behaviour is
+    // unchanged; uncomment to try the feature.
+    const sampleRc =
+      "# ~/.tinyshrc — tinysh startup config (read at shell startup)\n" +
+      "# Each line is run as a shell command; '#' starts a comment.\n" +
+      "# Uncomment to try:\n" +
+      "# export EDITOR=edit\n" +
+      "# export PATH=/commands:/usr/bin:/bin\n" +
+      "# echo \"Welcome back to tinysh!\"\n";
+    syncWrite(this._getBackend("/home/.tinyshrc"), "/.tinyshrc", sampleRc);
     syncWrite(this._getBackend("/tmp/README"), "/README",
       "This is ramfs. Contents lost on reload.\n");
 

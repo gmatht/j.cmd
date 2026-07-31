@@ -1611,6 +1611,10 @@ Loops, conditionals, variables, arithmetic and pipes work:
     Expand with $NAME or \${NAME}: echo $HOME · cd $HOME
     (single quotes or \$ keep the $ literal: echo '$HOME' prints $HOME)
 
+  Startup config: ~/.tinyshrc (i.e. /home/.tinyshrc) is read at
+    startup; each line runs as a shell command, '#' comments.
+    edit ~/.tinyshrc · export EDITOR=edit · echo "Welcome back"
+
   /dev/ devices: cat /dev/info · cat /dev/cpu · cat /dev/time
                 cat /dev/webgl · cat /dev/webgl/extensions
                 WebGL GPU: write /dev/webgl/shader/vertex · /dev/webgl/buffer/<name> · /dev/webgl/uniform/2f/uOffset
@@ -2255,6 +2259,28 @@ async function handleLine(line) {
   return exitCode;
 }
 
+// ─── Startup config (~/.tinyshrc) ─────────────────────────────
+// Like a Unix shell's rc file (.bashrc / .zshrc), $HOME/.tinyshrc
+// is read at startup and each non-comment line is run as a shell
+// command — set environment variables, tweak the path, print a
+// banner, whatever. Lines starting with # are comments; a missing
+// file is not an error.
+async function loadConfig() {
+  const configPath = (env.HOME.replace(/\/+$/, "") || "/") + "/.tinyshrc";
+  let content;
+  try {
+    content = await fs.read(configPath);
+  } catch {
+    return; // no config file — not an error
+  }
+  for (const line of content.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    await handleLine(trimmed);
+  }
+  updatePrompt();
+}
+
 // ─── Command History (persists across refreshes) ───────────────
 
 const HISTORY_KEY = "tinysh:history";
@@ -2852,6 +2878,9 @@ input.addEventListener("keydown", async (e) => {
   write("          cp file /pc — download · cp /pc/file — upload\n", "info");
   write("          /big/ — IndexedDB storage (no 5MB limit)\n\n", "info");
   write("          echo $HOME · $PATH · $USER — environment variables\n\n", "info");
+  // Read ~/.tinyshrc (persistent config in /home/) before the shell
+  // is usable — exports, banner, aliases etc. take effect immediately.
+  await loadConfig();
   updatePrompt();
   input.focus();
 })();

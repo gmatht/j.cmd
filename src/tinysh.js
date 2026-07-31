@@ -942,6 +942,13 @@ Built-in commands:
   help            This help
   exit            Exit the shell
 
+Startup config (~/.tinyshrc):
+  $HOME/.tinyshrc is read at startup (interactive mode); each line
+  runs as a shell command, '#' starts a comment.
+    export EDITOR=edit
+    echo "Welcome back"
+  (in the browser, edit it with: edit ~/.tinyshrc)
+
 Pipes: cmd1 | cmd2 — cmd1's stdout becomes cmd2's stdin
   Example: cat README.md | head -3
   Example: echo "hello" | grep -i hello
@@ -1425,6 +1432,32 @@ async function handleLine(line) {
   return exitCode;
 }
 
+// ─── Startup config (~/.tinyshrc) ─────────────────────────────
+// Like a Unix shell's rc file (.bashrc / .zshrc), $HOME/.tinyshrc
+// is read at startup and each non-comment line is run as a shell
+// command. Use it for persistent environment variables and setup:
+//
+//   # sample ~/.tinyshrc  (i.e. /home/.tinyshrc)
+//   export EDITOR=edit
+//   echo "Welcome back!"
+//
+// Lines starting with # are comments; a missing file is not an
+// error (bash skips a nonexistent .bashrc the same way).
+async function loadConfig() {
+  const configPath = (env.HOME.replace(/\/+$/, "") || "/") + "/.tinyshrc";
+  let content;
+  try {
+    content = await fs.read(configPath);
+  } catch {
+    return; // no config file — not an error
+  }
+  for (const line of content.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    await handleLine(trimmed);
+  }
+}
+
 // ─── Main ───────────────────────────────────────────────────────
 
 const rl = createInterface({
@@ -1435,6 +1468,9 @@ const rl = createInterface({
 });
 
 if (process.stdin.isTTY) {
+  // Read the user's ~/.tinyshrc before the first prompt so exports
+  // and setup commands are already in effect (like bash and .bashrc).
+  await loadConfig();
   rl.on("line", async (line) => {
     await runInterruptible(handleLine(line));
     rl.setPrompt(`tinysh:${fs.cwd}$ `);
