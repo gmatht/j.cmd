@@ -382,9 +382,11 @@ class VirtualFS {
     const counterContent = `const counterPath = "/tmp/counter.txt";\nlet count;\ntry {\n  const raw = await fs.read(counterPath);\n  count = parseInt(raw.trim(), 10) || 0;\n} catch { count = 0; }\ncount++;\nawait fs.write(counterPath, String(count));\nconsole.log("Invocation #" + count);\n`;
     syncWrite(this._getBackend("/bin/sayhello.js"), "/sayhello.js", helloContent);
     syncWrite(this._getBackend("/bin/counter.js"), "/counter.js", counterContent);
-    // mail — compose email via mailto: in a new tab. Written only if
-    // absent so user edits survive reloads (the samples above overwrite).
-    const mailContent = `// mail — compose email via mailto: in a new tab (browser) or printed URL (CLI).
+    // mail — compose email via mailto: in a new tab. Written when
+    // absent or outdated (marker in the header), so user edits survive
+    // reloads while version updates still reach existing installs.
+    const mailContent = `// mail v2 — compose email via mailto: in a new tab (browser) or printed URL (CLI).
+// v2: the first-use provider picker is a dropdown, not a text prompt.
 //
 //   mail to@example.com
 //   mail to@example.com -s "Subject" -b "Body"
@@ -393,9 +395,9 @@ class VirtualFS {
 //   mail --set gmail                             change default provider
 //   mail                                         show provider + usage
 //
-// First use asks which provider should open the compose window
-// (gmail / outlook / proton / fastmail / yahoo / default) and stores
-// the choice in ~/.config/mail.provider.
+// First use shows a dropdown asking which provider should open the
+// compose window (gmail / outlook / proton / fastmail / yahoo / default)
+// and stores the choice in ~/.config/mail.provider.
 //
 // NOTE: no backslashes, backticks or dollar-brace sequences in this
 // file — the shell embeds it verbatim in a template literal at boot,
@@ -456,6 +458,72 @@ function usage() {
   console.log("Config: " + CONFIG);
 }
 
+// Dropdown provider picker (browser only) — a small modal with a <select>,
+// because six known providers don't deserve a free-text prompt.
+function pickProvider() {
+  return new Promise(function (resolve) {
+    var overlay = document.createElement("div");
+    overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:100;";
+    var box = document.createElement("div");
+    box.style.cssText = "background:#161b22;color:#e0e0e0;border:1px solid #30363d;border-radius:8px;padding:18px 22px;font-family:monospace;min-width:340px;box-shadow:0 8px 30px rgba(0,0,0,.5);";
+    var title = document.createElement("div");
+    title.textContent = "Default mail provider";
+    title.style.cssText = "font-weight:bold;margin-bottom:6px;";
+    var sub = document.createElement("div");
+    sub.textContent = "Where should mail compose open?" + NL + "Stored in " + CONFIG + NL + "Change anytime with: mail --set <provider>";
+    sub.style.cssText = "color:#8b949e;font-size:12px;margin-bottom:12px;line-height:1.5;";
+    var select = document.createElement("select");
+    select.className = "mail-provider-select";
+    select.style.cssText = "width:100%;padding:7px;margin-bottom:12px;background:#0d1117;color:#e0e0e0;border:1px solid #30363d;border-radius:4px;";
+    KNOWN.forEach(function (p) {
+      var opt = document.createElement("option");
+      opt.value = p;
+      opt.textContent = p;
+      select.appendChild(opt);
+    });
+    select.value = "gmail";
+    var row = document.createElement("div");
+    row.style.cssText = "display:flex;justify-content:flex-end;gap:8px;";
+    var ok = document.createElement("button");
+    ok.textContent = "Set provider";
+    ok.style.cssText = "background:#1f6feb;color:#fff;border:none;border-radius:4px;padding:7px 16px;cursor:pointer;";
+    var cancel = document.createElement("button");
+    cancel.textContent = "Cancel";
+    cancel.style.cssText = "background:#21262d;color:#8b949e;border:1px solid #30363d;border-radius:4px;padding:7px 14px;cursor:pointer;";
+    row.appendChild(ok);
+    row.appendChild(cancel);
+    box.appendChild(title);
+    box.appendChild(sub);
+    box.appendChild(select);
+    box.appendChild(row);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    function close(val) {
+      overlay.remove();
+      var hi = document.getElementById("hidden-input");
+      if (hi) hi.focus();  // hand the keyboard back to the shell
+      resolve(val);
+    }
+    ok.onclick = function () { close(select.value); };
+    cancel.onclick = function () { close(null); };
+    overlay.onclick = function (e) { if (e.target === overlay) close(null); };
+    overlay.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") { e.preventDefault(); close(select.value); }
+      else if (e.key === "Escape") { e.preventDefault(); close(null); }
+    });
+    select.focus();
+  });
+}
+
+// Fallback if the DOM modal ever fails — plain prompt.
+function fallbackPrompt() {
+  return window.prompt(
+    "Default mail provider?" + NL + "  " + KNOWN.join(" / ") + NL + "(stored in " + CONFIG + ")",
+    "gmail"
+  );
+}
+
 // ─── parse args ───
 var to = [];
 var subject = "";
@@ -493,7 +561,7 @@ if (to.length === 0 && !subject && !body) {
   return 0;
 }
 
-// ─── resolve provider (--provider wins; else config; else first-use prompt) ───
+// ─── resolve provider (--provider wins; else config; else first-use picker) ───
 var provider = providerOverride ? normalize(providerOverride) : await readProvider();
 
 if (providerOverride && !provider) {
@@ -503,10 +571,12 @@ if (providerOverride && !provider) {
 
 if (!provider) {
   if (isBrowser) {
-    var answer = window.prompt(
-      "Default mail provider?" + NL + "  " + KNOWN.join(" / ") + NL + "(stored in " + CONFIG + ")",
-      "gmail"
-    );
+    var answer = null;
+    try {
+      answer = await pickProvider();
+    } catch {
+      answer = fallbackPrompt();
+    }
     if (answer === null) {
       console.log("mail: cancelled — no provider set. Run: mail --set gmail");
       return 1;
@@ -546,9 +616,12 @@ if (isBrowser) {
 }
 return 0;
 `;
-    // Only write mail.js when absent, so user edits survive reloads (the
-    // samples above overwrite every boot).
     this._getBackend("/bin/mail.js").read("/mail.js")
+      .then((existing) => {
+        if (!existing.includes("mail v2")) {
+          syncWrite(this._getBackend("/bin/mail.js"), "/mail.js", mailContent);
+        }
+      })
       .catch(() => syncWrite(this._getBackend("/bin/mail.js"), "/mail.js", mailContent));
 
     // WebGL device demo — draws a bouncing colored triangle via /dev/webgl.
