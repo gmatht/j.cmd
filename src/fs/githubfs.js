@@ -160,6 +160,32 @@ export class GitHubFS {
     return resp.blob();
   }
 
+  // ─── stat: metadata for a path ─────────────────────────────
+  // The GitHub contents API returns an array for directories and a
+  // single object for files, so one probe tells the type (and the
+  // byte size for files).
+  async stat(path) {
+    const p = this._parse(path);
+    if (p.root) return { type: "dir", size: 0, mtime: undefined };
+    if (p.file) return { type: "file", size: 0, mtime: undefined }; // root guide
+    if (!p.repo) return { type: "dir", size: 0, mtime: undefined }; // owner level
+    return this._statPath(p.owner, p.repo, p.filePath);
+  }
+
+  async _statPath(owner, repo, path) {
+    let apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents`;
+    if (path) apiUrl += "/" + path;
+    try {
+      const data = await this._fetchAPI(apiUrl);
+      if (Array.isArray(data)) {
+        return { type: "dir", size: 0, mtime: undefined };
+      }
+      return { type: "file", size: data.size || 0, mtime: undefined };
+    } catch {
+      throw new Error("ENOENT");
+    }
+  }
+
   async _readme() {
     let text = `GitHub Filesystem
 ==================
@@ -178,6 +204,64 @@ Featured repos:\n`;
     text += `\nBrowse any public repo: ls /mount/github/{owner}/{repo}/\n`;
     text += `List repos for a user:  ls /mount/github/{owner}/\n`;
     return text;
+  }
+
+  async write(path, content) {
+    throw new Error("EROFS: GitHub is read-only (use git push)");
+  }
+
+  async remove(path) {
+    throw new Error("EROFS: GitHub is read-only");
+  }
+}
+
+// ─── GitHubRepoFS: a single repo pinned at a mount point ────────
+//
+// Backend for the shell's `mount` command:
+//   mount github:user/repo /mymount
+// Pins a GitHubFS to one repo, so /mymount/ contains the repo's
+// contents directly — no {owner}/{repo}/ prefix needed. Read-only,
+// like GitHubFS itself.
+// -----------------------------------------------------------------
+
+export class GitHubRepoFS extends GitHubFS {
+  constructor(owner, repo, branch = "main") {
+    super(branch);
+    this.owner = owner;
+    this.repo = repo;
+  }
+
+  // "/README.md" → "README.md"; "/" → ""
+  _rel(path) {
+    return (path || "/").replace(/^\//, "").replace(/\/$/, "");
+  }
+
+  async list(path) {
+    return this._listContents(this.owner, this.repo, this._rel(path));
+  }
+
+  async read(path) {
+    const filePath = this._rel(path);
+    if (!filePath) throw new Error("EISDIR: Is a directory");
+    const rawUrl = `https://raw.githubusercontent.com/${this.owner}/${this.repo}/${this.branch}/${filePath}`;
+    const resp = await fetch(rawUrl);
+    if (!resp.ok) throw new Error("ENOENT");
+    return resp.text();
+  }
+
+  async readBlob(path) {
+    const filePath = this._rel(path);
+    if (!filePath) throw new Error("EISDIR: Is a directory");
+    const rawUrl = `https://raw.githubusercontent.com/${this.owner}/${this.repo}/${this.branch}/${filePath}`;
+    const resp = await fetch(rawUrl);
+    if (!resp.ok) throw new Error("ENOENT");
+    return resp.blob();
+  }
+
+  async stat(path) {
+    const rel = this._rel(path);
+    if (!rel) return { type: "dir", size: 0, mtime: undefined };
+    return this._statPath(this.owner, this.repo, rel);
   }
 
   async write(path, content) {

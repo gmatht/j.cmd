@@ -20,7 +20,7 @@ import { RamFS } from "./ramfs.js";
 import { LocalStorageFS } from "./localstoragefs.js";
 import { IndexedDBFS } from "./indexeddbfs.js";
 import { HttpFS } from "./httpfs.js";
-import { GitHubFS } from "./githubfs.js";
+import { GitHubFS, GitHubRepoFS } from "./githubfs.js";
 import { GitLabFS } from "./gitlabfs.js";
 import { GitFS } from "./gitfs.js";
 import { DevFS } from "./devfs.js";
@@ -282,6 +282,7 @@ try {
       `Try these commands:\n` +
       `  ls /mount/github/gmatht/sh2perl  -- browse a GitHub repo\n` +
       `  cat /mount/github/gmatht/sh2perl/README.md  -- read a file\n` +
+      `  mount github:gmatht/sh2perl /mymount  -- attach a repo at a path\n` +
       `  ls /git/github.com/torvalds/linux/  -- real git protocol, any repo\n` +
       `  cat /home/examples/hello.sh      -- a sample script\n` +
       `  edit /home/examples/note.txt     -- edit a file\n` +
@@ -310,9 +311,56 @@ try {
     return null;
   }
 
-  mount(name, prefix, backend) {
-    this.mounts.push({ name, prefix, backend });
+  mount(name, prefix, backend, opts = {}) {
+    const record = { name, prefix, backend, ...opts };
+    this.mounts.push(record);
     this.mounts.sort((a, b) => b.prefix.length - a.prefix.length);
+    return record;
+  }
+
+  // ─── mountSpec: mount a repo spec like "github:user/repo" ──
+  // Used by the shell's `mount` builtin:
+  //   mount github:user/repo /mymount
+  // Returns the new mount record. User-created mounts are marked
+  // .user so `unmount` can never detach a core mount by accident.
+  mountSpec(spec, prefix) {
+    const m = /^([a-z]+):(.+)$/.exec(String(spec).trim());
+    if (!m) {
+      throw new Error(`unknown mount spec '${spec}' (try 'github:user/repo')`);
+    }
+    const type = m[1];
+    const arg = m[2];
+    if (type === "github") {
+      const parts = arg.split("/").filter(Boolean);
+      if (parts.length < 2) {
+        throw new Error(`github mount needs 'user/repo', got '${arg}'`);
+      }
+      const owner = parts[0];
+      const repo = parts.slice(1).join("/");
+      if (!/^[A-Za-z0-9_.-]+$/.test(owner) || !/^[A-Za-z0-9_.-]+$/.test(repo)) {
+        throw new Error(`invalid github repo '${arg}'`);
+      }
+      return this.mount(`github:${owner}/${repo}`, prefix,
+        new GitHubRepoFS(owner, repo), { user: true });
+    }
+    throw new Error(`unknown mount type '${type}' (supported: github)`);
+  }
+
+  // ─── unmount: detach a user-created mount ──────────────────
+  // Only mounts created via mountSpec (.user) can be removed; core
+  // mounts (/tmp, /home, /dev, ...) are protected.
+  unmount(prefix) {
+    const norm = prefix.replace(/\/+$/, "") || "/";
+    const idx = this.mounts.findIndex((m) => m.prefix === norm && m.user);
+    if (idx === -1) throw new Error("not a user mount");
+    return this.mounts.splice(idx, 1)[0];
+  }
+
+  // Human-readable mount table, for `mount` / /proc/mounts
+  mountTable() {
+    const lines = this.mounts.map((m) =>
+      `${m.prefix.padEnd(22)} ${m.name}${m.user ? "  (user)" : ""}`);
+    return lines.join("\n") + "\n";
   }
 
   _resolve(path) {

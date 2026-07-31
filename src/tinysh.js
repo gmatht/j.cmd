@@ -589,6 +589,74 @@ const builtins = {
     return hadError ? 1 : 0;
   },
 
+  async mount(args) {
+    // mount                              — list current mounts
+    // mount github:user/repo /mymount    — attach a GitHub repo at a path
+    // mount --help                       — usage
+    if (args.length === 0 || args[0] === "-l" || args[0] === "--list") {
+      process.stdout.write(fs.mountTable());
+      return 0;
+    }
+    if (args[0] === "-h" || args[0] === "--help") {
+      process.stdout.write(`mount — attach a remote repo as a filesystem
+
+mount                          list mounted filesystems
+mount github:user/repo /path   mount a GitHub repo at /path
+unmount /path                  detach a user-created mount
+
+Example:
+  mount github:gmatht/sh2perl /mymount
+  ls /mymount
+  cat /mymount/README.md
+`);
+      return 0;
+    }
+    const spec = args[0];
+    const target = args[1];
+    if (!target) {
+      process.stderr.write(`mount: usage: mount github:user/repo /mymount\n`);
+      return 2;
+    }
+    if (args.length > 2) {
+      process.stderr.write(`mount: too many arguments\n`);
+      return 2;
+    }
+    const r = fs._resolve(target);
+    if (fs.mounts.some((m) => m.prefix === r)) {
+      process.stderr.write(`mount: ${r}: already a mount point (unmount ${r} first)\n`);
+      return 1;
+    }
+    try {
+      const record = fs.mountSpec(spec, r);
+      process.stdout.write(`mounted ${record.name} at ${record.prefix}\n`);
+      return 0;
+    } catch (e) {
+      process.stderr.write(`mount: ${e.message}\n`);
+      return 1;
+    }
+  },
+
+  async unmount(args) {
+    // unmount /mymount — detach a user-created mount
+    if (!args[0] || args[0] === "-h" || args[0] === "--help") {
+      process.stdout.write(`unmount — detach a user-created mount
+
+unmount /mymount
+`);
+      return 0;
+    }
+    const target = args[0];
+    try {
+      const r = fs._resolve(target);
+      const removed = fs.unmount(r);
+      process.stdout.write(`unmounted ${removed.prefix} (${removed.name})\n`);
+      return 0;
+    } catch (e) {
+      process.stderr.write(`unmount: ${target}: ${e.message}\n`);
+      return 1;
+    }
+  },
+
   async wasmer(args) {
     // wasmer list | install <pkg> | search <term> — WASM package
     // manager. The browser fetches the same prebuilt binaries over
@@ -673,6 +741,8 @@ Built-in commands:
                   -l files with matches · -r recursive · -e PATTERN)
   find [path...] [expr]  Find files by name/type
                  (-name PAT · -iname PAT · -type f|d · -maxdepth N · -mindepth N)
+  mount [github:user/repo /path]  List mounts, or attach a GitHub repo at a path
+  unmount <path>   Detach a user-created mount
   wasmer          WASM package manager (list / install <pkg> / search <term>)
   true            Always succeeds (exit 0)
   false           Always fails (exit 1)
@@ -911,6 +981,7 @@ async function runSegment(segmentText, stdin, isLast) {
       "apt": "wasmer", "apt-get": "wasmer", "yum": "wasmer",
       "dnf": "wasmer", "brew": "wasmer", "pacman": "wasmer",
       "apk": "wasmer", "pip": "wasmer", "npm": "wasmer install",
+      "umount": "unmount",
       "wasmer": "wasmer coming soon — WASM package manager for browser shell",
     };
     const hint = hints[cmd];
