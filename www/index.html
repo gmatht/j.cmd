@@ -803,9 +803,12 @@ function handleInterrupt() {
   }
   if (replState.active) {
     // Reactor REPL: can't interrupt a running asyncify'd line, but ^C
-    // gives a fresh prompt (like KeyboardInterrupt) and Ctrl+D exits.
+    // clears the current line and gives a fresh prompt (like
+    // KeyboardInterrupt); Ctrl+D exits.
     write("^C\n", "info");
     write("KeyboardInterrupt\n", "err");
+    currentLine = "";
+    cursorPos = 0;
     updatePrompt();
     input.focus();
     return;
@@ -3267,6 +3270,8 @@ const replState = {
                      // eval; replaying the whole session keeps them alive)
   perlOut: "",       // stdout captured during one run, split at the marker
   perlMarker: "",    // unique string printed between old and new code
+  history: [],       // per-session REPL history (Up/Down)
+  histIdx: 0,
 };
 
 function decChunk(chunk) {
@@ -3278,6 +3283,8 @@ function enterPythonRepl() {
   spinnerStop();  // modal mode takes over the prompt slot
   replState.active = true;
   replState.mode = "python";
+  replState.history = [];
+  replState.histIdx = 0;
   stdout.write("MicroPython REPL — state persists per line · exit() or Ctrl-D to leave\n");
   updatePrompt();
   recordReplPrompt();
@@ -3287,6 +3294,8 @@ function enterPerlRepl() {
   spinnerStop();  // modal mode takes over the prompt slot
   replState.active = true;
   replState.mode = "perl";
+  replState.history = [];
+  replState.histIdx = 0;
   stdout.write("Perl REPL (zeroperl) — state persists per line · exit or Ctrl-D to leave\n");
   updatePrompt();
   recordReplPrompt();
@@ -3330,6 +3339,10 @@ function exitRepl() {
 async function runReplLine(line) {
   if (!replState.active) return;
   const trimmed = line.trim();
+  if (trimmed && replState.history[replState.history.length - 1] !== trimmed) {
+    replState.history.push(trimmed);
+  }
+  replState.histIdx = replState.history.length;
   if (replState.mode === "python") {
     if (trimmed === "exit()" || trimmed === "quit()") { exitRepl(); return; }
     try {
@@ -3962,6 +3975,16 @@ input.addEventListener("keydown", async (e) => {
   // Up/Down — history
   if (e.key === "ArrowUp") {
     e.preventDefault();
+    if (replState.active) {
+      if (replState.histIdx > 0) {
+        replState.histIdx--;
+        currentLine = replState.history[replState.histIdx];
+        cursorPos = currentLine.length;
+        renderInput();
+        recordLineRedraw();
+      }
+      return;
+    }
     if (historyIndex > 0) {
       historyIndex--;
       currentLine = history[historyIndex];
@@ -3973,6 +3996,18 @@ input.addEventListener("keydown", async (e) => {
   }
   if (e.key === "ArrowDown") {
     e.preventDefault();
+    if (replState.active) {
+      if (replState.histIdx < replState.history.length) {
+        replState.histIdx++;
+        currentLine = replState.histIdx === replState.history.length
+          ? ""
+          : replState.history[replState.histIdx];
+        cursorPos = currentLine.length;
+        renderInput();
+        recordLineRedraw();
+      }
+      return;
+    }
     if (historyIndex < history.length - 1) {
       historyIndex++;
       currentLine = history[historyIndex];

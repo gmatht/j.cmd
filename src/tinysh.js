@@ -1809,11 +1809,14 @@ function tabComplete(line, callback) {
 // via zeroperl; both state-preserving, no worker / SharedArrayBuffer).
 const replState = { active: false, mode: null, perl: null, perlReady: null,
   perlSession: [], perlOut: "", perlMarker: "" };
+let shellHistory = [];  // the shell's readline history while a REPL owns it
 
 function enterPythonRepl() {
   if (!process.stdin.isTTY) { process.stderr.write("python: REPL requires an interactive terminal\n"); return; }
   replState.active = true;
   replState.mode = "python";
+  shellHistory = rl.history.slice();
+  rl.history = [];   // the REPL gets its own readline history (Up/Down)
   process.stdout.write("MicroPython REPL — state persists per line · exit() or Ctrl-D to leave\n");
   rl.setPrompt(">>> ");
   rl.prompt();
@@ -1823,6 +1826,8 @@ function enterPerlRepl() {
   if (!process.stdin.isTTY) { process.stderr.write("perl: REPL requires an interactive terminal\n"); return; }
   replState.active = true;
   replState.mode = "perl";
+  shellHistory = rl.history.slice();
+  rl.history = [];   // the REPL gets its own readline history (Up/Down)
   process.stdout.write("Perl REPL (zeroperl) — state persists per line · exit or Ctrl-D to leave\n");
   rl.setPrompt("perl> ");
   rl.prompt();
@@ -1855,6 +1860,7 @@ function exitRepl() {
   replState.perl = null;
   replState.perlReady = null;
   process.stdout.write(`\nLeaving ${mode === "perl" ? "Perl" : "Python"} REPL.\n`);
+  rl.history = shellHistory;  // give the shell its history back
   rl.setPrompt(`tinysh:${fs.cwd}$ `);
   rl.prompt();
 }
