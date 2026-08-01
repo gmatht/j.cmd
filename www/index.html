@@ -63,6 +63,29 @@
     white-space: pre-wrap;
     word-wrap: break-word;
   }
+  /* Welcome banner: motd text left, xkcd comic right when there's room;
+     flex-wrap drops the comic below the motd on narrow terminals. */
+  #welcome-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 4px;
+  }
+  #welcome-text {
+    white-space: pre-wrap;
+    flex: 1 1 480px;
+    min-width: 260px;
+  }
+  #welcome-xkcd {
+    flex: 0 1 auto;
+    align-self: flex-start;
+  }
+  #welcome-xkcd img {
+    max-width: min(42vw, 500px);
+    max-height: 32vh;
+    border-radius: 4px;
+  }
   #prompt {
     color: #7ec8e3;
   }
@@ -234,6 +257,10 @@ const statusHint = document.getElementById("status-hint");
 // blinking block cursor live in #prompt-line, the last child of the
 // terminal. Typing updates currentLine; Enter commits it.
 let currentLine = "";
+// While non-null, write() appends into this element instead of the
+// terminal — the init banner routes into the motd column of the
+// welcome row so the xkcd comic can sit to its right.
+let welcomeText = null;
 let cursorPos = 0;
 
 // ANSI SGR palette mapped onto the terminal's colors (used by `ls`:
@@ -252,10 +279,16 @@ let lastCharNewline = true;
 function write(text, cls = "out", opts = {}) {
   if (opts.record !== false) recordOutput(sgrWrap(text, cls));  // asciinema capture (no-op unless recording)
   const appendSpan = (span) => {
-    // Output goes before the prompt line so it stays the last visible line.
-    // While a command is running, output goes above the busy spinner
-    // instead, so the spinner always sits where the next prompt will be.
-    term.insertBefore(span, spinner.active ? spinner.el : promptLine);
+    if (welcomeText) {
+      // init banner: motd goes into the left column of the welcome row
+      welcomeText.appendChild(span);
+    } else {
+      // Output goes before the prompt line so it stays the last visible
+      // line. While a command is running, output goes above the busy
+      // spinner instead, so the spinner always sits where the next
+      // prompt will be.
+      term.insertBefore(span, spinner.active ? spinner.el : promptLine);
+    }
     term.scrollTop = term.scrollHeight;
   };
   // Fast path: plain text (the common case) — no escape processing.
@@ -3968,6 +4001,17 @@ input.addEventListener("keydown", async (e) => {
 
 (async () => {
   updateTermSize();
+  // Welcome row: motd text in the left column, the xkcd comic to its
+  // right when the terminal is wide enough (flex-wrap puts the comic
+  // below the motd otherwise).
+  const welcomeRow = document.createElement("div");
+  welcomeRow.id = "welcome-row";
+  welcomeText = document.createElement("div");
+  welcomeText.id = "welcome-text";
+  const welcomeXkcd = document.createElement("div");
+  welcomeXkcd.id = "welcome-xkcd";
+  welcomeRow.append(welcomeText, welcomeXkcd);
+  term.insertBefore(welcomeRow, promptLine);
   write("╔══════════════════════════════════════╗\n", "info");
   write("║ j.cmd — A JavaScript Command Line OS ║\n", "info");
   write("║     JavaScript is the binary format  ║\n", "info");
@@ -3990,6 +4034,7 @@ input.addEventListener("keydown", async (e) => {
   write("          cp file /pc — download · cp /pc/file — upload\n", "info");
   write("          /big/ — IndexedDB storage (no 5MB limit)\n\n", "info");
   write("          echo $HOME · $PATH · $USER — environment variables\n\n", "info");
+  welcomeText = null;  // banner done — writes go back to the terminal
 
   // xkcd comic of the day — a clickable image (xkcd.now.sh is a CORS
   // proxy for the official xkcd JSON API). Fetched lazily so a slow or
@@ -4010,7 +4055,7 @@ input.addEventListener("keydown", async (e) => {
       a.style.textDecoration = "none";
       const img = document.createElement("img");
       img.alt = c.title;
-      img.style.cssText = "max-width:100%;max-height:35vh;display:block;margin:6px 0 2px;border-radius:4px;";
+      img.style.cssText = "display:block;margin:2px 0;border-radius:4px;";
       const fallbacks = [
         c.img,
         "https://images.weserv.nl/?url=" + encodeURIComponent(c.img),
@@ -4040,7 +4085,7 @@ input.addEventListener("keydown", async (e) => {
       cap.textContent = "xkcd #" + c.num + " — " + c.title + " (click to open)";
       a.appendChild(img);
       a.appendChild(cap);
-      term.insertBefore(a, promptLine);
+      welcomeXkcd.appendChild(a);  // right of the motd, or below if narrow
       term.scrollTop = term.scrollHeight;
     })
     .catch(() => {});
