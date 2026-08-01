@@ -77,6 +77,12 @@ function expression(n) {
     case "LogicalExpression":
       // Always parenthesized — sidesteps &&/|| precedence entirely.
       return `(${expression(n.left)} ${n.operator} ${expression(n.right)})`;
+    case "BinaryExpression":
+      // Arithmetic/comparison (this debashcl build folds $((...)) and
+      // [ x -le y ] into real JS binary expressions over let variables).
+      return `(${expression(n.left)} ${n.operator} ${expression(n.right)})`;
+    case "AssignmentExpression":
+      return `(${expression(n.left)} ${n.operator} ${expression(n.right)})`;
     case "UnaryExpression":
       return n.operator + expression(n.argument);
     case "ArrayExpression":

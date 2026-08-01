@@ -1,21 +1,30 @@
-// ─── sh2lib: load debashl.wasm — bash → ESTree/Perl reactor ────
+// ─── sh2lib: load debashcl.wasm — the unified debashc CLI reactor ─
 //
-// debashl.wasm is the debashc compiler built as a WASI *reactor*
-// (exports debashc_to_perl / debashc_to_estree / debashc_lex /
-// debashc_version + the memory contract debashc_str_len / debashc_free).
-// It imports only six wasi_snapshot_preview1 functions, so instead of
-// pulling in @wasmer/wasi we hand-roll those imports — one loader that
-// runs identically in the browser (fetch) and Node (readFile).
+// debashcl.wasm is the full sh2perl CLI compiled as a WASI *reactor*:
+// one artifact replaces both debashc.wasm (the _start command) and
+// debashl.wasm (the to_perl/to_estree library). It exposes
+// debashc_cli_run / _run_json / _run_with_input, so an embedder
+// implements debashc in three lines:
 //
-// Memory contract: string exports return a pointer into linear memory
-// to a [u32 len LE][data][0] buffer; input goes into a monotonically
-// growing scratch region (wasm memory only grows, so offsets never
-// collide). Results are JSON envelopes {"ok":true,"output":...}.
+//   const { instance } = await WebAssembly.instantiate(wasm, { wasi });
+//   instance.exports._initialize();
+//   const res = instance.exports.debashc_cli_run(argc, argv);
+//
+// CLI output (ESTree JSON, Perl, lex dumps, help) goes to WASI
+// stdout/stderr; the return value is a small JSON envelope. This loader
+// hand-rolls the 19 wasi_snapshot_preview1 imports (the filesystem ones
+// are stubs — file commands use debashc_cli_run_with_input, so no
+// preopens are ever touched) and runs identically in the browser
+// (fetch) and Node (readFile).
+//
+// API (the same contract callers relied on from debashl):
+//   toEstree(src) → ESTree JSON object      (argv: file --estree -, input)
+//   toPerl(src)   → Perl source             (argv: file --perl -, input)
+//   lex(src)      → token dump string       (argv: lex <src>)
+//   version()     → version string
 // -----------------------------------------------------------------
 
-const WASM_PATH = "wasm-bin/debashl.wasm";  // browser: relative to the page
-const PAGE = 65536;
-let scratchTop = 0x10000;  // monotonic scratch cursor inside wasm memory
+const WASM_PATH = "wasm-bin/debashcl.wasm";  // browser: relative to the page
 
 let libPromise = null;
 
@@ -34,15 +43,17 @@ async function loadWasmBytes() {
   }
   const { readFile } = await import("node:fs/promises");
   return new Uint8Array(
-    await readFile(new URL("../www/wasm-bin/debashl.wasm", import.meta.url))
+    await readFile(new URL("../www/wasm-bin/debashcl.wasm", import.meta.url))
   );
 }
 
-// The six WASI imports debashl needs. Memory access goes through a
-// mutable ref so the import closures see the (possibly grown) buffer.
-function makeWasiImports(mem) {
+// The 19 WASI imports debashcl needs. Output (fd 1/2) is captured into
+// stdout/stderr; the filesystem imports are stubs (ENOSYS) — they are
+// never called because file commands use run_with_input.
+const ENOSYS = 52, EBADF = 8;
+
+function makeWasiImports(mem, out) {
   const dec = new TextDecoder();
-  const stdout = { out: "" };  // unused by the reactor, but cheap to keep
   return {
     wasi_snapshot_preview1: {
       random_get(ptr, len) {
@@ -65,6 +76,20 @@ function makeWasiImports(mem) {
         new DataView(mem.memory.buffer).setBigUint64(ptr, BigInt(Date.now()) * 1000000n, true);
         return 0;
       },
+      fd_close() { return 0; },
+      fd_fdstat_get(fd, buf) {
+        const v = new DataView(mem.memory.buffer);
+        v.setUint8(buf, 2);  // character device
+        v.setUint16(buf + 2, 0, true);
+        v.setBigUint64(buf + 8, 0n, true);
+        v.setBigUint64(buf + 16, 0n, true);
+        return 0;
+      },
+      fd_filestat_get() { return ENOSYS; },
+      fd_prestat_get() { return EBADF; },
+      fd_prestat_dir_name() { return EBADF; },
+      fd_read() { return ENOSYS; },
+      fd_readdir() { return ENOSYS; },
       fd_write(fd, iovs, iovsLen, nwritten) {
         const view = new DataView(mem.memory.buffer);
         const bytes = new Uint8Array(mem.memory.buffer);
@@ -72,67 +97,96 @@ function makeWasiImports(mem) {
         for (let i = 0; i < iovsLen; i++) {
           const ptr = view.getUint32(iovs + i * 8, true);
           const len = view.getUint32(iovs + i * 8 + 4, true);
-          if (fd === 1 || fd === 2) {
-            stdout.out += dec.decode(bytes.subarray(ptr, ptr + len));
-          }
+          const s = dec.decode(bytes.subarray(ptr, ptr + len));
+          if (fd === 1) out.stdout += s;
+          else if (fd === 2) out.stderr += s;
           total += len;
         }
         view.setUint32(nwritten, total, true);
         return 0;
       },
-      proc_exit(code) { throw new Error("debashl proc_exit(" + code + ")"); },
+      path_create_directory() { return ENOSYS; },
+      path_filestat_get() { return ENOSYS; },
+      path_open() { return ENOSYS; },
+      path_unlink_file() { return ENOSYS; },
+      poll_oneoff() { return 0; },
+      proc_exit(code) { throw new Error("debashcl proc_exit(" + code + ")"); },
+      sched_yield() { return 0; },
     },
   };
 }
 
 async function loadLibrary() {
   const bytes = await loadWasmBytes();
-  const module = await WebAssembly.compile(bytes);
   const mem = { memory: null };
-  // With a compiled Module, instantiate returns the instance directly
-  // (only the bytes overload returns { module, instance }).
-  const instance = await WebAssembly.instantiate(module, makeWasiImports(mem));
+  const out = { stdout: "", stderr: "" };
+  // With a Module (compiled bytes), instantiate returns { module, instance }.
+  const { instance } = await WebAssembly.instantiate(bytes, makeWasiImports(mem, out));
   mem.memory = instance.exports.memory;
-  instance.exports._initialize();  // reactor entry point (needs random_get)
-  return wrapLibrary(instance, mem);
+  instance.exports._initialize();  // reactor entry point
+  return wrapLibrary(instance, mem, out);
 }
 
-function wrapLibrary(instance, mem) {
+function wrapLibrary(instance, mem, out) {
   const enc = new TextEncoder();
   const dec = new TextDecoder();
   const ex = instance.exports;
 
-  function writeScratch(input) {
-    const bytes = enc.encode(input);
-    const off = scratchTop;
-    scratchTop += (bytes.length + 3) & ~3;  // keep 4-byte aligned
-    const needed = off + bytes.length;
-    if (ex.memory.buffer.byteLength < needed) {
-      ex.memory.grow(Math.ceil((needed - ex.memory.buffer.byteLength) / PAGE));
-      mem.memory = ex.memory;
+  // Marshal argv (+ optional input bytes) and run the CLI. The CLI's
+  // output lands in out.stdout/out.stderr; the return envelope tells us
+  // the exit code. Throws on proc_exit (nonzero) — caught by callers.
+  function runCli(argv, input) {
+    out.stdout = "";
+    out.stderr = "";
+    const args = ["debashc", ...argv];
+    const ptrs = [];
+    for (const a of args) {
+      const b = enc.encode(a);
+      const p = ex.debashc_alloc(b.length);
+      new Uint8Array(ex.memory.buffer, p, b.length).set(b);
+      ptrs.push(p);
     }
-    new Uint8Array(ex.memory.buffer, off, bytes.length).set(bytes);
-    return { off, len: bytes.length };
+    const table = ex.debashc_alloc(4 * args.length);
+    new Uint32Array(ex.memory.buffer, table, args.length).set(ptrs);
+    let res;
+    try {
+      if (input !== undefined) {
+        const ib = enc.encode(input);
+        const pi = ex.debashc_alloc(ib.length);
+        new Uint8Array(ex.memory.buffer, pi, ib.length).set(ib);
+        res = ex.debashc_cli_run_with_input(args.length, table, pi, ib.length);
+        ex.debashc_free(pi);
+      } else {
+        res = ex.debashc_cli_run(args.length, table);
+      }
+    } finally {
+      for (const p of ptrs) ex.debashc_free(p);
+      ex.debashc_free(table);
+    }
+    const n = ex.debashc_str_len(res);
+    const envelope = JSON.parse(dec.decode(new Uint8Array(ex.memory.buffer, res, n)));
+    ex.debashc_free(res);
+    if (!envelope.ok) throw new Error(`debashcl: ${envelope.error || "failed"}`);
+    return { stdout: out.stdout, stderr: out.stderr, exit: envelope.exit ?? 0 };
   }
 
-  function callStringFn(fnName, input) {
-    const { off, len } = writeScratch(input);
-    const ptr = ex[fnName](off, len);
-    if (!ptr) throw new Error(`${fnName}: wasm returned a null pointer`);
-    const outLen = ex.debashc_str_len(ptr);
-    const out = dec.decode(new Uint8Array(ex.memory.buffer, ptr, outLen));
-    ex.debashc_free(ptr);
-    const env = JSON.parse(out);
-    if (!env.ok) throw new Error(`${fnName}: ${env.error}`);
-    return env.output;
-  }
+  // Strip the CLI's "Converting to Perl:\n====…" banner.
+  const PERL_BANNER = /^Converting to Perl:\n=+\n([\s\S]*?)\n=+\n?$/;
 
   return {
-    // shell source → Perl source (string)
-    toPerl: (sh) => callStringFn("debashc_to_perl", sh),
-    // shell source → ESTree JSON object (PLAN.md §1.2 contract, sh2.* namespace)
-    toEstree: (sh) => JSON.parse(callStringFn("debashc_to_estree", sh)),
-    lex: (sh) => callStringFn("debashc_lex", sh),
-    version: () => callStringFn("debashc_version", ""),
+    // shell source → ESTree JSON object (argv: file --estree -, input)
+    toEstree: (sh) => {
+      const r = runCli(["file", "--estree", "-"], String(sh));
+      return JSON.parse(r.stdout);
+    },
+    // shell source → Perl source (argv: file --perl -, input)
+    toPerl: (sh) => {
+      const r = runCli(["file", "--perl", "-"], String(sh));
+      const m = PERL_BANNER.exec(r.stdout);
+      return m ? m[1] : r.stdout;
+    },
+    // shell source → token dump
+    lex: (sh) => runCli(["lex", String(sh)]).stdout,
+    version: () => "debashc 0.1.0 (debashcl)",
   };
 }

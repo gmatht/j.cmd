@@ -275,6 +275,15 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     for (const it of items || []) await fn(it);
   }
 
+  // sh2.guard — this debashcl build wraps every command in it. Minimal
+  // semantics: pass the result through (exec already records status); a
+  // future `set -e` would throw here on falsy.
+  function guard(value) { return value; }
+
+  // && and || lowered to closures over async fns.
+  async function and(fnA, fnB) { return !!(await fnA()) && !!(await fnB()); }
+  async function or(fnA, fnB) { return !!(await fnA()) || !!(await fnB()); }
+
   async function whileLoop(cond, body) {
     while (await cond()) await body();
   }
@@ -396,6 +405,7 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     sh2: {
       exec, pipeline, capture, captureWords, redirect, test,
       forLoop, whileLoop, caseMatch, define, brace, param, arith,
+      guard, and, or,
       getVar, setVar,
     },
     get lastStatus() { return lastStatus; },

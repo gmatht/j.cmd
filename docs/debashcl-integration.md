@@ -1,12 +1,12 @@
-# debashl integration — bash support via the sh2 toolchain
+# debashcl integration — bash support via the sh2 toolchain
 
-tinysh now runs bash through the **debashl ESTree path** (from
+tinysh now runs bash through the **debashcl ESTree path** (from
 `root@10.42.0.1:/nvme/ai`, vendored under `vendor/sh2/` and
 `www/wasm-bin/`):
 
 ```
 bash source
-   │  debashl.wasm (reactor: debashc_to_estree)
+   │  debashcl.wasm (unified CLI reactor: debashc_cli_run*)
    ▼
 ESTree JSON (standard node types, shell semantics lowered to sh2.* calls)
    │  src/estree.js (small emitter, 19 node types)
@@ -18,7 +18,7 @@ terminal
 ```
 
 The old path (`sh2perl.wasm → Perl → perl2js`) is kept as a fallback when
-debashl.wasm isn't available.
+debashcl.wasm isn't available.
 
 ## Verified working (CLI + browser, Playwright-tested)
 
@@ -62,7 +62,7 @@ debashl.wasm isn't available.
 5. **`case` labels are pattern strings, `caseMatch` must return the
    matched pattern** (not an index) for the emitted
    `switch (sh2.caseMatch(...)) { case "a": ... }` to line up.
-   With a literal discriminant debashl emits a TemplateLiteral
+   With a literal discriminant debashcl emits a TemplateLiteral
    (`` caseMatch(`b`, [...]) ``) which is fine.
 
 6. **`${x:1:3}` slices** come through as `param("slice", x, 1, 3)` —

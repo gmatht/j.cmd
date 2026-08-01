@@ -179,7 +179,7 @@ export async function bashToJS(fs, bashSource, { wasmRunner } = {}) {
   }
 }
 
-// ─── ESTree path: bash → ESTree (debashl.wasm) → JS ────────────
+// ─── ESTree path: bash → ESTree (debashcl.wasm) → JS ───────────
 export async function bashToJsEstree(fs, bashSource) {
   const lib = await getSh2Lib();
   const ast = await lib.toEstree(bashSource);
