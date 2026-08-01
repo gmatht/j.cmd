@@ -204,3 +204,118 @@ export function createJobScheduler({ fs, runLine, stdout, stderr, storagePath })
     }));
   }
 }
+
+// ─── Background jobs (`&`) ─────────────────────────────────────
+//
+// `cmd &` runs a pipeline in the background. The shell keeps a job
+// table so `jobs` / `wait` / `kill` (and, in the browser, the right-
+// hand background panel) can see and control them.
+//
+// A job is a detached async pipeline: runLine(job) runs the command
+// list and resolves with its exit code. Output routing is the caller's
+// job — the browser routes it into the job's panel slice; the CLI lets
+// it go to the terminal. kill() races the pipeline against a per-job
+// abort signal (exit 137, like SIGKILL); the pipeline itself winds
+// down in the background, same as ^C on a foreground command.
+// -----------------------------------------------------------------
+
+export function createBgJobs({ runLine, onUpdate }) {
+  const jobs = new Map();
+  let seq = 1;
+
+  function launch(text) {
+    const id = seq++;
+    const job = {
+      id,
+      pid: 1000 + id,          // virtual pid (no real processes here)
+      cmd: text.trim(),
+      running: true,
+      killed: false,
+      minimized: false,
+      code: null,
+      started: Date.now(),
+      done: null,
+      promise: null,
+    };
+    let abortResolve = null;
+    job.abort = new Promise((resolve) => { abortResolve = resolve; });
+    job.kill = () => { if (abortResolve) abortResolve(true); };
+
+    const p = (async () => {
+      let code = 0;
+      try {
+        code = await Promise.race([
+          runLine(job),
+          job.abort.then(() => { job.killed = true; return 137; }),
+        ]);
+      } catch (e) {
+        code = 1;
+      }
+      job.code = code;
+      job.running = false;
+      job.done = Date.now();
+      if (onUpdate) { try { onUpdate(job); } catch {} }
+      return code;
+    })();
+    job.promise = p;
+    jobs.set(id, job);
+    if (onUpdate) { try { onUpdate(job); } catch {} }
+    return job;
+  }
+
+  function find(ref) {
+    if (ref === undefined || ref === "") return null;
+    const n = Number(ref);
+    if (!Number.isFinite(n)) return null;
+    for (const j of jobs.values()) {
+      if (j.id === n || j.pid === n) return j;
+    }
+    return null;
+  }
+
+  function list() {
+    return [...jobs.values()];
+  }
+
+  // Kill a running job (137); dismiss a finished one. Returns the
+  // job's status code, 127 if not found.
+  function kill(ref) {
+    const j = find(ref);
+    if (!j) return 127;
+    if (!j.running) {
+      jobs.delete(j.id);
+      if (onUpdate) { try { onUpdate(j); } catch {} }
+      return 0;
+    }
+    j.kill();
+    return 0;
+  }
+
+  // wait [id|pid] — wait for one job (its exit code), or for all
+  // background jobs (0 if all succeeded). Finished jobs are pruned.
+  async function wait(ref) {
+    if (ref === undefined) {
+      const pending = [...jobs.values()];
+      if (pending.length === 0) return 0;
+      const codes = await Promise.all(pending.map((j) => j.promise.catch(() => 1)));
+      for (const j of pending) jobs.delete(j.id);
+      return codes.every((c) => c === 0) ? 0 : 1;
+    }
+    const j = find(ref);
+    if (!j) return 127;
+    const code = await j.promise.catch(() => 1);
+    jobs.delete(j.id);
+    if (onUpdate) { try { onUpdate(j); } catch {} }
+    return code;
+  }
+
+  function toggleMinimized(ref) {
+    const j = find(ref);
+    if (!j) return 127;
+    j.minimized = !j.minimized;
+    if (onUpdate) { try { onUpdate(j); } catch {} }
+    return 0;
+  }
+
+  return { launch, find, list, kill, wait, toggleMinimized };
+}

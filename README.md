@@ -102,6 +102,17 @@ nethack --demo      # CLI: scripted autoplay (proves the pipeline)
 Assets are `www/vendor/nethack.{js,wasm}` (wasm is 4.9MB, game data
 embedded); `build-wasm-nethack.sh` fetches them from the npm package.
 
+## Background Jobs (&) — the Right-Hand Panel
+
+`cmd &` runs a pipeline in the background. `jobs` / `wait [id]` /
+`kill <id>` control them (man jobs/wait/kill). In the browser, the
+right **quarter of the display** is the background-jobs panel: each
+non-minimized job gets an equal vertical slice with its own title bar
+— **minimise** (—) collapses it to a thin dock row, **kill** (✕)
+terminates a running job (exit 137) or dismisses a finished one.
+Output streams into the job's slice while it runs, so the terminal
+stays clean.
+
 ## Go in the Browser — the Real Toolchain as WASM
 
 The `go` command runs the **real Go compiler and linker** — cmd/compile

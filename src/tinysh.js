@@ -20,7 +20,7 @@ import { env, expandRef } from "./env.js";
 import { procfs } from "./fs/procfs.js";
 import { bashToJS, runBash, buildSh2LibFacade } from "./bash2js.js";
 import { createSh2Runtime } from "./sh2runtime.js";
-import { createJobScheduler } from "./jobs.js";
+import { createJobScheduler, createBgJobs } from "./jobs.js";
 import { getManPage, manIndex, searchManPages, MAN_PAGES } from "./manpages.js";
 import { GoRunner, createGoCommand } from "./go.js";
 import { createCliNethackCommand } from "./nethack.js";
@@ -1000,6 +1000,48 @@ Once installed they run as native commands:
     return await nethackCmd(args);
   },
 
+  async jobs(args) {
+    // jobs — list background jobs (&): [id] pid status cmd
+    const list = getBgJobs().list();
+    if (list.length === 0) {
+      process.stdout.write("jobs: no background jobs\n");
+      return 0;
+    }
+    for (const j of list) {
+      const status = j.running ? "running"
+        : j.killed ? "killed"
+        : j.code === 0 ? "done"
+        : `failed (${j.code})`;
+      process.stdout.write(`[${j.id}] ${j.pid}  ${status.padEnd(14)} ${j.cmd}${j.minimized ? "  (minimized)" : ""}\n`);
+    }
+    return 0;
+  },
+
+  async wait(args) {
+    // wait [id|pid] — wait for a background job, or all of them
+    if (args.length > 1) {
+      process.stderr.write("wait: too many arguments\n");
+      return 2;
+    }
+    const code = await getBgJobs().wait(args[0]);
+    if (code === 127 && args[0] !== undefined) {
+      process.stderr.write(`wait: no such job '${args[0]}'\n`);
+    }
+    return code;
+  },
+
+  async kill(args) {
+    // kill <id|pid> — terminate a background job (exit 137); dismiss a
+    // finished one from the job table
+    if (args.length !== 1) {
+      process.stderr.write("kill: usage: kill <job-id|pid>\n");
+      return 2;
+    }
+    const code = getBgJobs().kill(args[0]);
+    if (code === 127) process.stderr.write(`kill: no such job '${args[0]}'\n`);
+    return code;
+  },
+
   async bash2js(args) {
     // bash2js 'echo hello'  — transpile bash source to JavaScript
     // bash2js -f file.sh    — transpile a file from the VFS
@@ -1258,6 +1300,8 @@ Built-in commands:
                   (go run main.go · go build main.go · go version · man go)
   nethack         Play NetHack 3.6.7 — the real game, compiled to WASM
                   (browser: full-screen TTY · CLI: nethack --demo autoplays · man nethack)
+  jobs            List background jobs (&) · wait [id] · kill <id>
+                  (cmd & runs in the background; browser: right-hand panel)
   bash2js         Transpile bash to JavaScript (sh2perl → perl2js)
   bash            Run bash commands: transpile to JS and execute
                   (bash 'echo hi' · bash script.sh · cat s.sh | bash)
@@ -1863,18 +1907,26 @@ async function runSegment(segmentText, stdin, isLast) {
       const origWrite = process.stdout.write;
       const chunks = [];
       const capture = outputRedirect || !isLast;
+      let captureFn = null;
       if (capture) {
-        process.stdout.write = (chunk) => {
-          chunks.push(chunk);
-          return true;
+        // Guarded capture: only swallow output while THIS command is the
+        // current writer. If a background job has swapped the writer
+        // meanwhile, forward to the pre-capture writer instead —
+        // concurrent output must never be swallowed into someone
+        // else's redirect.
+        const preCapture = process.stdout.write;
+        captureFn = (chunk) => {
+          if (process.stdout.write === captureFn) { chunks.push(chunk); return true; }
+          return preCapture.call(process.stdout, chunk);
         };
+        process.stdout.write = captureFn;
       }
       let code = 0;
       try {
         code = (await resolved.fn(args)) ?? 0;
       } finally {
         if (capture) {
-          process.stdout.write = origWrite;
+          if (process.stdout.write === captureFn) process.stdout.write = origWrite;
           const captured = joinOut(chunks);
           if (outputRedirect) await writeOut(outputRedirect, captured, appendRedirect);
           else output = captured;
@@ -1948,7 +2000,7 @@ async function runSegment(segmentText, stdin, isLast) {
 // quotes and backslash escapes (a `\&&` outside quotes is a literal
 // ampersand, not an operator). Returns { text, op } parts where `op`
 // is the operator preceding the part ('&&' or '||'), or null for the
-// first part. A lone `&` is a syntax error (no background jobs here).
+// first part. A lone `&` is handled by splitBgList before this runs.
 function splitConditionals(line) {
   const parts = [];
   let cur = "";
@@ -2078,20 +2130,28 @@ async function runNestedCommand(cmdLine, stdin = "") {
   let capturedErr = "";
   const origWrite = process.stdout.write;
   const origErrWrite = process.stderr.write;
-  process.stdout.write = (chunk) => {
-    captured += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
-    return true;
+  const capOut = (chunk) => {
+    if (process.stdout.write === capOut) {
+      captured += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+      return true;
+    }
+    return origWrite.call(process.stdout, chunk);
   };
-  process.stderr.write = (chunk) => {
-    capturedErr += chunk;
-    return true;
+  const capErr = (chunk) => {
+    if (process.stderr.write === capErr) {
+      capturedErr += chunk;
+      return true;
+    }
+    return origErrWrite.call(process.stderr, chunk);
   };
+  process.stdout.write = capOut;
+  process.stderr.write = capErr;
   let code = 0;
   try {
     code = (await handleLine(cmdLine, stdin)) ?? 0;
   } finally {
-    process.stdout.write = origWrite;
-    process.stderr.write = origErrWrite;
+    if (process.stdout.write === capOut) process.stdout.write = origWrite;
+    if (process.stderr.write === capErr) process.stderr.write = origErrWrite;
   }
   return { out: captured, err: capturedErr, code };
 }
@@ -2112,21 +2172,130 @@ function getJobScheduler() {
   return globalThis.__tinyshJobs;
 }
 
+// Background jobs (`cmd &`): one shared table per shell. Output goes
+// straight to the terminal (live); the completion notice is printed by
+// onUpdate. See createBgJobs in src/jobs.js.
+function getBgJobs() {
+  if (!globalThis.__tinyshBgJobs) {
+    globalThis.__tinyshBgJobs = createBgJobs({
+      runLine: async (job) => (await runPipeline(job.cmd)) ?? 0,
+      onUpdate: (job) => {
+        if (job.running || job.notified) return;
+        job.notified = true;
+        const status = job.killed ? "Killed" : job.code === 0 ? "Done" : `Failed (exit ${job.code})`;
+        process.stdout.write(`[${job.id}]+  ${status.padEnd(18)} ${job.cmd}\n`);
+      },
+    });
+  }
+  return globalThis.__tinyshBgJobs;
+}
+
+// Split a line into background segments on a single `&` (respecting
+// quotes and backslash escapes). `&&` is the conditional operator and
+// stays inside a segment (handled by splitConditionals later). Returns
+// { text, bg } parts: bg=true when the segment was terminated by `&`,
+// meaning it runs as a background job (`cmd & cmd2` → cmd bg, cmd2 fg).
+function splitBgList(line) {
+  const parts = [];
+  let cur = "";
+  let bg = false;
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inSingle) {
+      if (ch === "'") inSingle = false;
+      cur += ch;
+      continue;
+    }
+    if (inDouble) {
+      if (ch === '"') inDouble = false;
+      cur += ch;
+      continue;
+    }
+    if (ch === "\\") {
+      cur += ch;
+      if (i + 1 < line.length) { cur += line[i + 1]; i++; }
+      continue;
+    }
+    if (ch === "'") { inSingle = true; cur += ch; continue; }
+    if (ch === '"') { inDouble = true; cur += ch; continue; }
+    if (ch === "&") {
+      if (line[i + 1] === "&") { cur += "&&"; i++; continue; }  // conditional op
+      parts.push({ text: cur, bg: true });
+      cur = "";
+      continue;
+    }
+    cur += ch;
+  }
+  // A line ending in `&` leaves cur empty after the split — don't push
+  // a phantom trailing segment (`cmd &` has no command after the &).
+  if (cur !== "" || parts.length === 0) parts.push({ text: cur, bg });
+  return parts;
+}
+
 async function handleLine(line, initialStdin) {
   const trimmed = line.trim();
   if (!trimmed) return;
 
-  // Split on && / || and run left to right. `&&` runs the next command
-  // only if the previous one succeeded (exit 0); `||` runs it only if
-  // the previous one failed. Each conditional part is itself a pipeline.
-  let parts;
+  // Split on `&` first — each `&`-terminated segment runs as a
+  // background job, everything else runs in the foreground. Segments
+  // themselves are conditional lists (`&&` / `||`) of pipelines.
+  let segments;
   try {
-    parts = splitConditionals(trimmed);
+    segments = splitBgList(trimmed);
   } catch (e) {
     process.stderr.write(`tinysh: ${e.message}\n`);
     return;
   }
-  // An empty segment means the line started with an operator, ended
+  for (const seg of segments) {
+    if (!seg.text.trim()) {
+      process.stderr.write(`tinysh: syntax error near unexpected token '&'\n`);
+      return;
+    }
+    // Validate a background segment's conditional structure now, so a
+    // broken `sleep 1 && &` fails at the prompt instead of launching a
+    // job that dies silently.
+    if (seg.bg) {
+      let cond;
+      try {
+        cond = splitConditionals(seg.text);
+      } catch (e) {
+        process.stderr.write(`tinysh: ${e.message}\n`);
+        return;
+      }
+      const bad = cond.find((p) => !p.text.trim());
+      if (bad) {
+        const token = bad.op || "newline";
+        process.stderr.write(`tinysh: syntax error near unexpected token '${token}'\n`);
+        return;
+      }
+    }
+  }
+
+  let exitCode = 0;
+  for (const seg of segments) {
+    if (seg.bg) {
+      const job = getBgJobs().launch(seg.text);
+      process.stdout.write(`[${job.id}] ${job.pid}\n`);
+    } else {
+      exitCode = await runConditionalList(seg.text, initialStdin);
+    }
+  }
+  return exitCode;
+}
+
+// Run one conditional list (`&&` / `||`-joined pipelines) — the
+// foreground part of a line, or the body of a background job.
+async function runConditionalList(text, initialStdin) {
+  let parts;
+  try {
+    parts = splitConditionals(text);
+  } catch (e) {
+    process.stderr.write(`tinysh: ${e.message}\n`);
+    return 2;
+  }
+  // An empty segment means the segment started with an operator, ended
   // with one, or had two operators in a row (`&& echo hi`, `echo hi &&`,
   // `a && || b`) — all syntax errors.
   for (let i = 0; i < parts.length; i++) {
@@ -2134,7 +2303,7 @@ async function handleLine(line, initialStdin) {
       const nextOp = i + 1 < parts.length ? parts[i + 1].op : null;
       const token = nextOp ? `'${nextOp}'` : "newline";
       process.stderr.write(`tinysh: syntax error near unexpected token ${token}\n`);
-      return;
+      return 2;
     }
   }
 

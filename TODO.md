@@ -85,6 +85,13 @@ and device files. It runs in any browser with no build step.
       monorepo, fetched by build-wasm-nethack.sh). `nethack` renders the
       TTY game in the shell (status/map/messages, ESC q quits, Ctrl+C
       returns); `nethack --demo` autoplays headlessly in the CLI.
+- [x] Background jobs: `cmd &` runs in the background (jobs/wait/kill
+      builtins + man pages). In the browser the right quarter of the
+      display is a jobs panel: non-minimized jobs split it equally
+      vertically, each with a title bar — minimise (—) collapses to a
+      dock row, kill (✕) terminates (137) or dismisses. Output streams
+      into each job's slice; guarded capture keeps concurrent
+      foreground output out of other jobs' redirects.
 - [x] `ls -l` output format (permissions, size, date)
 - [x] Pipe operator: `cat README.md | head -3`
 - [x] `grep` builtin or command

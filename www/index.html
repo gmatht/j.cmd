@@ -19,14 +19,120 @@
     overflow: hidden;
   }
 
-  #terminal {
+  #main-row {
     flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: row;
+  }
+
+  #terminal {
+    flex: 3;         /* left 3/4 */
+    min-width: 0;
     min-height: 0;  /* allow shrink so flex layout works */
     padding: 16px;
     overflow-y: auto;
     white-space: pre-wrap;
     word-wrap: break-word;
   }
+
+  /* Background-jobs panel — right 1/4 of the display. Shown only while
+     there are background jobs; non-minimized jobs split the panel
+     equally, each with a title bar (minimise / kill) and an output
+     body. Minimized jobs collapse to thin rows in the dock. */
+  #bg-panel {
+    flex: 1;         /* right 1/4 */
+    min-width: 0;
+    display: none;
+    flex-direction: column;
+    border-left: 1px solid #2a2a3a;
+    background: #0d0d16;
+    overflow: hidden;
+  }
+  #bg-panel.active { display: flex; }
+  #bg-panel-header {
+    padding: 6px 10px;
+    font-size: 12px;
+    color: #8b949e;
+    border-bottom: 1px solid #2a2a3a;
+    display: flex;
+    justify-content: space-between;
+  }
+  #bg-panel-slices {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .bg-slice {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    border-bottom: 1px solid #2a2a3a;
+  }
+  .bg-titlebar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 8px;
+    font-size: 12px;
+    background: #161622;
+    border-bottom: 1px solid #2a2a3a;
+    flex-shrink: 0;
+  }
+  .bg-titlebar .cmd {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #d8d8d8;
+  }
+  .bg-titlebar .status { font-size: 11px; color: #8b949e; flex-shrink: 0; }
+  .bg-titlebar button {
+    background: none;
+    border: 1px solid #3a3a55;
+    color: #a0a0b8;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 11px;
+    line-height: 1.1;
+    padding: 2px 7px;
+    flex-shrink: 0;
+  }
+  .bg-titlebar button:hover { background: #2a2a3a; color: #fff; }
+  .bg-titlebar .kill-btn:hover { background: #4a1a1a; border-color: #8a3a3a; color: #ff9090; }
+  .bg-body {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 6px 8px;
+    font-size: 12px;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    color: #c8c8d8;
+  }
+  #bg-panel-dock {
+    border-top: 1px solid #2a2a3a;
+    flex-shrink: 0;
+    max-height: 30vh;
+    overflow: auto;
+  }
+  .bg-min-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 10px;
+    font-size: 12px;
+    color: #8b949e;
+    cursor: pointer;
+    border-bottom: 1px solid #1e1e2e;
+  }
+  .bg-min-row:hover { background: #161622; color: #d8d8d8; }
+  .bg-min-row .cmd { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bg-min-row button { background: none; border: none; color: #8b949e; cursor: pointer; font-size: 12px; padding: 0 4px; }
+  .bg-min-row button:hover { color: #fff; }
 
   /* Hidden probe used to measure the monospace cell size for the
      COLUMNS/LINES terminal geometry. Kept off-screen (and out of the
@@ -207,8 +313,16 @@
 </head>
 <body>
 
+<div id="main-row">
 <div id="terminal">
   <div id="prompt-line"><span id="prompt" class="prompt"></span><span id="input-span"></span></div>
+</div>
+
+<div id="bg-panel">
+  <div id="bg-panel-header"><span>BACKGROUND JOBS</span><span id="bg-panel-count"></span></div>
+  <div id="bg-panel-slices"></div>
+  <div id="bg-panel-dock"></div>
+</div>
 </div>
 
 <div id="status-bar">
@@ -259,7 +373,7 @@ import { createSh2Runtime } from "../src/sh2runtime.js";
 import { getManPage, manIndex, searchManPages, MAN_PAGES } from "../src/manpages.js";
 import { GoRunner, createGoCommand } from "../src/go.js";
 import { createBrowserNethackCommand } from "../src/nethack.js";
-import { createJobScheduler } from "../src/jobs.js";
+import { createJobScheduler, createBgJobs } from "../src/jobs.js";
 const wasmRunner = new WasmRunner(fs);
 const goRunner = new GoRunner(fs);
 const goCmd = createGoCommand(goRunner, write, (s) => write(s, "err"));
@@ -273,6 +387,131 @@ const nethackCmd = createBrowserNethackCommand({
   onInterrupt: (fn) => { interruptCallbacks.push(fn); },
 });
 const sh2libFacade = buildSh2LibFacade(fs);  // debashl toolchain, injected into .js commands
+
+// ─── Background jobs (&) + the right-hand panel ────────────────
+// `cmd &` runs in the background. Each non-minimized job gets an equal
+// vertical slice of the right 1/4 of the display; its output streams
+// into the slice. The title bar carries minimise (collapse to the
+// dock) and kill (terminate / dismiss) buttons.
+const bgPanel = document.getElementById("bg-panel");
+const bgSlicesEl = document.getElementById("bg-panel-slices");
+const bgDockEl = document.getElementById("bg-panel-dock");
+const bgCountEl = document.getElementById("bg-panel-count");
+
+function getBgJobs() {
+  if (!globalThis.__tinyshBgJobs) {
+    globalThis.__tinyshBgJobs = createBgJobs({
+      // Capture the job's output into its panel slice — but only while
+      // this job owns the writer (guarded), so concurrent foreground
+      // output is forwarded to the terminal instead of being eaten.
+      runLine: async (job) => {
+        let code = 0;
+        const preOut = stdout.write;
+        const preErr = stderr.write;
+        const outFn = (chunk) => {
+          if (stdout.write === outFn) { job.appendOut(chunk); return true; }
+          return preOut(chunk);
+        };
+        const errFn = (chunk) => {
+          if (stderr.write === errFn) { job.appendErr(chunk); return true; }
+          return preErr(chunk);
+        };
+        stdout.write = outFn;
+        stderr.write = errFn;
+        try {
+          code = (await runConditionalList(job.cmd)) ?? 0;
+        } finally {
+          if (stdout.write === outFn) stdout.write = preOut;
+          if (stderr.write === errFn) stderr.write = preErr;
+        }
+        return code;
+      },
+      onUpdate: renderBgPanel,
+    });
+  }
+  return globalThis.__tinyshBgJobs;
+}
+
+function bgStatus(job) {
+  if (job.running) return { text: "running", cls: "" };
+  if (job.killed) return { text: "killed (137)", cls: "#8b949e" };
+  return job.code === 0
+    ? { text: "done (0)", cls: "#50a050" }
+    : { text: `failed (${job.code})`, cls: "#d06060" };
+}
+
+function makeSlice(job) {
+  const slice = document.createElement("div");
+  slice.className = "bg-slice";
+  const bar = document.createElement("div");
+  bar.className = "bg-titlebar";
+  const cmd = document.createElement("span");
+  cmd.className = "cmd";
+  cmd.textContent = `[${job.id}] ${job.cmd}`;
+  cmd.title = job.cmd;
+  const status = document.createElement("span");
+  status.className = "status";
+  const st = bgStatus(job);
+  status.textContent = st.text;
+  if (st.cls) status.style.color = st.cls;
+  const minBtn = document.createElement("button");
+  minBtn.textContent = "—";
+  minBtn.title = "Minimise";
+  minBtn.onclick = (e) => { e.stopPropagation(); getBgJobs().toggleMinimized(job.id); };
+  const killBtn = document.createElement("button");
+  killBtn.className = "kill-btn";
+  killBtn.textContent = "✕";
+  killBtn.title = job.running ? "Kill job" : "Dismiss";
+  killBtn.onclick = (e) => { e.stopPropagation(); getBgJobs().kill(job.id); };
+  bar.append(cmd, status, minBtn, killBtn);
+  const body = document.createElement("pre");
+  body.className = "bg-body";
+  slice.append(bar, body);
+  job.el = slice;
+  job.bodyEl = body;
+  job.appendOut = (chunk) => {
+    const t = typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+    body.textContent += t;
+    body.scrollTop = body.scrollHeight;
+  };
+  job.appendErr = job.appendOut;
+  return slice;
+}
+
+function makeMinRow(job) {
+  const row = document.createElement("div");
+  row.className = "bg-min-row";
+  const cmd = document.createElement("span");
+  cmd.className = "cmd";
+  cmd.textContent = `[${job.id}] ${job.cmd}`;
+  const status = document.createElement("span");
+  const st = bgStatus(job);
+  status.textContent = st.text;
+  if (st.cls) status.style.color = st.cls;
+  const restore = document.createElement("button");
+  restore.textContent = "▢";
+  restore.title = "Restore";
+  restore.onclick = (e) => { e.stopPropagation(); getBgJobs().toggleMinimized(job.id); };
+  const kill = document.createElement("button");
+  kill.textContent = "✕";
+  kill.title = job.running ? "Kill job" : "Dismiss";
+  kill.onclick = (e) => { e.stopPropagation(); getBgJobs().kill(job.id); };
+  row.append(cmd, status, restore, kill);
+  return row;
+}
+
+function renderBgPanel() {
+  const jobs = getBgJobs().list();
+  bgPanel.classList.toggle("active", jobs.length > 0);
+  bgCountEl.textContent = jobs.length ? `${jobs.length} job${jobs.length === 1 ? "" : "s"}` : "";
+  bgSlicesEl.textContent = "";
+  bgDockEl.textContent = "";
+  for (const j of jobs) {
+    if (j.killed) continue;               // killed jobs leave the panel
+    if (j.minimized) bgDockEl.appendChild(makeMinRow(j));
+    else bgSlicesEl.appendChild(makeSlice(j));
+  }
+}
 
 // Writes to read-only mounts (github/gitlab/http/git) land in a local
 // overlay via OverlayFS — surface the fork/login notice to the user.
@@ -2186,6 +2425,46 @@ const builtins = {
     return await nethackCmd(args);
   },
 
+  async jobs(args) {
+    // jobs — list background jobs (&): [id] pid status cmd. The right-
+    // hand panel shows them too.
+    const list = getBgJobs().list();
+    if (list.length === 0) {
+      stdout.write("jobs: no background jobs\n");
+      return 0;
+    }
+    for (const j of list) {
+      const st = bgStatus(j);
+      stdout.write(`[${j.id}] ${j.pid}  ${st.text.padEnd(14)} ${j.cmd}${j.minimized ? "  (minimized)" : ""}\n`);
+    }
+    return 0;
+  },
+
+  async wait(args) {
+    // wait [id|pid] — wait for a background job, or all of them
+    if (args.length > 1) {
+      stderr.write("wait: too many arguments\n");
+      return 2;
+    }
+    const code = await getBgJobs().wait(args[0]);
+    if (code === 127 && args[0] !== undefined) {
+      stderr.write(`wait: no such job '${args[0]}'\n`);
+    }
+    return code;
+  },
+
+  async kill(args) {
+    // kill <id|pid> — terminate a background job (exit 137); dismiss a
+    // finished one from the job table and the panel
+    if (args.length !== 1) {
+      stderr.write("kill: usage: kill <job-id|pid>\n");
+      return 2;
+    }
+    const code = getBgJobs().kill(args[0]);
+    if (code === 127) stderr.write(`kill: no such job '${args[0]}'\n`);
+    return code;
+  },
+
   async wat2wasm(args) {
     // wat2wasm <file.wat> [-o out.wasm]
     if (args.length === 0) { stderr.write("wat2wasm: missing input file\n"); return 2; }
@@ -2519,6 +2798,9 @@ Loops, conditionals, variables, arithmetic and pipes work:
                     (bash 'echo hi' · bash script.sh · cat s.sh | bash)
     man [cmd]       Manual page for a command (man alone: index;
                     man -k <word>: search pages, like apropos)
+    jobs            List background jobs (&) · wait [id] · kill <id>
+                    (cmd & runs in the background; see the right-hand
+                    panel — each job has minimise and kill buttons)
     help            This help
     history         Show command history (persists across refreshes)
     asciinema       Record/replay sessions: rec <file.cast> · stop · play
@@ -3260,7 +3542,7 @@ function splitPipe(line) {
 // quotes and backslash escapes (a `\&&` outside quotes is a literal
 // ampersand, not an operator). Returns { text, op } parts where `op`
 // is the operator preceding the part ('&&' or '||'), or null for the
-// first part. A lone `&` is a syntax error (no background jobs here).
+// first part. A lone `&` is handled by splitBgList before this runs.
 function splitConditionals(line) {
   const parts = [];
   let cur = "";
@@ -3403,20 +3685,28 @@ async function runNestedCommand(cmdLine, stdin = "") {
   let capturedErr = "";
   const origWrite = stdout.write;
   const origErrWrite = stderr.write;
-  stdout.write = (chunk) => {
-    captured += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
-    return true;
+  const capOut = (chunk) => {
+    if (stdout.write === capOut) {
+      captured += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+      return true;
+    }
+    return origWrite(chunk);
   };
-  stderr.write = (chunk) => {
-    capturedErr += chunk;
-    return true;
+  const capErr = (chunk) => {
+    if (stderr.write === capErr) {
+      capturedErr += chunk;
+      return true;
+    }
+    return origErrWrite(chunk);
   };
+  stdout.write = capOut;
+  stderr.write = capErr;
   let code = 0;
   try {
     code = (await handleLine(cmdLine, stdin)) ?? 0;
   } finally {
-    stdout.write = origWrite;
-    stderr.write = origErrWrite;
+    if (stdout.write === capOut) stdout.write = origWrite;
+    if (stderr.write === capErr) stderr.write = origErrWrite;
   }
   return { out: captured, err: capturedErr, code };
 }
@@ -3634,8 +3924,19 @@ async function runSegment(segmentText, stdin, isLast) {
       const origWrite = stdout.write;
       const chunks = [];
       const capture = outputRedirect || !isLast;
+      let captureFn = null;
       if (capture) {
-        stdout.write = (chunk) => { chunks.push(chunk); return true; };
+        // Guarded capture: only swallow output while THIS command is the
+        // current writer. If a background job has swapped the writer
+        // meanwhile, forward to the pre-capture writer instead —
+        // concurrent output must never be swallowed into someone
+        // else's redirect.
+        const preCapture = stdout.write;
+        captureFn = (chunk) => {
+          if (stdout.write === captureFn) { chunks.push(chunk); return true; }
+          return preCapture(chunk);
+        };
+        stdout.write = captureFn;
       }
       let code = 0;
       try {
@@ -3643,7 +3944,7 @@ async function runSegment(segmentText, stdin, isLast) {
         code = (await resolved.fn(args)) ?? 0;
       } finally {
         if (capture) {
-          stdout.write = origWrite;
+          if (stdout.write === captureFn) stdout.write = origWrite;
           const captured = joinOut(chunks);
           if (outputRedirect) await writeOut(outputRedirect, captured, appendRedirect);
           else output = captured;
@@ -3707,21 +4008,112 @@ async function runSegment(segmentText, stdin, isLast) {
   }
 }
 
+// Split a line into background segments on a single `&` (respecting
+// quotes and backslash escapes). `&&` is the conditional operator and
+// stays inside a segment (handled by splitConditionals later). Returns
+// { text, bg } parts: bg=true when the segment was terminated by `&`,
+// meaning it runs as a background job (`cmd & cmd2` → cmd bg, cmd2 fg).
+function splitBgList(line) {
+  const parts = [];
+  let cur = "";
+  let bg = false;
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inSingle) {
+      if (ch === "'") inSingle = false;
+      cur += ch;
+      continue;
+    }
+    if (inDouble) {
+      if (ch === '"') inDouble = false;
+      cur += ch;
+      continue;
+    }
+    if (ch === "\\") {
+      cur += ch;
+      if (i + 1 < line.length) { cur += line[i + 1]; i++; }
+      continue;
+    }
+    if (ch === "'") { inSingle = true; cur += ch; continue; }
+    if (ch === '"') { inDouble = true; cur += ch; continue; }
+    if (ch === "&") {
+      if (line[i + 1] === "&") { cur += "&&"; i++; continue; }  // conditional op
+      parts.push({ text: cur, bg: true });
+      cur = "";
+      continue;
+    }
+    cur += ch;
+  }
+  // A line ending in `&` leaves cur empty after the split — don't push
+  // a phantom trailing segment (`cmd &` has no command after the &).
+  if (cur !== "" || parts.length === 0) parts.push({ text: cur, bg });
+  return parts;
+}
+
 async function handleLine(line, initialStdin) {
   const trimmed = line.trim();
   if (!trimmed) return;
 
-  // Split on && / || and run left to right. `&&` runs the next command
-  // only if the previous one succeeded (exit 0); `||` runs it only if
-  // the previous one failed. Each conditional part is itself a pipeline.
-  let parts;
+  // Split on `&` first — each `&`-terminated segment runs as a
+  // background job, everything else runs in the foreground. Segments
+  // themselves are conditional lists (`&&` / `||`) of pipelines.
+  let segments;
   try {
-    parts = splitConditionals(trimmed);
+    segments = splitBgList(trimmed);
   } catch (e) {
     stderr.write(`tinysh: ${e.message}\n`);
     return;
   }
-  // An empty segment means the line started with an operator, ended
+  for (const seg of segments) {
+    if (!seg.text.trim()) {
+      stderr.write(`tinysh: syntax error near unexpected token '&'\n`);
+      return;
+    }
+    // Validate a background segment's conditional structure now, so a
+    // broken `sleep 1 && &` fails at the prompt instead of launching a
+    // job that dies silently.
+    if (seg.bg) {
+      let cond;
+      try {
+        cond = splitConditionals(seg.text);
+      } catch (e) {
+        stderr.write(`tinysh: ${e.message}\n`);
+        return;
+      }
+      const bad = cond.find((p) => !p.text.trim());
+      if (bad) {
+        const token = bad.op || "newline";
+        stderr.write(`tinysh: syntax error near unexpected token '${token}'\n`);
+        return;
+      }
+    }
+  }
+
+  let exitCode = 0;
+  for (const seg of segments) {
+    if (seg.bg) {
+      const job = getBgJobs().launch(seg.text);
+      write(`[${job.id}] ${job.pid}\n`);
+    } else {
+      exitCode = await runConditionalList(seg.text, initialStdin);
+    }
+  }
+  return exitCode;
+}
+
+// Run one conditional list (`&&` / `||`-joined pipelines) — the
+// foreground part of a line, or the body of a background job.
+async function runConditionalList(text, initialStdin) {
+  let parts;
+  try {
+    parts = splitConditionals(text);
+  } catch (e) {
+    stderr.write(`tinysh: ${e.message}\n`);
+    return 2;
+  }
+  // An empty segment means the segment started with an operator, ended
   // with one, or had two operators in a row (`&& echo hi`, `echo hi &&`,
   // `a && || b`) — all syntax errors.
   for (let i = 0; i < parts.length; i++) {
@@ -3729,7 +4121,7 @@ async function handleLine(line, initialStdin) {
       const nextOp = i + 1 < parts.length ? parts[i + 1].op : null;
       const token = nextOp ? `'${nextOp}'` : "newline";
       stderr.write(`tinysh: syntax error near unexpected token ${token}\n`);
-      return;
+      return 2;
     }
   }
 
