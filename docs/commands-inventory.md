@@ -5,9 +5,10 @@ the count. User-facing command names are unique across layers (a name
 lives in exactly one place, except toolchain builtins that shadow nothing).
 
 Quick totals: **95 user-facing commands** (28 shell builtins + 13 browser
-builtins + 45 `/bin` scripts + 9 wasm-bin artifacts) + **34 debashcl
-builtins** + **29 `sh2.*` runtime functions** = **158 total** (some names
-overlap by design — see the notes).
+builtins + 45 `/bin` scripts + 9 wasm-bin artifacts). Inside bash,
+another **25 debashcl-only builtins** are invocable (34 toolchain builtins
+minus 9 that are also shell builtins). The **`sh2.*` runtime API is NOT a
+command surface** — it is an internal JS interface for generated code.
 
 ## 1. Shell builtins — native JS, both shells (28)
 
@@ -101,10 +102,22 @@ this shell's sh2 execs through the shell, so they're also implemented (or
 candidates) as real shell commands (`head`/`tail` done; the rest are in
 `docs/remaining-tools.md`).
 
-## 6. `sh2.*` runtime API — `src/sh2runtime.js` (29)
+## 6. `sh2.*` runtime API — `src/sh2runtime.js` (29) — NOT commands
 
-The namespace the generated JS targets (the "commands" of the compiled
-bash):
+These are the JavaScript functions debashcl's generated code calls. They
+are **not user-runnable**: nothing in the command path resolves `sh2.*`,
+the shell's tokenizer never sees them, and they only exist as the `sh2`
+parameter injected into the scope of the transpiled JS (wired to a
+`createSh2Runtime` instance). `sh2.exec echo hi` at the prompt is
+"command not found"; even inside `bash -c`, `sh2.exec` parses as a
+command named `sh2.` and fails. Treat them as an implementation surface:
+
+```
+exec pipeline capture captureWords redirect test
+forLoop whileLoop caseMatch define brace param arith guard and or
+arithEval setArray setArrayAppend arrayIndex arrayLen assign
+break continue idiv imod not setLastExit getVar setVar
+```
 
 ```
 exec pipeline capture captureWords redirect test
@@ -115,16 +128,18 @@ break continue idiv imod not setLastExit getVar setVar
 
 ## Counts
 
-| layer | count |
-|---|---|
-| Shell builtins (both shells) | 28 |
-| Browser-only builtins | 13 |
-| `/bin` command scripts | 45 (37 regular + 8 site commands) |
-| wasm-bin artifacts | 9 (7 runnable + make stub + wasm-diff lib) |
-| **User-facing total** | **95** |
-| debashcl builtins (toolchain) | 34 |
-| `sh2.*` runtime functions | 29 |
-| **Grand total** | **158** |
+| layer | count | runnable? |
+|---|---|---|
+| Shell builtins (both shells) | 28 | yes — at the prompt |
+| Browser-only builtins | 13 | yes — browser shell |
+| `/bin` command scripts | 45 (37 regular + 8 site commands) | yes |
+| wasm-bin artifacts | 9 (7 runnable + make stub + wasm-diff lib) | yes (auto-load/install) |
+| **User-facing total** | **95** | |
+| debashcl builtins (toolchain) | 34 | only inside `bash`; 9 are also shell builtins, so **25 bash-only** |
+| `sh2.*` runtime API | 29 | **no — internal JS interface for generated code** |
+
+**Invocable command names: 95 user-facing + 25 bash-only = 120.** The
+29 `sh2.*` functions are not commands and add 0 to that count.
 
 ## Regenerating
 
