@@ -1764,6 +1764,71 @@ return 0;
         }
       })
       .catch(() => syncWrite(this._getBackend("/bin/screen.js"), "/screen.js", screenContent));
+    // qbe2wasm — QBE IR -> wasm binary. The in-shell C backend: compiles
+    // the QBE IL text emitted by cproc (cproc-qbe -o out.qbe prog.c) into
+    // a WebAssembly binary. The engine (src/qbe2wasm.js) is injected into
+    // .js commands by the shell as the `qbe2wasm` global. Version-gated
+    // (v1 marker) so updates reach existing installs.
+    const qbe2wasmContent = `// qbe2wasm v2 — QBE IR -> wasm binary. In-shell C backend.
+// Compiles QBE IL text (as emitted by cproc: cproc-qbe -o out.qbe prog.c)
+// into a WebAssembly binary. The engine is injected by the shell.
+//
+//   qbe2wasm file.qbe               writes a.wasm (like gcc's a.out)
+//   qbe2wasm -o out.wasm file.qbe   writes out.wasm
+//   qbe2wasm -w -o out.wasm file.qbe  memory64 module (addresses > 4GiB)
+//   cat prog.qbe | qbe2wasm -o out.wasm
+//
+// SEE ALSO
+//   man qbe2wasm
+let outFile = "a.wasm";
+let wasm64 = false;
+let src = null;
+const resolve = (p) => (p.startsWith("/") ? p : (fs._resolve ? fs._resolve(p) : p));
+for (let i = 0; i < args.length; i++) {
+  const a = args[i];
+  if (a === "-o" || a === "--output") {
+    i++;
+    outFile = resolve(args[i]);
+  } else if (a === "-w" || a === "--wasm64") {
+    wasm64 = true;
+  } else if (a === "-h" || a === "--help") {
+    console.log("usage: qbe2wasm [-o out.wasm] [-w] [file.qbe]");
+    console.log("  compiles QBE IL (cproc output) to a wasm binary.");
+    console.log("  reads stdin when no file is given. -w selects memory64.");
+    return 0;
+  } else if (src === null && !a.startsWith("-")) {
+    src = resolve(a);
+  } else {
+    console.log("qbe2wasm: unknown option '" + a + "'");
+    return 1;
+  }
+}
+let ir;
+if (src !== null) {
+  ir = await fs.read(src);
+} else if (stdin) {
+  ir = stdin;
+} else {
+  console.log("qbe2wasm: no input (give a .qbe file or pipe QBE IR on stdin)");
+  return 1;
+}
+try {
+  const bytes = qbe2wasm(ir, { wasm64: wasm64 });
+  await fs.writeBlob(outFile, new Blob([bytes], { type: "application/wasm" }));
+  console.log(outFile + ": " + bytes.length + " bytes");
+  return 0;
+} catch (e) {
+  throw e;
+}
+`;
+    this._getBackend("/bin/qbe2wasm.js").read("/qbe2wasm.js")
+      .then((existing) => {
+        if (!existing.includes("qbe2wasm v1")) {
+          syncWrite(this._getBackend("/bin/qbe2wasm.js"), "/qbe2wasm.js", qbe2wasmContent);
+        }
+      })
+      .catch(() => syncWrite(this._getBackend("/bin/qbe2wasm.js"), "/qbe2wasm.js", qbe2wasmContent));
+
 
     // Site-open commands: youtube, reddit, slashdot, lwn, hn, github,
     // wikipedia, arxiv — open the site in a new browser tab (print the
@@ -3412,7 +3477,7 @@ return 0;
       .catch(() => syncWrite(this._getBackend("/bin/curl.js"), "/curl.js", curlContent));
 
     // gzip — compress files (pako/zlib)
-    const gzipContent = `// gzip v1 — compress files (gzip format)
+    const gzipContent = `// gzip v2 — compress files (gzip format)
 //
 // NAME
 //      gzip — compress files (gzip format)
@@ -3423,8 +3488,11 @@ return 0;
 // DESCRIPTION
 //      gzip compresses each file to <file>.gz and removes the
 //      original (like real gzip); -k keeps it. -d decompresses
-//      <file>.gz back to <file>. Engine: pako in the browser,
-//      node:zlib in the CLI. Binary safe (readBlob/writeBlob).
+//      <file>.gz back to <file>. With no file arguments it acts as
+//      a filter: piped stdin is compressed (or decompressed with -d)
+//      to stdout, so 'echo hi | gzip | gunzip' round-trips. Engine:
+//      pako in the browser, node:zlib in the CLI. Binary safe
+//      (readBlob/writeBlob, raw pipe bytes).
 //
 // OPTIONS
 //      -d, --decompress  decompress (same as gunzip)
@@ -3435,6 +3503,7 @@ return 0;
 //      gzip /home/notes.txt          → /home/notes.txt.gz
 //      gzip -d /home/notes.txt.gz    → /home/notes.txt
 //      gzip -k -d /home/notes.txt.gz
+//      echo hi | gzip | gunzip       → hi
 
 var NL = String.fromCharCode(10);
 var isBrowser = typeof window !== "undefined" && typeof document !== "undefined";
@@ -3446,8 +3515,8 @@ while (i < args.length) {
   var a = args[i];
   if (a === "-h" || a === "--help") {
     console.log("gzip — compress files (gzip format)");
-    console.log("usage: gzip [-d] [-k] file...");
-    console.log("example: gzip /home/notes.txt · gzip -d /home/notes.txt.gz");
+    console.log("usage: gzip [-d] [-k] file... (no files: filter stdin → stdout)");
+    console.log("example: gzip /home/notes.txt · gzip -d /home/notes.txt.gz · echo hi | gzip | gunzip");
     return 0;
   }
   if (a === "-d" || a === "--decompress") { decompress = true; i++; continue; }
@@ -3458,10 +3527,6 @@ while (i < args.length) {
   }
   files.push(a);
   i++;
-}
-if (files.length === 0) {
-  console.log("gzip: no files (gzip [-d] [-k] file...)");
-  return 2;
 }
 
 // ─── engine: pako (browser) · node:zlib (CLI) ───
@@ -3490,6 +3555,20 @@ if (isBrowser) {
 }
 
 var hadError = false;
+// stdin filter mode: no file arguments with piped input — compress
+// stdin to stdout (or decompress with -d), like real gzip. Binary
+// safe: pipe.in is the raw bytes, pipe.out emits raw bytes.
+if (files.length === 0) {
+  var pipeIn = (typeof pipe !== "undefined" && pipe) ? pipe.in : "";
+  if (!pipeIn || pipeIn.length === 0) {
+    console.log("gzip: no files (gzip [-d] [-k] file...)");
+    return 2;
+  }
+  var inputBytes = typeof pipeIn === "string" ? new TextEncoder().encode(pipeIn) : new Uint8Array(pipeIn);
+  var filtered = decompress ? engine.decompress(inputBytes) : engine.compress(inputBytes);
+  pipe.out(filtered);
+  return 0;
+}
 for (var f = 0; f < files.length; f++) {
   var srcPath = typeof fs._resolve === "function" ? fs._resolve(files[f]) : files[f];
   var input;
@@ -3525,14 +3604,14 @@ return hadError ? 1 : 0;
 `;
     this._getBackend("/bin/gzip.js").read("/gzip.js")
       .then((existing) => {
-        if (!existing.includes("gzip v1")) {
+        if (!existing.includes("gzip v2")) {
           syncWrite(this._getBackend("/bin/gzip.js"), "/gzip.js", gzipContent);
         }
       })
       .catch(() => syncWrite(this._getBackend("/bin/gzip.js"), "/gzip.js", gzipContent));
 
     // gunzip — decompress gzip files
-    const gunzipContent = `// gunzip v1 — decompress gzip files
+    const gunzipContent = `// gunzip v2 — decompress gzip files
 //
 // NAME
 //      gunzip — decompress gzip files
@@ -3542,8 +3621,10 @@ return hadError ? 1 : 0;
 //
 // DESCRIPTION
 //      gunzip decompresses each <file>.gz back to <file> and removes
-//      the archive (like real gunzip); -k keeps it. Engine: pako in
-//      the browser, node:zlib in the CLI. Binary safe.
+//      the archive (like real gunzip); -k keeps it. With no file
+//      arguments it acts as a filter: piped stdin is decompressed to
+//      stdout, so 'echo hi | gzip | gunzip' round-trips. Engine:
+//      pako in the browser, node:zlib in the CLI. Binary safe.
 //
 // OPTIONS
 //      -k, --keep   keep the .gz input
@@ -3551,6 +3632,7 @@ return hadError ? 1 : 0;
 //
 // EXAMPLES
 //      gunzip /home/notes.txt.gz    → /home/notes.txt
+//      echo hi | gzip | gunzip      → hi
 
 var isBrowser = typeof window !== "undefined" && typeof document !== "undefined";
 var keep = false;
@@ -3560,8 +3642,8 @@ while (i < args.length) {
   var a = args[i];
   if (a === "-h" || a === "--help") {
     console.log("gunzip — decompress gzip files");
-    console.log("usage: gunzip [-k] file.gz...");
-    console.log("example: gunzip /home/notes.txt.gz");
+    console.log("usage: gunzip [-k] file.gz... (no files: filter stdin → stdout)");
+    console.log("example: gunzip /home/notes.txt.gz · echo hi | gzip | gunzip");
     return 0;
   }
   if (a === "-k" || a === "--keep") { keep = true; i++; continue; }
@@ -3571,10 +3653,6 @@ while (i < args.length) {
   }
   files.push(a);
   i++;
-}
-if (files.length === 0) {
-  console.log("gunzip: no files (gunzip [-k] file.gz...)");
-  return 2;
 }
 
 var engine = null;
@@ -3596,6 +3674,18 @@ if (isBrowser) {
 }
 
 var hadError = false;
+// stdin filter mode: no file arguments with piped input — decompress
+// stdin to stdout, like real gunzip. Binary safe (pipe.in/pipe.out).
+if (files.length === 0) {
+  var pipeIn = (typeof pipe !== "undefined" && pipe) ? pipe.in : "";
+  if (!pipeIn || pipeIn.length === 0) {
+    console.log("gunzip: no files (gunzip [-k] file.gz...)");
+    return 2;
+  }
+  var inputBytes = typeof pipeIn === "string" ? new TextEncoder().encode(pipeIn) : new Uint8Array(pipeIn);
+  pipe.out(engine(inputBytes));
+  return 0;
+}
 for (var f = 0; f < files.length; f++) {
   var srcPath = typeof fs._resolve === "function" ? fs._resolve(files[f]) : files[f];
   var input;
@@ -3623,7 +3713,7 @@ return hadError ? 1 : 0;
 `;
     this._getBackend("/bin/gunzip.js").read("/gunzip.js")
       .then((existing) => {
-        if (!existing.includes("gunzip v1")) {
+        if (!existing.includes("gunzip v2")) {
           syncWrite(this._getBackend("/bin/gunzip.js"), "/gunzip.js", gunzipContent);
         }
       })
@@ -6138,6 +6228,19 @@ return 1;
     return rows.map(r =>
       `${r.mode} 1 ${r.owner} ${r.owner} ${String(r.size).padStart(sizeW)} ${r.date.padEnd(dateW)} ${r.name}`
     ).join("\n") + "\n";
+  }
+
+  // Long listing for a single FILE path (`ls -l /path/to/file`). Real
+  // ls prints the file's own entry; formatList can't — listing a file
+  // path is ENOTDIR. Rendered with the same columns as formatLongList.
+  async formatLongFile(path) {
+    const name = path.split("/").filter(Boolean).pop() || "/";
+    const st = await this.stat(path);
+    const type = st && st.type === "dir" ? "dir" : "file";
+    const size = st && st.size !== undefined ? st.size : "-";
+    const a = this._attrFor(path);
+    const exe = type === "file" && isExecutableName(name);
+    return `${modeToString(type, a.mode)} 1 ${a.owner} ${a.owner} ${String(size).padStart(String(size).length)} ${formatMtime(st && st.mtime)} ${colorize(name, type === "dir" ? "dir" : exe ? "exe" : "file")}\n`;
   }
 }
 

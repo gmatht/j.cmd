@@ -51,6 +51,7 @@ const SHORT = {
   unmount: "detach a user-created mount (bind mounts too)",
   wasmer: "WASM package manager (list / install / search)",
   wat2wasm: "compile a .wat WebAssembly text file to .wasm",
+  qbe2wasm: "compile QBE IR (cproc output) to a wasm binary",
   bash2js: "transpile bash to JavaScript (sh2perl → perl2js)",
   bash: "run bash commands: transpile to JS and execute",
   which: "show the path (or builtin) the shell would run",
@@ -646,6 +647,39 @@ EXAMPLES
 
 SEE ALSO
      wasmer, bash2js
+`,
+  qbe2wasm: `NAME
+     qbe2wasm — compile QBE IL to a wasm binary
+
+SYNOPSIS
+     qbe2wasm [-o OUT.wasm] [-w] [FILE.qbe]
+     cat FILE.qbe | qbe2wasm -o OUT.wasm
+
+DESCRIPTION
+     qbe2wasm is the in-shell C backend: it compiles QBE Intermediate
+     Language (the text IR emitted by the cproc C compiler, e.g.
+     "cproc-qbe -o out.qbe prog.c") into a WebAssembly binary. This is
+     the "assembler" half of the C toolchain — JavaScript is the binary
+     format, and the engine (src/qbe2wasm.js) is injected into commands
+     by the shell.
+
+     Locals become a bump-allocated stack (module-level stack pointer
+     global); phis lower to a shared local; cproc's reducible control
+     flow (if/else joins, while/for/do-while, break/continue, switch)
+     lowers to wasm block/loop/if. Float literals (s_1.5, d_25) and
+     mixed w/l arithmetic are supported.
+
+OPTIONS
+     -o OUT.wasm   write the binary to OUT.wasm (default a.wasm)
+     -w            emit a memory64 module (i64 addresses, >4GiB)
+     -h            show usage
+
+EXAMPLES
+     qbe2wasm /tmp/hello.qbe               writes /tmp/a.wasm
+     qbe2wasm -w -o fib.wasm /tmp/t2.qbe   memory64 build
+
+SEE ALSO
+     cc, wat2wasm
 `,
   bash2js: `NAME
      bash2js — transpile bash to JavaScript

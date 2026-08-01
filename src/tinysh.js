@@ -22,14 +22,49 @@ import { bashToJS, runBash, buildSh2LibFacade } from "./bash2js.js";
 import { createSh2Runtime } from "./sh2runtime.js";
 import { createJobScheduler } from "./jobs.js";
 import { getManPage, manIndex, searchManPages, MAN_PAGES } from "./manpages.js";
+import { GoRunner, createGoCommand } from "./go.js";
+import { qbe2wasm } from "./qbe2wasm.js";
 
 const wasmRunner = new WasmRunner(fs);
 const sh2libFacade = buildSh2LibFacade(fs);  // debashl toolchain, injected into .js commands
 const wasmerReg = new WasmerRegistry(fs);
+const goRunner = new GoRunner(fs, { baseUrl: "www/" });
+const goCmd = createGoCommand(goRunner);
 
 // Pipe input for the current command — the previous pipeline segment's
 // captured stdout. Builtins that read stdin (head, ...) consume this.
 let stdinBuffer = "";
+// Raw form of the pipe input (string or Uint8Array) for binary-safe
+// consumers like cat, which must not round-trip bytes through UTF-8.
+let rawStdin = "";
+
+// ─── Pipe data ──────────────────────────────────────────────────
+// A pipeline segment's stdout is either text (string) or raw bytes
+// (Uint8Array — wasm programs, gzip output, ...). The pipe itself
+// carries both; these helpers convert at the boundaries that need a
+// specific kind:
+//   pipeText  — bytes → UTF-8 string (text consumers: head/grep, the
+//               terminal, JS command `stdin` args)
+//   pipeBytes — string → UTF-8 bytes (binary consumers)
+//   joinOut   — joins captured write chunks, preserving binary chunks
+const pipeText = (d) => (typeof d === "string" ? d : new TextDecoder().decode(d));
+const pipeBytes = (d) => (typeof d === "string" ? new TextEncoder().encode(d) : d);
+const joinOut = (chunks) => {
+  if (chunks.length === 0) return "";
+  if (chunks.every((c) => typeof c === "string")) return chunks.join("");
+  const parts = chunks.map(pipeBytes);
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const out = new Uint8Array(total);
+  let o = 0;
+  for (const p of parts) { out.set(p, o); o += p.length; }
+  return out;
+};
+// Write pipe data to a VFS file: bytes go through writeBlob (binary
+// safe), text through fs.write.
+async function writeOut(file, data) {
+  if (data instanceof Uint8Array) await fs.writeBlob(file, new Blob([data]));
+  else await fs.write(file, data);
+}
 
 // ─── Ctrl+C (SIGINT) interruption ──────────────────────────────
 // A real shell delivers SIGINT to the foreground process; here that
@@ -106,6 +141,16 @@ const builtins = {
     let hadError = false;
     for (const dir of dirs) {
       try {
+        // `ls <file>` prints the file's own entry (like real ls); a
+        // directory lists its contents.
+        const st = await fs.stat(dir);
+        if (st && st.type === "file") {
+          const output = long
+            ? await fs.formatLongFile(dir)
+            : (dir.split("/").filter(Boolean).pop() || "/") + "\n";
+          process.stdout.write(output);
+          continue;
+        }
         const output = await fs.formatList(dir, { long });
         if (!output) continue;
         if (dirs.length > 1) process.stdout.write(`${dir}:\n`);
@@ -141,17 +186,33 @@ const builtins = {
 
   async cat(args) {
     if (args.length === 0) {
-      // No files — read from stdin (pipe input)
-      process.stdout.write(stdinBuffer);
-      if (stdinBuffer && !stdinBuffer.endsWith("\n")) process.stdout.write("\n");
+      // No files — read from stdin (pipe input). Write the raw pipe
+      // data so binary streams (gzip/zstd output) pass through bytes.
+      const data = rawStdin;
+      if (data === "") return 0;
+      const endsNL = typeof data === "string"
+        ? data.endsWith("\n")
+        : data[data.length - 1] === 10;
+      process.stdout.write(data);
+      if (!endsNL) process.stdout.write("\n");
       return 0;
     }
     let hadError = false;
     for (const file of args) {
       try {
-        const content = await fs.read(file);
-        process.stdout.write(content);
-        if (!content.endsWith("\n")) process.stdout.write("\n");
+        // Binary safe: read the raw bytes. Valid UTF-8 is written as
+        // text (terminal rendering, grep pipelines); anything else
+        // passes through raw bytes, so `cat file.gz | gunzip` works.
+        const blob = await fs.readBlob(file);
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        let text = null;
+        try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch {}
+        if (text !== null) {
+          process.stdout.write(text);
+          if (!text.endsWith("\n")) process.stdout.write("\n");
+        } else {
+          process.stdout.write(bytes);
+        }
       } catch (e) {
         hadError = true;
         process.stderr.write(`cat: ${file}: ${e.message}\n`);
@@ -407,6 +468,21 @@ const builtins = {
       }
     }
     return hadError ? 1 : 0;
+  },
+
+  async sleep(args) {
+    // sleep [N] — delay for N seconds (floats ok; default 1). Needed by
+    // game loops (mimecroft) and scripts.
+    let secs = 1;
+    if (args.length > 0) {
+      secs = parseFloat(args[0]);
+      if (isNaN(secs) || secs < 0) {
+        process.stderr.write(`sleep: invalid time interval '${args[0]}'\n`);
+        return 2;
+      }
+    }
+    await new Promise((r) => setTimeout(r, Math.round(secs * 1000)));
+    return 0;
   },
 
   async grep(args) {
@@ -894,6 +970,13 @@ Once installed they run as native commands:
     }
     process.stderr.write(`wasmer: unknown command '${args[0]}' (list, install, search, help)\n`);
     return 2;
+  },
+
+  async go(args) {
+    // go run main.go [args…] — the REAL Go toolchain (cmd/compile +
+    // cmd/link, cross-compiled to GOOS=js GOARCH=wasm) running in the
+    // shell. See src/go.js and build-wasm-go.sh.
+    return await goCmd(args);
   },
 
   async bash2js(args) {
@@ -1624,7 +1707,7 @@ async function runSegment(segmentText, stdin, isLast) {
   }
   // perl — bare `perl` with no script/stdin opens the interactive REPL
   // (the /bin perl command handles -e / script / stdin as before).
-  if (cmd === "perl" && !cmd.includes("/") && args.length === 0 && !(stdin && stdin.trim())) {
+  if (cmd === "perl" && !cmd.includes("/") && args.length === 0 && !pipeText(stdin).trim()) {
     enterPerlRepl();
     return { ok: true, code: 0, output: "" };
   }
@@ -1669,8 +1752,10 @@ async function runSegment(segmentText, stdin, isLast) {
     path: resolved.type === "wasm" ? resolved.path : null,
   });
 
-  // Make pipe input available to builtins (head etc.)
-  stdinBuffer = stdin;
+  // Make pipe input available to builtins (head etc.) — text form.
+  // Binary consumers (wasm programs, gzip, cat) get the raw `stdin`.
+  stdinBuffer = pipeText(stdin);
+  rawStdin = stdin;
 
   // While the command runs, route stdout/stderr through suppression
   // guards so an aborted command can't keep spraying output after
@@ -1685,6 +1770,27 @@ async function runSegment(segmentText, stdin, isLast) {
 
   try {
     if (resolved.type === "wasm") {
+      // Go js/wasm binaries (compiled with GOOS=js GOARCH=wasm — `go build`,
+      // or any program from the Go toolchain) run through the Go runner
+      // (wasm_exec.js + VirtualFS fs shim), not the WASI runner.
+      if (await goRunner.isGoModule(resolved.path)) {
+        const gr = await goRunner.runModule(resolved.path, [cmd, ...args], stdin);
+        if (outputRedirect) {
+          await fs.write(outputRedirect, gr.stdout);
+        } else if (isLast) {
+          if (gr.stdout) process.stdout.write(gr.stdout);
+        } else {
+          output = gr.stdout;
+        }
+        if (gr.stderr) process.stderr.write(gr.stderr);
+        if (gr.code !== 0) {
+          process.stderr.write(`${cmd}: exited with code ${gr.code}\n`);
+          procfs.finish(pid, gr.code);
+          return { ok: false, code: gr.code, output: "" };
+        }
+        procfs.finish(pid, 0);
+        return { ok: true, code: 0, output };
+      }
       // Run a wasm32-wasi binary (full WASI via @wasmer/wasi, filesystem
       // bridged to our VirtualFS via @wasmer/wasmfs)
       let wasmArgs = [cmd, ...args];
@@ -1701,12 +1807,15 @@ async function runSegment(segmentText, stdin, isLast) {
         }
       }
       await wasmRunner.run(resolved.path, wasmArgs, stdin);
-      const wasmOut = wasmRunner.getStdout();
+      // Raw stdout bytes (binary-safe) — decode only for the terminal;
+      // a pipe carries the bytes so gzip | gunzip round-trips intact.
+      const wasmOut = wasmRunner.getStdoutBytes();
       const wasmErr = wasmRunner.getStderr();
       if (outputRedirect) {
-        await fs.write(outputRedirect, wasmOut);
+        if (wasmOut.length) await fs.writeBlob(outputRedirect, new Blob([wasmOut]));
+        else await fs.write(outputRedirect, "");
       } else if (isLast) {
-        if (wasmOut) process.stdout.write(wasmOut);
+        if (wasmOut.length) process.stdout.write(pipeText(wasmOut));
       } else {
         output = wasmOut;
       }
@@ -1739,8 +1848,8 @@ async function runSegment(segmentText, stdin, isLast) {
       } finally {
         if (capture) {
           process.stdout.write = origWrite;
-          const captured = chunks.join("");
-          if (outputRedirect) await fs.write(outputRedirect, captured);
+          const captured = joinOut(chunks);
+          if (outputRedirect) await writeOut(outputRedirect, captured);
           else output = captured;
         }
       }
@@ -1753,7 +1862,11 @@ async function runSegment(segmentText, stdin, isLast) {
     // Wrap in async IIFE to support top-level await; stdin is the 4th arg.
     // `sh2` is the bash runtime (saved bash2js output calls sh2.exec & co.),
     // `sh2lib` is the debashl toolchain facade (/bin/sh2js.js etc.).
-    const fn = new Function("args", "fs", "console", "stdin", "env", "sh2", "sh2lib", "shell", `
+    // `pipe` (10th arg) gives command files the raw pipe: `pipe.in` is
+    // the previous segment's stdout (string or Uint8Array — the 4th
+    // `stdin` arg is its text form), and `pipe.out(data)` captures
+    // output into the pipe (strings or raw bytes; gzip emits bytes).
+    const fn = new Function("args", "fs", "console", "stdin", "env", "sh2", "sh2lib", "shell", "qbe2wasm", "pipe", `
         return (async () => {
           ${content}
         })();
@@ -1775,15 +1888,19 @@ async function runSegment(segmentText, stdin, isLast) {
       // (watch, xeyes, ...) tear themselves down when interrupted.
       onInterrupt: (fn) => { interruptCallbacks.push(fn); },
     };
-    const ret = await fn(args, fs, fakeConsole, stdin, env, sh2rt.sh2, sh2libFacade, shellApi);
+    const pipe = {
+      in: stdin,          // raw pipe input (string or Uint8Array)
+      out: (data) => logChunks.push(data),  // capture into the pipe
+    };
+    const ret = await fn(args, fs, fakeConsole, pipeText(stdin), env, sh2rt.sh2, sh2libFacade, shellApi, qbe2wasm, pipe);
     // A command file may return a number to set its exit status
     const code = typeof ret === "number" ? ret : 0;
-    output = logChunks.join("");
+    output = joinOut(logChunks);
     if (outputRedirect) {
-      await fs.write(outputRedirect, output);
+      await writeOut(outputRedirect, output);
       output = "";
     } else if (isLast) {
-      process.stdout.write(output);
+      if (output) process.stdout.write(pipeText(output));
       output = "";
     }
     procfs.finish(pid, code);
@@ -1853,7 +1970,7 @@ function splitConditionals(line) {
 // is a singleton, so state persists across lines and invocations.
 async function runPythonCmd(args, stdin, isLast, outputRedirect) {
   if (args.length === 0) {
-    if (stdin && stdin.trim()) {
+    if (pipeText(stdin).trim()) {
       args = ["-"];
     } else if (process.stdin.isTTY) {
       enterPythonRepl();
@@ -1867,7 +1984,7 @@ async function runPythonCmd(args, stdin, isLast, outputRedirect) {
   if (args[0] === "-c" || args[0] === "-e") {
     source = args.slice(1).join(" ");
   } else if (args[0] === "-") {
-    source = stdin;
+    source = pipeText(stdin);
   } else if (!args[0].startsWith("-")) {
     try {
       source = await fs.read(args[0]);
@@ -1935,7 +2052,7 @@ async function runNestedCommand(cmdLine, stdin = "") {
   const origWrite = process.stdout.write;
   const origErrWrite = process.stderr.write;
   process.stdout.write = (chunk) => {
-    captured += chunk;
+    captured += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
     return true;
   };
   process.stderr.write = (chunk) => {

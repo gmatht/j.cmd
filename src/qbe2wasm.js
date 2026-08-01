@@ -868,6 +868,7 @@ function genFunction(fn, mod) {
 
 export function qbe2wasm(irText, { importBase = "env", wasm64 = false } = {}) {
   const mod = parseIr(irText);
+  if (mod.funcs.length === 0) throw new Error("qbe: no functions in IR (not QBE IL?)");
   mod.wasm64 = !!wasm64;
 
   // data segments → bytes with alignment

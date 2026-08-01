@@ -226,11 +226,15 @@ import { WasmRunner } from "../src/wasm.js";
 import { WasmerRegistry } from "../src/wasmer.js";
 import { env, expandRef } from "../src/env.js";
 import { watToWasm } from "../src/wabt-loader.js";
+import { qbe2wasm } from "../src/qbe2wasm.js";
 import { bashToJS, runBash, buildSh2LibFacade } from "../src/bash2js.js";
 import { createSh2Runtime } from "../src/sh2runtime.js";
 import { getManPage, manIndex, searchManPages, MAN_PAGES } from "../src/manpages.js";
+import { GoRunner, createGoCommand } from "../src/go.js";
 import { createJobScheduler } from "../src/jobs.js";
 const wasmRunner = new WasmRunner(fs);
+const goRunner = new GoRunner(fs);
+const goCmd = createGoCommand(goRunner, write, (s) => write(s, "err"));
 const sh2libFacade = buildSh2LibFacade(fs);  // debashl toolchain, injected into .js commands
 
 // Writes to read-only mounts (github/gitlab/http/git) land in a local
@@ -243,6 +247,40 @@ const wasmerReg = new WasmerRegistry(fs);
 // Pipe input for the current command — the previous pipeline segment's
 // captured stdout. Builtins that read stdin (head, ...) consume this.
 let stdinBuffer = "";
+// Raw form of the pipe input (string or Uint8Array) for binary-safe
+// consumers like cat, which must not round-trip bytes through UTF-8.
+let rawStdin = "";
+// True while a builtin's stdout is being captured (piped or redirected)
+// — cat uses this to pass binary files through raw instead of warning.
+let builtinCapture = false;
+
+// ─── Pipe data ──────────────────────────────────────────────────
+// A pipeline segment's stdout is either text (string) or raw bytes
+// (Uint8Array — wasm programs, gzip output, ...). The pipe itself
+// carries both; these helpers convert at the boundaries that need a
+// specific kind:
+//   pipeText  — bytes → UTF-8 string (text consumers: head/grep, the
+//               terminal, JS command `stdin` args)
+//   pipeBytes — string → UTF-8 bytes (binary consumers)
+//   joinOut   — joins captured write chunks, preserving binary chunks
+const pipeText = (d) => (typeof d === "string" ? d : new TextDecoder().decode(d));
+const pipeBytes = (d) => (typeof d === "string" ? new TextEncoder().encode(d) : d);
+const joinOut = (chunks) => {
+  if (chunks.length === 0) return "";
+  if (chunks.every((c) => typeof c === "string")) return chunks.join("");
+  const parts = chunks.map(pipeBytes);
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const out = new Uint8Array(total);
+  let o = 0;
+  for (const p of parts) { out.set(p, o); o += p.length; }
+  return out;
+};
+// Write pipe data to a VFS file: bytes go through writeBlob (binary
+// safe), text through fs.write.
+async function writeOut(file, data) {
+  if (data instanceof Uint8Array) await fs.writeBlob(file, new Blob([data]));
+  else await fs.write(file, data);
+}
 
 // ─── Terminal Output ───────────────────────────────────────────
 
@@ -280,6 +318,9 @@ const ansiPalette = {
 let lastCharNewline = true;
 
 function write(text, cls = "out", opts = {}) {
+  // The terminal is a text sink — raw bytes from cat/binary pipes are
+  // decoded here (they'd otherwise render as object garbage).
+  if (text instanceof Uint8Array) text = new TextDecoder().decode(text);
   if (opts.record !== false) recordOutput(sgrWrap(text, cls));  // asciinema capture (no-op unless recording)
   const appendSpan = (span) => {
     if (welcomeText) {
@@ -1189,6 +1230,16 @@ const builtins = {
     let hadError = false;
     for (const dir of dirs) {
       try {
+        // `ls <file>` prints the file's own entry (like real ls); a
+        // directory lists its contents.
+        const st = await fs.stat(dir);
+        if (st && st.type === "file") {
+          const output = long
+            ? await fs.formatLongFile(dir)
+            : (dir.split("/").filter(Boolean).pop() || "/") + "\n";
+          stdout.write(output);
+          continue;
+        }
         const output = await fs.formatList(dir, { long, width: Number(env.COLUMNS) || 80 });
         if (!output) continue;
         if (dirs.length > 1) stdout.write(`${dir}:\n`);
@@ -1224,9 +1275,15 @@ const builtins = {
 
   async cat(args) {
     if (args.length === 0) {
-      // No files — read from stdin (pipe input)
-      stdout.write(stdinBuffer);
-      if (stdinBuffer && !stdinBuffer.endsWith("\n")) stdout.write("\n");
+      // No files — read from stdin (pipe input). Write the raw pipe
+      // data so binary streams (gzip/zstd output) pass through bytes.
+      const data = rawStdin;
+      if (data === "") return 0;
+      const endsNL = typeof data === "string"
+        ? data.endsWith("\n")
+        : data[data.length - 1] === 10;
+      stdout.write(data);
+      if (!endsNL) stdout.write("\n");
       return 0;
     }
     let hadError = false;
@@ -1265,14 +1322,21 @@ const builtins = {
         }
       } else {
         try {
-          let content = await fs.read(file);
-          // Refuse to dump binary content as text — show a warning instead
-          if (looksBinary(content)) {
+          const blob = await fs.readBlob(file);
+          const bytes = new Uint8Array(await blob.arrayBuffer());
+          let content = null;
+          try { content = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch {}
+          if (content !== null && !looksBinary(content)) {
+            stdout.write(content);
+            if (!content.endsWith("\n")) stdout.write("\n");
+          } else if (builtinCapture) {
+            // Binary in a pipe/redirect: pass the raw bytes so
+            // `cat file.gz | gunzip` round-trips intact.
+            stdout.write(bytes);
+          } else {
             stderr.write(`cat: ${file}: binary file (use 'cp ${file} /pc' to download or view via edit)\n`);
             continue;
           }
-          stdout.write(content);
-          if (!content.endsWith("\n")) stdout.write("\n");
         } catch (e) {
           hadError = true;
           stderr.write(`cat: ${file}: ${e.message}\n`);
@@ -1562,6 +1626,21 @@ const builtins = {
       }
     }
     return hadError ? 1 : 0;
+  },
+
+  async sleep(args) {
+    // sleep [N] — delay for N seconds (floats ok; default 1). Needed by
+    // game loops (mimecroft) and scripts.
+    let secs = 1;
+    if (args.length > 0) {
+      secs = parseFloat(args[0]);
+      if (isNaN(secs) || secs < 0) {
+        stderr.write(`sleep: invalid time interval '${args[0]}'\n`);
+        return 2;
+      }
+    }
+    await new Promise((r) => setTimeout(r, Math.round(secs * 1000)));
+    return 0;
   },
 
   async grep(args) {
@@ -1928,6 +2007,13 @@ const builtins = {
   Installed packages are available as commands.\n
   Compile your own: Rust/wasm-pack → wasm32-wasi → /usr/bin/\n`);
     }
+  },
+
+  async go(args) {
+    // go run/build/version — the REAL Go toolchain (cmd/compile + cmd/link
+    // cross-compiled to GOOS=js GOARCH=wasm) running in the browser shell.
+    // See src/go.js and build-wasm-go.sh.
+    return await goCmd(args);
   },
 
   async wat2wasm(args) {
@@ -3050,7 +3136,7 @@ function splitConditionals(line) {
 // is a singleton, so state persists across lines and invocations.
 async function runPythonCmd(args, stdin, isLast, outputRedirect) {
   if (args.length === 0) {
-    if (stdin && stdin.trim()) {
+    if (pipeText(stdin).trim()) {
       args = ["-"];
     } else {
       enterPythonRepl();
@@ -3061,7 +3147,7 @@ async function runPythonCmd(args, stdin, isLast, outputRedirect) {
   if (args[0] === "-c" || args[0] === "-e") {
     source = args.slice(1).join(" ");
   } else if (args[0] === "-") {
-    source = stdin;
+    source = pipeText(stdin);
   } else if (!args[0].startsWith("-")) {
     try {
       source = await fs.read(args[0]);
@@ -3148,7 +3234,7 @@ async function runNestedCommand(cmdLine, stdin = "") {
   const origWrite = stdout.write;
   const origErrWrite = stderr.write;
   stdout.write = (chunk) => {
-    captured += chunk;
+    captured += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
     return true;
   };
   stderr.write = (chunk) => {
@@ -3228,7 +3314,7 @@ async function runSegment(segmentText, stdin, isLast) {
   }
   // perl — bare `perl` with no script/stdin opens the interactive REPL
   // (the /bin perl command handles -e / script / stdin as before).
-  if (cmd === "perl" && !cmd.includes("/") && args.length === 0 && !(stdin && stdin.trim())) {
+  if (cmd === "perl" && !cmd.includes("/") && args.length === 0 && !pipeText(stdin).trim()) {
     enterPerlRepl();
     return { ok: true, code: 0, output: "" };
   }
@@ -3263,8 +3349,10 @@ async function runSegment(segmentText, stdin, isLast) {
     return { ok: false, code: 127, output: "" };
   }
 
-  // Make pipe input available to builtins (head etc.)
-  stdinBuffer = stdin;
+  // Make pipe input available to builtins (head etc.) — text form.
+  // Binary consumers (wasm programs, gzip, cat) get the raw `stdin`.
+  stdinBuffer = pipeText(stdin);
+  rawStdin = stdin;
 
   try {
     if (resolved.type === "wasm") {
@@ -3313,9 +3401,24 @@ async function runSegment(segmentText, stdin, isLast) {
           wasmArgs = [cmd, srcFile];
         }
 
+        // Go js/wasm binaries (`go build` output, or anything compiled with
+        // GOOS=js GOARCH=wasm) run through the Go runner (wasm_exec.js +
+        // VirtualFS fs shim), not the WASI runner.
+        if (await goRunner.isGoModule(resolved.path)) {
+          const gr = await goRunner.runModule(resolved.path, [cmd, ...args], stdin);
+          if (gr.stdout) write(gr.stdout);
+          if (gr.stderr) write(gr.stderr, "err");
+          if (gr.code !== 0) {
+            write(`${cmd}: exited with code ${gr.code}\n`, "err");
+            return { ok: false, code: gr.code, output: "" };
+          }
+          return { ok: true, code: 0, output: gr.stdout };
+        }
+
         await wasmRunner.run(resolved.path, wasmArgs, stdin);
         const exitCode = wasmRunner.getExitCode();
-        let wasmOut = wasmRunner.getStdout();
+        let wasmOut = wasmRunner.getStdout();        // text (WAT for cc, or program output)
+        let wasmBytes = wasmRunner.getStdoutBytes(); // raw bytes — what the pipe carries
         const wasmErr = wasmRunner.getStderr();
 
         // Convert WAT → WASM binary (skip for -S which wants the WAT)
@@ -3324,7 +3427,8 @@ async function runSegment(segmentText, stdin, isLast) {
             const bytes = await watToWasm(wasmOut, "cc-output.wat");
             await fs.writeBlob(ccOutput, new Blob([bytes], { type: "application/wasm" }));
             stdout.write(`${ccOutput}: ${bytes.length} bytes\n`);
-            wasmOut = "";  // binary written to file, not stdout
+            wasmOut = "";       // binary written to file, not stdout
+            wasmBytes = new Uint8Array(0);
           } catch (e) {
             stderr.write(`cc: ${e.message}\n`);
             return { ok: false, code: 1, output: "" };
@@ -3332,11 +3436,12 @@ async function runSegment(segmentText, stdin, isLast) {
         }
 
         if (outputRedirect) {
-          await fs.write(outputRedirect, wasmOut);
+          if (wasmBytes.length) await fs.writeBlob(outputRedirect, new Blob([wasmBytes]));
+          else await fs.write(outputRedirect, "");
         } else if (isLast) {
           if (wasmOut) stdout.write(wasmOut);
         } else {
-          output = wasmOut;
+          output = wasmBytes;
         }
         if (wasmErr) {
           stderr.write(wasmErr);
@@ -3362,12 +3467,13 @@ async function runSegment(segmentText, stdin, isLast) {
       }
       let code = 0;
       try {
+        builtinCapture = capture;
         code = (await resolved.fn(args)) ?? 0;
       } finally {
         if (capture) {
           stdout.write = origWrite;
-          const captured = chunks.join("");
-          if (outputRedirect) await fs.write(outputRedirect, captured);
+          const captured = joinOut(chunks);
+          if (outputRedirect) await writeOut(outputRedirect, captured);
           else output = captured;
         }
       }
@@ -3376,7 +3482,11 @@ async function runSegment(segmentText, stdin, isLast) {
 
     // Run a .js command file from /commands/ (or /bin/, /usr/bin/)
     const content = await fs.read(resolved.path);
-    const fn = new Function("args", "fs", "console", "stdin", "env", "sh2", "sh2lib", "shell", `
+    // `pipe` (10th arg) gives command files the raw pipe: `pipe.in` is
+    // the previous segment's stdout (string or Uint8Array — the 4th
+    // `stdin` arg is its text form), and `pipe.out(data)` captures
+    // output into the pipe (strings or raw bytes; gzip emits bytes).
+    const fn = new Function("args", "fs", "console", "stdin", "env", "sh2", "sh2lib", "shell", "qbe2wasm", "pipe", `
         return (async () => { ${content} })();
       `);
     const logChunks = [];
@@ -3398,15 +3508,19 @@ async function runSegment(segmentText, stdin, isLast) {
       // (watch, xeyes, ...) tear themselves down when interrupted.
       onInterrupt: (fn) => { interruptCallbacks.push(fn); },
     };
-    const ret = await fn(args, fs, fakeConsole, stdin, env, sh2rt.sh2, sh2libFacade, shellApi);
+    const pipe = {
+      in: stdin,          // raw pipe input (string or Uint8Array)
+      out: (data) => logChunks.push(data),  // capture into the pipe
+    };
+    const ret = await fn(args, fs, fakeConsole, pipeText(stdin), env, sh2rt.sh2, sh2libFacade, shellApi, qbe2wasm, pipe);
     // A command file may return a number to set its exit status
     const code = typeof ret === "number" ? ret : 0;
-    output = logChunks.join("");
+    output = joinOut(logChunks);
     if (outputRedirect) {
-      await fs.write(outputRedirect, output);
+      await writeOut(outputRedirect, output);
       output = "";
     } else if (isLast) {
-      stdout.write(output);
+      if (output) stdout.write(pipeText(output));
       output = "";
     }
     return { ok: code === 0, code, output };
