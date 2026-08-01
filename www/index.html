@@ -269,6 +269,7 @@ const nethackCmd = createBrowserNethackCommand({
   write: (s) => write(s, "out"),
   err: (s) => write(s, "err"),
   getKeyList: () => keyCallbacks,
+  getInterruptList: () => interruptCallbacks,
   onInterrupt: (fn) => { interruptCallbacks.push(fn); },
 });
 const sh2libFacade = buildSh2LibFacade(fs);  // debashl toolchain, injected into .js commands
@@ -4251,11 +4252,16 @@ function updatePrompt() {
 
 async function onCommand() {
   const line = currentLine;
-  // Move the committed line into the scrollback: prompt + text + newline.
-  // Recording happens piecewise (prompt when drawn, chars as typed, the
-  // newline here), so the echo itself must not double-record.
-  write(`${getPromptStr()}${line}\n`, "prompt", { record: false });
-  recordOutput("\r\n");
+  const busy = running;  // a previous command is still executing
+  if (line.trim()) {
+    // Move the committed line into the scrollback: prompt + text + newline
+    // (a pending line while busy gets no fake prompt — it hasn't run yet).
+    // Recording happens piecewise (prompt when drawn, chars as typed, the
+    // newline here), so the echo itself must not double-record.
+    if (busy) write(`${line}\n`, "prompt", { record: false });
+    else write(`${getPromptStr()}${line}\n`, "prompt", { record: false });
+    recordOutput("\r\n");
+  }
   currentLine = "";
   cursorPos = 0;
   renderInput();
@@ -4274,9 +4280,11 @@ async function onCommand() {
     return;
   }
 
+  if (!line.trim()) return;  // empty Enter — nothing to do, no new prompt
+
   addHistory(line);
 
-  if (running) {
+  if (busy) {
     // A previous command is still executing (e.g. the line before was
     // `sleep 10 && ...`); buffer this line and run it when the shell is
     // free, like a real shell queues input while busy. Without this, two
