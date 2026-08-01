@@ -71,9 +71,10 @@ python3 www/serve.py
 # → http://localhost:8080/www/
 ```
 
-Live site: **https://gmatht.github.io/j.cmd/** — a GitHub Actions
-workflow (`.github/workflows/pages.yml`) assembles `www/*` + `src/`
-and deploys them as the site root.
+Live site: **https://gmatht.github.io/j.cmd/www/** — a GitHub Actions
+workflow (`.github/workflows/pages.yml`) publishes `www/` and `src/`
+as siblings (the shell imports `../src/`, so the app lives at the
+`/www/` path; a bare root would break those imports).
 
 Use `serve.py` (not bare `http.server`) — it sets COOP/COEP headers
 (required for SharedArrayBuffer, used by the WASI Python REPL) and

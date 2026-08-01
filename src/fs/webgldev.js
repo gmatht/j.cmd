@@ -32,7 +32,7 @@ const BUFFER_TYPES = ["f32", "f64", "u8", "u16", "i32"];
 
 const BASE_ENTRIES = [
   "bind", "buffer/", "call", "clearcolor", "extensions", "frame",
-  "info", "log", "program", "shader/", "state", "uniform/",
+  "info", "key", "log", "program", "shader/", "state", "uniform/",
 ];
 
 function glTypeSize(gl, type) {
@@ -52,6 +52,58 @@ function glTypeSize(gl, type) {
   }
 }
 
+// ─── NullGL: headless no-op device (CLI / tests, no DOM) ─────────
+// Accepts every write and draw so /dev/webgl scripts (games like
+// mimecroft.sh) run logic-only in the Node CLI; the browser gets a real
+// WebGL context. Reads return plausible values; frame is a placeholder.
+function makeNullGL() {
+  const counters = { shaders: 0, programs: 0, buffers: 0, draws: 0 };
+  const gl = {
+    VERTEX_SHADER: 0x8b31, FRAGMENT_SHADER: 0x8b30,
+    ARRAY_BUFFER: 0x8892, ELEMENT_ARRAY_BUFFER: 0x8893,
+    STATIC_DRAW: 0x88e4, COLOR_BUFFER_BIT: 0x4000,
+    TRIANGLES: 0x0004, TRIANGLE_STRIP: 0x0005, TRIANGLE_FAN: 0x0006,
+    POINTS: 0x0000, LINES: 0x0001, LINE_LOOP: 0x0002, LINE_STRIP: 0x0003,
+    FLOAT: 0x1406, INT: 0x1404, FLOAT_VEC2: 0x8b50, FLOAT_VEC3: 0x8b51,
+    FLOAT_VEC4: 0x8b52, INT_VEC2: 0x8b53, INT_VEC3: 0x8b54, INT_VEC4: 0x8b55,
+    FLOAT_MAT2: 0x8b5a, FLOAT_MAT3: 0x8b5b, FLOAT_MAT4: 0x8b5c,
+    UNSIGNED_BYTE: 0x1401, UNSIGNED_SHORT: 0x1403,
+    createBuffer: () => ({ id: ++counters.buffers }),
+    deleteBuffer: () => {},
+    bindBuffer: () => {},
+    bufferData: () => {},
+    createShader: () => ({ id: ++counters.shaders }),
+    deleteShader: () => {},
+    shaderSource: () => {},
+    compileShader: () => {},
+    getShaderParameter: () => true,
+    getShaderInfoLog: () => "",
+    createProgram: () => ({ id: ++counters.programs }),
+    deleteProgram: () => {},
+    attachShader: () => {},
+    linkProgram: () => {},
+    getProgramParameter: () => 0,
+    getProgramInfoLog: () => "",
+    useProgram: () => {},
+    getUniformLocation: () => ({}),
+    uniform1f: () => {}, uniform2f: () => {}, uniform3f: () => {},
+    uniform4f: () => {}, uniform1i: () => {}, uniformMatrix4fv: () => {},
+    getAttribLocation: () => 0,
+    enableVertexAttribArray: () => {},
+    vertexAttribPointer: () => {},
+    getActiveAttrib: () => ({ name: "aPos", type: gl.FLOAT_VEC3 }),
+    drawArrays: () => { counters.draws++; },
+    drawElements: () => { counters.draws++; },
+    clear: () => {},
+    clearColor: () => {},
+    flush: () => {},
+    getParameter: (p) => p === 0x1f02 ? "headless null device" : "0",
+    getSupportedExtensions: () => [],
+  };
+  gl._counters = counters;
+  return gl;
+}
+
 export class WebGLDevice {
   constructor() {
     this._gl = null;              // lazily created WebGL context
@@ -68,6 +120,10 @@ export class WebGLDevice {
     this._clearColor = [0, 0, 0, 1];
     this._lastCall = "";
     this._lastElementBuffer = null;  // name of last written u8/u16 buffer
+    this._keys = [];                 // key queue (a game reads /dev/webgl/key)
+    this._lastSwapAt = 0;            // for key-steal timeout after a game ends
+    this._keyListener = null;
+    this._null = false;              // headless null-device mode (no DOM)
   }
 
   // ─── Context ────────────────────────────────────────────────
@@ -75,7 +131,12 @@ export class WebGLDevice {
   _ensureGL() {
     if (this._gl) return this._gl;
     if (typeof document === "undefined") {
-      throw new Error("WebGL not available (no DOM in this environment)");
+      // Headless: a null device that accepts everything (no visuals).
+      this._gl = makeNullGL();
+      this._null = true;
+      this._contextName = "headless (null device)";
+      this._log += "[context] headless null device (no DOM)\n";
+      return this._gl;
     }
     try {
       const canvas = document.createElement("canvas");
@@ -100,6 +161,21 @@ export class WebGLDevice {
                            ctx instanceof WebGL2RenderingContext)
         ? "WebGL2" : "WebGL1";
       this._log += `[context] ${this._contextName} ready\n`;
+      // A game (e.g. mimecroft.sh) steals the keyboard while the canvas
+      // is presenting: capture keys into a queue readable at
+      // /dev/webgl/key. Keys flow back to the shell ~2s after the last
+      // swap, so an abandoned game can't lock the terminal.
+      if (!this._keyListener) {
+        this._keyListener = (e) => {
+          const visible = this._canvas && this._canvas.style.display !== "none";
+          const fresh = Date.now() - this._lastSwapAt < 2000;
+          if (!visible || !fresh) return;
+          if (this._keys.length < 64) this._keys.push(e.key === " " ? "space" : e.key);
+          e.preventDefault();
+          e.stopPropagation();
+        };
+        document.addEventListener("keydown", this._keyListener, true);
+      }
       return ctx;
     } catch (e) {
       throw new Error("WebGL not available: " + (e.message || e));
@@ -266,6 +342,15 @@ export class WebGLDevice {
       // Present to screen — the canvas stays hidden until the first swap
       gl.flush();
       if (this._canvas) this._canvas.style.display = "block";
+      this._lastSwapAt = Date.now();
+      this._lastCall = raw.trim();
+      return;
+    }
+    if (op === "hide") {
+      // A game finished: hide the canvas and drop the key queue so the
+      // keyboard returns to the shell immediately.
+      this._keys = [];
+      if (this._canvas) this._canvas.style.display = "none";
       this._lastCall = raw.trim();
       return;
     }
@@ -446,7 +531,7 @@ export class WebGLDevice {
   _frameDataURL() {
     const gl = this._ensureGL();
     gl.flush();
-    if (!this._canvas) throw new Error("no canvas");
+    if (!this._canvas || this._null) return "data:image/png;base64,iVBORw0KGgo=";
     return this._canvas.toDataURL("image/png");
   }
 
@@ -461,6 +546,11 @@ export class WebGLDevice {
     if (parts[0] === "log") return this._log + "\n";
     if (parts[0] === "frame") return this._frameDataURL();
     if (parts[0] === "call") return this._lastCall + "\n";
+    if (parts[0] === "key") {
+      const keys = this._keys;
+      this._keys = [];
+      return keys.join(",") + "\n";
+    }
     if (parts[0] === "clearcolor") return this._clearColor.join(" ") + "\n";
     if (parts[0] === "program") return this._programStatus();
     if (parts[0] === "bind") {
@@ -523,6 +613,10 @@ export class WebGLDevice {
     }
     if (parts[0] === "call") {
       this._doCall(String(content));
+      return;
+    }
+    if (parts[0] === "key") {
+      if (String(content).trim().toLowerCase() === "clear") this._keys = [];
       return;
     }
     throw new Error(`EROFS: cannot write /dev/webgl/${p}`);

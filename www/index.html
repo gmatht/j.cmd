@@ -224,7 +224,6 @@
   <div id="editor-body">
     <textarea id="editor-textarea" spellcheck="false"></textarea>
     <div id="editor-preview">
-      <iframe id="editor-preview-frame" sandbox="" title="markdown preview"></iframe>
       <div id="editor-preview-note"></div>
     </div>
   </div>
@@ -860,6 +859,11 @@ let interruptSignal = null; // rejects the running command's race
 let suppressOutput = false; // drop output from an aborted command
 let runId = 0;
 let interruptCallbacks = [];  // shell.onInterrupt hooks (watch etc.)              // bumped per command — stale aborts don't linger
+// shell.onKey hooks — commands (typist) capture printable keys from
+// the hidden input while they own the terminal. Return true from a
+// callback to claim the key (stop other handlers); returning false
+// lets the shell's line editor handle it.
+let keyCallbacks = [];
 
 // Run a command's promise so that Ctrl+C can abort it. Returns the
 // command's exit code (130 if interrupted).
@@ -1058,8 +1062,23 @@ function toggleMarkdownPreview(force) {
   return on;
 }
 
+// The preview frame is created lazily (not in the DOM at page load): an
+// always-present sandboxed about:blank frame triggers Chromium's "Blocked
+// script execution in 'about:blank'" noise. Sandbox stays empty — the
+// frame renders untrusted .md HTML with scripts disabled.
+function ensurePreviewFrame() {
+  let frame = document.getElementById("editor-preview-frame");
+  if (frame) return frame;
+  frame = document.createElement("iframe");
+  frame.id = "editor-preview-frame";
+  frame.sandbox = "";
+  frame.title = "markdown preview";
+  document.getElementById("editor-preview").appendChild(frame);
+  return frame;
+}
+
 async function updateMarkdownPreview() {
-  const frame = document.getElementById("editor-preview-frame");
+  const frame = ensurePreviewFrame();
   const note = document.getElementById("editor-preview-note");
   if (!cm) return;
   try {
@@ -3613,6 +3632,10 @@ async function runSegment(segmentText, stdin, isLast) {
       // Register a callback fired on Ctrl+C — lets long-running commands
       // (watch, xeyes, ...) tear themselves down when interrupted.
       onInterrupt: (fn) => { interruptCallbacks.push(fn); },
+      // Register a callback fired on printable keys (and Enter/Backspace)
+      // while the command runs — lets interactive commands (typist) read
+      // the keyboard. Return true to consume the key.
+      onKey: (fn) => { keyCallbacks.push(fn); },
     };
     const pipe = {
       in: stdin,          // raw pipe input (string or Uint8Array)
@@ -4453,6 +4476,14 @@ input.addEventListener("blur", () => term.classList.remove("focused"));
 
 input.addEventListener("keydown", async (e) => {
   if (e.isComposing) return;  // let the input event handle IME text
+
+  // While an interactive command owns the keyboard (shell.onKey),
+  // route every plain key to it instead of the line editor.
+  if (keyCallbacks.length > 0 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    let claimed = false;
+    for (const cb of keyCallbacks) { try { if (cb(e.key, e)) claimed = true; } catch {} }
+    if (claimed) { e.preventDefault(); return; }
+  }
 
   // Printable characters (including space) insert at the cursor.
   if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {

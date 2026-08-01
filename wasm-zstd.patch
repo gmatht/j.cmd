@@ -1,0 +1,21 @@
+diff --git a/programs/util.c b/programs/util.c
+index 652530b..5cae619 100644
+--- a/programs/util.c
++++ b/programs/util.c
+@@ -420,10 +420,12 @@ int UTIL_isSameFileStat(
+     (void)file2Stat;
+     ret = !strcmp(fName1, fName2);
+ #else
+-    {
+-        ret =  (file1Stat->st_dev == file2Stat->st_dev)
+-            && (file1Stat->st_ino == file2Stat->st_ino);
+-    }
++    /* WASI: the sandbox filesystem reports uniform (or stub) st_dev and
++     * st_ino, so inode identity is meaningless — any two files would look
++     * like the same file. Compare by name instead (conservative). */
++    (void)file1Stat;
++    (void)file2Stat;
++    ret = !strcmp(fName1, fName2);
+ #endif
+     UTIL_TRACE_RET(ret);
+     return ret;

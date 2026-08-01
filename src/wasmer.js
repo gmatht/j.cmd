@@ -35,6 +35,14 @@ const REGISTRY = {
     url: "wasm-bin/hexdump.wasm",
     desc: "Hex dump file contents",
   },
+  "zstd": {
+    url: "wasm-bin/zstd.wasm",
+    desc: "Real zstd CLI compiled to wasm32-wasi (facebook/zstd — see build-wasm-zstd.sh). Compress/decompress files and streams: echo hi | zstd | zstd -d",
+  },
+  "markdown": {
+    url: "wasm-bin/markdown.wasm",
+    desc: "Markdown → HTML (rsms/markdown-wasm md4c, wasm32-wasi — see build-wasm-markdown.sh). GitHub-style tables/strikethrough/tasklists. Usage: markdown file.md · echo '# hi' | markdown",
+  },
   "which": {
     url: "wasm-bin/which.wasm",
     desc: "Show path of a command",

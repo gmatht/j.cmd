@@ -50,9 +50,10 @@ toolchain facade, `src/sh2lib.js` + `debashcl.wasm`) · `base64` `base32`
 **Interpreters (2):** `perl` (zeroperl reactor, `@6over3/zeroperl-ts`) ·
 `lua` (wasmoon, `vendor/wasmoon.mjs`).
 
-**Archives & transfer (7):** `gzip` `gunzip` `zip` `tar` (pako in the
+**Archives & transfer (9):** `gzip` `gunzip` `zip` `tar` (pako in the
 browser / node:zlib in the CLI; tar streams `/pc` via StreamSaver) ·
-`curl` (fetch) · `md5sum` (pure-JS MD5) · `sha256sum` (Web Crypto).
+`curl` (fetch) · `md5sum` (pure-JS MD5) · `sha256sum` (Web Crypto) ·
+`zstd` (real zstd CLI, wasm32-wasi — `echo hi | zstd | zstd -d`).
 
 **Devices & toys (9):** `xclip` (clipboard) · `xeyes` `xterm` `screen`
 `sl` `cmatrix` (DOM/canvas toys) · `webgldemo` `audiodemo` (device

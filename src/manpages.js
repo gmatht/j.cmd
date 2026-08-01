@@ -89,6 +89,12 @@ const SHORT = {
   tree: "recursive directory listing",
   uptime: "how long the shell has been running",
   zip: "package files into a ZIP archive",
+  markdown: "render Markdown → HTML (md4c wasm; preview in edit)",
+  plot: "ASCII line charts in the terminal",
+  magick: "convert/resize/identify images (canvas-based, browser)",
+  convert: "convert/resize images (alias for magick)",
+  ffmpeg: "convert media files (ffmpeg.wasm, browser)",
+  typist: "typing speed and accuracy practice",
   screen: "split the terminal into panes (tmux-style, browser)",
   more: "page through a file (alias for cat)",
   less: "page through a file (alias for cat)",
@@ -1003,6 +1009,99 @@ EXAMPLES
 
 SEE ALSO
      play, /dev/audio (audiodemo)
+`,
+  markdown: `NAME
+     markdown — render Markdown to HTML (md4c)
+
+SYNOPSIS
+     markdown [file.md] | cat file.md | markdown
+
+DESCRIPTION
+     Renders Markdown to HTML with rsms/markdown-wasm (the same
+     CommonMark engine the npm package uses), compiled to wasm32-wasi.
+     Reads stdin when no file is given. Extensions on: tables,
+     strikethrough, tasklists, permissive autolinks, underline.
+
+EXAMPLES
+     echo '# hi' | markdown
+     markdown README.md > /pc/readme.html
+     (edit README.md shows a live preview — :preview toggles)
+`,
+  plot: `NAME
+     plot — ASCII line charts in the terminal
+
+SYNOPSIS
+     plot [options] [file|-] · plot -e EXPR
+
+DESCRIPTION
+     Plots columns from a file/stdin (first column = x, rest are
+     series) or an expression (-e) over [xmin,xmax] (default 0..2π;
+     sin/cos/exp/log/sqrt/… work bare). Renders an ASCII chart with
+     axes — the shell's quick answer to gnuplot for data & functions.
+
+OPTIONS
+     -w N · -h N · -t title · -xmin/-xmax/-ymin/-ymax
+
+EXAMPLES
+     plot -e "sin(x)" -xmax 6.283
+     cat data.txt | plot -w 80 -h 20 -t "sensor"
+`,
+  magick: `NAME
+     magick — convert, resize and identify images
+
+SYNOPSIS
+     magick input.png output.jpg [-resize WxH] [-quality N]
+     magick -info file
+
+DESCRIPTION
+     ImageMagick-style image tool. In the browser it converts between
+     png/jpeg/webp/gif on the canvas (resize, quality). -info works
+     everywhere via header parsing (PNG/GIF/JPEG/WebP). Real
+     ImageMagick wasm builds are Emscripten-glued and can't run under
+     this shell's WASI host, so this JS command covers the everyday
+     cases. convert is an alias.
+
+EXAMPLES
+     magick /home/photo.png /home/photo.jpg -resize 50%
+     magick -info /home/photo.png
+`,
+  convert: `NAME
+     convert — convert/resize images (alias for magick)
+
+SYNOPSIS
+     convert input output [-resize WxH]
+
+DESCRIPTION
+     Alias for magick. See: man magick
+`,
+  ffmpeg: `NAME
+     ffmpeg — convert media files (ffmpeg.wasm, browser)
+
+SYNOPSIS
+     ffmpeg -i input.mp4 [opts] output.mp4
+
+DESCRIPTION
+     Runs the official ffmpeg.wasm (@ffmpeg/ffmpeg + @ffmpeg/core,
+     ~30MB, fetched from a CDN on first use) with VFS files bridged
+     into ffmpeg's in-memory filesystem. The core is Emscripten-glued
+     (not WASI), so this runs in the browser only. Output is written
+     back to the VFS — play it with 'play', view with 'cat'.
+
+EXAMPLES
+     ffmpeg -i /home/in.mp4 -vf scale=320:240 /home/out.gif
+     ffmpeg -i /home/in.webm -c:v libx264 /home/out.mp4
+`,
+  typist: `NAME
+     typist — typing speed and accuracy practice
+
+SYNOPSIS
+     typist · typist demo
+
+DESCRIPTION
+     Shows a passage and types it character by character (browser,
+     via the shell.onKey hook); wrong keys count against accuracy,
+     Backspace rewinds, Enter/Esc ends early, live WPM on finish.
+     'typist demo' types the passage by itself (works in the CLI).
 `,
   screen: `NAME
      screen — split the terminal into panes

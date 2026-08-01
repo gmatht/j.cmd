@@ -67,6 +67,7 @@ export class WasmRunner {
     this.cache = new Map();
     this._initPromise = null;
     this._stdout = "";
+    this._stdoutBytes = new Uint8Array(0);
     this._stderr = "";
     this._stdCustomOut = "";
     this._stdin = "";
@@ -75,6 +76,13 @@ export class WasmRunner {
 
   getStdout() {
     return this._stdout;
+  }
+
+  // Raw stdout bytes (binary-safe). The text form (getStdout) is
+  // derived from this same capture, so both are consistent. Pipes use
+  // bytes so binary programs (gzip, ...) round-trip intact.
+  getStdoutBytes() {
+    return this._stdoutBytes;
   }
 
   getStderr() {
@@ -122,6 +130,7 @@ export class WasmRunner {
         this._exitCode = 0;
       }
       this._stdout = this._stdCustomOut || "";
+      this._stdoutBytes = new TextEncoder().encode(this._stdout);
       this._stderr = "";
       this._stdCustomOut = "";
       return instance;
@@ -131,6 +140,10 @@ export class WasmRunner {
     // the shell's files, then copy it into the WASI filesystem.
     const wasmfs = new WasmFs();
     await this._seedWasmFs(wasmfs);
+    // Snapshot the mirror's file list so _flushWasmFs can detect files
+    // the program deleted (zstd -d removes the source, gzip-style tools
+    // remove inputs) and propagate those removals back to VirtualFS.
+    const beforeFiles = this._wasmFsFiles(wasmfs);
 
     // Build the WASI filesystem (a MemFS) and populate it BEFORE the
     // WASI instance exists — the WASI constructor preopens dirs and
@@ -162,7 +175,9 @@ export class WasmRunner {
       preopens,
     });
     // Pipe support: feed the previous command's output as this program's stdin
-    if (stdin) wasi.setStdinString(stdin);
+    // (bytes stay bytes — a binary stream can't survive a string round-trip).
+    if (stdin instanceof Uint8Array) wasi.setStdinBuffer(stdin);
+    else if (stdin) wasi.setStdinString(stdin);
     this._stdin = stdin || "";
 
     // Instantiate (merging custom imports such as micropython_wasm) and
@@ -181,10 +196,16 @@ export class WasmRunner {
       this._exitCode = 0;
     }
 
-    this._stdout = wasi.getStdoutString();
+    this._stdoutBytes = wasi.getStdoutBuffer();
+    this._stdout = new TextDecoder().decode(this._stdoutBytes);
     this._stderr = wasi.getStderrString();
     // Merge output written via the custom 'std' module (c-compiler runtime)
     if (this._stdCustomOut) {
+      const custom = new TextEncoder().encode(this._stdCustomOut);
+      const merged = new Uint8Array(custom.length + this._stdoutBytes.length);
+      merged.set(custom, 0);
+      merged.set(this._stdoutBytes, custom.length);
+      this._stdoutBytes = merged;
       this._stdout = this._stdCustomOut + this._stdout;
       this._stdCustomOut = "";
     }
@@ -192,6 +213,9 @@ export class WasmRunner {
     // Harvest changes back through the WasmFs mirror into VirtualFS.
     this._copyWasiToWasmFs(wasi.fs, wasmfs);
     await this._flushWasmFs(wasmfs);
+    // Files that existed before the run but are gone from the mirror
+    // were removed by the program — reflect those deletions in the VFS.
+    this._flushRemoved(beforeFiles, wasmfs);
 
     return instance;
   }
@@ -285,6 +309,28 @@ export class WasmRunner {
   // ─── wasi.fs → WasmFs (harvest) ───────────────────────────
 
   _copyWasiToWasmFs(wasiFs, wasmfs) {
+    // The mirror may hold files the program deleted from its fs — clear
+    // it first so wasmfs exactly reflects what the program left behind
+    // (deletions then propagate to VirtualFS in _flushRemoved).
+    const removeAll = (dir) => {
+      let entries;
+      try {
+        entries = wasmfs.fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const e of entries) {
+        const path = (dir === "/" ? "/" : dir + "/") + e.name;
+        if (e.isDirectory()) {
+          removeAll(path);
+          try { wasmfs.fs.rmdirSync(path); } catch {}
+        } else {
+          try { wasmfs.fs.unlinkSync(path); } catch {}
+        }
+      }
+    };
+    removeAll("/");
+
     const walk = (dir) => {
       let entries;
       try {
@@ -314,6 +360,42 @@ export class WasmRunner {
   }
 
   // ─── WasmFs → VirtualFS (flush changes back to the shell) ─
+
+  // All regular-file paths currently in the mirror (for delete detection).
+  _wasmFsFiles(wasmfs) {
+    const out = new Set();
+    const walk = (dir) => {
+      let entries;
+      try {
+        entries = wasmfs.fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const e of entries) {
+        const path = (dir === "/" ? "/" : dir + "/") + e.name;
+        if (e.isDirectory()) walk(path);
+        else if (e.isFile()) out.add(path);
+      }
+    };
+    walk("/");
+    return out;
+  }
+
+  // Remove from VirtualFS any file the program deleted (present in the
+  // before-snapshot, missing from the mirror afterwards).
+  async _flushRemoved(beforeFiles, wasmfs) {
+    const afterFiles = this._wasmFsFiles(wasmfs);
+    for (const path of beforeFiles) {
+      if (afterFiles.has(path)) continue;
+      const mount = this._mountFor(path);
+      if (!mount || SKIP_MOUNTS.has(mount.name)) continue;
+      try {
+        await this.vfs.remove(path);
+      } catch {
+        // never existed / read-only backend — skip
+      }
+    }
+  }
 
   async _flushWasmFs(wasmfs) {
     const walk = async (dir) => {
@@ -394,8 +476,9 @@ export class WasmRunner {
         },
         readln: (po, bufLen) => {
           const mem = new Uint8Array(memRef.memory.buffer);
-          // stdin string was set on the runner during run()
-          const line = runner._stdin || "";
+          // stdin was set on the runner during run() — may be raw bytes
+          const raw = runner._stdin || "";
+          const line = typeof raw === "string" ? raw : new TextDecoder().decode(raw);
           runner._stdin = "";
           const bytes = enc.encode(line);
           const max = Math.min(bytes.length, Math.max(0, bufLen - 1));

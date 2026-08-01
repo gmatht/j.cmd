@@ -3719,6 +3719,562 @@ return hadError ? 1 : 0;
       })
       .catch(() => syncWrite(this._getBackend("/bin/gunzip.js"), "/gunzip.js", gunzipContent));
 
+    // plot — ASCII line charts in the terminal (pure JS; the browser
+    // shell's answer to gnuplot for quick data/expression charts).
+    const plotContent = `// plot v1 — ASCII line charts in the terminal
+//
+// NAME
+//      plot — draw an ASCII line chart from data or an expression
+//
+// SYNOPSIS
+//      plot [options] [file|-]
+//      plot -e EXPR [-xmin A] [-xmax B]
+//
+// DESCRIPTION
+//      With a file (or piped stdin), each line is split on whitespace:
+//      the first column is x, the rest are series (up to 3). A single
+//      column plots y against its index. With -e EXPR, plots the
+//      expression over [xmin,xmax] (default 0..2π); common math
+//      functions (sin cos tan exp log sqrt abs floor ceil pi) work.
+//
+// OPTIONS
+//      -w N        width in columns (default 72)
+//      -h N        height in rows (default 16)
+//      -t TEXT     title
+//      -e EXPR     plot y = EXPR as a function of x
+//      -xmin/-xmax/-ymin/-ymax   axis limits (auto by default)
+//
+// EXAMPLES
+//      plot -e "sin(x)" -xmax 6.283
+//      cat data.txt | plot -w 60 -t "sensor 1"
+//      plot /home/temps.dat -w 80 -h 20
+
+var width = 72, height = 16, title = null;
+var expr = null, xmin = null, xmax = null, ymin = null, ymax = null;
+var file = null;
+var i = 0;
+while (i < args.length) {
+  var a = args[i];
+  if (a === "-w") { width = parseInt(args[++i], 10) || 72; }
+  else if (a === "-h") { height = parseInt(args[++i], 10) || 16; }
+  else if (a === "-t") { title = args[++i]; }
+  else if (a === "-e") { expr = args[++i]; }
+  else if (a === "-xmin") { xmin = parseFloat(args[++i]); }
+  else if (a === "-xmax") { xmax = parseFloat(args[++i]); }
+  else if (a === "-ymin") { ymin = parseFloat(args[++i]); }
+  else if (a === "-ymax") { ymax = parseFloat(args[++i]); }
+  else if (a === "-h" || a === "--help") {
+    console.log("plot — ASCII line charts");
+    console.log("usage: plot [file|-] · plot -e EXPR · cat data | plot");
+    console.log("options: -w N -h N -t title -e EXPR -xmin/-xmax/-ymin/-ymax");
+    console.log("example: plot -e 'sin(x)' -xmax 6.283 · cat data.txt | plot");
+    return 0;
+  }
+  else if (a.charAt(0) === "-" && a.length > 1) {
+    console.log("plot: unknown option '" + a + "'");
+    return 2;
+  }
+  else if (file === null) { file = a; }
+  i++;
+}
+
+// ─── gather data points ───
+var data = null;
+if (expr !== null) {
+  // allow sin(x) / cos(x) / pi without Math. prefix
+  var pre = expr.replace(/\\b(sin|cos|tan|asin|acos|atan|exp|log|sqrt|abs|floor|ceil|round|pow|min|max|PI|E)\\b/g,
+    function (m) { return m === "PI" ? "Math.PI" : m === "E" ? "Math.E" : "Math." + m; });
+  var fn;
+  try { fn = new Function("x", "return (" + pre + ")"); }
+  catch (e) { console.log("plot: bad expression: " + e.message); return 2; }
+  var lo = (xmin === null ? 0 : xmin), hi = (xmax === null ? 2 * Math.PI : xmax);
+  if (hi <= lo) { console.log("plot: xmax must be > xmin"); return 2; }
+  var n = Math.min(width * 3, 400);
+  data = [];
+  for (var k = 0; k <= n; k++) {
+    var x = lo + (hi - lo) * k / n;
+    var y;
+    try { y = fn(x); } catch (e) { y = NaN; }
+    if (typeof y === "number" && isFinite(y)) data.push([x, y]);
+  }
+} else {
+  var raw = file !== null ? await fs.read(file) : stdin;
+  if (!raw || !raw.trim()) { console.log("plot: no data (give a file, pipe stdin, or -e EXPR)"); return 2; }
+  data = [];
+  var lines = raw.split("\\n");
+  for (var li = 0; li < lines.length; li++) {
+    var t = lines[li].trim();
+    if (!t || t.charAt(0) === "#") continue;
+    var cols = t.split(/[\\s,;]+/).map(parseFloat);
+    if (cols.some(function (v) { return isNaN(v); })) continue;
+    if (cols.length === 1) data.push([data.length, cols[0]]);
+    else data.push(cols);
+  }
+  if (data.length === 0) { console.log("plot: no numeric data found"); return 2; }
+}
+
+// ─── axis limits ───
+var xs = data.map(function (r) { return r[0]; });
+var nSeries = Math.min(3, Math.max(1, data[0].length - 1));
+var ysAll = [];
+for (var s = 0; s < nSeries; s++) for (var q = 0; q < data.length; q++) ysAll.push(data[q][s + 1]);
+if (xmin === null) xmin = Math.min.apply(null, xs);
+if (xmax === null) xmax = Math.max.apply(null, xs);
+if (ymin === null) ymin = Math.min.apply(null, ysAll);
+if (ymax === null) ymax = Math.max.apply(null, ysAll);
+if (xmax === xmin) xmax = xmin + 1;
+if (ymax === ymin) ymax = ymin + 1;
+
+// ─── render ───
+var glyphs = ["*", "+", "o"];
+var rows = [];
+for (var r = 0; r < height; r++) {
+  var row = [];
+  for (var c = 0; c < width; c++) row.push(" ");
+  rows.push(row);
+}
+var px = function (x) { return Math.round((x - xmin) / (xmax - xmin) * (width - 1)); };
+var py = function (y) { return Math.round((ymax - y) / (ymax - ymin) * (height - 1)); };
+// axes
+if (ymin <= 0 && ymax >= 0) { var zr = py(0); for (var c2 = 0; c2 < width; c2++) if (rows[zr][c2] === " ") rows[zr][c2] = "-"; }
+if (xmin <= 0 && xmax >= 0) { var zc = px(0); for (var r2 = 0; r2 < height; r2++) if (rows[r2][zc] === " " || rows[r2][zc] === "-") rows[r2][zc] = "|"; }
+// points
+for (var s2 = 0; s2 < nSeries; s2++) {
+  var g = glyphs[s2];
+  for (var p = 0; p < data.length; p++) {
+    var X = px(data[p][0]);
+    var Y = py(data[p][1 + s2]);
+    if (X < 0 || X >= width || Y < 0 || Y >= height) continue;
+    if (rows[Y][X] === " " || rows[Y][X] === "-") rows[Y][X] = g;
+  }
+}
+// axes labels
+var xL = "" + (Math.round(xmin * 100) / 100), xR = "" + (Math.round(xmax * 100) / 100);
+var yT = "" + (Math.round(ymax * 100) / 100), yB = "" + (Math.round(ymin * 100) / 100);
+rows[0][0] = yT.charAt(0);
+rows[height - 1][0] = yB.charAt(0);
+rows[height - 1][width - xL.length] = " ";
+// print
+if (title) console.log(title);
+console.log("^".padEnd ? "" : "");
+for (var rr = 0; rr < height; rr++) console.log(rows[rr].join("").replace(/\\s+$/, ""));
+console.log("0" + " ".repeat(Math.max(0, width - 3)) + xL + " " + xR);
+return 0;
+`;
+    this._getBackend("/bin/plot.js").read("/plot.js")
+      .then((existing) => {
+        if (!existing.includes("plot v1")) {
+          syncWrite(this._getBackend("/bin/plot.js"), "/plot.js", plotContent);
+        }
+      })
+      .catch(() => syncWrite(this._getBackend("/bin/plot.js"), "/plot.js", plotContent));
+
+    // magick/convert — image convert, resize and identify (canvas-based
+    // in the browser; header parsing for -info everywhere). The shell's
+    // ImageMagick answer: real ImageMagick wasm builds are Emscripten-
+    // glued and can't run under @wasmer/wasi, so this JS command does
+    // the everyday conversions (png/jpeg/webp/gif) on the canvas.
+    const magickContent = `// magick v1 — convert, resize and identify images
+//
+// NAME
+//      magick — image convert/resize/info (ImageMagick-style)
+//
+// SYNOPSIS
+//      magick input.png output.jpg [-resize WxH] [-quality N]
+//      magick -info file.png
+//      convert in.png out.webp        (alias)
+//
+// DESCRIPTION
+//      Converts between png/jpeg/webp/gif (gif = first frame), resizes
+//      (-resize 50% · -resize 320x200), sets quality for jpeg/webp.
+//      Rendered with the browser's canvas — no wasm needed. -info
+//      works everywhere (header parsing); conversions need a browser.
+//
+// OPTIONS
+//      -resize WxH | N%   scale (keep aspect if one dimension given)
+//      -quality N         jpeg/webp quality 1-100 (default 90)
+//      -info              print format, dimensions, size
+//      -h, --help         show this help
+//
+// EXAMPLES
+//      magick /home/photo.png /home/photo.jpg
+//      magick -info /home/photo.png
+//      convert /home/photo.jpg -resize 50% /home/thumb.png
+
+function infoOf(u8) {
+  // PNG: 8-byte sig, then IHDR: width/height at offset 16
+  if (u8.length > 24 && u8[0] === 0x89 && u8[1] === 0x50 && u8[2] === 0x4e && u8[3] === 0x47) {
+    return { fmt: "PNG", w: u8[16] << 24 | u8[17] << 16 | u8[18] << 8 | u8[19], h: u8[20] << 24 | u8[21] << 16 | u8[22] << 8 | u8[23] };
+  }
+  // GIF: "GIF87a"/"GIF89a", w/h little-endian at offset 6
+  if (u8.length > 10 && u8[0] === 0x47 && u8[1] === 0x49 && u8[2] === 0x46) {
+    return { fmt: "GIF", w: u8[6] | u8[7] << 8, h: u8[8] | u8[9] << 8 };
+  }
+  // WebP: RIFF....WEBP; VP8 (lossy) dims at 26, VP8L at 21, VP8X at 24
+  if (u8.length > 30 && u8[0] === 0x52 && u8[1] === 0x49 && u8[2] === 0x46 && u8[3] === 0x46 && u8[8] === 0x57) {
+    if (u8[12] === 0x56 && u8[13] === 0x50 && u8[14] === 0x38 && u8[15] === 0x20) {
+      return { fmt: "WEBP", w: u8[26] | (u8[27] & 0x3f) << 8, h: u8[28] | (u8[29] & 0x3f) << 8 };
+    }
+    if (u8[12] === 0x56 && u8[13] === 0x50 && u8[14] === 0x38 && u8[15] === 0x4c) {
+      return { fmt: "WEBP", w: 1 + (u8[21] | (u8[22] & 0x3f) << 8 | (u8[23] & 0x0f) << 16), h: 1 + ((u8[23] & 0xf0) >> 4 | (u8[24] & 0x3f) << 4 | (u8[25] & 0x0f) << 12) };
+    }
+    if (u8[12] === 0x56 && u8[13] === 0x50 && u8[14] === 0x38 && u8[15] === 0x58) {
+      return { fmt: "WEBP", w: 1 + (u8[24] | u8[25] << 8 | u8[26] << 16), h: 1 + (u8[27] | u8[28] << 8 | u8[29] << 16) };
+    }
+  }
+  // JPEG: scan for SOF0/SOF2 markers (FF C0/C2) with dims
+  if (u8.length > 4 && u8[0] === 0xff && u8[1] === 0xd8) {
+    var i = 2;
+    while (i + 9 < u8.length) {
+      if (u8[i] !== 0xff) { i++; continue; }
+      var m = u8[i + 1];
+      if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) {
+        return { fmt: "JPEG", w: u8[i + 7] << 8 | u8[i + 8], h: u8[i + 5] << 8 | u8[i + 6] };
+      }
+      i += 2 + (u8[i + 2] << 8 | u8[i + 3]);
+    }
+    return { fmt: "JPEG" };
+  }
+  return null;
+}
+
+var isBrowser = typeof document !== "undefined";
+var resize = null, quality = 90, infoOnly = false;
+var inputs = [], output = null;
+var i = 0;
+while (i < args.length) {
+  var a = args[i];
+  if (a === "-resize") { resize = args[++i]; }
+  else if (a === "-quality") { quality = parseInt(args[++i], 10); if (isNaN(quality)) quality = 90; }
+  else if (a === "-info") { infoOnly = true; }
+  else if (a === "-h" || a === "--help") {
+    console.log("magick — convert, resize, identify images");
+    console.log("usage: magick input.png output.jpg [-resize WxH] [-quality N] · magick -info file");
+    console.log("formats: png jpg webp gif (canvas-based in the browser; -info works in the CLI)");
+    return 0;
+  }
+  else if (a.charAt(0) === "-" && a.length > 1) { console.log("magick: unknown option '" + a + "'"); return 2; }
+  else { inputs.push(a); }
+  i++;
+}
+
+if (infoOnly) {
+  if (inputs.length === 0) { console.log("magick: -info needs a file"); return 2; }
+  var hadErr = false;
+  for (var f = 0; f < inputs.length; f++) {
+    try {
+      var blob = await fs.readBlob(inputs[f]);
+      var u8 = new Uint8Array(await blob.arrayBuffer());
+      var info = infoOf(u8);
+      if (!info) { console.log("magick: " + inputs[f] + ": unrecognized image format"); hadErr = true; continue; }
+      console.log(inputs[f] + " " + info.fmt + " " + info.w + "x" + info.h + " " + u8.length + "B");
+    } catch (e) {
+      console.log("magick: " + inputs[f] + ": " + (e && e.message ? e.message : String(e)));
+      hadErr = true;
+    }
+  }
+  return hadErr ? 1 : 0;
+}
+
+if (inputs.length < 2) {
+  console.log("magick: usage: magick input output [-resize WxH] [-quality N]");
+  return 2;
+}
+if (inputs.length > 2) {
+  console.log("magick: only one input supported (got " + (inputs.length - 1) + ")");
+  return 2;
+}
+var input = inputs[0];
+output = inputs[1];
+
+if (!isBrowser) {
+  console.log("magick: conversions need a browser (canvas); use 'magick -info' here");
+  return 1;
+}
+
+// ─── browser: canvas convert/resize ───
+try {
+  var inBlob = await fs.readBlob(input);
+  var bmp;
+  if (typeof createImageBitmap === "function") {
+    bmp = await createImageBitmap(inBlob);
+  } else {
+    bmp = await new Promise(function (res, rej) {
+      var url = URL.createObjectURL(inBlob);
+      var img = new Image();
+      img.onload = function () { URL.revokeObjectURL(url); res(img); };
+      img.onerror = function () { URL.revokeObjectURL(url); rej(new Error("cannot decode " + input)); };
+      img.src = url;
+    });
+  }
+  var w = bmp.width, h = bmp.height;
+  if (resize) {
+    var m = resize.match(/^(\\d*)x(\\d*)$/) || resize.match(/^(\\d+)%$/);
+    if (m) {
+      if (m[3]) { w = Math.round(w * parseInt(m[1], 10) / 100); h = Math.round(h * parseInt(m[1], 10) / 100); }
+      else {
+        var nw = m[1] ? parseInt(m[1], 10) : 0, nh = m[2] ? parseInt(m[2], 10) : 0;
+        if (nw && nh) { w = nw; h = nh; }
+        else if (nw) { h = Math.round(h * nw / w); w = nw; }
+        else if (nh) { w = Math.round(w * nh / h); h = nh; }
+      }
+    } else { console.log("magick: bad -resize '" + resize + "' (use WxH or N%)"); return 2; }
+  }
+  var canvas = document.createElement("canvas");
+  canvas.width = w; canvas.height = h;
+  var ctx = canvas.getContext("2d");
+  ctx.drawImage(bmp, 0, 0, w, h);
+  var ext = (output.split(".").pop() || "png").toLowerCase();
+  var mime = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif" }[ext];
+  if (!mime) { console.log("magick: unsupported output format ." + ext + " (png jpg webp gif)"); return 2; }
+  if (typeof bmp.close === "function") bmp.close();
+  var outBlob = await new Promise(function (res) { canvas.toBlob(res, mime, quality / 100); });
+  if (!outBlob) { console.log("magick: encoding failed (" + mime + ")"); return 1; }
+  var outPath = typeof fs._resolve === "function" ? fs._resolve(output) : output;
+  await fs.writeBlob(outPath, outBlob);
+  console.log(input + " → " + output + " (" + w + "x" + h + ", " + outBlob.size + "B)");
+  return 0;
+} catch (e) {
+  console.log("magick: " + (e && e.message ? e.message : String(e)));
+  return 1;
+}
+`;
+    for (const magickName of ["magick", "convert"]) {
+      this._getBackend("/bin/" + magickName + ".js").read("/" + magickName + ".js")
+        .then((existing) => {
+          if (!existing.includes("magick v1")) {
+            syncWrite(this._getBackend("/bin/" + magickName + ".js"), "/" + magickName + ".js", magickContent);
+          }
+        })
+        .catch(() => syncWrite(this._getBackend("/bin/" + magickName + ".js"), "/" + magickName + ".js", magickContent));
+    }
+
+    // ffmpeg — media conversion via ffmpeg.wasm (browser only). The
+    // official ffmpeg.wasm core is Emscripten-glued (imports a minified
+    // host module, not wasi_snapshot_preview1), so it can't run under
+    // @wasmer/wasi like grep/zstd — instead this JS command loads the
+    // official @ffmpeg/ffmpeg wrapper + @ffmpeg/core from a CDN and
+    // bridges the shell's VFS to ffmpeg's in-memory filesystem.
+    const ffmpegContent = `// ffmpeg v1 — media conversion via ffmpeg.wasm (browser)
+//
+// NAME
+//      ffmpeg — convert media files (ffmpeg.wasm, browser only)
+//
+// SYNOPSIS
+//      ffmpeg -i input.mp4 output.gif
+//      ffmpeg -i input.mp4 -vf scale=320:240 output.mp4
+//
+// DESCRIPTION
+//      Runs the official ffmpeg.wasm (@ffmpeg/ffmpeg + @ffmpeg/core,
+//      loaded from a CDN on first use) with the shell's files bridged
+//      into ffmpeg's in-memory filesystem. Inputs are existing VFS
+//      files (or -i FILE); the output is the last argument. Output is
+//      written back to the VFS, so 'play output.mp4' / 'cat out.png'
+//      work right after. Requires a browser + network (the core is
+//      ~30MB, fetched once).
+//
+// EXAMPLES
+//      ffmpeg -i /home/input.mp4 -vf scale=320:240 /home/out.gif
+//      ffmpeg -i /home/in.webm -c:v libx264 /home/out.mp4
+
+if (typeof document === "undefined") {
+  console.log("ffmpeg: requires a browser (the ffmpeg.wasm core is Emscripten-glued and cannot run under the CLI's WASI host)");
+  return 1;
+}
+
+var inputFiles = [];
+var outName = null;
+var i = 0;
+var args2 = [];
+var last = args[args.length - 1];
+// Identify inputs: explicit -i FILE, or any existing VFS file arg.
+// Everything else passes through; the LAST arg is the output name.
+while (i < args.length) {
+  var a = args[i];
+  if (a === "-i" && i + 1 < args.length) {
+    inputFiles.push(args[i + 1]);
+    args2.push("-i", "in" + inputFiles.length + "_" + (args[i + 1].split("/").pop() || "in" + inputFiles.length));
+    i += 2;
+    continue;
+  }
+  var isFile = false;
+  if (a.charAt(0) !== "-") {
+    try { var st = await fs.stat(a); isFile = st && st.type === "file"; } catch (e) {}
+  }
+  if (isFile) {
+    inputFiles.push(a);
+    args2.push("in" + inputFiles.length + "_" + (a.split("/").pop() || "in" + inputFiles.length));
+  } else {
+    args2.push(a);
+  }
+  i++;
+}
+if (inputFiles.length === 0 || !last || last.charAt(0) === "-") {
+  console.log("ffmpeg: usage: ffmpeg -i input.mp4 [opts] output.mp4");
+  return 2;
+}
+outName = last.split("/").pop() || last;
+// The output name in ffmpeg's memory fs is the bare basename — rewrite
+// the last arg so ffmpeg writes where readFile will look.
+args2[args2.length - 1] = outName;
+
+var log = [];
+try {
+  // Load the official wrapper + core from a CDN (cached after first use).
+  var mod = await import("https://esm.sh/@ffmpeg/ffmpeg@0.12.15");
+  var util = await import("https://esm.sh/@ffmpeg/util@0.12.2");
+  var ffmpeg = new mod.FFmpeg();
+  ffmpeg.on("log", function (msg) { log.push((msg && msg.message ? msg.message : msg) + "\\n"); });
+  await ffmpeg.load({
+    coreURL: await util.toBlobURL("https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm/ffmpeg-core.js", "text/javascript"),
+    wasmURL: await util.toBlobURL("https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm/ffmpeg-core.wasm", "application/wasm"),
+  });
+  // Bridge inputs: read each VFS file into ffmpeg's memory fs.
+  for (var f = 0; f < inputFiles.length; f++) {
+    var blob = await fs.readBlob(inputFiles[f]);
+    var data = new Uint8Array(await blob.arrayBuffer());
+    await ffmpeg.writeFile("in" + (f + 1) + "_" + (inputFiles[f].split("/").pop() || "in" + (f + 1)), data);
+  }
+  await ffmpeg.exec(args2);
+  var outData = await ffmpeg.readFile(outName);
+  var outBytes = outData instanceof Uint8Array ? outData : new Uint8Array(outData);
+  var outPath = typeof fs._resolve === "function" ? fs._resolve(last) : last;
+  await fs.writeBlob(outPath, new Blob([outBytes]));
+  console.log("ffmpeg: " + last + " (" + outBytes.length + " bytes)");
+  ffmpeg.terminate();
+  return 0;
+} catch (e) {
+  console.log("ffmpeg: " + (e && e.message ? e.message : String(e)));
+  if (log.length > 0) console.log(log.slice(-8).join(""));
+  return 1;
+}
+`;
+    this._getBackend("/bin/ffmpeg.js").read("/ffmpeg.js")
+      .then((existing) => {
+        if (!existing.includes("ffmpeg v1")) {
+          syncWrite(this._getBackend("/bin/ffmpeg.js"), "/ffmpeg.js", ffmpegContent);
+        }
+      })
+      .catch(() => syncWrite(this._getBackend("/bin/ffmpeg.js"), "/ffmpeg.js", ffmpegContent));
+
+    // typist — typing speed/accuracy practice. Interactive in the
+    // browser (keys via the shell.onKey hook, live DOM panel like
+    // watch/xeyes); `typist demo` types the passage by itself so the
+    // feature works and is testable anywhere (CLI included).
+    const typistContent = `// typist v1 — typing speed and accuracy practice
+//
+// NAME
+//      typist — typing speed and accuracy practice
+//
+// SYNOPSIS
+//      typist          interactive typing test (browser)
+//      typist demo     self-running demo (works in the CLI too)
+//
+// DESCRIPTION
+//      Shows a passage; type it character by character. Wrong keys
+//      are counted (accuracy), Backspace rewinds, Enter/Esc ends
+//      early. Live WPM and accuracy on finish. In the CLI there is
+//      no key capture, so \`typist demo\` types the passage itself.
+
+var NL = String.fromCharCode(10);
+var isBrowser = typeof document !== "undefined";
+
+var PASSAGES = [
+  "the quick brown fox jumps over the lazy dog while the amber sunset fades into a quiet evening sky",
+  "in the beginning was the command line, a simple prompt where thoughts become programs and programs become worlds",
+  "type slowly and deliberately at first, then let your fingers find the rhythm as speed follows accuracy",
+  "the shell is a place where the virtual and the real meet, where files flow like water through pipes",
+  "practice makes permanent, so type with intention and let every keystroke teach your hands the way",
+];
+
+if (args[0] === "-h" || args[0] === "--help") {
+  console.log("typist — typing speed and accuracy practice");
+  console.log("  typist          interactive typing test (browser)");
+  console.log("  typist demo     self-running demo");
+  console.log("  Backspace rewinds · Enter/Esc ends early");
+  return 0;
+}
+
+var demo = args[0] === "demo";
+var text = PASSAGES[Math.floor(Math.random() * PASSAGES.length)];
+var pos = 0, errors = 0, start = Date.now(), done = false;
+var panel = null;
+
+function stats() {
+  var secs = (Date.now() - start) / 1000;
+  var wpm = Math.round((pos / 5) / Math.max(secs / 60, 0.001));
+  var acc = pos + errors === 0 ? 0 : Math.round(100 * pos / (pos + errors));
+  return "wpm " + wpm + " · accuracy " + acc + "% · " + pos + " chars in " + secs.toFixed(1) + "s";
+}
+
+function finish() {
+  if (done) return;
+  done = true;
+  if (panel && panel.parentNode) panel.parentNode.removeChild(panel);
+  console.log("");
+  console.log("✓ " + stats());
+  if (resolver) resolver();
+}
+
+var resolver = null;
+
+if (!isBrowser || demo) {
+  // CLI / demo: type the passage ourselves so it works anywhere.
+  console.log(text);
+  for (var k = 0; k < text.length; k++) {
+    process.stdout.write(text[k]);
+    pos = k + 1;
+    await new Promise(function (r) { setTimeout(r, demo ? 40 : 25); });
+  }
+  console.log("");
+  console.log("✓ " + stats());
+  return 0;
+}
+
+// ─── browser: interactive typing test ───
+var term = document.getElementById("terminal");
+var promptLine = document.getElementById("prompt-line");
+panel = document.createElement("div");
+panel.style.cssText = "white-space:pre-wrap;word-wrap:break-word;font-family:monospace;font-size:14px;margin:2px 0;color:#a0d6a0;";
+term.insertBefore(panel, promptLine);
+console.log("Type the passage — wrong keys count against accuracy. Backspace rewinds, Enter/Esc ends.");
+console.log("");
+
+function render() {
+  panel.textContent = text.slice(0, pos) + (pos < text.length ? "▎" + text.slice(pos) : "");
+}
+render();
+
+// Register the key handler BEFORE awaiting — the command stays alive
+// until the user finishes (Enter/Esc/Ctrl+C), then stats are printed.
+if (typeof shell !== "undefined" && typeof shell.onKey === "function") {
+  shell.onKey(function (key) {
+    if (done) return false;
+    if (key === "Enter" || key === "Escape") { finish(); return true; }
+    if (key === "Backspace") { if (pos > 0) pos--; render(); return true; }
+    if (key.length === 1) {
+      if (key === text[pos]) pos++; else errors++;
+      render();
+      if (pos >= text.length) finish();
+      return true;
+    }
+    return false;
+  });
+}
+if (typeof shell !== "undefined" && typeof shell.onInterrupt === "function") {
+  shell.onInterrupt(function () { finish(); });
+}
+await new Promise(function (resolve) { resolver = resolve; });
+return 0;
+`;
+    this._getBackend("/bin/typist.js").read("/typist.js")
+      .then((existing) => {
+        if (!existing.includes("typist v1")) {
+          syncWrite(this._getBackend("/bin/typist.js"), "/typist.js", typistContent);
+        }
+      })
+      .catch(() => syncWrite(this._getBackend("/bin/typist.js"), "/typist.js", typistContent));
+
     // md5sum — MD5 checksums (pure-JS md5)
     const md5sumContent = `// md5sum v1 — compute MD5 checksums
 //

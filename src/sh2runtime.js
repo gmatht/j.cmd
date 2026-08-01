@@ -37,13 +37,27 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
   // Expand a test-expression operand ($var, ${var}, quotes already stripped).
   // Factory-local: it needs getVar for variable expansion.
   function expandOperand(s) {
-    return String(s).replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*|\d+|#|@|\*|\?|\$|\!)\}?/g, (m, name) => {
+    // ${#arr[@]} — array length · ${#name} — string length (the emitter
+    // passes both inside test strings like `[ $i -lt ${#arr[@]} ]`)
+    const withLen = String(s)
+      .replace(/\$\{#([A-Za-z_][A-Za-z0-9_]*)\[@\]\}/g, (m, name) => arrayLen(name))
+      .replace(/\$\{#([A-Za-z_][A-Za-z0-9_]*)\}/g, (m, name) => String(getVar(name)).length);
+    return withLen.replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*|\d+|#|@|\*|\?|\$|\!)\}?/g, (m, name) => {
       const v = getVar(name);
       return Array.isArray(v) ? v.join(" ") : String(v);
     });
   }
 
   function getVar(name) {
+    const sName = String(name);
+    const b = sName.lastIndexOf("[");
+    if (b > 0 && sName.endsWith("]")) {
+      const arrName = sName.slice(0, b);
+      const idx = Number(expandOperand(sName.slice(b + 1, -1)));
+      const v = vars.get(arrName);
+      if (Array.isArray(v) && Number.isFinite(idx)) return String(v[idx] ?? "");
+      return "";
+    }
     if (name === "#") return String(scriptArgs.length);
     if (name.startsWith("#") && name.length > 1) return String(String(getVar(name.slice(1))).length);
     if (name === "@") {
@@ -68,7 +82,24 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
   }
 
   function setVar(name, value) {
-    vars.set(name, value === undefined || value === null ? "" : String(value));
+    const s = String(name);
+    const val = value === undefined || value === null ? "" : String(value);
+    // "arr[$i]" — array element assignment (the compiler passes the
+    // index unexpanded)
+    const b = s.lastIndexOf("[");
+    if (b > 0 && s.endsWith("]")) {
+      const arrName = s.slice(0, b);
+      const idx = Number(expandOperand(s.slice(b + 1, -1)));
+      const existing = vars.get(arrName);
+      if (Array.isArray(existing) && Number.isFinite(idx)) {
+        const list = existing.slice();
+        list[idx] = val;
+        vars.set(arrName, list);
+        return;
+      }
+      // not an array (or bad index) — fall through to a plain variable
+    }
+    vars.set(name, val);
   }
 
   async function exec(name, argsArr) {
@@ -357,8 +388,9 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
   }
   function arrayIndex(name, idx) {
     const v = vars.get(name);
-    if (Array.isArray(v)) return String(v[Number(idx)] ?? "");
-    if (vars.has(name)) return Number(idx) === 0 ? String(v) : "";
+    const i = Number(expandOperand(String(idx)));   // "$i" → value
+    if (Array.isArray(v)) return String(v[i] ?? "");
+    if (vars.has(name)) return i === 0 ? String(v) : "";
     return "";
   }
   function arrayLen(name) {
@@ -366,6 +398,10 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     if (Array.isArray(v)) return String(v.length);
     if (vars.has(name)) return "1";
     return "0";
+  }
+  // ${arr[@]} spreads / slice results — the emitter wraps them in join
+  function join(v) {
+    return Array.isArray(v) ? v.join(" ") : String(v);
   }
 
   // ─── compound assignment: a+=2, x+=s, a*=3, a<<=1 ... ────────
@@ -537,8 +573,8 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       case "%": return trimByPattern(val, defaultVal, false, false);
       case "%%": return trimByPattern(val, defaultVal, false, true);
       case "slice": {
-        const start = Number(rest[0]) || 0;
-        const len = rest.length > 1 ? Number(rest[1]) : undefined;
+        const start = Number(expandOperand(String(rest[0]))) || 0;
+        const len = rest.length > 1 ? Number(expandOperand(String(rest[1]))) : undefined;
         return len === undefined ? String(val).slice(start) : String(val).slice(start, start + len);
       }
       default: return val;
@@ -550,7 +586,7 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       exec, pipeline, capture, captureWords, redirect, test,
       forLoop, whileLoop, caseMatch, define, brace, param, arith,
       guard, and, or, arithEval,
-      setArray, setArrayAppend, arrayIndex, arrayLen,
+      setArray, setArrayAppend, arrayIndex, arrayLen, join,
       assign,
       "break": breakLoop, "continue": continueLoop,
       idiv, imod, not, setLastExit,

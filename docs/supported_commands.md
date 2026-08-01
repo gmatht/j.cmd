@@ -19,14 +19,21 @@ asciinema  browse  clear  edit  history  less  locate  more  play
 resize  stty  vi  wat2wasm
 ```
 
-## 3. /bin command scripts — seeded from src/fs/index.js (37 regular)
+## 3. /bin command scripts — seeded from src/fs/index.js (42 regular)
 
 ```
-arecord  at  audiodemo  base32  base64  cmatrix  counter  cowsay  cron
-curl  debashc  diff  figlet  fortune  gunzip  gzip  llm  lua  mail
-md5sum  perl  sayhello  screen  sh2js  sh2perl  sha256sum  sl  tar
-time  tree  uptime  watch  webgldemo  xclip  xeyes  xterm  zip
+arecord  at  audiodemo  base32  base64  cmatrix  convert  counter
+cowsay  cron  curl  debashc  diff  ffmpeg  figlet  fortune  gunzip
+gzip  llm  lua  magick  mail  markdown→(wasm-bin)  md5sum  perl  plot
+sayhello  screen  sh2js  sh2perl  sha256sum  sl  tar  time  tree
+typist  uptime  watch  webgldemo  xclip  xeyes  xterm  zip
 ```
+
+`markdown` is a wasm-bin binary (rsms/markdown-wasm, build-wasm-markdown.sh)
+— `wasmer install markdown`; also powers the live preview pane in `edit`
+(`:preview`). `plot` is ASCII charts, `magick`/`convert` canvas-based image
+conversion (browser), `ffmpeg` the ffmpeg.wasm browser bridge, `typist` a
+typing tutor (browser; `typist demo` anywhere).
 
 ## 4. Site commands — generated from SITE_CMDS (8)
 
