@@ -21,6 +21,7 @@
 // -------------------------------------------------------------------
 
 import { env } from "../env.js";
+import { DocsFS } from "./docsfs.js";
 import { RamFS } from "./ramfs.js";
 import { LocalStorageFS } from "./localstoragefs.js";
 import { IndexedDBFS } from "./indexeddbfs.js";
@@ -376,6 +377,8 @@ class VirtualFS {
     this.mount("git", "/mount/git", git);
     this.mount("git", "/git", git);  // convenience alias
     this.mount("dev", "/dev", new DevFS());
+    // The repo's own documentation, readable from inside the shell.
+    this.mount("docs", "/docs", new OverlayFS(new DocsFS(), "docs", "fs:ovl:docs:"));
     this.mount("download", "/pc", new DownloadFS());
     // /proc/ — process info + browser stats. ProcFS keeps a registry of
     // every command tinysh runs (procfs.start/finish) and generates the
