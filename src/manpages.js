@@ -69,6 +69,11 @@ const SHORT = {
   lua: "Lua 5.4 interpreter (wasmoon wasm)",
   time: "run a command and report how long it took",
   diff: "compare two files (wasm-diff engine, vendored wasm)",
+  cowsay: "a talking cow (and friends)",
+  fortune: "print a random quotation",
+  figlet: "big ASCII banner text (fonts, style, size)",
+  sl: "steam locomotive — the ls typo",
+  cmatrix: "Matrix-style digital rain",
   screen: "split the terminal into panes (tmux-style, browser)",
   more: "page through a file (alias for cat)",
   less: "page through a file (alias for cat)",
@@ -1073,6 +1078,118 @@ EXAMPLES
 
 SEE ALSO
      wasmer, grep
+`,
+  cowsay: `NAME
+     cowsay — a talking cow (and friends)
+
+SYNOPSIS
+     cowsay [-f ANIMAL] [message...]
+     echo message | cowsay
+
+DESCRIPTION
+     cowsay renders a message in a speech bubble spoken by an ASCII
+     animal. Long messages wrap at 40 columns; a piped message works
+     too. The default animal is a cow; -f picks another.
+
+OPTIONS
+     -f, --file ANIMAL   cow (default), tux, dragon
+     -h, --help          show help
+
+EXAMPLES
+     cowsay moo
+     cowsay -f tux hello
+     echo 'feeling lucky' | cowsay -f dragon
+
+SEE ALSO
+     figlet, fortune
+`,
+  fortune: `NAME
+     fortune — print a random quotation
+
+SYNOPSIS
+     fortune [-s]
+
+DESCRIPTION
+     fortune prints a random quote, proverb or joke from its built-in
+     collection. -s (short) picks from the one-liners only.
+
+OPTIONS
+     -s, --short   only short quotes
+     -h, --help    show help
+
+EXAMPLES
+     fortune
+     cowsay "$(fortune -s)"
+
+SEE ALSO
+     cowsay
+`,
+  figlet: `NAME
+     figlet — big ASCII banner text
+
+SYNOPSIS
+     figlet [-f FONT] [-s ROWS] [-b|-i|-n] <text...>
+     figlet -l
+
+DESCRIPTION
+     figlet renders text as a large ASCII banner. In the browser it
+     draws the text with a real font on a hidden canvas and samples
+     the pixels into the banner; in the Node CLI it uses the built-in
+     block font. -l lists fonts, styles and sizes.
+
+OPTIONS
+     -f, --font NAME    blocks, mono, serif, sans, cursive, fantasy,
+                        courier, times, arial, impact (canvas fonts
+                        need a browser)
+     -s, --size ROWS    banner height 3..30 (canvas; default 8)
+     -b, --bold         bold (canvas)
+     -i, --italic       italic (canvas; combine with -b)
+     -n, --normal       normal style (default)
+     -l, --list         list fonts, styles and sizes
+     -h, --help         show help
+
+EXAMPLES
+     figlet hello
+     figlet -f impact -b j.cmd
+     figlet -l
+
+SEE ALSO
+     cowsay
+`,
+  sl: `NAME
+     sl — steam locomotive (the ls typo)
+
+SYNOPSIS
+     sl
+
+DESCRIPTION
+     In the browser a steam locomotive drives across the screen; press
+     any key, click, or wait for it to pass. In the Node CLI the
+     locomotive is printed statically.
+
+EXAMPLES
+     sl        (next time you mean ls)
+
+SEE ALSO
+     ls
+`,
+  cmatrix: `NAME
+     cmatrix — Matrix-style digital rain
+
+SYNOPSIS
+     cmatrix
+
+DESCRIPTION
+     In the browser, green katakana rain falls down the screen
+     (canvas-based, like the classic cmatrix); press any key, click,
+     or wait ~15s to leave. In the Node CLI a static rain frame is
+     printed.
+
+EXAMPLES
+     cmatrix
+
+SEE ALSO
+     xeyes, sl
 `,
   more: `NAME
      more — page through a file (alias for cat)

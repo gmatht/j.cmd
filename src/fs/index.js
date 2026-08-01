@@ -2469,6 +2469,665 @@ return 1;
       })
       .catch(() => syncWrite(this._getBackend("/bin/diff.js"), "/diff.js", diffContent));
 
+    // cowsay — a talking cow (and friends)
+    const cowsayContent = `// cowsay v1 — a configurable talking cow (and friends)
+//
+// NAME
+//      cowsay — a talking cow
+//
+// SYNOPSIS
+//      cowsay [-f ANIMAL] [message...]
+//      echo message | cowsay
+//
+// DESCRIPTION
+//      cowsay renders a message in a speech bubble, spoken by an ASCII
+//      animal. Long messages wrap at 40 columns; a piped message works
+//      too. The default animal is a cow; -f picks another.
+//
+// OPTIONS
+//      -f, --file ANIMAL   cow (default), tux, dragon
+//      -h, --help          show this help
+//
+// EXAMPLES
+//      cowsay moo
+//      cowsay -f tux hello
+//      echo 'feeling lucky' | cowsay -f dragon
+
+var NL = String.fromCharCode(10);
+var BS = String.fromCharCode(92);   // backslash
+var BT = String.fromCharCode(96);   // backtick
+var UNDER = String.fromCharCode(95);  // _
+var DASH = String.fromCharCode(45);   // -
+
+// ─── the animals (special chars built from codes) ───
+var ANIMALS = {
+  cow: [
+    "        " + BS + "   ^__^",
+    "         " + BS + "  (oo)" + BS + "_______",
+    "            (__)" + BS + "       )" + BS + "/" + BS,
+    "                ||----w |",
+    "                ||     ||",
+  ],
+  tux: [
+    "   .--.",
+    "  |o_o |",
+    "  |:_/ |",
+    " //   " + BS + " " + BS,
+    " (|     | )",
+    "/'" + BS + "_   _/" + BT + BS,
+    BS + "___)=(___/",
+  ],
+  dragon: [
+    "                ___",
+    "               /   " + BS,
+    "     " + BS + "         /  / " + BS + " " + BS,
+    "      " + BS + "       /  / " + BS + " " + BS + "_",
+    "       " + BS + "     /  /   " + BS + "_/_",
+    "        " + BS + "   /  /   /  /",
+    "         " + BS + "  /__/   /__/",
+  ],
+};
+var DEFAULT_ANIMAL = "cow";
+var WRAP = 40;
+
+function usage() {
+  console.log("cowsay — a talking cow (and friends)");
+  console.log("usage: cowsay [-f ANIMAL] [message...]   |   echo msg | cowsay");
+  console.log("animals: cow · tux · dragon   (default cow)");
+}
+
+// ─── parse args ───
+var animal = DEFAULT_ANIMAL;
+var i = 0;
+var words = [];
+while (i < args.length) {
+  var a = args[i];
+  if (a === "-h" || a === "--help") { usage(); return 0; }
+  if (a === "-f" || a === "--file") {
+    animal = (args[i + 1] || "").toLowerCase();
+    if (!ANIMALS[animal]) {
+      console.log("cowsay: unknown animal '" + (args[i + 1] || "") + "' (cow, tux, dragon)");
+      return 2;
+    }
+    i += 2;
+    continue;
+  }
+  words.push(a);
+  i++;
+}
+var message = words.join(" ");
+if (!message && stdin && stdin.trim()) message = stdin.trim();
+if (!message) { usage(); return 2; }
+
+// ─── wrap at WRAP columns ───
+var lines = [];
+var cur = "";
+var w = message.split(" ");
+for (var k = 0; k < w.length; k++) {
+  var word = w[k];
+  if (cur && cur.length + 1 + word.length > WRAP) {
+    lines.push(cur);
+    cur = word;
+  } else {
+    cur = cur ? cur + " " + word : word;
+  }
+}
+if (cur) lines.push(cur);
+
+// ─── speech bubble ───
+var width = 0;
+for (var m = 0; m < lines.length; m++) if (lines[m].length > width) width = lines[m].length;
+function pad(s, n) {
+  while (s.length < n) s += " ";
+  return s;
+}
+function repeatChar(c, n) {
+  var s = "";
+  for (var r = 0; r < n; r++) s += c;
+  return s;
+}
+var bubble = " " + repeatChar(UNDER, width + 2) + NL;
+if (lines.length === 1) {
+  bubble += "< " + lines[0] + " >" + NL;
+} else {
+  for (var m2 = 0; m2 < lines.length; m2++) {
+    var l = lines[m2];
+    var left = m2 === 0 ? "/" : m2 === lines.length - 1 ? BS : "|";
+    var right = m2 === 0 ? BS : m2 === lines.length - 1 ? "/" : "|";
+    bubble += left + " " + pad(l, width) + " " + right + NL;
+  }
+}
+bubble += " " + repeatChar(DASH, width + 2) + NL;
+
+// ─── assemble: bubble then animal ───
+var art = ANIMALS[animal];
+var out = bubble;
+for (var a2 = 0; a2 < art.length; a2++) out += art[a2] + NL;
+// trim trailing whitespace (console.log adds the final newline)
+while (out.length > 0 && (out.charAt(out.length - 1) === " " || out.charAt(out.length - 1) === NL)) {
+  out = out.slice(0, out.length - 1);
+}
+console.log(out);
+return 0;
+`;
+    this._getBackend("/bin/cowsay.js").read("/cowsay.js")
+      .then((existing) => {
+        if (!existing.includes("cowsay v1")) {
+          syncWrite(this._getBackend("/bin/cowsay.js"), "/cowsay.js", cowsayContent);
+        }
+      })
+      .catch(() => syncWrite(this._getBackend("/bin/cowsay.js"), "/cowsay.js", cowsayContent));
+
+    // fortune — random quotations
+    const fortuneContent = `// fortune v1 — print a random quotation (like the classic fortune)
+//
+// NAME
+//      fortune — print a random quotation
+//
+// SYNOPSIS
+//      fortune [-s]
+//
+// DESCRIPTION
+//      fortune prints a random quote, proverb or joke from its built-in
+//      collection. -s (short) picks from the one-liners only.
+//
+// OPTIONS
+//      -s, --short   only short quotes
+//      -h, --help    show this help
+//
+// EXAMPLES
+//      fortune
+//      cowsay "$(fortune -s)"
+
+var SHORT = [
+  "There is no place like 127.0.0.1.",
+  "A journey of a thousand miles begins with a single compile error.",
+  "Git: because every bug deserves a commit message.",
+  "The best way to predict the future is to implement it.",
+  "sudo rm -rf is a lifestyle choice, not a command.",
+  "Perl: write once, read never.",
+  "The cloud is just someone else's computer.",
+  "I have not failed. I have just found 10,000 ways that do not work.",
+  "Weeks of coding can save you hours of planning.",
+  "It works on my machine.",
+  "A bug is never just a mistake. It represents something bigger.",
+  "Do or do not. There is no try-catch.",
+  "Real programmers count from zero.",
+  "The code compiles, therefore it is correct.",
+  "git push --force is the nuclear option.",
+  "Simplicity is the ultimate sophistication.",
+];
+var LONG = [
+  "Two bytes meet. The first byte asks: are you ill? The second says: no, just a bit off by one.",
+  "A SQL query walks into a bar, goes up to two tables and asks: can I join you?",
+  "There are only two hard things in computer science: cache invalidation, naming things, and off-by-one errors.",
+  "A programmer is a machine that turns coffee into code. An admin is a machine that turns coffee into uptime.",
+  "Knock knock. Who's there? Interrupting cow. Interrupting cow wh-- MOO! (press Ctrl+C to continue)",
+  "The three virtues of a programmer: laziness, impatience, and hubris. Plus good backups.",
+  "An optimist says the glass is half full. A pessimist says it is half empty. An engineer says it is twice as big as it needs to be.",
+  "In theory there is no difference between theory and practice. In practice there is.",
+];
+
+function usage() {
+  console.log("fortune — print a random quotation");
+  console.log("usage: fortune [-s]");
+  console.log("  -s, --short   only short one-liners");
+}
+
+if (args[0] === "-h" || args[0] === "--help") { usage(); return 0; }
+var pool = (args[0] === "-s" || args[0] === "--short") ? SHORT : SHORT.concat(LONG);
+var pick = pool[Math.floor(Math.random() * pool.length)];
+console.log(pick);
+console.log("        -- from /usr/share/fortune (built-in)");
+return 0;
+`;
+    this._getBackend("/bin/fortune.js").read("/fortune.js")
+      .then((existing) => {
+        if (!existing.includes("fortune v1")) {
+          syncWrite(this._getBackend("/bin/fortune.js"), "/fortune.js", fortuneContent);
+        }
+      })
+      .catch(() => syncWrite(this._getBackend("/bin/fortune.js"), "/fortune.js", fortuneContent));
+
+    // figlet — big ASCII banners (fonts, style, size)
+    const figletContent = `// figlet v3 — big ASCII banner text (fonts, style, size)
+//
+// NAME
+//      figlet — big ASCII banner text
+//
+// SYNOPSIS
+//      figlet [-f FONT] [-s ROWS] [-b|-i|-n] <text...>
+//      figlet -l | -h
+//
+// DESCRIPTION
+//      figlet renders text as a large ASCII banner. In the browser it
+//      draws the text with a real font on a hidden canvas and samples
+//      the pixels into the banner (any characters, real font shapes);
+//      in the Node CLI it uses the built-in block font. -l lists the
+//      fonts, styles and sizes.
+//
+// OPTIONS
+//      -f, --font NAME    blocks | mono | serif | sans | cursive |
+//                         fantasy | courier | times | arial | impact
+//                         (default: mono in the browser, blocks in CLI)
+//      -s, --size ROWS    banner height 3..30 (canvas fonts; default 8)
+//      -b, --bold         bold style (canvas fonts)
+//      -i, --italic       italic style (canvas fonts; combine with -b)
+//      -n, --normal       normal style (default)
+//      -l, --list         list fonts, styles and sizes
+//      -h, --help         show this help
+//
+// EXAMPLES
+//      figlet hello
+//      figlet -f impact -b J.CMD
+//      figlet -f serif -i -s 12 hi
+//      figlet -l
+
+// ─── fonts ───
+var FONTS = {
+  blocks:  { family: null,        desc: "built-in 5-row block font (works in the CLI too)" },
+  mono:    { family: "monospace", desc: "monospace" },
+  serif:   { family: "serif",     desc: "serif" },
+  sans:    { family: "sans-serif", desc: "sans-serif" },
+  cursive: { family: "cursive",   desc: "cursive" },
+  fantasy: { family: "fantasy",   desc: "fantasy" },
+  courier: { family: "Courier New, monospace", desc: "Courier New" },
+  times:   { family: "Times New Roman, serif", desc: "Times New Roman" },
+  arial:   { family: "Arial, sans-serif", desc: "Arial" },
+  impact:  { family: "Impact, fantasy", desc: "Impact" },
+};
+var DEFAULT_ROWS = 8;
+
+function listAll() {
+  console.log("figlet fonts:");
+  for (var k in FONTS) {
+    console.log("  " + k + "   " + FONTS[k].desc);
+  }
+  console.log("styles: normal (-n) · bold (-b) · italic (-i) · bold+italic");
+  console.log("size: -s ROWS, 3..30 (banner height; default " + DEFAULT_ROWS + ", blocks is fixed at 5)");
+}
+
+function help() {
+  console.log("figlet — big ASCII banner text");
+  console.log("usage: figlet [-f FONT] [-s ROWS] [-b|-i|-n] <text...>");
+  console.log("       figlet -l   list fonts, styles and sizes");
+  console.log("fonts: blocks · mono · serif · sans · cursive · fantasy ·");
+  console.log("       courier · times · arial · impact   (canvas fonts need a browser)");
+  console.log("example: figlet -f impact -b j.cmd");
+}
+
+// ─── built-in block font (CLI + -f blocks) ───
+var BLOCK = {
+  "A": ".###.#...##...#######...#",
+  "B": "####.#...#####.#...#####.",
+  "C": ".#####....#....#.....####",
+  "D": "####.#...##...##...#####.",
+  "E": "######....####.#....#####",
+  "F": "######....####.#....#....",
+  "G": ".#####....#..###...#.####",
+  "H": "#...##...#######...##...#",
+  "I": "#####..#....#....#..#####",
+  "J": "..###...#....#.#..#..##..",
+  "K": "#...##..#.###..#..#.#...#",
+  "L": "#....#....#....#....#####",
+  "M": "#...###.###.#.##...##...#",
+  "N": "#...###..##.#.##..###...#",
+  "O": ".###.#...##...##...#.###.",
+  "P": "####.#...#####.#....#....",
+  "Q": ".###.#...##...##..#..##.#",
+  "R": "####.#...#####.#..#.#...#",
+  "S": ".#####.....###.....#####.",
+  "T": "#####..#....#....#....#..",
+  "U": "#...##...##...##...#.###.",
+  "V": "#...##...##...##...#.#.#.",
+  "W": "#...##...##.#.###.###...#",
+  "X": "#...##...#.#.#...#....#..",
+  "Y": "#...##...#.#.#...#....#..",
+  "Z": "#####....#...#...#..#####",
+  "0": ".###.#...##..###...#.###.",
+  "1": "..#...##....#....#..#####",
+  "2": ".###.....#.###.#....#####",
+  "3": "####.....#.###.....#####.",
+  "4": "#..#.#..#.#####....#....#",
+  "5": "######....####.....#####.",
+  "6": ".###.#....####.#...#.###.",
+  "7": "#####....#...#...#....#..",
+  "8": ".###.#...#.###.#...#.###.",
+  "9": ".###.#...#.####....#.###.",
+  " ": ".........................",
+  "!": "..#....#....#.........#..",
+  ".": "......................#..",
+  "?": ".###.#...#...#...#....#..",
+};
+
+function glyphRow(glyph, r) {
+  var s = glyph.slice(r * 5, r * 5 + 5);
+  var out = "";
+  for (var i = 0; i < s.length; i++) out += s.charAt(i) === "." ? " " : s.charAt(i);
+  return out;
+}
+
+function blockFiglet(text) {
+  var rows = ["", "", "", "", ""];
+  var upper = text.toUpperCase();
+  for (var c = 0; c < upper.length; c++) {
+    var glyph = BLOCK[upper.charAt(c)] || BLOCK["?"];
+    for (var r = 0; r < 5; r++) {
+      var g = glyphRow(glyph, r);
+      while (g.length > 0 && g.charAt(g.length - 1) === " ") g = g.slice(0, g.length - 1);
+      rows[r] += g + " ";
+    }
+  }
+  for (var rr = 0; rr < 5; rr++) {
+    while (rows[rr].length > 0 && rows[rr].charAt(rows[rr].length - 1) === " ") {
+      rows[rr] = rows[rr].slice(0, rows[rr].length - 1);
+    }
+  }
+  return rows;
+}
+
+// ─── browser renderer: draw with the chosen font/style/size on a
+//     hidden canvas and sample the pixels into the banner ───
+function canvasFiglet(text, family, style, rows) {
+  var canvas = document.createElement("canvas");
+  var ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("no 2d context");
+  var FS = rows * 12;               // ~12px of render per output row
+  ctx.font = style + " " + FS + "px " + family;
+  var tw = ctx.measureText(text).width;
+  canvas.width = Math.ceil(tw) + 8;
+  canvas.height = Math.ceil(FS * 1.35);
+  ctx.font = style + " " + FS + "px " + family;
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#000";
+  ctx.textBaseline = "top";
+  ctx.fillText(text, 4, 0);
+  var img = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+
+  var minY = canvas.height, maxY = -1;
+  for (var y = 0; y < canvas.height; y++) {
+    for (var x = 0; x < canvas.width; x++) {
+      if (img[(y * canvas.width + x) * 4] < 128) {
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (maxY < 0) return [text];
+  var boxH = maxY - minY + 1;
+  var cellH = boxH / rows;
+  var cellW = cellH * 0.55;         // glyphs are roughly 0.55 wide
+  var cols = Math.max(1, Math.ceil(tw / cellW));
+  if (cols > 160) cols = 160;
+  var out = [];
+  for (var r = 0; r < rows; r++) {
+    var line = "";
+    for (var c = 0; c < cols; c++) {
+      var x0 = Math.floor(c * cellW);
+      var y0 = minY + Math.floor(r * cellH);
+      var x1 = Math.min(canvas.width, Math.ceil((c + 1) * cellW));
+      var y1 = Math.min(maxY + 1, y0 + Math.ceil(cellH));
+      var sum = 0, n = 0;
+      for (var yy = y0; yy < y1; yy++) {
+        for (var xx = x0; xx < x1; xx++) {
+          sum += img[(yy * canvas.width + xx) * 4];
+          n++;
+        }
+      }
+      line += (sum / n) < 128 ? "#" : " ";
+    }
+    while (line.charAt(line.length - 1) === " ") line = line.slice(0, -1);
+    out.push(line);
+  }
+  return out;
+}
+
+// ─── parse args ───
+var font = null;
+var rows = 0;
+var bold = false;
+var italic = false;
+var i = 0;
+var words = [];
+while (i < args.length) {
+  var a = args[i];
+  if (a === "-h" || a === "--help") { help(); return 0; }
+  if (a === "-l" || a === "--list") { listAll(); return 0; }
+  if (a === "-f" || a === "--font") {
+    font = (args[i + 1] || "").toLowerCase();
+    if (!FONTS[font]) {
+      console.log("figlet: unknown font '" + (args[i + 1] || "") + "' — try: figlet -l");
+      return 2;
+    }
+    i += 2;
+    continue;
+  }
+  if (a === "-s" || a === "--size") {
+    rows = parseInt(args[i + 1], 10);
+    if (!isFinite(rows) || rows < 3 || rows > 30) {
+      console.log("figlet: bad size '" + (args[i + 1] || "") + "' (3..30 rows)");
+      return 2;
+    }
+    i += 2;
+    continue;
+  }
+  if (a === "-b" || a === "--bold") { bold = true; i++; continue; }
+  if (a === "-i" || a === "--italic") { italic = true; i++; continue; }
+  if (a === "-n" || a === "--normal") { bold = false; italic = false; i++; continue; }
+  words.push(a);
+  i++;
+}
+var text = words.join(" ");
+if (!text) {
+  help();
+  return 2;
+}
+
+var isBrowser = typeof document !== "undefined" && typeof document.createElement === "function";
+var useCanvas = isBrowser && font !== "blocks";
+if (!font) font = isBrowser ? "mono" : "blocks";
+if (!useCanvas && font !== "blocks") useCanvas = false;  // canvas font requested in CLI
+
+if (useCanvas) {
+  var styleStr = (bold && italic) ? "bold italic" : bold ? "bold" : italic ? "italic" : "normal";
+  var r = rows || DEFAULT_ROWS;
+  try {
+    var canvasRows = canvasFiglet(text, FONTS[font].family, styleStr, r);
+    for (var cr = 0; cr < canvasRows.length; cr++) console.log(canvasRows[cr]);
+    return 0;
+  } catch (e) {
+    // canvas unavailable — fall through to the block font
+  }
+}
+var blockRows = blockFiglet(text);
+for (var br = 0; br < blockRows.length; br++) console.log(blockRows[br]);
+return 0;
+`;
+    this._getBackend("/bin/figlet.js").read("/figlet.js")
+      .then((existing) => {
+        if (!existing.includes("figlet v3")) {
+          syncWrite(this._getBackend("/bin/figlet.js"), "/figlet.js", figletContent);
+        }
+      })
+      .catch(() => syncWrite(this._getBackend("/bin/figlet.js"), "/figlet.js", figletContent));
+
+    // sl — the ls typo steam locomotive
+    const slContent = `// sl v1 — when you mean ls but type sl, a steam locomotive crosses
+// the screen (the classic Unix gag).
+//
+// NAME
+//      sl — steam locomotive (the ls typo)
+//
+// SYNOPSIS
+//      sl
+//
+// DESCRIPTION
+//      In the browser a steam locomotive drives across the screen;
+//      press any key, click, or wait for it to pass. In the Node CLI
+//      the locomotive is printed statically.
+//
+// EXAMPLES
+//      sl        (next time you mean ls)
+
+var NL = String.fromCharCode(10);
+var BS = String.fromCharCode(92);
+var TRAIN = [
+  "        ====        ________                ___________",
+  "  _D _|  |_______/        " + BS + "__I_I_____===__|_________|",
+  "   |(_)---  |   H" + BS + "________/ |   |        =|___ ___|      _________________",
+  "       /     |  H_|   |     |   |         ||_| |_||     _|                " + BS + "_____A",
+  "      |      |  H_|  |     |   |         ||_| |_||    |                        |",
+  "      |      |        |   |    |______H|__|_____|__|__________________|_______|__|",
+];
+
+if (typeof document === "undefined" || typeof document.createElement !== "function") {
+  for (var t = 0; t < TRAIN.length; t++) console.log(TRAIN[t]);
+  console.log("(the locomotive can't move in the CLI — try the browser)");
+  return 0;
+}
+
+// ─── browser: an overlay train crossing the screen ───
+var overlay = document.createElement("div");
+overlay.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;z-index:50;background:#0d1117;overflow:hidden;";
+var train = document.createElement("pre");
+train.textContent = TRAIN.join(NL);
+train.style.cssText = "position:absolute;top:42%;color:#f0e68c;font:16px monospace;white-space:pre;";
+overlay.appendChild(train);
+var label = document.createElement("div");
+label.textContent = "sl — you meant ls, didn't you? (any key or click to close)";
+label.style.cssText = "position:absolute;bottom:24px;left:50%;transform:translateX(-50%);color:#8b949e;font:12px monospace;";
+overlay.appendChild(label);
+document.body.appendChild(overlay);
+
+var x = window.innerWidth;
+var timer = setInterval(function () {
+  x -= 14;
+  train.style.left = x + "px";
+  if (x < -900) done();
+}, 20);
+
+var resolve;
+var wait = new Promise(function (r) { resolve = r; });
+var finished = false;
+function done() {
+  if (finished) return;
+  finished = true;
+  clearInterval(timer);
+  document.removeEventListener("keydown", keyHandler, true);
+  if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+  resolve();
+}
+function keyHandler(e) { done(); }
+document.addEventListener("keydown", keyHandler, true);
+overlay.addEventListener("click", done);
+
+await wait;
+return 0;
+`;
+    this._getBackend("/bin/sl.js").read("/sl.js")
+      .then((existing) => {
+        if (!existing.includes("sl v1")) {
+          syncWrite(this._getBackend("/bin/sl.js"), "/sl.js", slContent);
+        }
+      })
+      .catch(() => syncWrite(this._getBackend("/bin/sl.js"), "/sl.js", slContent));
+
+    // cmatrix — Matrix-style digital rain
+    const cmatrixContent = `// cmatrix v1 — Matrix-style digital rain
+//
+// NAME
+//      cmatrix — Matrix-style digital rain
+//
+// SYNOPSIS
+//      cmatrix
+//
+// DESCRIPTION
+//      In the browser, green katakana rain falls down the screen
+//      (canvas-based, like the classic cmatrix); press any key, click,
+//      or wait ~15s to leave. In the Node CLI a static rain frame is
+//      printed.
+//
+// EXAMPLES
+//      cmatrix
+
+var RAIN_CHARS = "アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン0123456789";
+
+// ─── CLI: a static frame of the rain ───
+if (typeof document === "undefined" || typeof document.createElement !== "function") {
+  for (var r = 0; r < 10; r++) {
+    var line = "";
+    for (var c = 0; c < 70; c++) {
+      line += Math.random() < 0.35
+        ? RAIN_CHARS.charAt(Math.floor(Math.random() * RAIN_CHARS.length))
+        : " ";
+    }
+    console.log(line);
+  }
+  console.log("(the rain animation needs a browser — run cmatrix in the web shell)");
+  return 0;
+}
+
+// ─── browser: canvas rain ───
+var canvas = document.createElement("canvas");
+canvas.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;z-index:50;background:#000;";
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+document.body.appendChild(canvas);
+var ctx = canvas.getContext("2d");
+var FONT_PX = 16;
+var cols = Math.floor(canvas.width / FONT_PX);
+var drops = [];
+for (var d = 0; d < cols; d++) drops[d] = Math.floor(Math.random() * -30);
+
+function frame() {
+  ctx.fillStyle = "rgba(0,0,0,0.08)";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#0f0";
+  ctx.font = "bold " + FONT_PX + "px monospace";
+  for (var c = 0; c < cols; c++) {
+    var ch = RAIN_CHARS.charAt(Math.floor(Math.random() * RAIN_CHARS.length));
+    ctx.fillText(ch, c * FONT_PX, drops[c] * FONT_PX);
+    if (drops[c] * FONT_PX > canvas.height && Math.random() > 0.975) drops[c] = 0;
+    drops[c]++;
+  }
+}
+frame();
+var timer = setInterval(frame, 50);
+var label = document.createElement("div");
+label.textContent = "cmatrix — wake up, Neo... (any key or click to leave)";
+label.style.cssText = "position:absolute;bottom:24px;left:50%;transform:translateX(-50%);color:#0f0;font:12px monospace;z-index:51;";
+document.body.appendChild(label);
+
+var resolve;
+var wait = new Promise(function (r) { resolve = r; });
+var finished = false;
+function done() {
+  if (finished) return;
+  finished = true;
+  clearInterval(timer);
+  document.removeEventListener("keydown", keyHandler, true);
+  if (canvas.parentNode) canvas.parentNode.removeChild(canvas);
+  if (label.parentNode) label.parentNode.removeChild(label);
+  resolve();
+}
+function keyHandler(e) { done(); }
+document.addEventListener("keydown", keyHandler, true);
+canvas.addEventListener("click", done);
+var autoStop = setTimeout(done, 15000);
+
+await wait;
+clearTimeout(autoStop);
+return 0;
+`;
+    this._getBackend("/bin/cmatrix.js").read("/cmatrix.js")
+      .then((existing) => {
+        if (!existing.includes("cmatrix v1")) {
+          syncWrite(this._getBackend("/bin/cmatrix.js"), "/cmatrix.js", cmatrixContent);
+        }
+      })
+      .catch(() => syncWrite(this._getBackend("/bin/cmatrix.js"), "/cmatrix.js", cmatrixContent));
+
     // sh2js.js — debashl toolchain command (uses the injected sh2lib facade).
     // Version-gated (v2 marker) so file/pipe support reaches existing installs.
     const sh2jsjsContent = `async function sh2src() {
