@@ -777,7 +777,8 @@ class InterruptError extends Error {
 let running = false;        // a command is executing right now
 let interruptSignal = null; // rejects the running command's race
 let suppressOutput = false; // drop output from an aborted command
-let runId = 0;              // bumped per command — stale aborts don't linger
+let runId = 0;
+let interruptCallbacks = [];  // shell.onInterrupt hooks (watch etc.)              // bumped per command — stale aborts don't linger
 
 // Run a command's promise so that Ctrl+C can abort it. Returns the
 // command's exit code (130 if interrupted).
@@ -786,7 +787,11 @@ async function runInterruptible(promise) {
   suppressOutput = false;
   running = true;
   let rejectFn = null;
-  interruptSignal = () => { if (rejectFn) rejectFn(new InterruptError()); };
+  interruptSignal = () => {
+    if (rejectFn) rejectFn(new InterruptError());
+    for (const cb of interruptCallbacks) { try { cb(); } catch {} }
+    interruptCallbacks = [];
+  };
   const interruptible = new Promise((_, reject) => { rejectFn = reject; });
 
   let code = 0;
@@ -3384,6 +3389,9 @@ async function runSegment(segmentText, stdin, isLast) {
     const shellApi = {
       runLine: (cmdLine) => runNestedCommand(cmdLine),
       jobs: getJobScheduler(),   // at/cron scheduler (src/jobs.js)
+      // Register a callback fired on Ctrl+C — lets long-running commands
+      // (watch, xeyes, ...) tear themselves down when interrupted.
+      onInterrupt: (fn) => { interruptCallbacks.push(fn); },
     };
     const ret = await fn(args, fs, fakeConsole, stdin, env, sh2rt.sh2, sh2libFacade, shellApi);
     // A command file may return a number to set its exit status

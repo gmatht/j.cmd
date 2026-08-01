@@ -68,6 +68,7 @@ const SHORT = {
   perl: "Perl 5 interpreter (zeroperl wasm)",
   lua: "Lua 5.4 interpreter (wasmoon wasm)",
   time: "run a command and report how long it took",
+  watch: "run a command repeatedly and refresh the display",
   diff: "compare two files (wasm-diff engine, vendored wasm)",
   cowsay: "a talking cow (and friends)",
   fortune: "print a random quotation",
@@ -529,6 +530,25 @@ EXAMPLES
 
 SEE ALSO
      su
+`,
+  watch: `NAME
+     watch — run a command repeatedly and refresh the display
+
+SYNOPSIS
+     watch [-n SECONDS] <command> [args...]
+
+DESCRIPTION
+     watch runs the given command every SECONDS (default 2) and
+     refreshes the display in place. The browser shell renders a
+     self-refreshing panel above the prompt; the Node CLI clears the
+     screen with ANSI sequences, like the real watch. Ctrl+C stops it.
+
+OPTIONS
+     -n, --interval=SECONDS   seconds between runs
+     -h, --help               show help
+
+SEE ALSO
+     time
 `,
   mount: `NAME
      mount — attach a filesystem at a path
