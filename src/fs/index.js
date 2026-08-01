@@ -1726,6 +1726,440 @@ return 0;
       })
       .catch(() => syncWrite(this._getBackend("/bin/screen.js"), "/screen.js", screenContent));
 
+    // Site-open commands: youtube, reddit, slashdot, lwn, hn, github,
+    // wikipedia, arxiv — open the site in a new browser tab (print the
+    // URL in the Node CLI, where there is no browser). One generated
+    // .js file per site, so each also gets its own man page from the
+    // header comment. Version-gated (v1 marker) per site.
+    const SITE_CMDS = [
+      { name: "youtube",   desc: "YouTube",                       base: "https://www.youtube.com",      search: "https://www.youtube.com/results?search_query=",   path: "" },
+      { name: "reddit",    desc: "Reddit",                        base: "https://www.reddit.com",       search: "https://www.reddit.com/search/?q=",               path: "r/" },
+      { name: "slashdot",  desc: "Slashdot — news for nerds",     base: "https://slashdot.org",         search: "https://slashdot.org/search?query=",              path: "" },
+      // lwn: the site search form is POST-only (/Search/DoTextSearch,
+      // field "words") and /Search/ ignores GET params — no URL
+      // prefills it, so searches go through a site-restricted web
+      // search that does prefill.
+      { name: "lwn",       desc: "LWN — Linux Weekly News",       base: "https://lwn.net",              search: "https://duckduckgo.com/?q=site%3Alwn.net+",      path: "" },
+      { name: "hn",        desc: "Hacker News",                   base: "https://news.ycombinator.com", search: "https://hn.algolia.com/?q=",                     path: "" },
+      { name: "github",    desc: "GitHub",                        base: "https://github.com",           search: "https://github.com/search?q=",                    path: "" },
+      { name: "wikipedia", desc: "Wikipedia",                     base: "https://en.wikipedia.org",     search: "https://en.wikipedia.org/w/index.php?search=",     path: "" },
+      { name: "arxiv",     desc: "arXiv — scientific preprints",  base: "https://arxiv.org",            search: "https://arxiv.org/search/?query=",                path: "" },
+    ];
+    const SITE_VER = "v2";
+    for (const site of SITE_CMDS) {
+      const content = `// ${site.name} ${SITE_VER} — open ${site.desc} in a new browser tab
+//
+// NAME
+//      ${site.name} — open ${site.desc} in a new tab
+//
+// SYNOPSIS
+//      ${site.name} [search terms | URL]
+//
+// DESCRIPTION
+//      Opens ${site.desc} in a new browser tab. With arguments, opens
+//      a search for the given terms; a single http(s) URL is opened
+//      as-is. In the Node CLI (no browser) the URL is printed.
+//
+// EXAMPLES
+//      ${site.name}
+//      ${site.name} keyboard shortcuts
+//      ${site.name} https://example.com/path
+
+var BASE = "${site.base}";
+var SEARCH = "${site.search}";
+var PATH = "${site.path}";
+var q = args.join(" ").trim();
+var url = BASE;
+if (q) {
+  if (q.indexOf("http://") === 0 || q.indexOf("https://") === 0) {
+    url = q;
+  } else if (PATH && q.indexOf(PATH) === 0) {
+    url = BASE + "/" + q;
+  } else {
+    url = SEARCH + encodeURIComponent(q);
+  }
+}
+if (typeof window !== "undefined" && typeof window.open === "function") {
+  var win = window.open(url, "_blank");
+  if (win) {
+    console.log("${site.name}: opening " + url);
+  } else {
+    console.log("${site.name}: popup blocked — open this URL manually:");
+    console.log(url);
+  }
+} else {
+  console.log(url);
+}
+return 0;
+`;
+      const sitePath = "/bin/" + site.name + ".js";
+      const siteRel = "/" + site.name + ".js";
+      this._getBackend(sitePath).read(siteRel)
+        .then((existing) => {
+          if (!existing.includes(site.name + " " + SITE_VER)) {
+            syncWrite(this._getBackend(sitePath), siteRel, content);
+          }
+        })
+        .catch(() => syncWrite(this._getBackend(sitePath), siteRel, content));
+    }
+
+    // perl — Perl 5 interpreter via @6over3/zeroperl-ts (zeroperl wasm).
+    // A JS command that embeds the zeroperl reactor: eval / runFile /
+    // stdin, with the script registered into the interpreter's virtual
+    // filesystem. Version-gated (v1 marker) so updates reach installs.
+    const perlContent = `// perl v1 — Perl 5 interpreter via @6over3/zeroperl-ts (zeroperl, wasm)
+//
+// NAME
+//      perl — Perl 5 interpreter
+//
+// SYNOPSIS
+//      perl [-e CODE] [script.pl] [args...]
+//      echo 'print 6*7' | perl
+//
+// DESCRIPTION
+//      Runs Perl 5.42 compiled to WebAssembly (the zeroperl project,
+//      via the @6over3/zeroperl-ts npm package). The script is
+//      registered into the interpreter's virtual filesystem; @ARGV is
+//      set from the trailing arguments, and stdout/stderr flow to the
+//      shell. Scripts are read from the shell's filesystem (perl
+//      script.pl) or from a pipe (echo '...' | perl).
+//
+// OPTIONS
+//      -e CODE      evaluate inline Perl code
+//      -E CODE      same as -e (modern Perl features)
+//      -            read the script from stdin
+//      -h, --help   show this help
+//
+// EXAMPLES
+//      perl -e 'print 6*7'
+//      perl -e 'print join(",", @ARGV)' a b c
+//      echo 'print "hi"' | perl
+//      perl /home/hello.pl hello world
+
+var NL = String.fromCharCode(10);
+var LIB = "@6over3/zeroperl-ts";
+var isBrowser = typeof window !== "undefined" && typeof document !== "undefined";
+
+function usage() {
+  console.log("perl — Perl 5 interpreter (zeroperl, wasm)");
+  console.log("usage: perl [-e CODE] [script.pl] [args...]");
+  console.log("       echo 'print 6*7' | perl");
+  console.log("");
+  console.log("  -e CODE   evaluate inline Perl code");
+  console.log("  -E CODE   same as -e (modern Perl features)");
+  console.log("  -         read the script from stdin");
+  console.log("  -h        this help");
+}
+
+// ─── parse arguments ───
+var codeArg = null;
+var scriptArg = null;
+var restArgs = [];
+if (args[0] === "-h" || args[0] === "--help") {
+  usage();
+  return 0;
+}
+var isE = args[0] === "-E";
+if (args[0] === "-e" || isE) {
+  codeArg = args[1] || "";
+  if (isE) codeArg = 'use feature ":5.40";' + NL + codeArg;
+  restArgs = args.slice(2);
+} else if (args[0] === "-") {
+  scriptArg = "stdin.pl";
+  restArgs = args.slice(1);
+} else if (args[0] !== undefined) {
+  scriptArg = args[0];
+  restArgs = args.slice(1);
+}
+// bare perl with a piped script reads the program from stdin
+// (real perl behaviour); with empty stdin it shows usage.
+if (codeArg === null && scriptArg === null && stdin && stdin.trim()) {
+  scriptArg = "stdin.pl";
+  restArgs = [];
+}
+if (codeArg === null && scriptArg === null) {
+  usage();
+  return 2;
+}
+
+// ─── load the library (browser: importmap · node: node_modules) ───
+var mod;
+try {
+  mod = await import(LIB);
+} catch (e) {
+  console.log("perl: cannot load " + LIB + ": " + (e && e.message ? e.message : String(e)));
+  console.log("(install it with: npm install @6over3/zeroperl-ts)");
+  return 1;
+}
+
+// ─── read the script (file from the shell's fs, or stdin) ───
+var scriptContent = null;
+if (codeArg === null && scriptArg !== null && scriptArg !== "stdin.pl") {
+  var resolved = typeof fs._resolve === "function" ? fs._resolve(scriptArg) : scriptArg;
+  try {
+    scriptContent = await fs.read(resolved);
+    scriptArg = resolved;
+  } catch (e) {
+    console.log("perl: Can't open " + scriptArg + ": No such file or directory");
+    return 2;
+  }
+} else if (scriptArg === "stdin.pl") {
+  scriptContent = stdin || "";
+}
+
+// ─── start the interpreter ───
+var outChunks = [];
+var errChunks = [];
+function dec(chunk) {
+  if (typeof chunk === "string") return chunk;
+  return new TextDecoder().decode(chunk);
+}
+var memfs = null;
+try {
+  if (scriptContent !== null && scriptArg !== null) {
+    memfs = new mod.MemoryFileSystem();
+    memfs.addFile(scriptArg, scriptContent);
+  }
+} catch (e) {
+  console.log("perl: cannot register script: " + (e && e.message ? e.message : String(e)));
+  return 1;
+}
+
+var perl;
+try {
+  perl = await mod.ZeroPerl.create({
+    env: env || {},
+    fileSystem: memfs,
+    stdout: function (d) { outChunks.push(dec(d)); },
+    stderr: function (d) { errChunks.push(dec(d)); },
+    fetch: isBrowser
+      ? function () { return fetch("/node_modules/@6over3/zeroperl-ts/dist/esm/zeroperl.wasm"); }
+      : undefined,
+  });
+} catch (e) {
+  console.log("perl: failed to start the interpreter: " + (e && e.message ? e.message : String(e)));
+  return 1;
+}
+
+// ─── run ───
+var result;
+try {
+  if (codeArg !== null) {
+    result = await perl.eval(codeArg, restArgs);
+  } else {
+    result = await perl.runFile(scriptArg, restArgs);
+  }
+} catch (e) {
+  try { perl.flush(); } catch (e2) {}
+  try { perl.shutdown(); } catch (e3) {}
+  console.log("perl: " + (e && e.message ? e.message : String(e)));
+  return 1;
+}
+try { perl.flush(); } catch (e4) {}
+try { perl.shutdown(); } catch (e5) {}
+
+// ─── emit captured output (shell streams are text) ───
+function emit(text) {
+  var s = String(text);
+  if (!s) return;
+  var lines = s.split(NL);
+  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  for (var k = 0; k < lines.length; k++) console.log(lines[k]);
+}
+emit(outChunks.join(""));
+emit(errChunks.join(""));
+var exitCode = (result && result.exitCode) || 0;
+if (!result || !result.success) {
+  if (result && result.error) emit(String(result.error));
+  return exitCode > 0 ? exitCode : 1;
+}
+return exitCode > 0 ? exitCode : 0;
+`;
+    this._getBackend("/bin/perl.js").read("/perl.js")
+      .then((existing) => {
+        if (!existing.includes("perl v1")) {
+          syncWrite(this._getBackend("/bin/perl.js"), "/perl.js", perlContent);
+        }
+      })
+      .catch(() => syncWrite(this._getBackend("/bin/perl.js"), "/perl.js", perlContent));
+
+    // lua — Lua 5.4 interpreter via wasmoon (wasm, 0.3 MiB).
+    // A JS command that embeds the wasmoon engine: eval / script /
+    // stdin, print/io.write routed to the shell, standard arg table.
+    // Version-gated (v1 marker) so updates reach installs.
+    const luaContent = `// lua v1 — Lua 5.4 interpreter via wasmoon (wasm, 0.3 MiB)
+//
+// NAME
+//      lua — Lua 5.4 interpreter
+//
+// SYNOPSIS
+//      lua [-e CODE] [script.lua] [args...]
+//      echo 'print(6*7)' | lua
+//
+// DESCRIPTION
+//      Runs Lua 5.4 compiled to WebAssembly (wasmoon). print and
+//      io.write are routed to the shell; the trailing arguments
+//      appear in the standard Lua arg table (arg[0] is the script name).
+//      Scripts come from the shell's filesystem (lua script.lua) or
+//      from a pipe (echo '...' | lua).
+//
+// OPTIONS
+//      -e CODE      evaluate inline Lua code
+//      -            read the script from stdin
+//      -h, --help   show this help
+//
+// EXAMPLES
+//      lua -e 'print(6*7)'
+//      lua -e 'for i=1,3 do print(i) end'
+//      echo 'print("hi")' | lua
+//      lua /home/hello.lua world
+
+var NL = String.fromCharCode(10);
+var isBrowser = typeof window !== "undefined" && typeof document !== "undefined";
+
+function usage() {
+  console.log("lua — Lua 5.4 interpreter (wasmoon, wasm)");
+  console.log("usage: lua [-e CODE] [script.lua] [args...]");
+  console.log("       echo 'print(6*7)' | lua");
+  console.log("");
+  console.log("  -e CODE   evaluate inline Lua code");
+  console.log("  -         read the script from stdin");
+  console.log("  -h        this help");
+}
+
+// ─── parse arguments ───
+var codeArg = null;
+var scriptArg = null;
+var restArgs = [];
+if (args[0] === "-h" || args[0] === "--help") {
+  usage();
+  return 0;
+}
+if (args[0] === "-e") {
+  codeArg = args[1] || "";
+  restArgs = args.slice(2);
+} else if (args[0] === "-") {
+  scriptArg = "stdin.lua";
+  restArgs = args.slice(1);
+} else if (args[0] !== undefined) {
+  scriptArg = args[0];
+  restArgs = args.slice(1);
+}
+// bare lua with a piped script reads stdin (like real lua)
+if (codeArg === null && scriptArg === null && stdin && stdin.trim()) {
+  scriptArg = "stdin.lua";
+  restArgs = [];
+}
+if (codeArg === null && scriptArg === null) {
+  usage();
+  return 2;
+}
+
+// ─── load the engine (browser: script tag → window.wasmoon ·
+//     node: require/import from node_modules) ───
+function loadScript(src) {
+  return new Promise(function (resolve, reject) {
+    if (document.querySelector('script[src="' + src + '"]')) return resolve();
+    var s = document.createElement("script");
+    s.src = src;
+    s.onload = function () { resolve(); };
+    s.onerror = function () { reject(new Error("failed to load " + src)); };
+    document.head.appendChild(s);
+  });
+}
+var LuaFactory = null;
+try {
+  if (isBrowser) {
+    await loadScript("/node_modules/wasmoon/dist/index.js");
+    LuaFactory = window.wasmoon && window.wasmoon.LuaFactory;
+    if (!LuaFactory) throw new Error("wasmoon did not load (window.wasmoon missing)");
+  } else {
+    var wasmoon = await import("wasmoon");
+    LuaFactory = wasmoon.LuaFactory;
+  }
+} catch (e) {
+  console.log("lua: cannot load wasmoon: " + (e && e.message ? e.message : String(e)));
+  console.log("(install it with: npm install wasmoon)");
+  return 1;
+}
+
+// ─── read the script (shell fs or stdin) ───
+var scriptContent = null;
+if (codeArg === null && scriptArg !== null && scriptArg !== "stdin.lua") {
+  var resolved = typeof fs._resolve === "function" ? fs._resolve(scriptArg) : scriptArg;
+  try {
+    scriptContent = await fs.read(resolved);
+    scriptArg = resolved;
+  } catch (e) {
+    console.log("lua: cannot open " + scriptArg + ": No such file or directory");
+    return 2;
+  }
+} else if (scriptArg === "stdin.lua") {
+  scriptContent = stdin || "";
+}
+
+// ─── start the engine ───
+var outChunks = [];
+var errChunks = [];
+var lua;
+try {
+  var factory = new LuaFactory(isBrowser ? "/node_modules/wasmoon/dist/glue.wasm" : undefined);
+  lua = await factory.createEngine({ openStandardLibs: true });
+  lua.global.set("__lua_out", function (s) { outChunks.push(String(s)); });
+  // Route print and io.write to the shell: they normally go to the C
+  // stdout (the browser console / Node stdout), which a command can't
+  // capture. Replace them with a JS callback (string.char avoids
+  // escapes: tab=9, newline=10).
+  var shim = 'local __o=__lua_out; print=function(...) local t={} for i=1,select("#",...) do t[i]=tostring(select(i,...)) end __o(table.concat(t,string.char(9))..string.char(10)) end; io.write=function(...) local t={} for i=1,select("#",...) do t[i]=tostring(select(i,...)) end __o(table.concat(t,"")) end';
+  lua.doStringSync(shim);
+  // Standard Lua arg table: arg[0] = script name, arg[1..] = the
+  // trailing arguments (wasmoon drops a 0 key from JS arrays, so
+  // populate the table from a JS accessor instead).
+  var argArr = [codeArg !== null ? "-e" : scriptArg].concat(restArgs);
+  lua.global.set("__arg_get", function (idx) {
+    var v = argArr[idx];
+    return v === undefined ? null : v;
+  });
+  lua.doStringSync("arg={} for i=0," + String(argArr.length - 1) + " do arg[i]=__arg_get(i) end");
+} catch (e) {
+  console.log("lua: failed to start the interpreter: " + (e && e.message ? e.message : String(e)));
+  return 1;
+}
+
+// ─── run (scripts run from their content — no file mount needed) ───
+try {
+  if (codeArg !== null) {
+    await lua.doString(codeArg);
+  } else {
+    await lua.doString(scriptContent);
+  }
+} catch (e) {
+  var msg = e && e.message ? e.message : String(e);
+  if (msg.indexOf("lua:") !== 0) msg = "lua: " + msg;
+  console.log(msg);
+  return 1;
+}
+
+// ─── emit captured output ───
+function emit(text) {
+  var s = String(text);
+  if (!s) return;
+  var lines = s.split(NL);
+  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  for (var k = 0; k < lines.length; k++) console.log(lines[k]);
+}
+emit(outChunks.join(""));
+emit(errChunks.join(""));
+return 0;
+`;
+    this._getBackend("/bin/lua.js").read("/lua.js")
+      .then((existing) => {
+        if (!existing.includes("lua v1")) {
+          syncWrite(this._getBackend("/bin/lua.js"), "/lua.js", luaContent);
+        }
+      })
+      .catch(() => syncWrite(this._getBackend("/bin/lua.js"), "/lua.js", luaContent));
+
     // sh2js.js — debashl toolchain command (uses the injected sh2lib facade).
     // Version-gated (v2 marker) so file/pipe support reaches existing installs.
     const sh2jsjsContent = `async function sh2src() {
@@ -2030,7 +2464,7 @@ return 0;
 
     // xterm.js — floating, draggable terminal that is its own shell session
     // (own cwd/env, shared filesystem). Version-gated (v2 marker).
-    const xtermjsContent = `// xterm v2 — a floating, draggable terminal (xterm.js) that is its own
+    const xtermjsContent = `// xterm v3 — a floating, draggable terminal (xterm.js) that is its own
 // shell session: own cwd and own environment, sharing the filesystem.
 //   xterm            open the floating terminal; type exit to close
 // Each line runs through the shell's machinery with the session's cwd
@@ -2133,6 +2567,7 @@ function runSession(cmd) {
   var tKeys = Object.keys(termEnv);
   for (var i = 0; i < tKeys.length; i++) env[tKeys[i]] = termEnv[tKeys[i]];
   fs.cwd = termCwd;
+  var preCwd = fs.cwd;                       // the float's cwd before this run
   return shell.runLine(cmd).then(function (res) {
     // capture what the run exported or changed into the session env
     for (var k in env) {
@@ -2141,7 +2576,11 @@ function runSession(cmd) {
     for (var j = 0; j < tKeys.length; j++) {
       if (!(tKeys[j] in env)) delete termEnv[tKeys[j]];
     }
-    if (fs.cwd !== mainCwd) termCwd = fs.cwd;   // cd inside follows the session
+    // cd inside follows the session. Compare against the float's own
+    // pre-run cwd, not the main shell's: when the float cd's to the
+    // main shell's cwd (e.g. /home) the old check mistook it for "no
+    // change" and left the float's prompt stuck.
+    if (fs.cwd !== preCwd) termCwd = fs.cwd;
     fs.cwd = mainCwd;                            // main shell unaffected
     env.PWD = mainCwd;
     // revert every key the session env touches (overlay + new exports)
@@ -2235,7 +2674,7 @@ return 0;
 `;
     this._getBackend("/bin/xterm.js").read("/xterm.js")
       .then((existing) => {
-        if (!existing.includes("xterm v2")) {
+        if (!existing.includes("xterm v3")) {
           syncWrite(this._getBackend("/bin/xterm.js"), "/xterm.js", xtermjsContent);
         }
       })
@@ -2507,17 +2946,26 @@ return 0;
 
     // Classify entries for coloring: dirs → blue, executable files
     // (.js/.mjs/.wasm — the formats this shell runs) → green, other
-    // files → white. stat is best-effort: remote/virtual backends may
-    // not support it, so fall back to the trailing-slash convention.
+    // files → white. Every backend marks directories with a trailing
+    // slash, so dirs need no stat — and on GitHub a stat is an API call
+    // per entry, so short listings must not burn quota on them. stat is
+    // best-effort for files: remote/virtual backends may not support it
+    // (stat returns null), so fall back to the trailing-slash
+    // convention.
     const kinds = [];
     for (const e of entries) {
       let kind = "file";
-      try {
-        const st = await this.stat(path + "/" + e);
-        if (st && st.type === "dir") kind = "dir";
-        else if (st && st.type === "file" && isExecutableName(e)) kind = "exe";
-      } catch {
-        if (e.endsWith("/")) kind = "dir";
+      if (e.endsWith("/")) {
+        kind = "dir";
+      } else {
+        try {
+          const st = await this.stat(path + "/" + e);
+          if (st && st.type === "dir") kind = "dir";
+          else if (st && st.type === "file" && isExecutableName(e)) kind = "exe";
+          else if (!st) kind = "file";
+        } catch {
+          kind = "file";
+        }
       }
       kinds.push(kind);
     }

@@ -126,6 +126,15 @@ export class DownloadFS {
     return [];
   }
 
+  async stat(path) {
+    // Never fall back to read() — read() opens the file picker! /pc is
+    // a virtual bridge to the real machine: the mount root is a dir,
+    // and any /pc/<name> only exists once you pick a file for it.
+    const p = path.replace(/^\/+|\/+$/g, "") || "/";
+    if (p === "/") return { type: "dir", size: 0, mtime: undefined };
+    return { type: "file", size: 0, mtime: undefined };
+  }
+
   async remove(path) {
     throw new Error("EROFS: cannot remove from /pc/");
   }

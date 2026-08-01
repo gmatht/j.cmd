@@ -47,10 +47,9 @@ const REGISTRY = {
     url: "wasm-bin/python.wasm",
     desc: "Python interpreter (MicroPython, 363K)",
   },
-  "perl": {
-    url: "wasm-bin/perl.wasm",
-    desc: "Perl interpreter",
-  },
+  // perl is implemented as a /bin JS command embedding the zeroperl
+  // reactor (@6over3/zeroperl-ts) — it is NOT a wasm32-wasi binary, so
+  // there is nothing to install here. `perl` works out of the box.
   "make": {
     url: "wasm-bin/make.wasm",
     desc: "Build tool (Makefile runner)",

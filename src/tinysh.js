@@ -106,20 +106,24 @@ const builtins = {
         process.stdout.write(output);
         // Note when a remote listing came from the persistent ls cache
         // (24h TTL) — "cached 3h ago" beats a silent, unexplained list.
+        // A fresh fetch also writes the cache (age ≈ 0) and a cd into a
+        // remote dir fetches + caches too, so "cached" is decided by
+        // whether THIS listing hit the API (rate info) or not (cache
+        // age) rather than by a fixed age cut-off.
         const cacheNote = await fs.cacheInfo(dir);
-        if (cacheNote && cacheNote.age >= 60000) {
-          const tag = cacheNote.stale
-            ? `cached ${formatAge(cacheNote.age)} — API unavailable, stale`
-            : `cached ${formatAge(cacheNote.age)}`;
-          process.stdout.write(`  (${tag})\n`);
-        } else {
+        const rate = await fs.rateInfo(dir);
+        if (cacheNote && cacheNote.stale) {
+          // Last-resort fallback (API down / rate-limited)
+          process.stdout.write(`  (cached ${formatAge(cacheNote.age)} — API unavailable, stale)\n`);
+        } else if (rate && rate.limit > 0) {
           // Fresh request — report the API's rolling-hour usage from the
           // response headers (exact for the IP, not an estimate).
-          const rate = await fs.rateInfo(dir);
-          if (rate && rate.limit > 0) {
-            const used = Math.max(0, rate.limit - rate.remaining);
-            process.stdout.write(`  (${rate.name}: ${used}/${rate.limit} API requests used ${rate.period})\n`);
-          }
+          const used = Math.max(0, rate.limit - rate.remaining);
+          process.stdout.write(`  (${rate.name}: ${used}/${rate.limit} API requests used ${rate.period})\n`);
+        } else if (cacheNote) {
+          // Served from cache — a just-completed cd fetched and cached
+          // this dir, so an ls right after hits the cache (age < 1min).
+          process.stdout.write(`  (cached ${formatAge(cacheNote.age)})\n`);
         }
       } catch (e) {
         hadError = true;
@@ -177,6 +181,14 @@ const builtins = {
       const r = fs._resolve(dir);
       fs.cwd = r;
       env.PWD = r;
+      // cd into a remote mount may have just fetched (and cached) the
+      // listing — surface the API usage from that fetch, like ls does.
+      // (ls right after will show "cached just now" instead.)
+      const rate = await fs.rateInfo(dir);
+      if (rate && rate.limit > 0) {
+        const used = Math.max(0, rate.limit - rate.remaining);
+        process.stdout.write(`  (${rate.name}: ${used}/${rate.limit} API requests used ${rate.period})\n`);
+      }
       return 0;
     } catch (e) {
       process.stderr.write(`cd: ${dir}: ${e.message}\n`);

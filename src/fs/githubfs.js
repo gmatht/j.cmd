@@ -254,6 +254,32 @@ export class GitHubFS {
   }
 
   async _statPath(owner, repo, path) {
+    // The contents API returns the full entry array for a directory, so
+    // if the parent listing is cached the type is already known — no
+    // extra API call. Without this, `ls` stats every entry and each
+    // stat fetches the API (the old behaviour burned the 60/hr quota in
+    // a few listings). The repos listing is the same story one level up:
+    // every repo is a dir.
+    const parts = String(path || "").split("/").filter(Boolean);
+    const name = parts.length ? parts[parts.length - 1] : "";
+    const parent = parts.slice(0, -1).join("/");
+    const parentCache = this.lsCache.get(`contents:${owner}/${repo}/${parent}`);
+    if (parentCache && Array.isArray(parentCache.data)) {
+      for (const item of parentCache.data) {
+        if (item.name === name) {
+          if (item.type === "dir") return { type: "dir", size: 0, mtime: undefined };
+          return { type: "file", size: item.size || 0, mtime: undefined };
+        }
+      }
+    }
+    if (name === "" || name === repo) {
+      // Repo root: the repos listing (stored with trailing slashes)
+      // knows every repo is a dir — no fetch needed.
+      const reposCache = this.lsCache.get(`repos:${owner}`);
+      if (reposCache && reposCache.data.includes((name === "" ? repo : name) + "/")) {
+        return { type: "dir", size: 0, mtime: undefined };  // it's a repo
+      }
+    }
     try {
       const data = await this._fetchContents(owner, repo, path);
       if (Array.isArray(data)) {

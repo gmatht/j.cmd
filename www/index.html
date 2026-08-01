@@ -191,7 +191,8 @@
 {
   "imports": {
     "@wasmer/wasi": "/node_modules/@wasmer/wasi/dist/Library.esm.js",
-    "@wasmer/wasmfs": "/node_modules/@wasmer/wasmfs/lib/index.esm.js"
+    "@wasmer/wasmfs": "/node_modules/@wasmer/wasmfs/lib/index.esm.js",
+    "@6over3/zeroperl-ts": "/node_modules/@6over3/zeroperl-ts/dist/esm/index.js"
   }
 }
 </script>
@@ -1145,20 +1146,24 @@ const builtins = {
         stdout.write(output);
         // Note when a remote listing came from the persistent ls cache
         // (24h TTL) — "cached 3h ago" beats a silent, unexplained list.
+        // A fresh fetch also writes the cache (age ≈ 0) and a cd into a
+        // remote dir fetches + caches too, so "cached" is decided by
+        // whether THIS listing hit the API (rate info) or not (cache
+        // age) rather than by a fixed age cut-off.
         const cacheNote = await fs.cacheInfo(dir);
-        if (cacheNote && cacheNote.age >= 60000) {
-          const tag = cacheNote.stale
-            ? `cached ${formatAge(cacheNote.age)} — API unavailable, stale`
-            : `cached ${formatAge(cacheNote.age)}`;
-          write(`  (${tag})\n`, "info");
-        } else {
+        const rate = await fs.rateInfo(dir);
+        if (cacheNote && cacheNote.stale) {
+          // Last-resort fallback (API down / rate-limited)
+          write(`  (cached ${formatAge(cacheNote.age)} — API unavailable, stale)\n`, "info");
+        } else if (rate && rate.limit > 0) {
           // Fresh request — report the API's rolling-hour usage from the
           // response headers (exact for the IP, not an estimate).
-          const rate = await fs.rateInfo(dir);
-          if (rate && rate.limit > 0) {
-            const used = Math.max(0, rate.limit - rate.remaining);
-            write(`  (${rate.name}: ${used}/${rate.limit} API requests used ${rate.period})\n`, "info");
-          }
+          const used = Math.max(0, rate.limit - rate.remaining);
+          write(`  (${rate.name}: ${used}/${rate.limit} API requests used ${rate.period})\n`, "info");
+        } else if (cacheNote) {
+          // Served from cache — a just-completed cd fetched and cached
+          // this dir, so an ls right after hits the cache (age < 1min).
+          write(`  (cached ${formatAge(cacheNote.age)})\n`, "info");
         }
       } catch (e) {
         hadError = true;
@@ -1254,6 +1259,14 @@ const builtins = {
       await fs.list(dir);
       fs.cwd = fs._resolve(dir);
       env.PWD = fs.cwd;
+      // cd into a remote mount may have just fetched (and cached) the
+      // listing — surface the API usage from that fetch, like ls does.
+      // (ls right after will show "cached just now" instead.)
+      const rate = await fs.rateInfo(dir);
+      if (rate && rate.limit > 0) {
+        const used = Math.max(0, rate.limit - rate.remaining);
+        write(`  (${rate.name}: ${used}/${rate.limit} API requests used ${rate.period})\n`, "info");
+      }
       return 0;
     } catch (e) {
       stderr.write(`cd: ${dir}: ${e.message}\n`);
@@ -2112,6 +2125,8 @@ Loops, conditionals, variables, arithmetic and pipes work:
     ls [dir]        List directory contents
     cat <file>...   Print file contents  (PNG/JPG/GIF renders inline)
     browse [path]   Open in browser tab (default: current dir)
+    youtube|reddit|slashdot|lwn|hn|github|wikipedia|arxiv
+                    Open site in a new tab (args search the site)
     play <file>     Play audio file (MP3/WAV/OGG)
     echo <text>     Print text
     pwd             Print working directory
@@ -3966,13 +3981,70 @@ input.addEventListener("keydown", async (e) => {
   write("          cat image.png · play music.mp3\n", "info");
   write("          browse /github/user/repo — open in tab\n", "info");
   write("          mail to@x.com — compose email in a new tab (mailto:)\n", "info");
-  write("          apt/yum/pip → wasmer · wasmer install <pkg>\n", "info");
-  write("          python, echoc — auto-loaded from /wasm-bin/\n", "info");
+  write("          screen — split the terminal into panes (+ split · x close · q exit)\n", "info");
+  write("          xterm — floating terminal · arecord -d 5 rec.wav — record the mic\n", "info");
+  write("          youtube · reddit · slashdot · lwn · hn — open sites in a tab (args search)\n", "info");
+  write("          python · perl · lua — interpreters (python/echoc auto-load from /wasm-bin/)\n", "info");
   write("          history — persisted across refreshes\n", "info");
   write("          asciinema rec demo.cast · stop · play — record sessions\n", "info");
   write("          cp file /pc — download · cp /pc/file — upload\n", "info");
   write("          /big/ — IndexedDB storage (no 5MB limit)\n\n", "info");
   write("          echo $HOME · $PATH · $USER — environment variables\n\n", "info");
+
+  // xkcd comic of the day — a clickable image (xkcd.now.sh is a CORS
+  // proxy for the official xkcd JSON API). Fetched lazily so a slow or
+  // down proxy never delays the shell; skipped silently on failure.
+  // The image itself is loaded defensively: imgs.xkcd.com is sometimes
+  // blocked by networks/ad-blockers, so we try (1) fetch → object URL
+  // (same CORS path as the JSON fetch above, which already works),
+  // (2) the direct URL, (3) the images.weserv.nl proxy — and if all
+  // fail, drop the img and keep the text link (never a broken icon).
+  fetch("https://xkcd.now.sh/?comic=latest")
+    .then((r) => r.json())
+    .then((c) => {
+      if (!c || !c.img) return;
+      const a = document.createElement("a");
+      a.href = "https://xkcd.com/" + c.num + "/";
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.style.textDecoration = "none";
+      const img = document.createElement("img");
+      img.alt = c.title;
+      img.style.cssText = "max-width:100%;max-height:35vh;display:block;margin:6px 0 2px;border-radius:4px;";
+      const fallbacks = [
+        c.img,
+        "https://images.weserv.nl/?url=" + encodeURIComponent(c.img),
+      ];
+      let fi = 0;
+      const nextSource = () => {
+        if (fi < fallbacks.length) {
+          img.src = fallbacks[fi++];
+        } else if (img.parentNode) {
+          img.parentNode.removeChild(img);  // text link remains
+        }
+      };
+      img.onerror = nextSource;
+      fetch(c.img)
+        .then((r) => (r.ok ? r.blob() : null))
+        .then((b) => {
+          if (b) {
+            img.src = URL.createObjectURL(b);
+            setTimeout(() => { try { URL.revokeObjectURL(img.src); } catch (e) {} }, 60000);
+          } else {
+            nextSource();
+          }
+        })
+        .catch(() => nextSource());
+      const cap = document.createElement("div");
+      cap.style.cssText = "color:#8b949e;font-size:12px;margin:0 0 8px;";
+      cap.textContent = "xkcd #" + c.num + " — " + c.title + " (click to open)";
+      a.appendChild(img);
+      a.appendChild(cap);
+      term.insertBefore(a, promptLine);
+      term.scrollTop = term.scrollHeight;
+    })
+    .catch(() => {});
+
   // Read ~/.tinyshrc (persistent config in /home/) before the shell
   // is usable — exports, banner, aliases etc. take effect immediately.
   await loadConfig();

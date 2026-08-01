@@ -65,6 +65,8 @@ const SHORT = {
   browse: "open current GitHub/GitLab dir in a new browser tab",
   play: "play an audio file (MP3/WAV/OGG)",
   arecord: "record microphone audio (arecord-compatible options)",
+  perl: "Perl 5 interpreter (zeroperl wasm)",
+  lua: "Lua 5.4 interpreter (wasmoon wasm)",
   screen: "split the terminal into panes (tmux-style, browser)",
   more: "page through a file (alias for cat)",
   less: "page through a file (alias for cat)",
@@ -867,6 +869,62 @@ EXAMPLES
 
 SEE ALSO
      arecord, play
+`,
+  perl: `NAME
+     perl — Perl 5 interpreter
+
+SYNOPSIS
+     perl [-e CODE] [script.pl] [args...]
+     echo 'print 6*7' | perl
+
+DESCRIPTION
+     perl runs Perl 5.42 compiled to WebAssembly (the zeroperl project,
+     via the @6over3/zeroperl-ts npm package, 24 MiB). The script is
+     registered into the interpreter's virtual filesystem; @ARGV is set
+     from the trailing arguments and stdout/stderr flow to the shell.
+     Scripts come from the shell's filesystem or a pipe.
+
+OPTIONS
+     -e CODE   evaluate inline Perl code
+     -E CODE   same as -e (modern Perl features: say, state, ...)
+     -         read the script from stdin
+     -h        show help
+
+EXAMPLES
+     perl -e 'print 6*7'
+     perl -e 'print join(",", @ARGV)' a b c
+     echo 'print "hi"' | perl
+     perl /home/hello.pl world
+
+SEE ALSO
+     lua, python, wasmer
+`,
+  lua: `NAME
+     lua — Lua 5.4 interpreter
+
+SYNOPSIS
+     lua [-e CODE] [script.lua] [args...]
+     echo 'print(6*7)' | lua
+
+DESCRIPTION
+     lua runs Lua 5.4 compiled to WebAssembly (wasmoon, 0.3 MiB).
+     print and io.write are routed to the shell; the trailing arguments
+     appear in the standard Lua arg table (arg[0] is the script name);
+     scripts come from the shell's filesystem or a pipe.
+
+OPTIONS
+     -e CODE   evaluate inline Lua code
+     -         read the script from stdin
+     -h        show help
+
+EXAMPLES
+     lua -e 'print(6*7)'
+     lua -e 'for i=1,3 do print(i) end'
+     echo 'print("hi")' | lua
+     lua /home/hello.lua world
+
+SEE ALSO
+     perl, python, wasmer
 `,
   more: `NAME
      more — page through a file (alias for cat)
