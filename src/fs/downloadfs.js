@@ -108,6 +108,60 @@ export class DownloadFS {
     this._download(name, blob);
   }
 
+  // ─── writeStream: STREAM a download instead of materializing it ───
+  // With StreamSaver (vendored: streamsaver.js + mitm.html + sw.js) the
+  // data is piped through a service worker to a real incremental disk
+  // write, so huge artifacts (tar -czf /pc/backup.tgz /) never sit in
+  // memory. Without a service worker (or in the CLI) it falls back to
+  // buffering the chunks and downloading one Blob at close.
+  // Returns a WHATWG WritableStream; write Uint8Array chunks, close()
+  // finishes the download.
+  async writeStream(path, { size } = {}) {
+    const name = path.replace(/^\//, "");
+    if (!name) throw new Error("EROFS: specify a filename (/pc/name)");
+    const mime = mimeHint(name) || "application/octet-stream";
+
+    if (typeof window !== "undefined" && typeof document !== "undefined") {
+      try {
+        await this._ensureStreamSaver();
+        const opts = {};
+        if (size) opts.size = size;
+        return window.streamSaver.createWriteStream(name, opts);
+      } catch {
+        // StreamSaver unavailable (SW blocked / offline) — buffer instead
+      }
+    }
+
+    // Buffered fallback: collect chunks, download one Blob on close.
+    const chunks = [];
+    const enc = new TextEncoder();
+    const download = () => this._download(name, new Blob(chunks, { type: mime }));
+    return new WritableStream({
+      write(chunk) {
+        chunks.push(chunk instanceof Uint8Array ? chunk : enc.encode(String(chunk)));
+      },
+      close() { download(); chunks.length = 0; },
+      abort() { chunks.length = 0; },
+    });
+  }
+
+  // Load the vendored StreamSaver lib and point it at our mitm page.
+  async _ensureStreamSaver() {
+    if (window.streamSaver && window.streamSaver.createWriteStream) {
+      window.streamSaver.mitm = "vendor/mitm.html";
+      return;
+    }
+    await new Promise((resolve, reject) => {
+      const src = "vendor/streamsaver.js";
+      if (document.querySelector('script[src="' + src + '"]')) return resolve();
+      const s = document.createElement("script");
+      s.src = src;
+      s.onload = () => { window.streamSaver.mitm = "vendor/mitm.html"; resolve(); };
+      s.onerror = () => reject(new Error("failed to load " + src));
+      document.head.appendChild(s);
+    });
+  }
+
   _download(name, blob) {
     // Filename is already known — just download like a normal browser
     // download to the Downloads folder. No save dialog needed.

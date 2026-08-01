@@ -24,6 +24,7 @@
     "@wasmer/wasmfs": "^0.12.0",
     "@xterm/addon-fit": "^0.10.0",
     "@yeliulee/micropython-wasm": "^1.0.0",
+    "streamsaver": "^2.0.6",
     "wabt": "^1.0.39",
     "wasm-diff": "^1.1.1",
     "wasmoon": "^1.16.0",
