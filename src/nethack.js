@@ -292,7 +292,7 @@ export class NethackGame {
             resolve(27);
           }
         }
-      }, 350);
+      }, 800);
       return false; // claimed only when the follow-up key arrives
     }
     if (this._pendingKey) {
