@@ -373,12 +373,15 @@ export class NethackGame {
 
 export function createBrowserNethackCommand(hooks = {}) {
   const { write = () => {}, err = () => {}, onInterrupt = null } = hooks;
-  // keyList: the shell's key-callback array. Pass the array directly, or
-  // getKeyList() to resolve it lazily (the shell may declare it later).
+  // keyList / interruptList: the shell's hook arrays. Pass them directly,
+  // or getKeyList()/getInterruptList() to resolve lazily (the shell may
+  // declare them later in its module scope).
   const keyList = () => (hooks.getKeyList ? hooks.getKeyList() : hooks.keyList);
+  const interruptList = () => (hooks.getInterruptList ? hooks.getInterruptList() : hooks.interruptList);
   let root = null;
   let statusEl = null, mapEl = null, msgEl = null, menuEl = null;
   let keyHandler = null;
+  let interruptFn = null;
   let game = null;
 
   function keyCode(e) {
@@ -434,12 +437,18 @@ export function createBrowserNethackCommand(hooks = {}) {
   }
 
   function tearDown() {
-    const list = keyList();
-    if (keyHandler && Array.isArray(list)) {
-      const i = list.indexOf(keyHandler);
-      if (i !== -1) list.splice(i, 1);
+    const klist = keyList();
+    if (keyHandler && Array.isArray(klist)) {
+      const i = klist.indexOf(keyHandler);
+      if (i !== -1) klist.splice(i, 1);
     }
     keyHandler = null;
+    const ilist = interruptList();
+    if (interruptFn && Array.isArray(ilist)) {
+      const i = ilist.indexOf(interruptFn);
+      if (i !== -1) ilist.splice(i, 1);
+    }
+    interruptFn = null;
     if (root && root.parentNode) root.parentNode.removeChild(root);
     root = null;
   }
@@ -482,7 +491,8 @@ export function createBrowserNethackCommand(hooks = {}) {
         list.push(keyHandler);
       }
       if (onInterrupt) {
-        onInterrupt(() => { game.finish(130); tearDown(); });
+        interruptFn = () => { game.finish(130); tearDown(); };
+        onInterrupt(interruptFn);
       }
       const code = await game.play();
       tearDown();
