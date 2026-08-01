@@ -623,6 +623,78 @@ async function playCast(content) {
     }
   };
 
+  // Playback renders into a container we rebuild per frame, so the cast
+  // plays progressively (the spinner sits below the output meanwhile).
+  const player = document.createElement("div");
+  player.className = "cast-player";
+  term.insertBefore(player, spinner.active ? spinner.el : promptLine);
+  term.scrollTop = term.scrollHeight;
+
+  // Paint the current screen as DOM (rows carry SGR codes → colored
+  // spans, exactly like write()); a blinking block cursor marks the
+  // terminal's cursor cell.
+  let lastPaint = 0;
+  const paint = () => {
+    player.textContent = "";
+    let lastCode = null, buf = "";
+    const flushBuf = () => {
+      if (!buf) return;
+      const span = document.createElement("span");
+      span.className = "out";
+      if (lastCode && ansiPalette[lastCode]) span.style.color = ansiPalette[lastCode];
+      span.textContent = buf;
+      player.appendChild(span);
+      buf = "";
+    };
+    const setCode = (code) => { if (code !== lastCode) { flushBuf(); lastCode = code; } };
+    const newline = () => {
+      flushBuf();
+      const nl = document.createElement("span");
+      nl.className = "out";
+      nl.textContent = "\n";
+      player.appendChild(nl);
+    };
+    const isCursorCell = (r, c) => (r === row && c === col);
+
+    // Trim trailing blank rows (and rows below the cursor) so playback
+    // doesn't leave a stack of empty lines.
+    let lastRow = 0;
+    for (let r = 0; r < H; r++) {
+      let end = W - 1;
+      while (end >= 0 && screen[r][end].ch === " ") end--;
+      if (end >= 0 || isCursorCell(r, 0)) lastRow = r;
+    }
+    for (let r = 0; r <= lastRow; r++) {
+      let end = W - 1;
+      while (end >= 0 && screen[r][end].ch === " ") end--;
+      const rowEnd = isCursorCell(r, 0)
+        ? Math.max(end, Math.min(W - 1, col))
+        : end;
+      for (let c = 0; c <= rowEnd; c++) {
+        const cell = screen[r][c];
+        if (isCursorCell(r, c)) {
+          setCode(cell.code);
+          flushBuf();
+          const cur = document.createElement("span");
+          cur.className = "cursor";
+          cur.textContent = cell.ch === " " ? " " : cell.ch;
+          player.appendChild(cur);
+        } else {
+          setCode(cell.code);
+          buf += cell.ch;
+        }
+      }
+      setCode("");
+      newline();
+    }
+    flushBuf();
+    term.scrollTop = term.scrollHeight;
+  };
+  const maybePaint = () => {
+    const now = Date.now();
+    if (now - lastPaint >= 60) { lastPaint = now; paint(); }
+  };
+
   // v2 cast timestamps are cumulative (seconds since recording start)
   // — the delay between consecutive events is what we wait for.
   let prevTime = 0;
@@ -637,65 +709,10 @@ async function playCast(content) {
     prevTime = t;
     if (delta > 0) await new Promise((r) => setTimeout(r, delta * 1000));
     feed(String(ev[2]));
+    maybePaint();
   }
 
-  // Paint the final screen as DOM, with a blinking block cursor on the
-  // cell where the terminal cursor ended up — asciinema playback shows
-  // the cursor too. Rows carry SGR codes; we split them into coloured
-  // spans exactly like write() would.
-  let lastCode = null, buf = "";
-  const flushBuf = () => {
-    if (!buf) return;
-    const span = document.createElement("span");
-    span.className = "out";
-    if (lastCode && ansiPalette[lastCode]) span.style.color = ansiPalette[lastCode];
-    span.textContent = buf;
-    term.insertBefore(span, promptLine);
-    buf = "";
-  };
-  const setCode = (code) => { if (code !== lastCode) { flushBuf(); lastCode = code; } };
-  const newline = () => {
-    flushBuf();
-    const nl = document.createElement("span");
-    nl.className = "out";
-    nl.textContent = "\n";
-    term.insertBefore(nl, promptLine);
-  };
-  const isCursorCell = (r, c) => (r === row && c === col);
-
-  // Trim trailing blank rows (and rows below the cursor) so playback
-  // doesn't leave a stack of empty lines.
-  let lastRow = 0;
-  for (let r = 0; r < H; r++) {
-    let end = W - 1;
-    while (end >= 0 && screen[r][end].ch === " ") end--;
-    if (end >= 0 || isCursorCell(r, 0)) lastRow = r;
-  }
-  for (let r = 0; r <= lastRow; r++) {
-    let end = W - 1;
-    while (end >= 0 && screen[r][end].ch === " ") end--;
-    const rowEnd = isCursorCell(r, 0)
-      ? Math.max(end, Math.min(W - 1, col))
-      : end;
-    for (let c = 0; c <= rowEnd; c++) {
-      const cell = screen[r][c];
-      if (isCursorCell(r, c)) {
-        setCode(cell.code);
-        flushBuf();
-        const cur = document.createElement("span");
-        cur.className = "cursor";
-        cur.textContent = cell.ch === " " ? " " : cell.ch;
-        term.insertBefore(cur, promptLine);
-      } else {
-        setCode(cell.code);
-        buf += cell.ch;
-      }
-    }
-    setCode("");
-    newline();
-  }
-  term.scrollTop = term.scrollHeight;
-  lastCharNewline = true;
+  paint();  // final frame
 }
 
 function clearViewport() {

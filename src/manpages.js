@@ -68,6 +68,7 @@ const SHORT = {
   perl: "Perl 5 interpreter (zeroperl wasm)",
   lua: "Lua 5.4 interpreter (wasmoon wasm)",
   time: "run a command and report how long it took",
+  diff: "compare two files (wasm-diff engine, vendored wasm)",
   screen: "split the terminal into panes (tmux-style, browser)",
   more: "page through a file (alias for cat)",
   less: "page through a file (alias for cat)",
@@ -1047,6 +1048,31 @@ EXAMPLES
 
 SEE ALSO
      /dev/time (current time device)
+`,
+  diff: `NAME
+     diff — compare two files
+
+SYNOPSIS
+     diff <file1> <file2>
+
+DESCRIPTION
+     diff compares two files and prints the differences prefixed like
+     a unified diff (space = context, - = removed, + = added). The
+     engine is wasm-diff — the diff Rust crate compiled to WebAssembly
+     and vendored at wasm-bin/wasm-diff.wasm (from the npm package
+     wasm-diff; it's a wasm-bindgen library, so the command drives it
+     directly). It diffs at character granularity, so intra-line
+     changes appear as fine insert/delete chunks.
+
+     Exit status: 0 if identical, 1 if different, 2 on error (like
+     the real diff).
+
+EXAMPLES
+     diff /home/a.txt /home/b.txt
+     diff README.md README.md.bak
+
+SEE ALSO
+     wasmer, grep
 `,
   more: `NAME
      more — page through a file (alias for cat)
