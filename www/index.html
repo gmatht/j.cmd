@@ -229,6 +229,7 @@ import { watToWasm } from "../src/wabt-loader.js";
 import { bashToJS, runBash, buildSh2LibFacade } from "../src/bash2js.js";
 import { createSh2Runtime } from "../src/sh2runtime.js";
 import { getManPage, manIndex, searchManPages, MAN_PAGES } from "../src/manpages.js";
+import { createJobScheduler } from "../src/jobs.js";
 const wasmRunner = new WasmRunner(fs);
 const sh2libFacade = buildSh2LibFacade(fs);  // debashl toolchain, injected into .js commands
 
@@ -1466,6 +1467,8 @@ const builtins = {
         i++;
       } else if (/^-\d+$/.test(a)) {
         count = parseInt(a.slice(1), 10);
+      } else if (/^\d+$/.test(a)) {
+        count = parseInt(a, 10);   // friendly: `tail 1` == `tail -n 1`
       } else if (a.startsWith("-")) {
         stderr.write(`head: invalid option -- '${a}'\n`);
         return 2;
@@ -1496,6 +1499,61 @@ const builtins = {
       } catch (e) {
         hadError = true;
         stderr.write(`head: ${file}: ${e.message}\n`);
+      }
+    }
+    return hadError ? 1 : 0;
+  },
+
+  async tail(args) {
+    // tail [-n N] [file...] — print the last N lines (default 10).
+    // With no file arguments, reads from stdin (i.e. a pipe).
+    let count = 10;
+    const files = [];
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (a === "-n" || a === "--lines") {
+        count = parseInt(args[i + 1], 10);
+        if (isNaN(count)) {
+          stderr.write(`tail: invalid number of lines: '${args[i + 1]}'\n`);
+          return 2;
+        }
+        i++;
+      } else if (/^-\d+$/.test(a)) {
+        count = parseInt(a.slice(1), 10);
+      } else if (/^\d+$/.test(a)) {
+        count = parseInt(a, 10);   // friendly: `tail 1` == `tail -n 1`
+      } else if (a.startsWith("-")) {
+        stderr.write(`tail: invalid option -- '${a}'\n`);
+        return 2;
+      } else {
+        files.push(a);
+      }
+    }
+    if (count < 0) count = 0;
+
+    const printLines = (content) => {
+      if (content === "") return;
+      const lines = content.split("\n");
+      if (lines[lines.length - 1] === "") lines.pop(); // drop trailing newline
+      if (lines.length === 0) return;
+      const out = count === 0 ? [] : lines.slice(-count);
+      if (out.length === 0) return;
+      stdout.write(out.join("\n") + "\n");
+    };
+
+    if (files.length === 0) {
+      printLines(stdinBuffer);
+      return 0;
+    }
+    let hadError = false;
+    for (const file of files) {
+      try {
+        const content = await fs.read(file);
+        if (files.length > 1) stdout.write(`==> ${file} <==\n`);
+        printLines(content);
+      } catch (e) {
+        hadError = true;
+        stderr.write(`tail: ${file}: ${e.message}\n`);
       }
     }
     return hadError ? 1 : 0;
@@ -2182,6 +2240,7 @@ Loops, conditionals, variables, arithmetic and pipes work:
     cp <src> <dst>  Copy files
     mv <src> <dst>  Move files
     head [-n N] [file...]  Print first N lines (default 10; stdin if no file)
+    tail [-n N] [file...]  Print last N lines (default 10; stdin if no file)
     grep [opts] <pattern> [file...]  Search files or stdin for pattern
            (-i ignore case · -n line numbers · -v invert · -c count
             -l files with matches · -r recursive · -e PATTERN)
@@ -3057,6 +3116,22 @@ async function runPipeline(pipelineText, initialStdin = "") {
 // rt.pipe / rt.pipeCond in the generated JS call: sh2perl shells out
 // to 'bash -c "..."' for pipes, and we route that back through the
 // shell's own pipeline machinery.
+function getJobScheduler() {
+  // One shared scheduler per shell page, so at/cron commands and the
+  // boot-time restore all see the same job queue. Jobs run through
+  // runNestedCommand; cron jobs persist to /home/.tinyshcron.
+  if (!globalThis.__tinyshJobs) {
+    globalThis.__tinyshJobs = createJobScheduler({
+      fs,
+      runLine: (cmd) => runNestedCommand(cmd),
+      stdout,
+      stderr,
+      storagePath: "/home/.tinyshcron",
+    });
+  }
+  return globalThis.__tinyshJobs;
+}
+
 async function runNestedCommand(cmdLine, stdin = "") {
   let captured = "";
   let capturedErr = "";
@@ -3306,7 +3381,10 @@ async function runSegment(segmentText, stdin, isLast) {
     });
     // `shell` — lets commands run lines through the shell itself (the
     // floating xterm terminal uses this); returns { out, err, code }.
-    const shellApi = { runLine: (cmdLine) => runNestedCommand(cmdLine) };
+    const shellApi = {
+      runLine: (cmdLine) => runNestedCommand(cmdLine),
+      jobs: getJobScheduler(),   // at/cron scheduler (src/jobs.js)
+    };
     const ret = await fn(args, fs, fakeConsole, stdin, env, sh2rt.sh2, sh2libFacade, shellApi);
     // A command file may return a number to set its exit status
     const code = typeof ret === "number" ? ret : 0;
@@ -4322,6 +4400,7 @@ input.addEventListener("keydown", async (e) => {
   write("          xterm — floating terminal · arecord -d 5 rec.wav — record the mic\n", "info");
   write("          youtube · reddit · slashdot · lwn · hn — open sites in a tab (args search)\n", "info");
   write("          fun: cowsay moo · figlet -f impact -b hi · fortune · sl · cmatrix\n", "info");
+  write("          at +10s echo done — run later · cron add \"*/5 * * * *\" echo tick — schedule\n", "info");
   write("          python · perl · lua — interpreters (reactor-based, no wasm/worker)\n", "info");
   write("          history — persisted across refreshes\n", "info");
   write("          asciinema rec demo.cast · stop · play — record sessions\n", "info");
@@ -4387,6 +4466,7 @@ input.addEventListener("keydown", async (e) => {
   // Read ~/.tinyshrc (persistent config in /home/) before the shell
   // is usable — exports, banner, aliases etc. take effect immediately.
   await loadConfig();
+  await getJobScheduler().restore();  // re-arm persisted cron jobs
   writeShellPrompt();  // initial prompt line in the scrollback
   input.focus();
 })();

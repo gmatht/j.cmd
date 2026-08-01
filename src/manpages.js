@@ -74,6 +74,8 @@ const SHORT = {
   figlet: "big ASCII banner text (fonts, style, size)",
   sl: "steam locomotive — the ls typo",
   cmatrix: "Matrix-style digital rain",
+  at: "run a command once, later",
+  cron: "periodic jobs (5-field schedule, persisted)",
   screen: "split the terminal into panes (tmux-style, browser)",
   more: "page through a file (alias for cat)",
   less: "page through a file (alias for cat)",
@@ -1190,6 +1192,60 @@ EXAMPLES
 
 SEE ALSO
      xeyes, sl
+`,
+  at: `NAME
+     at — run a command once, later
+
+SYNOPSIS
+     at <when> <command...>
+     at -l | -r ID | -h
+
+DESCRIPTION
+     at schedules a one-shot job: the command runs through the shell
+     at the given time and its output appears in the terminal. Jobs
+     are session-scoped (like real at's queue) — they do not survive
+     a page reload.
+
+OPTIONS
+     <when>       now | +Ns | +Nm | +Nh | +Nd | HH:MM (HH:MM today,
+                  or tomorrow if already past)
+     -l, --list   list pending jobs
+     -r, --remove remove a job by id
+     -h, --help   show help
+
+EXAMPLES
+     at +10s echo done
+     at 14:30 echo lunch
+
+SEE ALSO
+     cron
+`,
+  cron: `NAME
+     cron — periodic jobs
+
+SYNOPSIS
+     cron add "SCHEDULE" <command...>
+     cron list | -l | rm ID | clear | -h
+
+DESCRIPTION
+     cron runs commands on a schedule, like the classic crontab. Jobs
+     persist in /home/.tinyshcron and are re-armed when the shell
+     starts, so they survive reloads. The scheduler ticks every 30s
+     and runs each due job through the shell.
+
+SCHEDULE
+     min hour dom mon dow   five fields, space separated.
+     * every value · */N every N · N-M a range · A,B a list.
+     dow: 0 or 7 = Sunday.
+     Examples: * * * * * (every minute), */5 * * * * (every 5 min),
+               0 9 * * 1-5 (weekdays 09:00)
+
+EXAMPLES
+     cron add "*/5 * * * *" echo tick
+     cron list · cron rm c1 · cron clear
+
+SEE ALSO
+     at
 `,
   more: `NAME
      more — page through a file (alias for cat)

@@ -20,6 +20,7 @@ import { env, expandRef } from "./env.js";
 import { procfs } from "./fs/procfs.js";
 import { bashToJS, runBash, buildSh2LibFacade } from "./bash2js.js";
 import { createSh2Runtime } from "./sh2runtime.js";
+import { createJobScheduler } from "./jobs.js";
 import { getManPage, manIndex, searchManPages, MAN_PAGES } from "./manpages.js";
 
 const wasmRunner = new WasmRunner(fs);
@@ -311,6 +312,8 @@ const builtins = {
         i++;
       } else if (/^-\d+$/.test(a)) {
         count = parseInt(a.slice(1), 10);
+      } else if (/^\d+$/.test(a)) {
+        count = parseInt(a, 10);   // friendly: `tail 1` == `tail -n 1`
       } else if (a.startsWith("-")) {
         process.stderr.write(`head: invalid option -- '${a}'\n`);
         return 2;
@@ -341,6 +344,61 @@ const builtins = {
       } catch (e) {
         hadError = true;
         process.stderr.write(`head: ${file}: ${e.message}\n`);
+      }
+    }
+    return hadError ? 1 : 0;
+  },
+
+  async tail(args) {
+    // tail [-n N] [file...] — print the last N lines (default 10).
+    // With no file arguments, reads from stdin (i.e. a pipe).
+    let count = 10;
+    const files = [];
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (a === "-n" || a === "--lines") {
+        count = parseInt(args[i + 1], 10);
+        if (isNaN(count)) {
+          process.stderr.write(`tail: invalid number of lines: '${args[i + 1]}'\n`);
+          return 2;
+        }
+        i++;
+      } else if (/^-\d+$/.test(a)) {
+        count = parseInt(a.slice(1), 10);
+      } else if (/^\d+$/.test(a)) {
+        count = parseInt(a, 10);   // friendly: `tail 1` == `tail -n 1`
+      } else if (a.startsWith("-")) {
+        process.stderr.write(`tail: invalid option -- '${a}'\n`);
+        return 2;
+      } else {
+        files.push(a);
+      }
+    }
+    if (count < 0) count = 0;
+
+    const printLines = (content) => {
+      if (content === "") return;
+      const lines = content.split("\n");
+      if (lines[lines.length - 1] === "") lines.pop(); // drop trailing newline
+      if (lines.length === 0) return;
+      const out = count === 0 ? [] : lines.slice(-count);
+      if (out.length === 0) return;
+      process.stdout.write(out.join("\n") + "\n");
+    };
+
+    if (files.length === 0) {
+      printLines(stdinBuffer);
+      return 0;
+    }
+    let hadError = false;
+    for (const file of files) {
+      try {
+        const content = await fs.read(file);
+        if (files.length > 1) process.stdout.write(`==> ${file} <==\n`);
+        printLines(content);
+      } catch (e) {
+        hadError = true;
+        process.stderr.write(`tail: ${file}: ${e.message}\n`);
       }
     }
     return hadError ? 1 : 0;
@@ -1073,6 +1131,7 @@ Built-in commands:
   cp <src> <dst>  Copy files
   mv <src> <dst>  Move files
   head [-n N] [file...]  Print first N lines (default 10; stdin if no file)
+  tail [-n N] [file...]  Print last N lines (default 10; stdin if no file)
   grep [opts] <pattern> [file...]  Search files/stdin for pattern
                  (-i ignore case · -n line numbers · -v invert · -c count
                   -l files with matches · -r recursive · -e PATTERN)
@@ -1699,7 +1758,10 @@ async function runSegment(segmentText, stdin, isLast) {
       args: args.slice(1),
       argv0: cmd,
     });
-    const shellApi = { runLine: (cmdLine) => runNestedCommand(cmdLine) };
+    const shellApi = {
+      runLine: (cmdLine) => runNestedCommand(cmdLine),
+      jobs: getJobScheduler(),   // at/cron scheduler (src/jobs.js)
+    };
     const ret = await fn(args, fs, fakeConsole, stdin, env, sh2rt.sh2, sh2libFacade, shellApi);
     // A command file may return a number to set its exit status
     const code = typeof ret === "number" ? ret : 0;
@@ -1875,6 +1937,22 @@ async function runNestedCommand(cmdLine, stdin = "") {
     process.stderr.write = origErrWrite;
   }
   return { out: captured, err: capturedErr, code };
+}
+
+function getJobScheduler() {
+  // One shared scheduler per shell process/page, so at/cron commands and
+  // the boot-time restore all see the same job queue. Jobs run through
+  // runNestedCommand; cron jobs persist to /home/.tinyshcron.
+  if (!globalThis.__tinyshJobs) {
+    globalThis.__tinyshJobs = createJobScheduler({
+      fs,
+      runLine: (cmd) => runNestedCommand(cmd),
+      stdout: process.stdout,
+      stderr: process.stderr,
+      storagePath: "/home/.tinyshcron",
+    });
+  }
+  return globalThis.__tinyshJobs;
 }
 
 async function handleLine(line, initialStdin) {
@@ -2131,6 +2209,7 @@ if (process.stdin.isTTY) {
   // Read the user's ~/.tinyshrc before the first prompt so exports
   // and setup commands are already in effect (like bash and .bashrc).
   await loadConfig();
+  await getJobScheduler().restore();  // re-arm persisted cron jobs
   // readline fires 'line' without awaiting the handler, so fast typing
   // (or a piped stream) would run commands concurrently — fatal for the
   // perl REPL, which shares one interpreter and an output buffer across

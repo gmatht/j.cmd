@@ -3128,6 +3128,195 @@ return 0;
       })
       .catch(() => syncWrite(this._getBackend("/bin/cmatrix.js"), "/cmatrix.js", cmatrixContent));
 
+    // at — job scheduling via shell.jobs (src/jobs.js). Version-gated.
+    const atContent = `// at v1 — run a command once, later
+//
+// NAME
+//      at — run a command once, later
+//
+// SYNOPSIS
+//      at <when> <command...>
+//      at -l | -r ID | -h
+//
+// DESCRIPTION
+//      at schedules a one-shot job: the command runs through the shell
+//      at the given time and its output appears in the terminal. Jobs
+//      are session-scoped (like real at's queue) — they do not survive
+//      a page reload.
+//
+// OPTIONS
+//      <when>         now | +Ns | +Nm | +Nh | +Nd | HH:MM
+//                     (HH:MM today, or tomorrow if already past)
+//      -l, --list     list pending jobs
+//      -r, --remove   remove a job by id
+//      -h, --help     show this help
+//
+// EXAMPLES
+//      at +10s echo done
+//      at +5m ls /tmp
+//      at 14:30 echo lunch
+
+var TAB = String.fromCharCode(9);
+
+function usage() {
+  console.log("at — run a command once, later");
+  console.log("usage: at <when> <command...>   (now | +Ns | +Nm | +Nh | +Nd | HH:MM)");
+  console.log("       at -l · at -r ID · at -h");
+  console.log("example: at +10s echo done");
+}
+
+if (args.length === 0) { usage(); return 2; }
+if (!shell || !shell.jobs) {
+  console.log("at: job scheduler not available in this shell");
+  return 1;
+}
+var jobs = shell.jobs;
+
+if (args[0] === "-h" || args[0] === "--help") { usage(); return 0; }
+
+if (args[0] === "-l" || args[0] === "--list") {
+  var list = jobs.list().filter(function (j) { return j.type === "at"; });
+  if (list.length === 0) { console.log("at: no jobs scheduled"); return 0; }
+  for (var i = 0; i < list.length; i++) {
+    console.log(list[i].id + TAB + list[i].next + TAB + list[i].cmd);
+  }
+  return 0;
+}
+
+if (args[0] === "-r" || args[0] === "--remove") {
+  var id = args[1];
+  if (!id) { console.log("at: -r needs a job id (see: at -l)"); return 2; }
+  var removed = jobs.remove(id);
+  console.log(removed ? "at: removed " + id : "at: no such job " + id);
+  return removed ? 0 : 1;
+}
+
+var when = args[0];
+var cmd = args.slice(1).join(" ");
+if (!cmd) {
+  console.log("at: no command given (at +10s <command>)");
+  return 2;
+}
+var res = jobs.addAt(when, cmd);
+if (res.error) {
+  console.log("at: bad time '" + when + "' (use now, +Ns, +Nm, +Nh, +Nd, or HH:MM)");
+  return 2;
+}
+console.log("at: job " + res.id + " scheduled for " + new Date(res.nextRun).toString());
+return 0;
+`;
+    this._getBackend("/bin/at.js").read("/at.js")
+      .then((existing) => {
+        if (!existing.includes("at v1")) {
+          syncWrite(this._getBackend("/bin/at.js"), "/at.js", atContent);
+        }
+      })
+      .catch(() => syncWrite(this._getBackend("/bin/at.js"), "/at.js", atContent));
+
+    // cron — job scheduling via shell.jobs (src/jobs.js). Version-gated.
+    const cronContent = `// cron v1 — periodic jobs (5-field schedule)
+//
+// NAME
+//      cron — periodic jobs
+//
+// SYNOPSIS
+//      cron add "SCHEDULE" <command...>
+//      cron list | -l | rm ID | clear | -h
+//
+// DESCRIPTION
+//      cron runs commands on a schedule, like the classic crontab.
+//      Jobs persist in /home/.tinyshcron and are re-armed when the
+//      shell starts, so they survive reloads. The scheduler ticks
+//      every 30s and runs each due job through the shell (its output
+//      appears in the terminal).
+//
+// SCHEDULE
+//      min hour dom mon dow      five fields, space separated
+//        *      every value      */N    every N
+//        N-M    a range          A,B    a list
+//      dow: 0 or 7 = Sunday. Examples:
+//        "* * * * *"        every minute
+//        "*/5 * * * *"      every 5 minutes
+//        "0 9 * * 1-5"      weekdays at 09:00
+//        "30 8 * * *"       08:30 daily
+//
+// EXAMPLES
+//      cron add "*/5 * * * *" echo tick
+//      cron add "0 9 * * 1-5" echo work
+//      cron list · cron rm c1 · cron clear
+
+var TAB = String.fromCharCode(9);
+
+function usage() {
+  console.log("cron — periodic jobs (5-field schedule)");
+  console.log('usage: cron add "SCHEDULE" <command> · cron list · cron rm ID · cron clear');
+  console.log("schedule: min hour dom mon dow   (* | */N | N-M | A,B)");
+  console.log('example: cron add "*/5 * * * *" echo tick');
+}
+
+if (args.length === 0) { usage(); return 2; }
+if (!shell || !shell.jobs) {
+  console.log("cron: job scheduler not available in this shell");
+  return 1;
+}
+var jobs = shell.jobs;
+
+if (args[0] === "-h" || args[0] === "--help") { usage(); return 0; }
+
+if (args[0] === "add" || args[0] === "-a") {
+  var schedule = args[1];
+  var cmd = args.slice(2).join(" ");
+  if (!schedule || !cmd) {
+    console.log('cron: usage: cron add "SCHEDULE" <command>');
+    return 2;
+  }
+  var res = jobs.addCron(schedule, cmd);
+  if (res.error) {
+    console.log("cron: bad schedule '" + schedule + "' (min hour dom mon dow · see cron -h)");
+    return 2;
+  }
+  console.log("cron: job " + res.id + " added — next run " + new Date(res.nextRun).toString());
+  return 0;
+}
+
+if (args[0] === "list" || args[0] === "-l" || args[0] === "ls") {
+  var list = jobs.list().filter(function (j) { return j.type === "cron"; });
+  if (list.length === 0) {
+    console.log('cron: no jobs (cron add "SCHEDULE" <command>)');
+    return 0;
+  }
+  for (var i = 0; i < list.length; i++) {
+    console.log(list[i].id + TAB + list[i].when + TAB + list[i].next + TAB + list[i].cmd);
+  }
+  return 0;
+}
+
+if (args[0] === "rm" || args[0] === "remove") {
+  var id = args[1];
+  if (!id) { console.log("cron: rm needs a job id (see: cron list)"); return 2; }
+  var removed = jobs.remove(id);
+  console.log(removed ? "cron: removed " + id : "cron: no such job " + id);
+  return removed ? 0 : 1;
+}
+
+if (args[0] === "clear") {
+  jobs.clear();
+  console.log("cron: all jobs removed");
+  return 0;
+}
+
+console.log("cron: unknown command '" + args[0] + "' (add, list, rm, clear)");
+usage();
+return 2;
+`;
+    this._getBackend("/bin/cron.js").read("/cron.js")
+      .then((existing) => {
+        if (!existing.includes("cron v1")) {
+          syncWrite(this._getBackend("/bin/cron.js"), "/cron.js", cronContent);
+        }
+      })
+      .catch(() => syncWrite(this._getBackend("/bin/cron.js"), "/cron.js", cronContent));
+
     // sh2js.js — debashl toolchain command (uses the injected sh2lib facade).
     // Version-gated (v2 marker) so file/pipe support reaches existing installs.
     const sh2jsjsContent = `async function sh2src() {

@@ -164,9 +164,11 @@ async function ensureSh2perl(fs) {
 // Returns { js, perl }: the generated JavaScript (runtime preamble +
 // transpiled statements) and the intermediate Perl.
 //
-// Two paths: the ESTree path (debashl.wasm → sh2.* runtime — the
-// "full bash" one) and the Perl path (sh2perl.wasm → perl2js). ESTree
-// is preferred; if debashl.wasm isn't available we fall back to Perl.
+// Two paths: the ESTree path (debashcl.wasm — the unified debashc CLI
+// reactor that replaced debashl.wasm/debashc.wasm — → sh2.* runtime,
+// the "full bash" one) and the Perl path (sh2perl.wasm → perl2js).
+// ESTree is preferred; if debashcl.wasm isn't available we fall back to
+// Perl.
 export async function bashToJS(fs, bashSource, { wasmRunner } = {}) {
   try {
     return await bashToJsEstree(fs, bashSource);
