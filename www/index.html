@@ -866,6 +866,7 @@ class InterruptError extends Error {
 }
 let running = false;        // a command is executing right now
 let interruptSignal = null; // rejects the running command's race
+let abortCurrent = null;    // rejects when ^C aborts the running command (sleep races it)
 let suppressOutput = false; // drop output from an aborted command
 let runId = 0;
 let interruptCallbacks = [];  // shell.onInterrupt hooks (watch etc.)              // bumped per command — stale aborts don't linger
@@ -882,8 +883,15 @@ async function runInterruptible(promise) {
   suppressOutput = false;
   running = true;
   let rejectFn = null;
+  let abortReject = null;
+  // abortCurrent rejects when ^C aborts this command — interruptible
+  // builtins (sleep) race against it so they stop promptly instead of
+  // winding down in the background (sleep 5 && echo x must NOT run echo
+  // after ^C, like a real SIGINT to the foreground process group).
+  abortCurrent = new Promise((_, rej) => { abortReject = rej; });
   interruptSignal = () => {
     if (rejectFn) rejectFn(new InterruptError());
+    if (abortReject) abortReject(new InterruptError());
     for (const cb of interruptCallbacks) { try { cb(); } catch {} }
     interruptCallbacks = [];
   };
@@ -908,6 +916,7 @@ async function runInterruptible(promise) {
   } finally {
     running = false;
     interruptSignal = null;
+    abortCurrent = null;
   }
   return code;
 }
@@ -938,6 +947,13 @@ function handleInterrupt() {
     // Abort the foreground command: print ^C, then reject its race.
     write("^C\n", "info");
     suppressOutput = true;
+    // ^C also flushes buffered input, like a tty's line discipline (ISIG
+    // discards the input queue) — pending queued lines and the in-progress
+    // input line are dropped so they don't run as commands afterwards.
+    commandQueue = [];
+    currentLine = "";
+    cursorPos = 0;
+    renderInput();
     if (interruptSignal) interruptSignal();
     input.focus();
     return;
@@ -1772,8 +1788,22 @@ const builtins = {
         return 2;
       }
     }
-    await new Promise((r) => setTimeout(r, Math.round(secs * 1000)));
-    return 0;
+    const ms = Math.round(secs * 1000);
+    let aborted = false;
+    if (abortCurrent) {
+      // Race against ^C so `sleep 5 && echo x` stops at sleep (echo never
+      // runs), like SIGINT killing the foreground process group.
+      let timer;
+      try {
+        await Promise.race([
+          new Promise((r) => { timer = setTimeout(r, ms); }),
+          abortCurrent.catch(() => { aborted = true; }),
+        ]);
+      } finally { clearTimeout(timer); }
+    } else {
+      await new Promise((r) => setTimeout(r, ms));
+    }
+    return aborted ? 130 : 0;
   },
 
   async grep(args) {
