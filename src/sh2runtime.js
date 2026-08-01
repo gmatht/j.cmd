@@ -59,7 +59,10 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     if (name === "!") return String(0);
     if (name === "0") return argv0;
     if (/^[1-9]$/.test(name)) return scriptArgs[Number(name) - 1] || "";
-    if (vars.has(name)) return vars.get(name);
+    if (vars.has(name)) {
+      const v = vars.get(name);
+      return Array.isArray(v) ? String(v[0] ?? "") : v;
+    }
     if (env && env[name] !== undefined) return String(env[name]);
     return "";
   }
@@ -284,6 +287,38 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
   async function and(fnA, fnB) { return !!(await fnA()) && !!(await fnB()); }
   async function or(fnA, fnB) { return !!(await fnA()) || !!(await fnB()); }
 
+  // $((...)) in argument position — evaluate and stringify (the result
+  // is a shell word, not a number). The compiler emits a SYNC arrow and
+  // calls this without await, so it must be synchronous.
+  function arithEval(fn) { return String(fn()); }
+
+  // ─── arrays: arr=(a b c), ${arr[i]}, ${#arr[@]} ──────────────
+  function setArray(name, arr) {
+    vars.set(name, (arr || []).map(String));
+  }
+  function arrayIndex(name, idx) {
+    const v = vars.get(name);
+    if (Array.isArray(v)) return String(v[Number(idx)] ?? "");
+    if (vars.has(name)) return Number(idx) === 0 ? String(v) : "";
+    return "";
+  }
+  function arrayLen(name) {
+    const v = vars.get(name);
+    if (Array.isArray(v)) return String(v.length);
+    if (vars.has(name)) return "1";
+    return "0";
+  }
+
+  // bash integer division / modulo (guarding /0 → 0)
+  function idiv(a, b) { const n = Number(b); return n === 0 ? 0 : Math.trunc(Number(a) / n); }
+  function imod(a, b) { const n = Number(b); return n === 0 ? 0 : Math.trunc(Number(a) % n); }
+
+  // ! command / condition
+  function not(v) { return !v; }
+
+  // record $? after a condition
+  function setLastExit(code) { lastStatus = Number(code); }
+
   async function whileLoop(cond, body) {
     while (await cond()) await body();
   }
@@ -405,7 +440,8 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     sh2: {
       exec, pipeline, capture, captureWords, redirect, test,
       forLoop, whileLoop, caseMatch, define, brace, param, arith,
-      guard, and, or,
+      guard, and, or, arithEval,
+      setArray, arrayIndex, arrayLen, idiv, imod, not, setLastExit,
       getVar, setVar,
     },
     get lastStatus() { return lastStatus; },
