@@ -1703,6 +1703,15 @@ function tokenize(segment) {
       started = true;
       continue;
     }
+    if (ch === ">") {
+      // `>` is a metacharacter (bash-style): `echo 1>log` redirects to
+      // log instead of echoing "1>log". Split it out of the word, and
+      // treat ">>" as its own append-redirect token.
+      push();
+      if (segment[i + 1] === ">") { tokens.push(">>"); i++; }
+      else tokens.push(">");
+      continue;
+    }
     if (/\s/.test(ch)) { push(); continue; }
     cur += ch;
     started = true;

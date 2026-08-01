@@ -407,7 +407,6 @@ const sh2libFacade = buildSh2LibFacade(fs);  // debashl toolchain, injected into
 // vertical slice of the right 1/4 of the display; its output streams
 // into the slice. The title bar carries minimise (collapse to the
 // dock) and kill (terminate / dismiss) buttons.
-let bgOutputTarget = null;   // bg job's panel slice body — direct-DOM commands (watch) render here
 const bgPanel = document.getElementById("bg-panel");
 const bgSlicesEl = document.getElementById("bg-panel-slices");
 const bgDockEl = document.getElementById("bg-panel-dock");
@@ -452,30 +451,15 @@ function getBgJobs() {
       // this job owns the writer (guarded), so concurrent foreground
       // output is forwarded to the terminal instead of being eaten.
       runLine: async (job) => {
+        // The output target (the job's panel slice) is threaded through
+        // the command chain — runSegment routes this job's output to it.
+        // No global writer swap: a job that runs forever must not capture
+        // the foreground's output.
         let code = 0;
-        const preOut = stdout.write;
-        const preErr = stderr.write;
-        const outFn = (chunk) => {
-          if (stdout.write === outFn) { job.appendOut(chunk); return true; }
-          return preOut(chunk);
-        };
-        const errFn = (chunk) => {
-          if (stderr.write === errFn) { job.appendErr(chunk); return true; }
-          return preErr(chunk);
-        };
-        stdout.write = outFn;
-        stderr.write = errFn;
-        // Direct-DOM commands (watch, screen) render into the job's
-        // panel slice instead of the terminal — exposed as
-        // shell.outputTarget to .js command files.
-        const prevTarget = bgOutputTarget;
-        bgOutputTarget = job.bodyEl;
         try {
-          code = (await runConditionalList(job.cmd)) ?? 0;
-        } finally {
-          bgOutputTarget = prevTarget;
-          if (stdout.write === outFn) stdout.write = preOut;
-          if (stderr.write === errFn) stderr.write = preErr;
+          code = (await runConditionalList(job.cmd, "", job.bodyEl)) ?? 0;
+        } catch {
+          code = 1;
         }
         return code;
       },
@@ -3549,6 +3533,15 @@ function tokenize(segment) {
       started = true;
       continue;
     }
+    if (ch === ">") {
+      // `>` is a metacharacter (bash-style): `echo 1>log` redirects to
+      // log instead of echoing "1>log". Split it out of the word, and
+      // treat ">>" as its own append-redirect token.
+      push();
+      if (segment[i + 1] === ">") { tokens.push(">>"); i++; }
+      else tokens.push(">");
+      continue;
+    }
     if (/\s/.test(ch)) { push(); continue; }
     cur += ch;
     started = true;
@@ -3695,7 +3688,7 @@ async function runPythonCmd(args, stdin, isLast, outputRedirect, appendRedirect)
 // Run one pipeline (`|`-separated commands), feeding each command's
 // stdout to the next command's stdin. Returns the pipeline's exit
 // status: the first failing command's status, else the last one's.
-async function runPipeline(pipelineText, initialStdin = "") {
+async function runPipeline(pipelineText, initialStdin = "", target = null) {
   const segments = splitPipe(pipelineText);
   let stdin = initialStdin;
   let exitCode = 0;
@@ -3704,7 +3697,7 @@ async function runPipeline(pipelineText, initialStdin = "") {
       stderr.write(`tinysh: syntax error near unexpected token '|'\n`);
       return 2;
     }
-    const result = await runSegment(segments[i], stdin, i === segments.length - 1);
+    const result = await runSegment(segments[i], stdin, i === segments.length - 1, target);
     if (!result.ok) return result.code ?? 1;
     stdin = result.output;
     exitCode = result.code ?? 0;
@@ -3801,7 +3794,7 @@ window.shellPaneRun = async (line, opts = {}) => {
 // stdout. Returns { ok, code, output } — `code` is the command's exit
 // status (0 success), `output` is the captured stdout that should be
 // fed to the next segment (empty for the last segment).
-async function runSegment(segmentText, stdin, isLast) {
+async function runSegment(segmentText, stdin, isLast, target = null) {
   let tokens;
   try {
     tokens = tokenize(segmentText);
@@ -3812,6 +3805,33 @@ async function runSegment(segmentText, stdin, isLast) {
   if (tokens.length === 0) return { ok: false, code: 2, output: "" };
   const cmd = tokens[0];
   const args = tokens.slice(1);
+
+  // Output router for THIS command only (guarded restore): background
+  // jobs render into their panel slice (target), foreground commands go
+  // to the terminal. Because it is installed per command, a job that
+  // runs forever never captures the foreground's output, and nested
+  // routers forward to their saved writer instead of recursing.
+  const preOut = stdout.write;
+  const preErr = stderr.write;
+  const routerOut = (chunk) => {
+    if (stdout.write !== routerOut) return preOut(chunk);
+    if (suppressOutput) return true;
+    if (target && target.appendOut) { target.appendOut(chunk); return true; }
+    return preOut(chunk);
+  };
+  const routerErr = (chunk) => {
+    if (stderr.write !== routerErr) return preErr(chunk);
+    if (suppressOutput) return true;
+    if (target && target.appendErr) { target.appendErr(chunk); return true; }
+    return preErr(chunk);
+  };
+  stdout.write = routerOut;
+  stderr.write = routerErr;
+  const restoreWriters = () => {
+    if (stdout.write === routerOut) stdout.write = preOut;
+    if (stderr.write === routerErr) stderr.write = preErr;
+  };
+  try {
 
   let outputRedirect = null;
   let appendRedirect = false;
@@ -4033,7 +4053,7 @@ async function runSegment(segmentText, stdin, isLast) {
       jobs: getJobScheduler(),   // at/cron scheduler (src/jobs.js)
       // When the command runs as a background job, its output lands in
       // the job's panel slice; direct-DOM commands (watch) render there.
-      outputTarget: bgOutputTarget,
+      outputTarget: target,
       // Register a callback fired on Ctrl+C — lets long-running commands
       // (watch, xeyes, ...) tear themselves down when interrupted.
       onInterrupt: (fn) => { interruptCallbacks.push(fn); },
@@ -4062,6 +4082,8 @@ async function runSegment(segmentText, stdin, isLast) {
     if (e instanceof InterruptError) throw e;
     stderr.write(`${cmd}: error: ${e.message}\n`);
     return { ok: false, code: 1, output: "" };
+  } finally {
+    restoreWriters();
   }
 }
 
@@ -4109,7 +4131,7 @@ function splitBgList(line) {
   return parts;
 }
 
-async function handleLine(line, initialStdin) {
+async function handleLine(line, initialStdin, target = null) {
   const trimmed = line.trim();
   if (!trimmed) return;
 
@@ -4154,7 +4176,7 @@ async function handleLine(line, initialStdin) {
       const job = getBgJobs().launch(seg.text);
       write(`[${job.id}] ${job.pid}\n`);
     } else {
-      exitCode = await runConditionalList(seg.text, initialStdin);
+      exitCode = await runConditionalList(seg.text, initialStdin, target);
     }
   }
   return exitCode;
@@ -4162,7 +4184,7 @@ async function handleLine(line, initialStdin) {
 
 // Run one conditional list (`&&` / `||`-joined pipelines) — the
 // foreground part of a line, or the body of a background job.
-async function runConditionalList(text, initialStdin) {
+async function runConditionalList(text, initialStdin, target = null) {
   let parts;
   try {
     parts = splitConditionals(text);
@@ -4188,7 +4210,7 @@ async function runConditionalList(text, initialStdin) {
       if (parts[i].op === "&&" && exitCode !== 0) continue;
       if (parts[i].op === "||" && exitCode === 0) continue;
     }
-    exitCode = await runPipeline(parts[i].text, initialStdin);
+    exitCode = await runPipeline(parts[i].text, initialStdin, target);
   }
   return exitCode;
 }
