@@ -3317,6 +3317,1339 @@ return 2;
       })
       .catch(() => syncWrite(this._getBackend("/bin/cron.js"), "/cron.js", cronContent));
 
+    // curl — fetch URLs (fetch-based, -o saves)
+    const curlContent = `// curl v1 — transfer data from URLs (fetch-based)
+//
+// NAME
+//      curl — transfer data from URLs
+//
+// SYNOPSIS
+//      curl [-o FILE] [-I] [-s] URL
+//
+// DESCRIPTION
+//      curl fetches a URL with the browser/Node fetch API. Without -o
+//      the response body is printed; -o saves it to a file (binary
+//      safe). In the browser, CORS applies (the same restriction as
+//      the /http mount).
+//
+// OPTIONS
+//      -o FILE    save the response body to FILE
+//      -I, --head show response headers only
+//      -s, --silent  no progress line when saving
+//      -h, --help show this help
+//
+// EXAMPLES
+//      curl https://example.com
+//      curl -o /home/logo.png https://example.com/logo.png
+//      curl -I https://example.com
+
+var url = null;
+var outFile = null;
+var headersOnly = false;
+var silent = false;
+var i = 0;
+while (i < args.length) {
+  var a = args[i];
+  if (a === "-h" || a === "--help") {
+    console.log("curl — transfer data from URLs");
+    console.log("usage: curl [-o FILE] [-I] [-s] URL");
+    console.log("example: curl https://example.com · curl -o /home/f.png URL");
+    return 0;
+  }
+  if (a === "-o") { outFile = args[i + 1]; i += 2; continue; }
+  if (a === "-I" || a === "--head") { headersOnly = true; i++; continue; }
+  if (a === "-s" || a === "--silent") { silent = true; i++; continue; }
+  url = a;
+  i++;
+}
+if (!url) {
+  console.log("curl — transfer data from URLs");
+  console.log("usage: curl [-o FILE] [-I] [-s] URL");
+  console.log("example: curl https://example.com");
+  return 2;
+}
+
+var resp;
+try {
+  resp = await fetch(url, { method: headersOnly ? "HEAD" : "GET" });
+} catch (e) {
+  console.log("curl: " + url + ": " + (e && e.message ? e.message : String(e)));
+  return 1;
+}
+
+if (headersOnly) {
+  console.log("HTTP/" + resp.status + " " + resp.statusText);
+  if (resp.headers && resp.headers.forEach) {
+    resp.headers.forEach(function (v, k) { console.log(k + ": " + v); });
+  }
+  return 0;
+}
+if (!resp.ok) {
+  console.log("curl: " + url + ": HTTP " + resp.status + " " + resp.statusText);
+  return 1;
+}
+
+if (outFile) {
+  var blob = await resp.blob();
+  var dest = typeof fs._resolve === "function" ? fs._resolve(outFile) : outFile;
+  await fs.writeBlob(dest, blob);
+  if (!silent) console.log("curl: saved " + blob.size + " bytes to " + outFile);
+} else {
+  var text = await resp.text();
+  if (text) console.log(text);
+}
+return 0;
+`;
+    this._getBackend("/bin/curl.js").read("/curl.js")
+      .then((existing) => {
+        if (!existing.includes("curl v1")) {
+          syncWrite(this._getBackend("/bin/curl.js"), "/curl.js", curlContent);
+        }
+      })
+      .catch(() => syncWrite(this._getBackend("/bin/curl.js"), "/curl.js", curlContent));
+
+    // gzip — compress files (pako/zlib)
+    const gzipContent = `// gzip v1 — compress files (gzip format)
+//
+// NAME
+//      gzip — compress files (gzip format)
+//
+// SYNOPSIS
+//      gzip [-d] [-k] file...
+//
+// DESCRIPTION
+//      gzip compresses each file to <file>.gz and removes the
+//      original (like real gzip); -k keeps it. -d decompresses
+//      <file>.gz back to <file>. Engine: pako in the browser,
+//      node:zlib in the CLI. Binary safe (readBlob/writeBlob).
+//
+// OPTIONS
+//      -d, --decompress  decompress (same as gunzip)
+//      -k, --keep        keep the input file
+//      -h, --help        show this help
+//
+// EXAMPLES
+//      gzip /home/notes.txt          → /home/notes.txt.gz
+//      gzip -d /home/notes.txt.gz    → /home/notes.txt
+//      gzip -k -d /home/notes.txt.gz
+
+var NL = String.fromCharCode(10);
+var isBrowser = typeof window !== "undefined" && typeof document !== "undefined";
+var decompress = false;
+var keep = false;
+var files = [];
+var i = 0;
+while (i < args.length) {
+  var a = args[i];
+  if (a === "-h" || a === "--help") {
+    console.log("gzip — compress files (gzip format)");
+    console.log("usage: gzip [-d] [-k] file...");
+    console.log("example: gzip /home/notes.txt · gzip -d /home/notes.txt.gz");
+    return 0;
+  }
+  if (a === "-d" || a === "--decompress") { decompress = true; i++; continue; }
+  if (a === "-k" || a === "--keep") { keep = true; i++; continue; }
+  if (a.charAt(0) === "-" && a.length > 1) {
+    console.log("gzip: invalid option -- '" + a + "'");
+    return 2;
+  }
+  files.push(a);
+  i++;
+}
+if (files.length === 0) {
+  console.log("gzip: no files (gzip [-d] [-k] file...)");
+  return 2;
+}
+
+// ─── engine: pako (browser) · node:zlib (CLI) ───
+var engine = null;
+if (isBrowser) {
+  await new Promise(function (resolve, reject) {
+    var src = "vendor/pako.min.js";
+    if (window.pako) return resolve();
+    if (document.querySelector('script[src="' + src + '"]')) return resolve();
+    var s = document.createElement("script");
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = function () { reject(new Error("failed to load " + src)); };
+    document.head.appendChild(s);
+  });
+  engine = {
+    compress: function (u8) { return window.pako.gzip(u8); },
+    decompress: function (u8) { return window.pako.ungzip(u8); },
+  };
+} else {
+  var zlib = await import("node:zlib");
+  engine = {
+    compress: function (u8) { return new Uint8Array(zlib.gzipSync(u8)); },
+    decompress: function (u8) { return new Uint8Array(zlib.gunzipSync(u8)); },
+  };
+}
+
+var hadError = false;
+for (var f = 0; f < files.length; f++) {
+  var srcPath = typeof fs._resolve === "function" ? fs._resolve(files[f]) : files[f];
+  var input;
+  try {
+    var blob = await fs.readBlob(srcPath);
+    input = new Uint8Array(await blob.arrayBuffer());
+  } catch (e) {
+    console.log("gzip: " + files[f] + ": No such file or directory");
+    hadError = true;
+    continue;
+  }
+  try {
+    var output;
+    var dest;
+    if (decompress) {
+      output = engine.decompress(input);
+      dest = files[f].slice(-3) === ".gz" ? files[f].slice(0, -3) : files[f] + ".out";
+    } else {
+      output = engine.compress(input);
+      dest = files[f] + ".gz";
+    }
+    var destPath = typeof fs._resolve === "function" ? fs._resolve(dest) : dest;
+    var mime = decompress ? "application/octet-stream" : "application/gzip";
+    await fs.writeBlob(destPath, new Blob([output], { type: mime }));
+    if (!keep) await fs.remove(srcPath);
+    console.log("gzip: " + files[f] + " → " + dest + " (" + output.length + " bytes)");
+  } catch (e) {
+    console.log("gzip: " + files[f] + ": " + (e && e.message ? e.message : String(e)));
+    hadError = true;
+  }
+}
+return hadError ? 1 : 0;
+`;
+    this._getBackend("/bin/gzip.js").read("/gzip.js")
+      .then((existing) => {
+        if (!existing.includes("gzip v1")) {
+          syncWrite(this._getBackend("/bin/gzip.js"), "/gzip.js", gzipContent);
+        }
+      })
+      .catch(() => syncWrite(this._getBackend("/bin/gzip.js"), "/gzip.js", gzipContent));
+
+    // gunzip — decompress gzip files
+    const gunzipContent = `// gunzip v1 — decompress gzip files
+//
+// NAME
+//      gunzip — decompress gzip files
+//
+// SYNOPSIS
+//      gunzip [-k] file.gz...
+//
+// DESCRIPTION
+//      gunzip decompresses each <file>.gz back to <file> and removes
+//      the archive (like real gunzip); -k keeps it. Engine: pako in
+//      the browser, node:zlib in the CLI. Binary safe.
+//
+// OPTIONS
+//      -k, --keep   keep the .gz input
+//      -h, --help   show this help
+//
+// EXAMPLES
+//      gunzip /home/notes.txt.gz    → /home/notes.txt
+
+var isBrowser = typeof window !== "undefined" && typeof document !== "undefined";
+var keep = false;
+var files = [];
+var i = 0;
+while (i < args.length) {
+  var a = args[i];
+  if (a === "-h" || a === "--help") {
+    console.log("gunzip — decompress gzip files");
+    console.log("usage: gunzip [-k] file.gz...");
+    console.log("example: gunzip /home/notes.txt.gz");
+    return 0;
+  }
+  if (a === "-k" || a === "--keep") { keep = true; i++; continue; }
+  if (a.charAt(0) === "-" && a.length > 1) {
+    console.log("gunzip: invalid option -- '" + a + "'");
+    return 2;
+  }
+  files.push(a);
+  i++;
+}
+if (files.length === 0) {
+  console.log("gunzip: no files (gunzip [-k] file.gz...)");
+  return 2;
+}
+
+var engine = null;
+if (isBrowser) {
+  await new Promise(function (resolve, reject) {
+    var src = "vendor/pako.min.js";
+    if (window.pako) return resolve();
+    if (document.querySelector('script[src="' + src + '"]')) return resolve();
+    var s = document.createElement("script");
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = function () { reject(new Error("failed to load " + src)); };
+    document.head.appendChild(s);
+  });
+  engine = function (u8) { return window.pako.ungzip(u8); };
+} else {
+  var zlib = await import("node:zlib");
+  engine = function (u8) { return new Uint8Array(zlib.gunzipSync(u8)); };
+}
+
+var hadError = false;
+for (var f = 0; f < files.length; f++) {
+  var srcPath = typeof fs._resolve === "function" ? fs._resolve(files[f]) : files[f];
+  var input;
+  try {
+    var blob = await fs.readBlob(srcPath);
+    input = new Uint8Array(await blob.arrayBuffer());
+  } catch (e) {
+    console.log("gunzip: " + files[f] + ": No such file or directory");
+    hadError = true;
+    continue;
+  }
+  try {
+    var output = engine(input);
+    var dest = files[f].slice(-3) === ".gz" ? files[f].slice(0, -3) : files[f] + ".out";
+    var destPath = typeof fs._resolve === "function" ? fs._resolve(dest) : dest;
+    await fs.writeBlob(destPath, new Blob([output], { type: "application/octet-stream" }));
+    if (!keep) await fs.remove(srcPath);
+    console.log("gunzip: " + files[f] + " → " + dest + " (" + output.length + " bytes)");
+  } catch (e) {
+    console.log("gunzip: " + files[f] + ": " + (e && e.message ? e.message : String(e)));
+    hadError = true;
+  }
+}
+return hadError ? 1 : 0;
+`;
+    this._getBackend("/bin/gunzip.js").read("/gunzip.js")
+      .then((existing) => {
+        if (!existing.includes("gunzip v1")) {
+          syncWrite(this._getBackend("/bin/gunzip.js"), "/gunzip.js", gunzipContent);
+        }
+      })
+      .catch(() => syncWrite(this._getBackend("/bin/gunzip.js"), "/gunzip.js", gunzipContent));
+
+    // md5sum — MD5 checksums (pure-JS md5)
+    const md5sumContent = `// md5sum v1 — compute MD5 checksums
+//
+// NAME
+//      md5sum — compute MD5 checksums
+//
+// SYNOPSIS
+//      md5sum [file...]
+//
+// DESCRIPTION
+//      Prints the MD5 digest of each file (or of stdin when no files
+//      are given), in "hash  filename" form. Uses a bundled pure-JS
+//      MD5 so it works identically in the browser and the CLI.
+//
+// EXAMPLES
+//      md5sum /home/hello.txt
+//      echo hi | md5sum
+
+// ─── pure-JS MD5 (no dependencies; works in browser + Node) ───
+function md5Hex(bytes) {
+  var n = bytes.length;
+  var padded = ((n + 9 + 63) >> 6) << 6;
+  var buf = new Uint8Array(padded);
+  buf.set(bytes);
+  buf[n] = 0x80;
+  var dv = new DataView(buf.buffer);
+  dv.setUint32(padded - 8, (n << 3) >>> 0, true);
+  dv.setUint32(padded - 4, Math.floor(n / 0x20000000), true);
+  var s = [7,12,17,22,7,12,17,22,7,12,17,22,7,12,17,22,
+           5,9,14,20,5,9,14,20,5,9,14,20,5,9,14,20,
+           4,11,16,23,4,11,16,23,4,11,16,23,4,11,16,23,
+           6,10,15,21,6,10,15,21,6,10,15,21,6,10,15,21];
+  var K = [0xd76aa478,0xe8c7b756,0x242070db,0xc1bdceee,
+           0xf57c0faf,0x4787c62a,0xa8304613,0xfd469501,
+           0x698098d8,0x8b44f7af,0xffff5bb1,0x895cd7be,
+           0x6b901122,0xfd987193,0xa679438e,0x49b40821,
+           0xf61e2562,0xc040b340,0x265e5a51,0xe9b6c7aa,
+           0xd62f105d,0x02441453,0xd8a1e681,0xe7d3fbc8,
+           0x21e1cde6,0xc33707d6,0xf4d50d87,0x455a14ed,
+           0xa9e3e905,0xfcefa3f8,0x676f02d9,0x8d2a4c8a,
+           0xfffa3942,0x8771f681,0x6d9d6122,0xfde5380c,
+           0xa4beea44,0x4bdecfa9,0xf6bb4b60,0xbebfbc70,
+           0x289b7ec6,0xeaa127fa,0xd4ef3085,0x04881d05,
+           0xd9d4d039,0xe6db99e5,0x1fa27cf8,0xc4ac5665,
+           0xf4292244,0x432aff97,0xab9423a7,0xfc93a039,
+           0x655b59c3,0x8f0ccc92,0xffeff47d,0x85845dd1,
+           0x6fa87e4f,0xfe2ce6e0,0xa3014314,0x4e0811a1,
+           0xf7537e82,0xbd3af235,0x2ad7d2bb,0xeb86d391];
+  var a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
+  var M = new DataView(buf.buffer);
+  for (var off = 0; off < padded; off += 64) {
+    var A = a0, B = b0, C = c0, D = d0;
+    for (var j = 0; j < 64; j++) {
+      var f, g;
+      if (j < 16) { f = (B & C) | (~B & D); g = j; }
+      else if (j < 32) { f = (D & B) | (~D & C); g = (5 * j + 1) % 16; }
+      else if (j < 48) { f = B ^ C ^ D; g = (3 * j + 5) % 16; }
+      else { f = C ^ (B | ~D); g = (7 * j) % 16; }
+      var X = M.getUint32(off + g * 4, true);
+      var tmp = D;
+      D = C; C = B;
+      var sum = (A + f + K[j] + X) >>> 0;
+      var rot = (sum << s[j]) | (sum >>> (32 - s[j]));
+      B = (B + rot) >>> 0;
+      A = tmp;
+    }
+    a0 = (a0 + A) >>> 0; b0 = (b0 + B) >>> 0;
+    c0 = (c0 + C) >>> 0; d0 = (d0 + D) >>> 0;
+  }
+  function hx(v) {
+    // MD5 digests print each 32-bit word little-endian (lowest byte first)
+    var s = ("0000000" + v.toString(16)).slice(-8);
+    return s.slice(6, 8) + s.slice(4, 6) + s.slice(2, 4) + s.slice(0, 2);
+  }
+  return hx(a0) + hx(b0) + hx(c0) + hx(d0);
+}
+
+if (args.length === 0 || args[0] === "-h" || args[0] === "--help") {
+  console.log("md5sum — compute MD5 checksums");
+  console.log("usage: md5sum [file...]   (stdin when no files)");
+  console.log("example: md5sum /home/hello.txt");
+  return args.length ? 0 : 2;
+}
+
+async function bytesOf(path) {
+  var blob = await fs.readBlob(path);
+  return new Uint8Array(await blob.arrayBuffer());
+}
+function hexOf(bytes) {
+  var hex = "";
+  for (var i = 0; i < bytes.length; i++) {
+    var b = bytes[i].toString(16);
+    hex += b.length === 1 ? "0" + b : b;
+  }
+  return hex;
+}
+
+var hadError = false;
+for (var i = 0; i < args.length; i++) {
+  var path = typeof fs._resolve === "function" ? fs._resolve(args[i]) : args[i];
+  var data;
+  try { data = await bytesOf(path); }
+  catch (e) {
+    console.log("md5sum: " + args[i] + ": No such file or directory");
+    hadError = true;
+    continue;
+  }
+  console.log(md5Hex(data) + "  " + args[i]);
+}
+return hadError ? 1 : 0;
+`;
+    this._getBackend("/bin/md5sum.js").read("/md5sum.js")
+      .then((existing) => {
+        if (!existing.includes("md5sum v1")) {
+          syncWrite(this._getBackend("/bin/md5sum.js"), "/md5sum.js", md5sumContent);
+        }
+      })
+      .catch(() => syncWrite(this._getBackend("/bin/md5sum.js"), "/md5sum.js", md5sumContent));
+
+    // sha256sum — SHA-256 checksums (Web Crypto)
+    const sha256sumContent = `// sha256sum v1 — compute SHA-256 checksums
+//
+// NAME
+//      sha256sum — compute SHA-256 checksums
+//
+// SYNOPSIS
+//      sha256sum [file...]
+//
+// DESCRIPTION
+//      Prints the SHA-256 digest of each file (or of stdin when no
+//      files are given), in "hash  filename" form. Uses the Web
+//      Crypto API (crypto.subtle), which both the browser and Node
+//      provide.
+//
+// EXAMPLES
+//      sha256sum /home/hello.txt
+//      echo hi | sha256sum
+
+if (args.length === 0 || args[0] === "-h" || args[0] === "--help") {
+  console.log("sha256sum — compute SHA-256 checksums");
+  console.log("usage: sha256sum [file...]   (stdin when no files)");
+  console.log("example: sha256sum /home/hello.txt");
+  return args.length ? 0 : 2;
+}
+
+function toHex(bytes) {
+  var hex = "";
+  for (var i = 0; i < bytes.length; i++) {
+    var b = bytes[i].toString(16);
+    hex += b.length === 1 ? "0" + b : b;
+  }
+  return hex;
+}
+
+var hadError = false;
+for (var i = 0; i < args.length; i++) {
+  var path = typeof fs._resolve === "function" ? fs._resolve(args[i]) : args[i];
+  try {
+    var blob = await fs.readBlob(path);
+    var data = new Uint8Array(await blob.arrayBuffer());
+    var digest = await crypto.subtle.digest("SHA-256", data);
+    console.log(toHex(new Uint8Array(digest)) + "  " + args[i]);
+  } catch (e) {
+    console.log("sha256sum: " + args[i] + ": " + (e && e.message ? e.message : String(e)));
+    hadError = true;
+  }
+}
+return hadError ? 1 : 0;
+`;
+    this._getBackend("/bin/sha256sum.js").read("/sha256sum.js")
+      .then((existing) => {
+        if (!existing.includes("sha256sum v1")) {
+          syncWrite(this._getBackend("/bin/sha256sum.js"), "/sha256sum.js", sha256sumContent);
+        }
+      })
+      .catch(() => syncWrite(this._getBackend("/bin/sha256sum.js"), "/sha256sum.js", sha256sumContent));
+
+    // tar — ustar archives, -z gzip, streams to /pc via StreamSaver
+    const tarContent = `// tar v1 — create, list and extract tar archives (ustar)
+//
+// NAME
+//      tar — create, list and extract tar archives
+//
+// SYNOPSIS
+//      tar -cf ARCHIVE <file|dir>...   create (dirs recursed)
+//      tar -tf ARCHIVE                 list entries
+//      tar -xf ARCHIVE                 extract (into cwd or -C DIR)
+//      tar -z                          gzip the archive (tar.gz)
+//
+// DESCRIPTION
+//      tar packs files and directories into a POSIX ustar archive.
+//      Directories are recursed; remote/device mounts (/pc /dev /proc
+//      /http /github /gitlab /git /mount) are skipped when walking.
+//      With -z the archive is gzip-compressed (pako/node:zlib). When
+//      the destination is on /pc, the archive is STREAMED through
+//      StreamSaver as it is built — nothing is materialized in memory.
+//
+// OPTIONS
+//      -cf FILE ...   create
+//      -tf FILE       list
+//      -xf FILE       extract
+//      -C DIR         extract into DIR
+//      -z             gzip (create) / gunzip (extract)
+//      -h, --help     show this help
+//
+// EXAMPLES
+//      tar -cf /home/backup.tar /home/notes.txt /home/photos/
+//      tar -czf /pc/backup.tgz /          (streams the download)
+//      tar -xf /home/backup.tar -C /tmp
+
+var isBrowser = typeof window !== "undefined" && typeof document !== "undefined";
+var BLOCK = 512;
+var SKIP = ["/pc", "/dev", "/proc", "/http", "/github", "/gitlab", "/git", "/mount", "/commands"];
+var enc = new TextEncoder();
+var dec = new TextDecoder();
+
+function usage() {
+  console.log("tar — create, list and extract tar archives (ustar)");
+  console.log("usage: tar -cf ARCHIVE file... · tar -tf ARCHIVE · tar -xf ARCHIVE [-C DIR] [-z]");
+  console.log("example: tar -czf /pc/backup.tgz /");
+}
+
+if (args.length === 0 || args[0] === "-h" || args[0] === "--help") { usage(); return args.length ? 0 : 2; }
+
+var mode = null;      // "c" | "t" | "x"
+var gzip = false;
+var archive = null;
+var extractDir = null;
+var paths = [];
+var i = 0;
+while (i < args.length) {
+  var a = args[i];
+  if (a.charAt(0) === "-" && a.length > 1 && a !== "-C") {
+    for (var k = 1; k < a.length; k++) {
+      var c = a.charAt(k);
+      if (c === "c" || c === "t" || c === "x") mode = c;
+      else if (c === "z") gzip = true;
+      else if (c === "f") { archive = args[i + 1]; i++; }
+      else if (c === "C") { extractDir = args[i + 1]; i++; }
+      else {
+        console.log("tar: invalid option -- '" + c + "'");
+        return 2;
+      }
+    }
+    i++;
+    continue;
+  }
+  if (a === "-C") { extractDir = args[i + 1]; i += 2; continue; }
+  paths.push(a);
+  i++;
+}
+if (!mode || !archive) { usage(); return 2; }
+if (mode === "c" && paths.length === 0) { console.log("tar: no files to archive"); return 2; }
+var outPath = typeof fs._resolve === "function" ? fs._resolve(archive) : archive;
+
+// ─── engine ────────────────────────────────────────────────────
+var gz = null;
+if (gzip) {
+  if (isBrowser) {
+    await new Promise(function (resolve, reject) {
+      var src = "vendor/pako.min.js";
+      if (window.pako) return resolve();
+      if (document.querySelector('script[src="' + src + '"]')) return resolve();
+      var s = document.createElement("script");
+      s.src = src;
+      s.onload = resolve;
+      s.onerror = function () { reject(new Error("failed to load " + src)); };
+      document.head.appendChild(s);
+    });
+    gz = {
+      gzip: function (u8) { return window.pako.gzip(u8); },
+      gunzip: function (u8) { return window.pako.ungzip(u8); },
+    };
+  } else {
+    var nz = await import("node:zlib");
+    gz = {
+      gzip: function (u8) { return new Uint8Array(nz.gzipSync(u8)); },
+      gunzip: function (u8) { return new Uint8Array(nz.gunzipSync(u8)); },
+    };
+  }
+}
+
+// ─── ustar helpers ──────────────────────────────────────────────
+function octal(v, len) {
+  var s = v.toString(8);
+  while (s.length < len - 1) s = "0" + s;
+  return s + String.fromCharCode(0);
+}
+function asciiInto(u8, off, len, s) {
+  var b = enc.encode(s);
+  for (var i = 0; i < len; i++) u8[off + i] = i < b.length ? b[i] : 0;
+}
+function headerFor(entry) {
+  var h = new Uint8Array(BLOCK);
+  asciiInto(h, 0, 100, entry.name);
+  asciiInto(h, 100, 8, octal(entry.mode || 420, 8));   // 0644
+  asciiInto(h, 108, 8, octal(0, 8));
+  asciiInto(h, 116, 8, octal(0, 8));
+  asciiInto(h, 124, 12, octal(entry.size || 0, 12));
+  asciiInto(h, 136, 12, octal(Math.floor((entry.mtime || Date.now()) / 1000), 12));
+  h[156] = entry.isDir ? 53 : 48;   // '5' dir, '0' file
+  // magic + version: "ustar" NUL "00"
+  var mag = enc.encode("ustar");
+  for (var m = 0; m < 5; m++) h[257 + m] = mag[m];
+  h[262] = 0; h[263] = 48; h[264] = 48;
+  asciiInto(h, 265, 32, "tinysh");
+  // checksum: sum with the field as 8 spaces, then 6 octal digits + NUL + space
+  for (var sp = 148; sp < 156; sp++) h[sp] = 32;
+  var chk = 0;
+  for (var i = 0; i < BLOCK; i++) chk += h[i];
+  var chkStr = chk.toString(8);
+  while (chkStr.length < 6) chkStr = "0" + chkStr;
+  asciiInto(h, 148, 8, chkStr + String.fromCharCode(0) + " ");
+  return h;
+}
+
+function baseName(p) {
+  var s = String(p);
+  while (s.charAt(s.length - 1) === "/") s = s.slice(0, -1);
+  var idx = s.lastIndexOf("/");
+  return idx === -1 ? s : s.slice(idx + 1);
+}
+
+function skipped(p) {
+  for (var s = 0; s < SKIP.length; s++) if (p === SKIP[s] || p.indexOf(SKIP[s] + "/") === 0) return true;
+  return false;
+}
+
+// ─── create ─────────────────────────────────────────────────────
+function* tarChunks(entries) {
+  for (var e = 0; e < entries.length; e++) {
+    var ent = entries[e];
+    var h = headerFor(ent);
+    yield h;
+    if (!ent.isDir && ent.data && ent.data.length) {
+      yield ent.data;
+      var pad = BLOCK - (ent.data.length % BLOCK);
+      if (pad !== BLOCK) yield new Uint8Array(pad);
+    }
+  }
+  yield new Uint8Array(BLOCK);
+  yield new Uint8Array(BLOCK);
+}
+
+async function createTar() {
+  var entries = [];
+  async function walk(dir, name) {
+    var list;
+    try { list = await fs.list(dir); } catch { return; }
+    var sub = [];
+    for (var k = 0; k < list.length; k++) {
+      var e = list[k];
+      var isDir = e.charAt(e.length - 1) === "/";
+      var n = isDir ? e.slice(0, -1) : e;
+      var full = dir === "/" ? "/" + n : dir + "/" + n;
+      if (skipped(full)) continue;
+      var tarName = name ? name + "/" + n : baseName(n);
+      if (isDir) {
+        entries.push({ name: tarName + "/", isDir: true, mode: 493, mtime: Date.now(), size: 0 });
+        await walk(full, tarName);
+      } else {
+        var blob = await fs.readBlob(full);
+        var data = new Uint8Array(await blob.arrayBuffer());
+        entries.push({ name: tarName, isDir: false, mode: 420, mtime: Date.now(), size: data.length, data: data });
+      }
+    }
+  }
+  for (var p = 0; p < paths.length; p++) {
+    var resolved = typeof fs._resolve === "function" ? fs._resolve(paths[p]) : paths[p];
+    if (skipped(resolved)) { console.log("tar: skipping " + paths[p] + " (mount excluded)"); continue; }
+    var st;
+    try { st = await fs.stat(resolved); } catch { st = null; }
+    if (!st) { console.log("tar: " + paths[p] + ": No such file or directory"); return 1; }
+    var base = baseName(paths[p]);
+    if (st.type === "dir") {
+      entries.push({ name: base + "/", isDir: true, mode: 493, mtime: Date.now(), size: 0 });
+      await walk(resolved, base);
+    } else {
+      var blob2 = await fs.readBlob(resolved);
+      var data2 = new Uint8Array(await blob2.arrayBuffer());
+      entries.push({ name: base, isDir: false, mode: 420, mtime: Date.now(), size: data2.length, data: data2 });
+    }
+  }
+  if (entries.length === 0) { console.log("tar: nothing to archive"); return 1; }
+
+  // chunks → (optionally gzip) → stream to /pc or build in memory
+  function* rawChunks() { yield* tarChunks(entries); }
+  var bytesWritten = await writeOut(rawChunks);
+  console.log("tar: " + entries.length + " entr" + (entries.length === 1 ? "y" : "ies") +
+    " → " + archive + " (" + bytesWritten + " bytes" + (gzip ? ", gzip" : "") + ")");
+  return 0;
+}
+
+async function writeOut(chunksFn) {
+  var gzipper = null;
+  if (gzip) {
+    if (isBrowser) gzipper = new window.pako.Deflate({ gzip: true });
+  }
+  var wrote = 0;
+  // Try streaming (DownloadFS via StreamSaver); fall back to in-memory.
+  try {
+    var ws = await fs.writeStream(outPath);
+    var writer = ws.getWriter();
+    for (var chunk of chunksFn()) {
+      if (gzipper) {
+        gzipper.push(chunk, false);
+        if (gzipper.result && gzipper.result.length) {
+          await writer.write(gzipper.result);
+          wrote += gzipper.result.length;
+          gzipper.result = null;
+        }
+      } else {
+        await writer.write(chunk);
+        wrote += chunk.length;
+      }
+    }
+    if (gzipper) {
+      gzipper.push(new Uint8Array(0), true);
+      if (gzipper.result && gzipper.result.length) {
+        await writer.write(gzipper.result);
+        wrote += gzipper.result.length;
+      }
+    }
+    await writer.close();
+    return wrote;
+  } catch (eStream) {
+    // in-memory fallback
+    var parts = [];
+    var total = 0;
+    for (var chunk2 of chunksFn()) {
+      if (gzipper) {
+        gzipper.push(chunk2, false);
+        if (gzipper.result && gzipper.result.length) { parts.push(gzipper.result); total += gzipper.result.length; gzipper.result = null; }
+      } else { parts.push(chunk2); total += chunk2.length; }
+    }
+    if (gzipper) {
+      gzipper.push(new Uint8Array(0), true);
+      if (gzipper.result && gzipper.result.length) { parts.push(gzipper.result); total += gzipper.result.length; }
+    }
+    var all = new Uint8Array(total);
+    var off = 0;
+    for (var p = 0; p < parts.length; p++) { all.set(parts[p], off); off += parts[p].length; }
+    var finalBytes = all;
+    var mime = "application/x-tar";
+    if (gzip && !gzipper) {          // CLI: compress the assembled tar
+      finalBytes = gz.gzip(all);
+      mime = "application/gzip";
+    } else if (gzipper) {
+      mime = "application/gzip";
+    }
+    await fs.writeBlob(outPath, new Blob([finalBytes], { type: mime }));
+    return finalBytes.length;
+  }
+}
+
+// ─── list ───────────────────────────────────────────────────────
+async function readRawArchive() {
+  var blob = await fs.readBlob(outPath);
+  var u8 = new Uint8Array(await blob.arrayBuffer());
+  return gzip ? gz.gunzip(u8) : u8;
+}
+
+async function listTar() {
+  var bytes = await readRawArchive();
+  var pos = 0;
+  var count = 0;
+  while (pos + BLOCK <= bytes.length) {
+    var block = bytes.subarray(pos, pos + BLOCK);
+    if (isZeroBlock(block)) break;
+    var size = parseOctal(bytes, pos + 124, 12);
+    var name = readName(bytes, pos, 100);
+    var typeflag = bytes[pos + 156];
+    if (size === null) break;
+    if (typeflag === 53 || typeflag === 48) {
+      console.log((typeflag === 53 ? "d" : "-") + " " + String(size).padStart(10) + "  " + name);
+      count++;
+    }
+    pos += BLOCK + Math.ceil(size / BLOCK) * BLOCK;
+  }
+  console.log("tar: " + count + " entr" + (count === 1 ? "y" : "ies") + " in " + archive);
+  return 0;
+}
+
+// ─── extract ────────────────────────────────────────────────────
+async function extractTar() {
+  var bytes = await readRawArchive();
+  var base = extractDir ? (typeof fs._resolve === "function" ? fs._resolve(extractDir) : extractDir) : (fs.cwd || "/home");
+  var pos = 0;
+  var count = 0;
+  var hadError = false;
+  while (pos + BLOCK <= bytes.length) {
+    var block = bytes.subarray(pos, pos + BLOCK);
+    if (isZeroBlock(block)) break;
+    var size = parseOctal(bytes, pos + 124, 12);
+    var name = readName(bytes, pos, 100);
+    var typeflag = bytes[pos + 156];
+    if (size === null) break;
+    var dest = base === "/" ? "/" + name : base + "/" + name;
+    var dataStart = pos + BLOCK;
+    var dataEnd = dataStart + Math.ceil(size / BLOCK) * BLOCK;
+    if (dataEnd > bytes.length) break;
+    try {
+      if (typeflag === 53) {
+        await fs.mkdir(dest);
+        count++;
+      } else if (typeflag === 48 || typeflag === 0) {
+        var data = bytes.subarray(dataStart, dataStart + size);
+        await fs.writeBlob(dest, new Blob([data], { type: "application/octet-stream" }));
+        console.log("  " + name);
+        count++;
+      }
+    } catch (e) {
+      console.log("tar: " + name + ": " + (e && e.message ? e.message : String(e)));
+      hadError = true;
+    }
+    pos = dataEnd;
+  }
+  console.log("tar: extracted " + count + " entr" + (count === 1 ? "y" : "ies") + " to " + base);
+  return hadError ? 1 : 0;
+}
+
+function isZeroBlock(b) {
+  for (var i = 0; i < BLOCK; i++) if (b[i] !== 0) return false;
+  return true;
+}
+function parseOctal(bytes, off, len) {
+  var s = "";
+  for (var i = off; i < off + len; i++) {
+    if (bytes[i] === 0) break;
+    s += String.fromCharCode(bytes[i]);
+  }
+  s = s.trim();
+  if (!s) return null;
+  var v = parseInt(s, 8);
+  return isFinite(v) ? v : null;
+}
+function readName(bytes, off, len) {
+  var end = off;
+  while (end < off + len && bytes[end] !== 0) end++;
+  return dec.decode(bytes.subarray(off, end));
+}
+
+if (mode === "c") return await createTar();
+if (mode === "t") return await listTar();
+return await extractTar();
+`;
+    this._getBackend("/bin/tar.js").read("/tar.js")
+      .then((existing) => {
+        if (!existing.includes("tar v1")) {
+          syncWrite(this._getBackend("/bin/tar.js"), "/tar.js", tarContent);
+        }
+      })
+      .catch(() => syncWrite(this._getBackend("/bin/tar.js"), "/tar.js", tarContent));
+
+    // tree — recursive directory listing
+    const treeContent = `// tree v1 — recursive directory listing
+//
+// NAME
+//      tree — recursive directory listing
+//
+// SYNOPSIS
+//      tree [dir] [-L N] [-a]
+//
+// DESCRIPTION
+//      Prints the directory tree under [dir] (default: the current
+//      directory), with branch characters like the classic tree
+//      command. -L limits the depth, -a includes dotfiles.
+//
+// OPTIONS
+//      -L N     descend at most N levels
+//      -a       include hidden files
+//      -h, --help   show this help
+//
+// EXAMPLES
+//      tree /home
+//      tree -L 2 /tmp
+
+var NL = String.fromCharCode(10);
+var TE = String.fromCharCode(9500);   // ├
+var LE = String.fromCharCode(9492);   // └
+var VE = String.fromCharCode(9474);   // │
+var HZ = String.fromCharCode(9472);   // ─
+
+var maxDepth = Infinity;
+var showAll = false;
+var roots = [];
+var i = 0;
+while (i < args.length) {
+  var a = args[i];
+  if (a === "-h" || a === "--help") {
+    console.log("tree — recursive directory listing");
+    console.log("usage: tree [dir] [-L N] [-a]");
+    console.log("example: tree /home · tree -L 2 /tmp");
+    return 0;
+  }
+  if (a === "-L") {
+    maxDepth = parseInt(args[i + 1], 10);
+    if (!isFinite(maxDepth) || maxDepth < 1) {
+      console.log("tree: bad depth '" + (args[i + 1] || "") + "'");
+      return 2;
+    }
+    i += 2;
+    continue;
+  }
+  if (a === "-a") { showAll = true; i++; continue; }
+  if (a.charAt(0) === "-" && a.length > 1) {
+    console.log("tree: invalid option -- '" + a + "'");
+    return 2;
+  }
+  roots.push(a);
+  i++;
+}
+if (roots.length === 0) roots.push(fs.cwd || "/home");
+
+var out = "";
+var dirCount = 0;
+var fileCount = 0;
+
+function joinPath(dir, name) {
+  return dir === "/" ? "/" + name : dir + "/" + name;
+}
+
+async function walk(dir, prefix, depth) {
+  var entries;
+  try { entries = await fs.list(dir); } catch { return; }
+  var items = entries.filter(function (e) { return showAll || e.charAt(0) !== "."; });
+  items.sort();
+  for (var k = 0; k < items.length; k++) {
+    var e = items[k];
+    var isDir = e.charAt(e.length - 1) === "/";
+    var name = isDir ? e.slice(0, -1) : e;
+    var last = k === items.length - 1;
+    out += prefix + (last ? LE : TE) + HZ + HZ + " " + name + NL;
+    if (isDir) {
+      dirCount++;
+      if (depth < maxDepth) {
+        await walk(joinPath(dir, name), prefix + (last ? "    " : VE + "   "), depth + 1);
+      }
+    } else {
+      fileCount++;
+    }
+  }
+}
+
+for (var r = 0; r < roots.length; r++) {
+  var root = typeof fs._resolve === "function" ? fs._resolve(roots[r]) : roots[r];
+  out += root + NL;
+  await walk(root, "", 1);
+  out += NL;
+}
+out += dirCount + " director" + (dirCount === 1 ? "y" : "ies") + ", " +
+  fileCount + " file" + (fileCount === 1 ? "" : "s");
+console.log(out);
+return 0;
+`;
+    this._getBackend("/bin/tree.js").read("/tree.js")
+      .then((existing) => {
+        if (!existing.includes("tree v1")) {
+          syncWrite(this._getBackend("/bin/tree.js"), "/tree.js", treeContent);
+        }
+      })
+      .catch(() => syncWrite(this._getBackend("/bin/tree.js"), "/tree.js", treeContent));
+
+    // uptime — how long the shell has been running
+    const uptimeContent = `// uptime v1 — how long the shell has been running
+//
+// NAME
+//      uptime — how long the shell has been running
+//
+// SYNOPSIS
+//      uptime
+//
+// DESCRIPTION
+//      Prints the current time, how long the shell has been up
+//      (since the page loaded in the browser, or since the process
+//      started in the CLI), the current user, and a load average.
+//      The load average is not tracked, so it reads 0.00.
+//
+// EXAMPLES
+//      uptime
+
+var NL = String.fromCharCode(10);
+
+var uptimeSec = 0;
+if (typeof performance !== "undefined" && performance.timeOrigin) {
+  uptimeSec = (Date.now() - performance.timeOrigin) / 1000;
+} else if (typeof process !== "undefined" && typeof process.uptime === "function") {
+  uptimeSec = process.uptime();
+}
+
+function pad(n) { return n < 10 ? "0" + n : String(n); }
+
+function fmtUptime(sec) {
+  var s = Math.max(0, Math.floor(sec));
+  var d = Math.floor(s / 86400);
+  var h = Math.floor((s % 86400) / 3600);
+  var m = Math.floor((s % 3600) / 60);
+  if (d > 0) return d + " day" + (d === 1 ? "" : "s") + ", " + h + ":" + pad(m);
+  if (h > 0) return h + ":" + pad(m);
+  return m + " min";
+}
+
+var now = new Date();
+var clock = pad(now.getHours()) + ":" + pad(now.getMinutes()) + ":" + pad(now.getSeconds());
+console.log(" " + clock + " up " + fmtUptime(uptimeSec) +
+  ", 1 user, load average: 0.00, 0.00, 0.00");
+console.log("(load average is not tracked by this shell)");
+return 0;
+`;
+    this._getBackend("/bin/uptime.js").read("/uptime.js")
+      .then((existing) => {
+        if (!existing.includes("uptime v1")) {
+          syncWrite(this._getBackend("/bin/uptime.js"), "/uptime.js", uptimeContent);
+        }
+      })
+      .catch(() => syncWrite(this._getBackend("/bin/uptime.js"), "/uptime.js", uptimeContent));
+
+    // zip — create/list/extract ZIP archives
+    const zipContent = `// zip v1 — package files into a ZIP archive
+//
+// NAME
+//      zip — package files into a ZIP archive
+//
+// SYNOPSIS
+//      zip <archive.zip> <file|dir>...   create (dirs recursed)
+//      zip -l <archive.zip>              list entries
+//      zip -x <archive.zip>              extract into the cwd
+//      zip -h                            help
+//
+// DESCRIPTION
+//      zip builds a standard ZIP archive (deflate, with a stored
+//      fallback for incompressible data). Directories are recursed.
+//      Engine: pako in the browser, node:zlib in the CLI. Binary safe
+//      (readBlob/writeBlob).
+//
+// EXAMPLES
+//      zip /home/backup.zip /home/notes.txt /home/photos/
+//      zip -l /home/backup.zip
+//      zip -x /home/backup.zip
+
+var isBrowser = typeof window !== "undefined" && typeof document !== "undefined";
+var enc = new TextEncoder();
+var dec = new TextDecoder();
+var LOCAL_SIG = 0x04034b50;
+var CENTRAL_SIG = 0x02014b50;
+var EOCD_SIG = 0x06054b50;
+
+// ─── CRC32 ─────────────────────────────────────────────────────
+var CRC_TABLE = (function () {
+  var t = new Uint32Array(256);
+  for (var i = 0; i < 256; i++) {
+    var c = i;
+    for (var j = 0; j < 8; j++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+    t[i] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(u8) {
+  var c = 0xffffffff;
+  for (var i = 0; i < u8.length; i++) c = CRC_TABLE[(c ^ u8[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+function rdU32(u8, off) { return (u8[off] | (u8[off + 1] << 8) | (u8[off + 2] << 16) | (u8[off + 3] << 24)) >>> 0; }
+function rdU16(u8, off) { return (u8[off] | (u8[off + 1] << 8)) & 0xffff; }
+function dosTime(d) { return ((d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1)) & 0xffff; }
+function dosDate(d) { return (((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate()) & 0xffff; }
+
+// ─── engine ────────────────────────────────────────────────────
+var zlibApi = null;
+if (isBrowser) {
+  await new Promise(function (resolve, reject) {
+    var src = "vendor/pako.min.js";
+    if (window.pako) return resolve();
+    if (document.querySelector('script[src="' + src + '"]')) return resolve();
+    var s = document.createElement("script");
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = function () { reject(new Error("failed to load " + src)); };
+    document.head.appendChild(s);
+  });
+  zlibApi = {
+    deflateRaw: function (u8) { return window.pako.deflateRaw(u8); },
+    inflateRaw: function (u8) { return window.pako.inflateRaw(u8); },
+  };
+} else {
+  var nz = await import("node:zlib");
+  zlibApi = {
+    deflateRaw: function (u8) { return new Uint8Array(nz.deflateRawSync(u8)); },
+    inflateRaw: function (u8) { return new Uint8Array(nz.inflateRawSync(u8)); },
+  };
+}
+
+function baseName(p) {
+  var s = String(p);
+  while (s.charAt(s.length - 1) === "/") s = s.slice(0, -1);
+  var idx = s.lastIndexOf("/");
+  return idx === -1 ? s : s.slice(idx + 1);
+}
+
+function usage() {
+  console.log("zip — package files into a ZIP archive");
+  console.log("usage: zip <archive.zip> <file|dir>... · zip -l <archive.zip> · zip -x <archive.zip>");
+  console.log("example: zip /home/backup.zip /home/notes.txt /home/photos/");
+}
+
+if (args.length === 0 || args[0] === "-h" || args[0] === "--help") { usage(); return args.length ? 0 : 2; }
+if (args[0] === "-l" || args[0] === "--list") { return await listArchive(args[1]); }
+if (args[0] === "-x" || args[0] === "--extract") { return await extractArchive(args[1]); }
+if (args[0].charAt(0) === "-") { console.log("zip: invalid option -- '" + args[0] + "'"); return 2; }
+if (args.length < 2) { usage(); return 2; }
+return await createArchive(args[0], args.slice(1));
+
+// ─── collect entries (dirs recursed) ───────────────────────────
+async function collectEntries(paths) {
+  var entries = [];
+  async function walk(dir, name) {
+    var list = await fs.list(dir);
+    var sub = [];
+    for (var k = 0; k < list.length; k++) {
+      var e = list[k];
+      var isDir = e.charAt(e.length - 1) === "/";
+      var n = isDir ? e.slice(0, -1) : e;
+      var full = dir === "/" ? "/" + n : dir + "/" + n;
+      var zipName = name ? name + "/" + n : n;
+      if (isDir) {
+        entries.push({ name: zipName + "/", isDir: true, data: null });
+        await walk(full, zipName);
+      } else {
+        var blob = await fs.readBlob(full);
+        var data = new Uint8Array(await blob.arrayBuffer());
+        entries.push({ name: zipName, isDir: false, data: data });
+      }
+    }
+  }
+  for (var p = 0; p < paths.length; p++) {
+    var resolved = typeof fs._resolve === "function" ? fs._resolve(paths[p]) : paths[p];
+    var st;
+    try { st = await fs.stat(resolved); } catch { st = null; }
+    if (!st) {
+      console.log("zip: " + paths[p] + ": No such file or directory");
+      return null;
+    }
+    if (st.type === "dir") {
+      entries.push({ name: baseName(paths[p]) + "/", isDir: true, data: null });
+      await walk(resolved, baseName(paths[p]));
+    } else {
+      var blob2 = await fs.readBlob(resolved);
+      entries.push({ name: baseName(paths[p]), isDir: false, data: new Uint8Array(await blob2.arrayBuffer()) });
+    }
+  }
+  return entries;
+}
+
+async function createArchive(archive, paths) {
+  var entries = await collectEntries(paths);
+  if (!entries) return 1;
+
+  var localOffsets = [];
+  var central = [];
+  var chunks = [];
+  var total = 0;
+  var now = new Date();
+  var dt = dosTime(now), dd = dosDate(now);
+
+  for (var i = 0; i < entries.length; i++) {
+    var e = entries[i];
+    var nameBytes = enc.encode(e.name);
+    var data = e.data || new Uint8Array(0);
+    var crc = e.isDir ? 0 : crc32(data);
+    var comp = e.isDir ? new Uint8Array(0) : zlibApi.deflateRaw(data);
+    var method = (!e.isDir && comp.length < data.length) ? 8 : 0;
+    if (method === 0) comp = data;
+
+    // local file header
+    var lh = new DataView(new ArrayBuffer(30));
+    lh.setUint32(0, LOCAL_SIG, true);
+    lh.setUint16(4, 20, true);      // version needed
+    lh.setUint16(6, 0, true);       // flags
+    lh.setUint16(8, method, true);
+    lh.setUint16(10, dt, true);
+    lh.setUint16(12, dd, true);
+    lh.setUint32(14, crc, true);
+    lh.setUint32(18, comp.length, true);
+    lh.setUint32(22, data.length, true);
+    lh.setUint16(26, nameBytes.length, true);
+    lh.setUint16(28, 0, true);      // extra len
+    localOffsets.push(total);
+    chunks.push(new Uint8Array(lh.buffer), nameBytes, comp);
+    total += 30 + nameBytes.length + comp.length;
+
+    // central directory entry
+    var ch = new DataView(new ArrayBuffer(46));
+    ch.setUint32(0, CENTRAL_SIG, true);
+    ch.setUint16(4, 20, true);
+    ch.setUint16(6, 20, true);
+    ch.setUint16(8, 0, true);
+    ch.setUint16(10, method, true);
+    ch.setUint16(12, dt, true);
+    ch.setUint16(14, dd, true);
+    ch.setUint32(16, crc, true);
+    ch.setUint32(20, comp.length, true);
+    ch.setUint32(24, data.length, true);
+    ch.setUint16(28, nameBytes.length, true);
+    ch.setUint16(30, 0, true);
+    ch.setUint16(32, 0, true);
+    ch.setUint16(34, 0, true);
+    ch.setUint16(36, 0, true);
+    ch.setUint32(38, 0, true);
+    ch.setUint32(42, localOffsets[i], true);
+    central.push({ bytes: new Uint8Array(ch.buffer), name: nameBytes });
+  }
+
+  var cdStart = total;
+  var cdSize = 0;
+  for (var c = 0; c < central.length; c++) {
+    chunks.push(central[c].bytes, central[c].name);
+    cdSize += 46 + central[c].name.length;
+  }
+  var eocd = new DataView(new ArrayBuffer(22));
+  eocd.setUint32(0, EOCD_SIG, true);
+  eocd.setUint16(4, 0, true);
+  eocd.setUint16(6, 0, true);
+  eocd.setUint16(8, entries.length, true);
+  eocd.setUint16(10, entries.length, true);
+  eocd.setUint32(12, cdSize, true);
+  eocd.setUint32(16, cdStart, true);
+  eocd.setUint16(20, 0, true);
+  chunks.push(new Uint8Array(eocd.buffer));
+
+  var totalBytes = 0;
+  for (var b = 0; b < chunks.length; b++) totalBytes += chunks[b].length;
+  var out = new Uint8Array(totalBytes);
+  var off = 0;
+  for (var b2 = 0; b2 < chunks.length; b2++) { out.set(chunks[b2], off); off += chunks[b2].length; }
+
+  var dest = typeof fs._resolve === "function" ? fs._resolve(archive) : archive;
+  await fs.writeBlob(dest, new Blob([out], { type: "application/zip" }));
+  console.log("zip: " + entries.length + " entr" + (entries.length === 1 ? "y" : "ies") + " → " + archive + " (" + out.length + " bytes)");
+  return 0;
+}
+
+async function listArchive(archive) {
+  var bytes = await readArchive(archive);
+  if (!bytes) return 1;
+  var eocd = findEocd(bytes);
+  if (!eocd) { console.log("zip: " + archive + ": not a zip archive"); return 1; }
+  var count = rdU16(bytes, eocd + 10);
+  var cdOff = rdU32(bytes, eocd + 16);
+  var pos = cdOff;
+  for (var i = 0; i < count; i++) {
+    if (rdU32(bytes, pos) !== CENTRAL_SIG) break;
+    var nameLen = rdU16(bytes, pos + 28);
+    var compSize = rdU32(bytes, pos + 20);
+    var name = dec.decode(bytes.subarray(pos + 46, pos + 46 + nameLen));
+    console.log(String(compSize).padStart(10) + "  " + name);
+    pos += 46 + nameLen + rdU16(bytes, pos + 30) + rdU16(bytes, pos + 32);
+  }
+  return 0;
+}
+
+async function extractArchive(archive) {
+  var bytes = await readArchive(archive);
+  if (!bytes) return 1;
+  var eocd = findEocd(bytes);
+  if (!eocd) { console.log("zip: " + archive + ": not a zip archive"); return 1; }
+  var count = rdU16(bytes, eocd + 10);
+  var cdOff = rdU32(bytes, eocd + 16);
+  var pos = cdOff;
+  var hadError = false;
+  for (var i = 0; i < count; i++) {
+    if (rdU32(bytes, pos) !== CENTRAL_SIG) break;
+    var method = rdU16(bytes, pos + 10);
+    var compSize = rdU32(bytes, pos + 20);
+    var uncompSize = rdU32(bytes, pos + 24);
+    var nameLen = rdU16(bytes, pos + 28);
+    var localOff = rdU32(bytes, pos + 42);
+    var name = dec.decode(bytes.subarray(pos + 46, pos + 46 + nameLen));
+    pos += 46 + nameLen + rdU16(bytes, pos + 30) + rdU16(bytes, pos + 32);
+    try {
+      if (name.charAt(name.length - 1) === "/") {
+        await fs.mkdir(name);
+        continue;
+      }
+      var dataOff = localOff + 30 + rdU16(bytes, localOff + 26) + rdU16(bytes, localOff + 28);
+      var comp = bytes.subarray(dataOff, dataOff + compSize);
+      var data = method === 8 ? zlibApi.inflateRaw(comp) : comp;
+      await fs.writeBlob(name, new Blob([data], { type: "application/octet-stream" }));
+      console.log("  " + name);
+    } catch (e) {
+      console.log("zip: " + name + ": " + (e && e.message ? e.message : String(e)));
+      hadError = true;
+    }
+  }
+  console.log("zip: extracted " + count + " entr" + (count === 1 ? "y" : "ies") + " from " + archive);
+  return hadError ? 1 : 0;
+}
+
+async function readArchive(archive) {
+  try {
+    var blob = await fs.readBlob(typeof fs._resolve === "function" ? fs._resolve(archive) : archive);
+    return new Uint8Array(await blob.arrayBuffer());
+  } catch (e) {
+    console.log("zip: " + archive + ": No such file or directory");
+    return null;
+  }
+}
+
+function findEocd(bytes) {
+  var min = bytes.length >= 22 ? bytes.length - 22 : 0;
+  for (var i = bytes.length - 22; i >= min; i--) {
+    if (rdU32(bytes, i) === EOCD_SIG) return i;
+  }
+  return null;
+}
+`;
+    this._getBackend("/bin/zip.js").read("/zip.js")
+      .then((existing) => {
+        if (!existing.includes("zip v1")) {
+          syncWrite(this._getBackend("/bin/zip.js"), "/zip.js", zipContent);
+        }
+      })
+      .catch(() => syncWrite(this._getBackend("/bin/zip.js"), "/zip.js", zipContent));
+
     // sh2js.js — debashl toolchain command (uses the injected sh2lib facade).
     // Version-gated (v2 marker) so file/pipe support reaches existing installs.
     const sh2jsjsContent = `async function sh2src() {

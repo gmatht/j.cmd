@@ -77,6 +77,15 @@ const SHORT = {
   cmatrix: "Matrix-style digital rain",
   at: "run a command once, later",
   cron: "periodic jobs (5-field schedule, persisted)",
+  curl: "transfer data from URLs (fetch-based)",
+  gzip: "compress files (gzip format)",
+  gunzip: "decompress gzip files",
+  md5sum: "compute MD5 checksums",
+  sha256sum: "compute SHA-256 checksums",
+  tar: "create, list and extract tar archives",
+  tree: "recursive directory listing",
+  uptime: "how long the shell has been running",
+  zip: "package files into a ZIP archive",
   screen: "split the terminal into panes (tmux-style, browser)",
   more: "page through a file (alias for cat)",
   less: "page through a file (alias for cat)",
@@ -1266,6 +1275,149 @@ EXAMPLES
 
 SEE ALSO
      at
+`,
+  curl: `NAME
+     curl — transfer data from URLs
+
+SYNOPSIS
+     curl [-o FILE] [-I] [-s] URL
+
+DESCRIPTION
+     curl fetches a URL with the browser/Node fetch API. Without -o
+     the body is printed; -o saves it binary-safe. CORS applies in
+     the browser (same as the /http mount).
+
+OPTIONS
+     -o FILE    save the response body to FILE
+     -I, --head show headers only
+     -s, --silent  no progress line
+     -h, --help show help
+
+EXAMPLES
+     curl https://example.com
+     curl -o /home/logo.png https://example.com/logo.png
+`,
+  gzip: `NAME
+     gzip — compress files (gzip format)
+
+SYNOPSIS
+     gzip [-d] [-k] file...
+
+DESCRIPTION
+     gzip compresses each file to <file>.gz and removes the original
+     (like real gzip); -k keeps it. -d decompresses. Engine: pako in
+     the browser, node:zlib in the CLI. Binary safe.
+
+OPTIONS
+     -d, --decompress  decompress
+     -k, --keep        keep the input
+     -h, --help        show help
+
+EXAMPLES
+     gzip /home/notes.txt · gzip -d /home/notes.txt.gz
+`,
+  gunzip: `NAME
+     gunzip — decompress gzip files
+
+SYNOPSIS
+     gunzip [-k] file.gz...
+
+DESCRIPTION
+     gunzip decompresses each <file>.gz back to <file> and removes
+     the archive; -k keeps it. Engine: pako in the browser,
+     node:zlib in the CLI.
+
+EXAMPLES
+     gunzip /home/notes.txt.gz
+`,
+  md5sum: `NAME
+     md5sum — compute MD5 checksums
+
+SYNOPSIS
+     md5sum [file...]
+
+DESCRIPTION
+     Prints the MD5 digest of each file (or stdin when no files), in
+     "hash  filename" form. Uses a bundled pure-JS MD5 so it works
+     identically in the browser and the CLI.
+
+EXAMPLES
+     md5sum /home/hello.txt
+`,
+  sha256sum: `NAME
+     sha256sum — compute SHA-256 checksums
+
+SYNOPSIS
+     sha256sum [file...]
+
+DESCRIPTION
+     Prints the SHA-256 digest of each file (or stdin when no files),
+     in "hash  filename" form. Uses the Web Crypto API.
+
+EXAMPLES
+     sha256sum /home/hello.txt
+`,
+  tar: `NAME
+     tar — create, list and extract tar archives
+
+SYNOPSIS
+     tar -cf ARCHIVE file... · tar -tf ARCHIVE · tar -xf ARCHIVE [-C DIR] [-z]
+
+DESCRIPTION
+     tar packs files and directories into a POSIX ustar archive.
+     Directories are recursed; remote/device mounts (/pc /dev /proc
+     /http /github /gitlab /git /mount) are skipped when walking.
+     -z gzips the archive. Writing to /pc STREAMS the download
+     through StreamSaver — nothing is materialized in memory.
+
+EXAMPLES
+     tar -cf /home/backup.tar /home/notes.txt
+     tar -czf /pc/backup.tgz /          (streams the download)
+     tar -xf /home/backup.tar -C /tmp
+`,
+  tree: `NAME
+     tree — recursive directory listing
+
+SYNOPSIS
+     tree [dir] [-L N] [-a]
+
+DESCRIPTION
+     Prints the directory tree under [dir] (default cwd) with branch
+     characters like the classic tree command.
+
+OPTIONS
+     -L N     descend at most N levels
+     -a       include hidden files
+     -h       show help
+
+EXAMPLES
+     tree /home · tree -L 2 /tmp
+`,
+  uptime: `NAME
+     uptime — how long the shell has been running
+
+SYNOPSIS
+     uptime
+
+DESCRIPTION
+     Prints the current time, how long the shell has been up (since
+     the page loaded, or since the process started), the current
+     user, and a load average (not tracked, reads 0.00).
+`,
+  zip: `NAME
+     zip — package files into a ZIP archive
+
+SYNOPSIS
+     zip <archive.zip> <file|dir>... · zip -l <archive.zip> · zip -x <archive.zip>
+
+DESCRIPTION
+     zip builds a standard ZIP archive (deflate, stored fallback).
+     Directories are recursed. Engine: pako in the browser,
+     node:zlib in the CLI. Binary safe.
+
+EXAMPLES
+     zip /home/backup.zip /home/notes.txt /home/photos/
+     zip -x /home/backup.zip
 `,
   more: `NAME
      more — page through a file (alias for cat)
