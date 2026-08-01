@@ -4148,6 +4148,102 @@ return 0;
     this._getBackend("/bin/base32.js").read("/base32.js")
       .catch(() => syncWrite(this._getBackend("/bin/base32.js"), "/base32.js", base32jsContent));
 
+    // llm.js — CORS-enabled LLM chat (OpenRouter). Written only when absent.
+    const llmjsContent = `// llm v1 — chat with a CORS-enabled LLM API from the browser shell.
+//   llm 'prompt'                chat (OpenRouter default model)
+//   llm -m MODEL 'prompt'       pick a model
+//   llm --list                  list available models (public, no key)
+//   llm -h                      help
+//
+// API key: set $LLM_API_KEY, or write it to ~/.config/llm.key
+// (echo sk-... > ~/.config/llm.key). OpenRouter allows browser use;
+// remember the key is visible to anyone who opens the page — fine for
+// a personal demo, not for a public multi-user site.
+var NL = String.fromCharCode(10);
+var CONFIG = ((env.HOME || "/home").replace(RegExp("/+$"), "") || "/") + "/.config/llm.key";
+var API = "https://openrouter.ai/api/v1";
+var DEFAULT_MODEL = "openai/gpt-4o-mini";
+
+function usage() {
+  console.log("llm — chat with a CORS-enabled LLM API (OpenRouter)");
+  console.log("  llm 'prompt'                chat");
+  console.log("  llm -m MODEL 'prompt'       pick a model");
+  console.log("  llm --list                  list models (no key needed)");
+  console.log("  llm -h                      help");
+  console.log("Key: $LLM_API_KEY or " + CONFIG);
+}
+
+var model = DEFAULT_MODEL;
+var showList = false;
+var rest = [];
+for (var i = 0; i < args.length; i++) {
+  var a = args[i];
+  if (a === "-m" || a === "--model") model = args[++i] || DEFAULT_MODEL;
+  else if (a === "--list") showList = true;
+  else if (a === "-h" || a === "--help") { usage(); return 0; }
+  else rest.push(a);
+}
+
+async function getKey() {
+  if (env.LLM_API_KEY) return env.LLM_API_KEY;
+  try {
+    var k = await fs.read(CONFIG);
+    var t = String(k).trim();
+    if (t) return t;
+  } catch {}
+  return null;
+}
+
+if (showList) {
+  try {
+    var lresp = await fetch(API + "/models");
+    var ldata = await lresp.json();
+    var names = (ldata.data || []).map(function (m) { return m.id; }).sort();
+    console.log((ldata.data || []).length + " models available (via OpenRouter):");
+    console.log(names.join(NL));
+  } catch (e) {
+    console.log("llm: " + (e && e.message ? e.message : String(e)));
+    return 1;
+  }
+  return 0;
+}
+
+var prompt = rest.join(" ");
+if (!prompt) { usage(); return 2; }
+
+var key = await getKey();
+if (!key) {
+  console.log("llm: no API key. Set $LLM_API_KEY or write it to " + CONFIG);
+  console.log("(get one at https://openrouter.ai/keys — browser keys are for personal use)");
+  return 1;
+}
+
+try {
+  var r = await fetch(API + "/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer " + key,
+    },
+    body: JSON.stringify({ model: model, messages: [{ role: "user", content: prompt }] }),
+  });
+  var j = await r.json();
+  if (!r.ok) {
+    var errMsg = j && j.error && j.error.message ? j.error.message : "HTTP " + r.status;
+    console.log("llm: " + errMsg);
+    return 1;
+  }
+  var text = j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
+  console.log(text || "(empty response)");
+} catch (e) {
+  console.log("llm: " + (e && e.message ? e.message : String(e)));
+  return 1;
+}
+return 0;
+`;
+    this._getBackend("/bin/llm.js").read("/llm.js")
+      .catch(() => syncWrite(this._getBackend("/bin/llm.js"), "/llm.js", llmjsContent));
+
     // Sample content for new users
     syncWrite(this._getBackend("/home/examples/README.txt"), "/examples/README.txt",
       `Welcome to tinysh!\n\n` +
