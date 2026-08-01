@@ -1,0 +1,46 @@
+# Deploy the browser shell to GitHub Pages → https://gmatht.github.io/j.cmd/
+#
+# The shell lives in www/ but imports the runtime from ../src/, so the
+# published site is an assembly: www/* at the root with src/ copied
+# beside it. Everything else in the repo (build scripts, docs, the
+# tinysh CLI) stays out of the published site.
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assemble the site (www + src so ../src imports resolve)
+        run: |
+          mkdir -p site
+          cp -r www/* site/
+          cp -r src site/src
+          touch site/.nojekyll
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
