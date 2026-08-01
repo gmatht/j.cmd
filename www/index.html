@@ -150,6 +150,30 @@
     font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
     font-size: 14px;
   }
+  /* Markdown preview pane (edit README.md · :preview toggles) */
+  #editor-preview {
+    display: none;
+    flex: 1;
+    min-width: 40%;
+    border-left: 1px solid #30363d;
+    background: #ffffff;
+  }
+  #editor-preview.active {
+    display: block;
+  }
+  #editor-preview-frame {
+    width: 100%;
+    height: 100%;
+    border: 0;
+    background: #ffffff;
+  }
+  #editor-preview-note {
+    display: none;
+    padding: 16px;
+    color: #8b949e;
+    font-size: 12px;
+    background: #0d1117;
+  }
   .cm-s-monokai .CodeMirror-cursor {
     border-color: #7ec8e3;
   }
@@ -199,6 +223,10 @@
   </div>
   <div id="editor-body">
     <textarea id="editor-textarea" spellcheck="false"></textarea>
+    <div id="editor-preview">
+      <iframe id="editor-preview-frame" sandbox="" title="markdown preview"></iframe>
+      <div id="editor-preview-note"></div>
+    </div>
   </div>
 </div>
 
@@ -277,7 +305,19 @@ const joinOut = (chunks) => {
 };
 // Write pipe data to a VFS file: bytes go through writeBlob (binary
 // safe), text through fs.write.
-async function writeOut(file, data) {
+async function writeOut(file, data, append) {
+  if (append) {
+    // >> — read the existing content and concatenate
+    let existing = null;
+    try {
+      existing = data instanceof Uint8Array ? await fs.readBlob(file) : await fs.read(file);
+    } catch {}
+    if (data instanceof Uint8Array) {
+      const parts = [existing || new Blob([]), new Blob([data])];
+      return fs.writeBlob(file, new Blob(parts));
+    }
+    return fs.write(file, (existing || "") + data);
+  }
   if (data instanceof Uint8Array) await fs.writeBlob(file, new Blob([data]));
   else await fs.write(file, data);
 }
@@ -947,6 +987,7 @@ let editorFilepath = null;
 let editorCallback = null;
 let editorOnClose = null;
 let cm = null;
+let previewTimer = null;
 
 function openEditor(filepath, initialContent, onSave, onClose) {
   spinnerStop();  // editor is a modal overlay — nothing to spin behind it
@@ -958,6 +999,12 @@ function openEditor(filepath, initialContent, onSave, onClose) {
   input.disabled = true;
   if (recording.active) recordEditorOpen(initialContent);
 
+  const editorPreview = document.getElementById("editor-preview");
+  const frame = document.getElementById("editor-preview-frame");
+  const note = document.getElementById("editor-preview-note");
+  editorPreview.classList.remove("active");
+  frame.style.display = "block";
+  note.style.display = "none";
   // Initialize CodeMirror on the textarea
   cm = CodeMirror.fromTextArea(editorTextarea, {
     value: initialContent,
@@ -971,6 +1018,7 @@ function openEditor(filepath, initialContent, onSave, onClose) {
     extraKeys: {
       "Ctrl-S": () => closeEditor(true),
       "Cmd-S": () => closeEditor(true),
+      "Ctrl-Shift-P": () => toggleMarkdownPreview(),
       "Esc": () => {
         const val = cm.getValue();
         if (val !== "") {
@@ -982,13 +1030,59 @@ function openEditor(filepath, initialContent, onSave, onClose) {
     }
   });
   // Render buffer changes into the cast while recording (skip the
-  // initial setValue — recordEditorOpen already drew the buffer)
+  // initial setValue — recordEditorOpen already drew the buffer);
+  // live-refresh the markdown preview (debounced).
   cm.on("change", (cm2, change) => {
     if (recording.active && change.origin !== "setValue") recordEditorRedraw(cm.getValue());
+    if (editorPreview.classList.contains("active")) {
+      clearTimeout(previewTimer);
+      previewTimer = setTimeout(updateMarkdownPreview, 400);
+    }
   });
   cm.setValue(initialContent);
   cm.focus();
   cm.setCursor(0, 0);
+  // .md files get a rendered preview pane next to the source
+  if (/\\.md$/i.test(filepath)) toggleMarkdownPreview(true);
+}
+
+// ─── Markdown preview (edit README.md · :preview toggles) ─────
+// Renders the buffer through the real `markdown` command (md4c wasm)
+// into a sandboxed iframe — scripts never run, so untrusted .md is
+// safe to preview. The preview updates live as you type (debounced).
+function toggleMarkdownPreview(force) {
+  const pv = document.getElementById("editor-preview");
+  const on = force !== undefined ? force : !pv.classList.contains("active");
+  pv.classList.toggle("active", on);
+  if (on) updateMarkdownPreview();
+  return on;
+}
+
+async function updateMarkdownPreview() {
+  const frame = document.getElementById("editor-preview-frame");
+  const note = document.getElementById("editor-preview-note");
+  if (!cm) return;
+  try {
+    // Round-trip through the shell: write the buffer to a temp file,
+    // then run the real markdown command (md4c wasm) on it. runNested
+    // captures stdout, so the HTML comes back as res.out.
+    await fs.write("/tmp/.mdpreview.md", cm.getValue());
+    const res = await runNestedCommand("markdown /tmp/.mdpreview.md");
+    if (!res.out) {
+      note.textContent = res.err || "markdown: no output";
+      note.style.display = "block";
+      frame.style.display = "none";
+      return;
+    }
+    note.style.display = "none";
+    frame.style.display = "block";
+    const css = "body{font:15px/1.6 -apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#24292f;max-width:820px;margin:0 auto;padding:16px 24px}h1,h2{border-bottom:1px solid #eaecef;padding-bottom:.3em}pre,code{background:#f6f8fa;border-radius:6px;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}pre{padding:12px;overflow:auto}code{padding:.2em .4em}table{border-collapse:collapse}td,th{border:1px solid #d0d7de;padding:6px 12px}blockquote{color:#57606a;border-left:4px solid #d0d7de;margin:0;padding-left:16px}img{max-width:100%}a{color:#0969da}li.task-list-item{list-style:none}";
+    frame.srcdoc = '<!DOCTYPE html><meta charset="utf-8"><style>' + css + "</style>" + res.out;
+  } catch (e) {
+    note.textContent = "markdown: " + e.message;
+    note.style.display = "block";
+    frame.style.display = "none";
+  }
 }
 
 function closeEditor(save) {
@@ -1089,6 +1183,12 @@ function openViEditor(filepath, initialContent, onSave, onClose) {
     if (change.origin !== "setValue") {
       viState.dirty = true;
       if (recording.active) recordEditorRedraw(cm.getValue());
+      // live-refresh the markdown preview pane (debounced)
+      const pv = document.getElementById("editor-preview");
+      if (pv && pv.classList.contains("active")) {
+        clearTimeout(previewTimer);
+        previewTimer = setTimeout(updateMarkdownPreview, 400);
+      }
     }
   });
 
@@ -1096,6 +1196,8 @@ function openViEditor(filepath, initialContent, onSave, onClose) {
   cm.focus();
   cm.setCursor(0, 0);
   updateViModeDisplay();
+  // .md files get a rendered preview pane next to the source
+  if (/\.md$/i.test(filepath)) toggleMarkdownPreview(true);
 }
 
 async function saveViFile() {
@@ -1134,6 +1236,8 @@ function registerViExCommands() {
   vim.defineEx("write", "w", () => saveViFile());
   vim.defineEx("wq", "wq", () => { saveViFile().then(closeViEditor); });
   vim.defineEx("xit", "x", () => { saveViFile().then(closeViEditor); });
+  vim.defineEx("preview", "pre", () => toggleMarkdownPreview());
+  vim.defineEx("md", "md", () => toggleMarkdownPreview());
   vim.defineEx("quit", "q", (cm2, params) => {
     // :q! is parsed as command 'q' with '!' as an argument — detect it
     // by inspecting the full input string.
@@ -3134,7 +3238,7 @@ function splitConditionals(line) {
 
 // python — run through the MicroPython reactor (src/py.js). The engine
 // is a singleton, so state persists across lines and invocations.
-async function runPythonCmd(args, stdin, isLast, outputRedirect) {
+async function runPythonCmd(args, stdin, isLast, outputRedirect, appendRedirect) {
   if (args.length === 0) {
     if (pipeText(stdin).trim()) {
       args = ["-"];
@@ -3177,7 +3281,7 @@ async function runPythonCmd(args, stdin, isLast, outputRedirect) {
     stdout.write = origWrite;
   }
   if (outputRedirect) {
-    await fs.write(outputRedirect, output);
+    await writeOut(outputRedirect, output, appendRedirect);
     output = "";
   } else if (isLast) {
     stdout.write(output);
@@ -3300,7 +3404,10 @@ async function runSegment(segmentText, stdin, isLast) {
   const args = tokens.slice(1);
 
   let outputRedirect = null;
-  const redirectIndex = args.indexOf(">");
+  let appendRedirect = false;
+  let redirectIndex = args.indexOf(">>");
+  if (redirectIndex === -1) redirectIndex = args.indexOf(">");
+  else appendRedirect = true;
   if (redirectIndex !== -1) {
     outputRedirect = args[redirectIndex + 1];
     args.splice(redirectIndex, 2);
@@ -3310,7 +3417,7 @@ async function runSegment(segmentText, stdin, isLast) {
   // files and stdin. Intercepted before resolveCommand so it never
   // auto-loads python.wasm or needs a worker/SAB.
   if (cmd === "python" && !cmd.includes("/")) {
-    return await runPythonCmd(args, stdin, isLast, outputRedirect);
+    return await runPythonCmd(args, stdin, isLast, outputRedirect, appendRedirect);
   }
   // perl — bare `perl` with no script/stdin opens the interactive REPL
   // (the /bin perl command handles -e / script / stdin as before).
@@ -3436,8 +3543,7 @@ async function runSegment(segmentText, stdin, isLast) {
         }
 
         if (outputRedirect) {
-          if (wasmBytes.length) await fs.writeBlob(outputRedirect, new Blob([wasmBytes]));
-          else await fs.write(outputRedirect, "");
+          await writeOut(outputRedirect, wasmBytes.length ? wasmBytes : "", appendRedirect);
         } else if (isLast) {
           if (wasmOut) stdout.write(wasmOut);
         } else {
@@ -3473,7 +3579,7 @@ async function runSegment(segmentText, stdin, isLast) {
         if (capture) {
           stdout.write = origWrite;
           const captured = joinOut(chunks);
-          if (outputRedirect) await writeOut(outputRedirect, captured);
+          if (outputRedirect) await writeOut(outputRedirect, captured, appendRedirect);
           else output = captured;
         }
       }
@@ -4131,9 +4237,32 @@ async function onCommand() {
 
   addHistory(line);
 
+  if (running) {
+    // A previous command is still executing (e.g. the line before was
+    // `sleep 10 && ...`); buffer this line and run it when the shell is
+    // free, like a real shell queues input while busy. Without this, two
+    // commands run concurrently and the earlier one's completion draws a
+    // spurious prompt while the later one (e.g. watch) is still going.
+    commandQueue.push(line);
+    return;
+  }
+
   // Slow commands (ls /github/..., remote reads) get a spinner where
   // the next prompt will be; the prompt itself is only drawn after the
   // command's output has been printed.
+  await runCommandLine(line);
+  // Drain anything typed while this command was running (Ctrl+C during a
+  // queued command leaves the rest of the queue intact, like a real shell).
+  while (commandQueue.length > 0 && !pagerState.active && !replState.active) {
+    const next = commandQueue.shift();
+    await runCommandLine(next);
+  }
+}
+
+// One top-level command: spinner while busy, prompt after, focus back.
+// The shell runs exactly one of these at a time (see commandQueue).
+let commandQueue = [];
+async function runCommandLine(line) {
   spinnerStart(line.trim());
   await runInterruptible(handleLine(line));
   spinnerStop();

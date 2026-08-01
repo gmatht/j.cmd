@@ -61,7 +61,19 @@ const joinOut = (chunks) => {
 };
 // Write pipe data to a VFS file: bytes go through writeBlob (binary
 // safe), text through fs.write.
-async function writeOut(file, data) {
+async function writeOut(file, data, append) {
+  if (append) {
+    // >> — read the existing content and concatenate
+    let existing = null;
+    try {
+      existing = data instanceof Uint8Array ? await fs.readBlob(file) : await fs.read(file);
+    } catch {}
+    if (data instanceof Uint8Array) {
+      const parts = [existing || new Blob([]), new Blob([data])];
+      return fs.writeBlob(file, new Blob(parts));
+    }
+    return fs.write(file, (existing || "") + data);
+  }
   if (data instanceof Uint8Array) await fs.writeBlob(file, new Blob([data]));
   else await fs.write(file, data);
 }
@@ -1695,7 +1707,10 @@ async function runSegment(segmentText, stdin, isLast) {
   const args = tokens.slice(1);
 
   let outputRedirect = null;
-  const redirectIndex = args.indexOf(">");
+  let appendRedirect = false;
+  let redirectIndex = args.indexOf(">>");
+  if (redirectIndex === -1) redirectIndex = args.indexOf(">");
+  else appendRedirect = true;
   if (redirectIndex !== -1) {
     outputRedirect = args[redirectIndex + 1];
     args.splice(redirectIndex, 2);
@@ -1705,7 +1720,7 @@ async function runSegment(segmentText, stdin, isLast) {
   // files and stdin. Intercepted before resolveCommand so it never
   // auto-loads python.wasm.
   if (cmd === "python" && !cmd.includes("/")) {
-    return await runPythonCmd(args, stdin, isLast, outputRedirect);
+    return await runPythonCmd(args, stdin, isLast, outputRedirect, appendRedirect);
   }
   // perl — bare `perl` with no script/stdin opens the interactive REPL
   // (the /bin perl command handles -e / script / stdin as before).
@@ -1778,7 +1793,7 @@ async function runSegment(segmentText, stdin, isLast) {
       if (await goRunner.isGoModule(resolved.path)) {
         const gr = await goRunner.runModule(resolved.path, [cmd, ...args], stdin);
         if (outputRedirect) {
-          await fs.write(outputRedirect, gr.stdout);
+          await writeOut(outputRedirect, gr.stdout, appendRedirect);
         } else if (isLast) {
           if (gr.stdout) process.stdout.write(gr.stdout);
         } else {
@@ -1814,8 +1829,7 @@ async function runSegment(segmentText, stdin, isLast) {
       const wasmOut = wasmRunner.getStdoutBytes();
       const wasmErr = wasmRunner.getStderr();
       if (outputRedirect) {
-        if (wasmOut.length) await fs.writeBlob(outputRedirect, new Blob([wasmOut]));
-        else await fs.write(outputRedirect, "");
+        await writeOut(outputRedirect, wasmOut.length ? wasmOut : "", appendRedirect);
       } else if (isLast) {
         if (wasmOut.length) process.stdout.write(pipeText(wasmOut));
       } else {
@@ -1851,7 +1865,7 @@ async function runSegment(segmentText, stdin, isLast) {
         if (capture) {
           process.stdout.write = origWrite;
           const captured = joinOut(chunks);
-          if (outputRedirect) await writeOut(outputRedirect, captured);
+          if (outputRedirect) await writeOut(outputRedirect, captured, appendRedirect);
           else output = captured;
         }
       }
@@ -1970,7 +1984,7 @@ function splitConditionals(line) {
 // status: the first failing command's status, else the last one's.
 // python — run through the MicroPython reactor (src/py.js). The engine
 // is a singleton, so state persists across lines and invocations.
-async function runPythonCmd(args, stdin, isLast, outputRedirect) {
+async function runPythonCmd(args, stdin, isLast, outputRedirect, appendRedirect) {
   if (args.length === 0) {
     if (pipeText(stdin).trim()) {
       args = ["-"];
@@ -2016,7 +2030,7 @@ async function runPythonCmd(args, stdin, isLast, outputRedirect) {
     process.stdout.write = origWrite;
   }
   if (outputRedirect) {
-    await fs.write(outputRedirect, output);
+    await writeOut(outputRedirect, output, appendRedirect);
     output = "";
   } else if (isLast) {
     process.stdout.write(output);
