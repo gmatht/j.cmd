@@ -485,14 +485,19 @@ export class GoRunner {
 // ─── The `go` shell command ────────────────────────────────────
 
 export function createGoCommand(runner, out = process.stdout, errOut = process.stderr) {
+  // Accept either a stream-like object (process.stdout, {write}) or a
+  // plain function (the browser's write(text, cls)) — the browser shell
+  // passes write, the CLI passes process.stdout.
+  const writeOut = (s) => (typeof out === "function" ? out(s) : out.write(s));
+  const writeErr = (s) => (typeof errOut === "function" ? errOut(s) : errOut.write(s));
   return async function go(args) {
     const sub = args[0];
     if (sub === "version") {
-      out.write("go version go1.22.2 js/wasm (real cmd/compile + cmd/link, cross-compiled)\n");
+      writeOut("go version go1.22.2 js/wasm (real cmd/compile + cmd/link, cross-compiled)\n");
       return 0;
     }
     if (!sub || sub === "help" || sub === "-h" || sub === "--help") {
-      out.write(`go — the REAL Go toolchain, running as WASM in the browser
+      writeOut(`go — the REAL Go toolchain, running as WASM in the browser
 
 usage:
   go run <main.go> [args...]   compile + link + run a Go program
@@ -510,12 +515,12 @@ notes:
       return 0;
     }
     if (sub !== "run" && sub !== "build") {
-      errOut.write(`go: unknown command '${sub}' (run, build, version, help)\n`);
+      writeErr(`go: unknown command '${sub}' (run, build, version, help)\n`);
       return 1;
     }
     const srcArg = args[1];
     if (!srcArg) {
-      errOut.write(`go ${sub}: missing source file (try 'go help')\n`);
+      writeErr(`go ${sub}: missing source file (try 'go help')\n`);
       return 1;
     }
     const progArgs = args.slice(2);
@@ -529,7 +534,7 @@ notes:
       const srcPath = srcArg.startsWith("/") ? srcArg : (runner.vfs.cwd + "/" + srcArg);
       const st = await runner.vfs.stat(srcPath).catch(() => null);
       if (!st || st.type !== "file") {
-        errOut.write(`go ${sub}: cannot find '${srcArg}'\n`);
+        writeErr(`go ${sub}: cannot find '${srcArg}'\n`);
         return 1;
       }
       const src = await runner._readBlobBytes(srcPath);
@@ -539,7 +544,7 @@ notes:
       await runner.vfs.writeBlob(SCRATCH + "/importcfg", new Blob([runner.importCfg()]));
 
       // Stage 1: compile.
-      out.write(`go ${sub}: compiling ${srcArg} (cmd/compile, js/wasm)…\n`);
+      writeOut(`go ${sub}: compiling ${srcArg} (cmd/compile, js/wasm)…\n`);
       const c = await runner.runModule("/tmp/go-tool/go.wasm", [
         "compile", "-p", "main",
         "-importcfg", SCRATCH + "/importcfg",
@@ -547,25 +552,25 @@ notes:
         SCRATCH + "/main.go",
       ]);
       if (c.code !== 0) {
-        if (c.stdout) out.write(c.stdout);
-        if (c.stderr) errOut.write(c.stderr);
-        errOut.write(`go: compile failed (exit ${c.code})\n`);
+        if (c.stdout) writeOut(c.stdout);
+        if (c.stderr) writeErr(c.stderr);
+        writeErr(`go: compile failed (exit ${c.code})\n`);
         return c.code;
       }
 
       // Stage 2: link.
       const linkCfg = runner.importCfg() + `\npackagefile main=${SCRATCH}/main.o\n`;
       await runner.vfs.writeBlob(SCRATCH + "/link.cfg", new Blob([linkCfg]));
-      out.write(`go ${sub}: linking (cmd/link, js/wasm)…\n`);
+      writeOut(`go ${sub}: linking (cmd/link, js/wasm)…\n`);
       const l = await runner.runModule("/tmp/go-tool/link.wasm", [
         "link", "-o", SCRATCH + "/main.wasm",
         "-importcfg", SCRATCH + "/link.cfg",
         SCRATCH + "/main.o",
       ]);
       if (l.code !== 0) {
-        if (l.stdout) out.write(l.stdout);
-        if (l.stderr) errOut.write(l.stderr);
-        errOut.write(`go: link failed (exit ${l.code})\n`);
+        if (l.stdout) writeOut(l.stdout);
+        if (l.stderr) writeErr(l.stderr);
+        writeErr(`go: link failed (exit ${l.code})\n`);
         return l.code;
       }
 
@@ -575,18 +580,18 @@ notes:
         const base = srcArg.split("/").pop().replace(/\.go$/, "");
         const dest = (runner.vfs.cwd + "/" + base + ".wasm").replace(/\/+/g, "/");
         await runner.vfs.writeBlob(dest, new Blob([outWasm]));
-        out.write(`go: built ${base}.wasm (${(outWasm.length / 1024).toFixed(0)}K)\n`);
+        writeOut(`go: built ${base}.wasm (${(outWasm.length / 1024).toFixed(0)}K)\n`);
         return 0;
       }
 
       // Stage 3: run the freshly built program.
       await runner.vfs.writeBlob(SCRATCH + "/main.wasm", new Blob([outWasm]));
       const r = await runner.runModule(SCRATCH + "/main.wasm", ["main.wasm", ...progArgs]);
-      if (r.stdout) out.write(r.stdout);
-      if (r.stderr) errOut.write(r.stderr);
+      if (r.stdout) writeOut(r.stdout);
+      if (r.stderr) writeErr(r.stderr);
       return r.code;
     } catch (e) {
-      errOut.write(`go: ${e.message}\n`);
+      writeErr(`go: ${e.message}\n`);
       return 1;
     }
   };
