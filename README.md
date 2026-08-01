@@ -97,6 +97,17 @@ This follows Plan 9's philosophy: **everything is a file**.
 | `/proc/` | browser `navigator.*` APIs |
 | 9P2000 protocol | `VirtualFS` interface |
 
+## Security
+
+A full description of the security model — users, permissions, the
+custom-code execution gate, admin-only mount/chroot, and the
+LLM-key / localStorage / CORS story — lives in
+[docs/security.md](docs/security.md). The short version: permissions are
+enforced at the filesystem layer, unprivileged users can't run custom
+code, and browser API keys are protected from other websites (Same-Origin
+Policy) and from page visitors (per-client localStorage) but not from the
+page's own code — keep keys personal or proxy them server-side.
+
 ## License
 
 GPL-3.0 (same as sh2perl)

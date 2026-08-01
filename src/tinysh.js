@@ -1004,6 +1004,10 @@ Loops, conditionals, variables, arithmetic and pipes work:
     } else if (args.length === 0 || args[0] === "-") {
       if (stdinBuffer) {
         source = stdinBuffer; // piped in
+      } else if (args.length === 0) {
+        // bare `bash` with no pipe → an interactive REPL
+        enterBashRepl();
+        return 0;
       } else {
         process.stderr.write("bash: no script given (pass one as an argument, use -f FILE, or pipe it in)\n");
         return 2;
@@ -2092,7 +2096,8 @@ function tabComplete(line, callback) {
 // ─── Interactive REPLs (reactor-based — python via src/py.js, perl
 // via zeroperl; both state-preserving, no worker / SharedArrayBuffer).
 const replState = { active: false, mode: null, perl: null, perlReady: null,
-  perlSession: [], perlOut: "", perlMarker: "" };
+  perlSession: [], perlOut: "", perlMarker: "",
+  bashSession: [], bashOut: "", bashMarker: "" };
 let shellHistory = [];  // the shell's readline history while a REPL owns it
 const suState = { prev: null };  // previous user context, for `su tinysh`
 
@@ -2142,6 +2147,20 @@ function enterPerlRepl() {
   })();
 }
 
+function enterBashRepl() {
+  if (!process.stdin.isTTY) { process.stderr.write("bash: REPL requires an interactive terminal\n"); return; }
+  replState.active = true;
+  replState.mode = "bash";
+  shellHistory = rl.history.slice();
+  rl.history = [];
+  process.stdout.write("bash REPL — state persists per line · exit or Ctrl-D to leave\n");
+  rl.setPrompt("bash> ");
+  rl.prompt();
+  replState.bashSession = [];
+  replState.bashMarker = "__bash_repl_" + Date.now() + "_" +
+    Math.floor(Math.random() * 1e9) + "__";
+}
+
 function exitRepl() {
   if (!replState.active) return;
   const mode = replState.mode;
@@ -2150,7 +2169,8 @@ function exitRepl() {
   replState.mode = null;
   replState.perl = null;
   replState.perlReady = null;
-  process.stdout.write(`\nLeaving ${mode === "perl" ? "Perl" : "Python"} REPL.\n`);
+  const label = mode === "perl" ? "Perl" : mode === "bash" ? "Bash" : "Python";
+  process.stdout.write(`\nLeaving ${label} REPL.\n`);
   rl.history = shellHistory;  // give the shell its history back
   rl.setPrompt(shellPrompt());
   rl.prompt();
@@ -2165,6 +2185,42 @@ async function runReplLine(line) {
       await pyExec(line, { stdout: process.stdout, stderr: process.stderr });
     } catch (e) {
       process.stderr.write(`python: ${e.message}\n`);
+    }
+  } else if (replState.mode === "bash") {
+    const t = line.trim();
+    if (!t) return;
+    // exit / quit / "exit 5" leave the REPL (never reach the shell's exit)
+    if (t === "exit" || t === "quit" || t === ":q" ||
+        t.indexOf("exit ") === 0 || t.indexOf("quit ") === 0) { exitRepl(); return; }
+    try {
+      // Session replay: re-transpile and re-run every line so far plus
+      // the new one, with an echo marker between old and new. Variables
+      // and functions persist because the whole session re-declares
+      // them; only the output after the marker is shown.
+      replState.bashOut = "";
+      const session = replState.bashSession;
+      const src = (session.length > 0 ? session.join("\n") + "\n" : "") +
+        "echo '" + replState.bashMarker + "'\n" + line;
+      const { runBash } = await import("./bash2js.js");
+      await runBash(fs, src, {
+        runCmd: runNestedCommand,
+        stdout: { write: (s) => { replState.bashOut += s; } },
+        stderr: { write: (s) => { replState.bashOut += s; } },
+      });
+      const marker = replState.bashMarker;
+      const splitAt = replState.bashOut.lastIndexOf(marker + "\n");
+      if (splitAt === -1) {
+        // The marker echo never ran — debashcl silently dropped the
+        // whole statement (e.g. `echo )`), so the line was not executed.
+        process.stderr.write("bash: syntax error — nothing was run (the line is not in the session)\n");
+
+      } else {
+        const fresh = replState.bashOut.slice(splitAt + marker.length + 1);
+        if (fresh) process.stdout.write(fresh);
+        session.push(line);
+      }
+    } catch (e) {
+      process.stderr.write(`bash: ${(e && e.message) ? e.message : String(e)}\n`);
     }
   } else {
     const t = line.trim();
@@ -2200,7 +2256,7 @@ async function runReplLine(line) {
     }
   }
   if (replState.active) {
-    rl.setPrompt(replState.mode === "perl" ? "perl> " : ">>> ");
+    rl.setPrompt(replState.mode === "perl" ? "perl> " : replState.mode === "bash" ? "bash> " : ">>> ");
     rl.prompt();
   }
 }
@@ -2241,7 +2297,7 @@ if (process.stdin.isTTY) {
     process.stdout.write("^C\n");
     if (replState.active) {
       process.stdout.write("KeyboardInterrupt\n");
-      rl.setPrompt(replState.mode === "perl" ? "perl> " : ">>> ");
+      rl.setPrompt(replState.mode === "perl" ? "perl> " : replState.mode === "bash" ? "bash> " : ">>> ");
       rl.prompt();
       return;
     }
