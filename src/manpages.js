@@ -50,6 +50,7 @@ const SHORT = {
   mount: "list mounts, attach a repo, or bind an existing dir (admin only)",
   unmount: "detach a user-created mount (bind mounts too)",
   wasmer: "WASM package manager (list / install / search)",
+  go: "run/build Go programs — the REAL Go toolchain (cmd/compile + cmd/link) as WASM",
   wat2wasm: "compile a .wat WebAssembly text file to .wasm",
   qbe2wasm: "compile QBE IR (cproc output) to a wasm binary",
   bash2js: "transpile bash to JavaScript (sh2perl → perl2js)",
@@ -81,6 +82,7 @@ const SHORT = {
   curl: "transfer data from URLs (fetch-based)",
   gzip: "compress files (gzip format)",
   gunzip: "decompress gzip files",
+  zstd: "compress/decompress with zstd (real CLI, wasm32-wasi)",
   md5sum: "compute MD5 checksums",
   sha256sum: "compute SHA-256 checksums",
   tar: "create, list and extract tar archives",
@@ -1385,6 +1387,34 @@ OPTIONS
 EXAMPLES
      gzip /home/notes.txt · gzip -d /home/notes.txt.gz
 `,
+  zstd: `NAME
+     zstd — compress or decompress with Zstandard (real CLI)
+
+SYNOPSIS
+     zstd [-d] [-k] [-f] [-#] [file...]
+     zstd -d file.zst
+
+DESCRIPTION
+     zstd is the real Zstandard CLI (facebook/zstd) compiled to
+     wasm32-wasi. With no file arguments it reads stdin and writes
+     the compressed stream to stdout, so pipes round-trip:
+     'echo hi | zstd | zstd -d'. With file arguments it writes
+     <file>.zst (like real zstd it keeps the source unless --rm).
+
+OPTIONS
+     -d, --decompress  decompress
+     -k, --keep        keep the source file (default)
+     --rm              delete the source after success (gzip-like)
+     -f, --force       overwrite outputs without asking
+     -#                compression level 1-19 (-3 is a good default)
+     -o <file>         write output to <file>
+     --version         print version
+
+EXAMPLES
+     echo hi | zstd | zstd -d     round-trip through a pipe
+     zstd -f /home/notes.txt      compress a file
+     zstd -d -f /home/notes.txt.zst   decompress a file
+`,
   gunzip: `NAME
      gunzip — decompress gzip files
 
@@ -1562,6 +1592,46 @@ DESCRIPTION
 
 SEE ALSO
      help
+`,
+
+  go: `NAME
+     go — run or build Go programs with the real Go toolchain
+
+SYNOPSIS
+     go run <main.go> [args...]
+     go build <main.go>
+     go version
+     go help
+
+DESCRIPTION
+     go runs the REAL Go compiler and linker — cmd/compile (go.wasm,
+     37MB) and cmd/link (link.wasm, 8.9MB) — cross-compiled to
+     GOOS=js GOARCH=wasm and executed in the browser via Go's
+     wasm_exec.js glue (build-wasm-go.sh). JavaScript wasm modules
+     built with GOOS=js GOARCH=wasm run as commands too: Go's os
+     package maps to the shell's VirtualFS through a node-fs-style
+     shim, and net/http maps to the browser fetch API.
+
+     go run compiles the program to /tmp/go-build/, links it, and
+     runs it. go build leaves <main>.wasm in the current directory,
+     which can then be executed as ./<main>.wasm.
+
+     Imports are limited to the bundled js_wasm stdlib: fmt, os,
+     strings, strconv, math, time, sort, encoding/json, net/http
+     plus their transitive dependencies.
+
+OPTIONS
+     (none — go is a builtin, not the cmd/go driver; js/wasm has
+     no os/exec, so the driver is the shell command itself)
+
+EXAMPLES
+     go run hello.go
+     go run server.go 8080
+     go build tool.go
+     ./tool.wasm
+
+SEE ALSO
+     wasmer, cc, help
 `,
 };
 

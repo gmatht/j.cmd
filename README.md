@@ -84,6 +84,27 @@ where you type directly on the prompt line, inline in the scrollback
 — like a real terminal emulator.
 No build step, no bundler — just ES modules served over HTTP.
 
+## Go in the Browser — the Real Toolchain as WASM
+
+The `go` command runs the **real Go compiler and linker** — cmd/compile
+(37MB) and cmd/link (8.9MB), cross-compiled with `GOOS=js GOARCH=wasm`
+— inside the shell (see `build-wasm-go.sh`):
+
+```
+go run main.go [args...]     # compile + link + run, in the browser
+./main.wasm                  # js/wasm binaries run as commands too
+go build main.go             # leaves main.wasm in the shell
+```
+
+How it works: Go's js/wasm runtime (`wasm_exec.js`, vendored) calls a
+node-fs-style `globalThis.fs` — we back it with the shell's VirtualFS
+— and a `globalThis.process` whose `argv0` isn't node, so `net/http`
+takes the browser path and maps to the **fetch API** (CORS applies,
+exactly as in Go's js/wasm docs). The stdlib needed to resolve imports
+is shipped as one gzipped bundle (`www/wasm-bin/goroot.dat`,
+~11MB) and served out of memory. cmd/go itself can't run on js/wasm
+(no os/exec), so the shell command drives compile → link directly.
+
 ## The Plan 9 Connection
 
 This follows Plan 9's philosophy: **everything is a file**.

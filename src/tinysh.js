@@ -1233,6 +1233,8 @@ Built-in commands:
   mount [github:user/repo /path]  List mounts, or attach a GitHub repo at a path
   unmount <path>   Detach a user-created mount
   wasmer          WASM package manager (list / install <pkg> / search <term>)
+  go              Run/build Go programs — the real Go toolchain as WASM
+                  (go run main.go · go build main.go · go version · man go)
   bash2js         Transpile bash to JavaScript (sh2perl → perl2js)
   bash            Run bash commands: transpile to JS and execute
                   (bash 'echo hi' · bash script.sh · cat s.sh | bash)

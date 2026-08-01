@@ -74,6 +74,12 @@ and device files. It runs in any browser with no build step.
       1. Fix native build (add <cstdint>, <algorithm>, type hierarchy)
       2. Cross-compile with wasi-sdk
       Alternative: use tcc-wasm or wasm2c path.
+- [x] Go in the browser: the REAL Go toolchain (cmd/compile + cmd/link)
+      cross-compiled with GOOS=js GOARCH=wasm and run through Go's
+      wasm_exec.js glue (build-wasm-go.sh). `go run main.go` compiles,
+      links and runs in the shell; js/wasm binaries run as commands via
+      a node-fs-style fs shim over VirtualFS (net/http → fetch API).
+      Stdlib shipped as one gzipped bundle (wasm-bin/goroot.dat).
 - [x] `ls -l` output format (permissions, size, date)
 - [x] Pipe operator: `cat README.md | head -3`
 - [x] `grep` builtin or command
