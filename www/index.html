@@ -24,10 +24,11 @@
     min-height: 0;
     display: flex;
     flex-direction: row;
+    --bg-panel-w: 25%;   /* panel share; draggable (localStorage-saved) */
   }
 
   #terminal {
-    flex: 3;         /* left 3/4 */
+    flex: 1 1 auto;      /* takes the space the panel doesn't */
     min-width: 0;
     min-height: 0;  /* allow shrink so flex layout works */
     padding: 16px;
@@ -36,12 +37,23 @@
     word-wrap: break-word;
   }
 
+  /* Drag handle between the terminal and the background panel. */
+  #bg-divider {
+    flex: 0 0 5px;
+    cursor: col-resize;
+    background: #2a2a3a;
+    display: none;
+    touch-action: none;
+  }
+  #bg-divider:hover, #bg-divider.dragging { background: #7ec8e3; }
+  #main-row.has-bg #bg-divider { display: block; }
+
   /* Background-jobs panel — right 1/4 of the display. Shown only while
      there are background jobs; non-minimized jobs split the panel
      equally, each with a title bar (minimise / kill) and an output
      body. Minimized jobs collapse to thin rows in the dock. */
   #bg-panel {
-    flex: 1;         /* right 1/4 */
+    flex: 0 0 var(--bg-panel-w);
     min-width: 0;
     display: none;
     flex-direction: column;
@@ -318,6 +330,8 @@
   <div id="prompt-line"><span id="prompt" class="prompt"></span><span id="input-span"></span></div>
 </div>
 
+<div id="bg-divider" title="Drag to resize the background panel"></div>
+
 <div id="bg-panel">
   <div id="bg-panel-header"><span>BACKGROUND JOBS</span><span id="bg-panel-count"></span></div>
   <div id="bg-panel-slices"></div>
@@ -393,10 +407,43 @@ const sh2libFacade = buildSh2LibFacade(fs);  // debashl toolchain, injected into
 // vertical slice of the right 1/4 of the display; its output streams
 // into the slice. The title bar carries minimise (collapse to the
 // dock) and kill (terminate / dismiss) buttons.
+let bgOutputTarget = null;   // bg job's panel slice body — direct-DOM commands (watch) render here
 const bgPanel = document.getElementById("bg-panel");
 const bgSlicesEl = document.getElementById("bg-panel-slices");
 const bgDockEl = document.getElementById("bg-panel-dock");
 const bgCountEl = document.getElementById("bg-panel-count");
+const mainRow = document.getElementById("main-row");
+const bgDivider = document.getElementById("bg-divider");
+
+// ─── Draggable resize: drag the divider to change the panel share ──
+// Saved to localStorage so the split survives reloads.
+const BG_W_KEY = "tinysh:bg-panel-width";
+try {
+  const saved = parseFloat(localStorage.getItem(BG_W_KEY));
+  if (saved >= 10 && saved <= 60) mainRow.style.setProperty("--bg-panel-w", saved + "%");
+} catch {}
+let bgDragging = null;
+bgDivider.addEventListener("pointerdown", (e) => {
+  bgDragging = {
+    startX: e.clientX,
+    startW: parseFloat(mainRow.style.getPropertyValue("--bg-panel-w")) || 25,
+  };
+  bgDivider.classList.add("dragging");
+  bgDivider.setPointerCapture(e.pointerId);
+  e.preventDefault();
+});
+bgDivider.addEventListener("pointermove", (e) => {
+  if (!bgDragging) return;
+  const rect = mainRow.getBoundingClientRect();
+  if (rect.width === 0) return;
+  const delta = e.clientX - bgDragging.startX;
+  const w = Math.min(60, Math.max(10, bgDragging.startW + (delta / rect.width) * 100));
+  mainRow.style.setProperty("--bg-panel-w", w.toFixed(1) + "%");
+  try { localStorage.setItem(BG_W_KEY, w.toFixed(1)); } catch {}
+});
+const endDrag = () => { bgDragging = null; bgDivider.classList.remove("dragging"); };
+bgDivider.addEventListener("pointerup", endDrag);
+bgDivider.addEventListener("pointercancel", endDrag);
 
 function getBgJobs() {
   if (!globalThis.__tinyshBgJobs) {
@@ -418,9 +465,15 @@ function getBgJobs() {
         };
         stdout.write = outFn;
         stderr.write = errFn;
+        // Direct-DOM commands (watch, screen) render into the job's
+        // panel slice instead of the terminal — exposed as
+        // shell.outputTarget to .js command files.
+        const prevTarget = bgOutputTarget;
+        bgOutputTarget = job.bodyEl;
         try {
           code = (await runConditionalList(job.cmd)) ?? 0;
         } finally {
+          bgOutputTarget = prevTarget;
           if (stdout.write === outFn) stdout.write = preOut;
           if (stderr.write === errFn) stderr.write = preErr;
         }
@@ -503,6 +556,7 @@ function makeMinRow(job) {
 function renderBgPanel() {
   const jobs = getBgJobs().list();
   bgPanel.classList.toggle("active", jobs.length > 0);
+  mainRow.classList.toggle("has-bg", jobs.length > 0);
   bgCountEl.textContent = jobs.length ? `${jobs.length} job${jobs.length === 1 ? "" : "s"}` : "";
   bgSlicesEl.textContent = "";
   bgDockEl.textContent = "";
@@ -3977,6 +4031,9 @@ async function runSegment(segmentText, stdin, isLast) {
     const shellApi = {
       runLine: (cmdLine) => runNestedCommand(cmdLine),
       jobs: getJobScheduler(),   // at/cron scheduler (src/jobs.js)
+      // When the command runs as a background job, its output lands in
+      // the job's panel slice; direct-DOM commands (watch) render there.
+      outputTarget: bgOutputTarget,
       // Register a callback fired on Ctrl+C — lets long-running commands
       // (watch, xeyes, ...) tear themselves down when interrupted.
       onInterrupt: (fn) => { interruptCallbacks.push(fn); },

@@ -5821,7 +5821,8 @@ return 0;
 
     // watch.js — run a command repeatedly, refresh in place (uses
     // the shell.runLine hook, like time.js). Written only when absent.
-    const watchjsContent = `// watch v1 — run a command repeatedly and refresh the display.
+    const watchjsContent = `// watch v2 — run a command repeatedly and refresh the display.
+// v2: as a background job (&), renders into the job's panel slice (shell.outputTarget).
 //   watch ls /home          every 2s (default)
 //   watch -n 5 date         every 5s (any positive number, e.g. 0.5)
 //   watch -h                help
@@ -5855,14 +5856,23 @@ if (typeof shell === "undefined" || typeof shell.runLine !== "function") {
 }
 
 var panel = null;
+var bgTarget = (typeof shell !== "undefined" && shell.outputTarget) || null;
 if (isBrowser) {
-  // A self-refreshing region right above the prompt line — no scrollback spam.
-  panel = document.createElement("div");
-  panel.className = "watch-panel";
-  panel.style.cssText = "white-space:pre-wrap;word-wrap:break-word;font-family:monospace;font-size:13px;margin:2px 0;";
-  var termEl = document.getElementById("terminal");
-  var promptLine = document.getElementById("prompt-line");
-  termEl.insertBefore(panel, promptLine);
+  if (bgTarget) {
+    // Running as a background job — render into the job's panel slice
+    // on the right of the display instead of the terminal.
+    panel = bgTarget;
+    panel.className = "bg-body";
+    panel.textContent = "";
+  } else {
+    // A self-refreshing region right above the prompt line — no scrollback spam.
+    panel = document.createElement("div");
+    panel.className = "watch-panel";
+    panel.style.cssText = "white-space:pre-wrap;word-wrap:break-word;font-family:monospace;font-size:13px;margin:2px 0;";
+    var termEl = document.getElementById("terminal");
+    var promptLine = document.getElementById("prompt-line");
+    termEl.insertBefore(panel, promptLine);
+  }
 }
 
 // ANSI SGR (color codes) → colored spans, without regex escapes.
@@ -5911,7 +5921,14 @@ function cleanup() {
   if (done) return;
   done = true;
   if (timer) clearTimeout(timer);
-  if (panel && panel.parentNode) panel.parentNode.removeChild(panel);
+  if (panel) {
+    if (bgTarget) {
+      panel.textContent = "";      // leave the slice to the panel UI
+      if (panel.style) panel.style.cssText = "";
+    } else if (panel.parentNode) {
+      panel.parentNode.removeChild(panel);
+    }
+  }
   if (waitResolve) waitResolve();
 }
 
@@ -5942,7 +5959,13 @@ try {
 }
 return 0;
 `;
+    // version-gated so existing installs pick up v2 (bg panel support)
     this._getBackend("/bin/watch.js").read("/watch.js")
+      .then((existing) => {
+        if (!existing.includes("watch v2")) {
+          syncWrite(this._getBackend("/bin/watch.js"), "/watch.js", watchjsContent);
+        }
+      })
       .catch(() => syncWrite(this._getBackend("/bin/watch.js"), "/watch.js", watchjsContent));
 
     // base64.js — base64/base32 codec command. Written only when absent.
