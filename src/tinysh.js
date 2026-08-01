@@ -160,7 +160,7 @@ const builtins = {
   },
 
   async pwd(args) {
-    process.stdout.write(fs.cwd + "\n");
+    process.stdout.write((fs.view ? fs.view(fs.cwd) : fs.cwd) + "\n");
     return 0;
   },
 
@@ -694,10 +694,39 @@ Example:
 `);
       return 0;
     }
+    if (args[0] === "--bind") {
+      // mount --bind <src> <dst> — re-expose one directory at another
+      // path. Admin-only: an unprivileged user could otherwise bind a
+      // directory over a protected one and bypass permissions.
+      if (!isPrivilegedUser()) {
+        process.stderr.write("mount: operation not permitted (admin only)\n");
+        return 1;
+      }
+      const bindSrc = args[1];
+      const bindDst = args[2];
+      if (!bindSrc || !bindDst) {
+        process.stderr.write("mount: usage: mount --bind <src> <dst>\n");
+        return 2;
+      }
+      const sr = fs._resolve(bindSrc);
+      const dr = fs._resolve(bindDst);
+      if (fs.mounts.some((m) => m.prefix === dr)) {
+        process.stderr.write(`mount: ${dr}: already a mount point (unmount ${dr} first)\n`);
+        return 1;
+      }
+      try {
+        fs.bindMount(sr, dr);
+        process.stdout.write(`mounted ${bindSrc} on ${bindDst} (bind)\n`);
+        return 0;
+      } catch (e) {
+        process.stderr.write(`mount: ${e.message}\n`);
+        return 1;
+      }
+    }
     const spec = args[0];
     const target = args[1];
     if (!target) {
-      process.stderr.write(`mount: usage: mount github:user/repo /mymount\n`);
+      process.stderr.write(`mount: usage: mount github:user/repo /mymount · mount --bind <src> <dst>\n`);
       return 2;
     }
     if (args.length > 2) {
@@ -1109,6 +1138,136 @@ Write new commands by creating .js files in /bin/.
 `);
   },
 
+  async chmod(args) {
+    // chmod OCTAL file... — only the owner (or tinysh/root) may change a
+    // file's mode. Modes are Unix-style: 600 = owner rw, 644 = +other r,
+    // 755 = dir default, 700 = private dir.
+    if (args.length === 0 || args[0] === "-h" || args[0] === "--help") {
+      process.stderr.write("chmod OCTAL file...  (e.g. chmod 600 secret.txt · chmod 755 dir)\n");
+      return args.length ? 0 : 2;
+    }
+    if (!/^[0-7]{3,4}$/.test(args[0])) {
+      process.stderr.write(`chmod: invalid mode '${args[0]}' — use octal (600, 644, 755)\n`);
+      return 2;
+    }
+    const mode = parseInt(args[0], 8);
+    const user = env.USER || "tinysh";
+    let hadError = false;
+    for (const file of args.slice(1)) {
+      const a = fs.attrOf(file);
+      if (!a) {
+        process.stderr.write(`chmod: ${file}: No such file or directory\n`);
+        hadError = true;
+        continue;
+      }
+      if (user !== "tinysh" && user !== "root" && user !== a.owner) {
+        process.stderr.write(`chmod: ${file}: operation not permitted (owned by ${a.owner})\n`);
+        hadError = true;
+        continue;
+      }
+      fs.setAttr(file, { owner: a.owner, mode });
+    }
+    return hadError ? 1 : 0;
+  },
+
+  async whoami(args) {
+    process.stdout.write((env.USER || "tinysh") + "\n");
+    return 0;
+  },
+
+  async su(args) {
+    // su                  → drop to nobody (unprivileged)
+    // su <name>           → switch to that user (su tinysh / su root → back)
+    let target = (args[0] || "nobody").trim().toLowerCase();
+    if (target === "-") target = "nobody";
+    if (!/^[a-z_][a-z0-9_-]*$/.test(target)) {
+      process.stderr.write(`su: invalid user name '${target}'\n`);
+      return 1;
+    }
+    if (env.USER === target) {
+      process.stdout.write(`su: already running as ${target}\n`);
+      return 0;
+    }
+    if (!suState.prev) {
+      suState.prev = { user: env.USER, home: env.HOME, cwd: fs.cwd };
+    }
+    env.USER = target;
+    const home = target === "tinysh" ? "/home" : "/home/" + target;
+    env.HOME = home;
+    try {
+      await fs.stat(home);
+    } catch {
+      try {
+        await fs.write(home + "/README.txt",
+          `Welcome, ${target}!\n` +
+          `This is your home directory (${home}).\n` +
+          `You are ${target === "nobody" ? "an unprivileged user" : "running as " + target} on tinysh.\n` +
+          `Run 'su tinysh' to return to the admin account.\n`);
+      } catch {}
+    }
+    // The new home is owned by the target user (su runs as admin, so
+    // the writes above would otherwise attribute it to tinysh — leaving
+    // the account unable to write in its own home).
+    fs.setAttr(home, { owner: target, mode: 0o700 });
+    try { fs.setAttr(home + "/README.txt", { owner: target, mode: 0o644 }); } catch {}
+    if (target === "tinysh" && suState.prev) {
+      fs.cwd = suState.prev.cwd;
+      suState.prev = null;
+    } else {
+      fs.cwd = home;
+    }
+    env.PWD = fs.cwd;
+    const unpriv = ["nobody", "daemon", "guest", "www-data"].includes(target);
+    process.stdout.write(`su: switched to ${target} — ${unpriv ? "unprivileged" : "user"}\n`);
+    process.stdout.write(`    HOME=${env.HOME} · run 'su tinysh' to return\n`);
+    rl.setPrompt(shellPrompt());
+    rl.prompt();
+    return 0;
+  },
+
+  async chroot(args) {
+    // chroot <dir>   — confine the shell to a new root (admin only)
+    // chroot -       — return to the real root
+    if (!isPrivilegedUser()) {
+      process.stderr.write("chroot: operation not permitted (admin only)\n");
+      return 1;
+    }
+    if (args.length === 0 || args[0] === "-h" || args[0] === "--help") {
+      process.stdout.write("chroot <dir> — confine the shell to a new root\n");
+      process.stdout.write("chroot -      — return to the real root\n");
+      return args.length ? 0 : 2;
+    }
+    if (args[0] === "-" || args[0] === "/") {
+      if (fs.root && fs.root !== "/") {
+        fs.cwd = fs.chrootSavedCwd || "/home";
+        fs.root = "/";
+        process.stdout.write("chroot: returned to the real root\n");
+      } else {
+        process.stdout.write("chroot: not inside a chroot\n");
+      }
+      rl.setPrompt(shellPrompt());
+      rl.prompt();
+      return 0;
+    }
+    const r = fs._resolve(args[0]);
+    let st;
+    try { st = await fs.stat(r); } catch (e) {
+      process.stderr.write(`chroot: ${args[0]}: ${e.message}\n`);
+      return 1;
+    }
+    if (!st || st.type !== "dir") {
+      process.stderr.write(`chroot: ${args[0]}: not a directory\n`);
+      return 1;
+    }
+    fs.chrootSavedCwd = fs.cwd;
+    fs.root = r;
+    fs.cwd = r;
+    process.stdout.write(`chroot: changed root to ${args[0]} — "/" is now ${r}\n`);
+    rl.setPrompt(shellPrompt());
+    rl.prompt();
+    return 0;
+  },
+
   async exit(args) {
     process.exit(0);
   }
@@ -1127,6 +1286,27 @@ Write new commands by creating .js files in /bin/.
 // resolved against the cwd and run directly (./a.wasm, /home/x.js,
 // ../run.mjs) instead of being looked up in $PATH. Bare names never
 // fall back to the cwd — that's what the leading ./ is for.
+// Unprivileged users (su nobody/daemon/guest/...) may only run
+// admin-trusted code: builtins and .js/.wasm files owned by tinysh.
+// Custom code (anything they — or another non-admin — created) is
+// refused, so an unprivileged session can't escalate by dropping a
+// .js/.wasm file and running it.
+function isPrivilegedUser() {
+  const u = env.USER || "tinysh";
+  return u === "tinysh" || u === "root";
+}
+function customExecDenied(path) {
+  if (isPrivilegedUser()) return null;
+  const a = fs.attrOf(path);
+  const owner = a ? a.owner : "tinysh";
+  if (owner === "tinysh") return null;
+  return {
+    type: "badpath",
+    path,
+    err: "operation not permitted: unprivileged users cannot run custom code (owned by " + owner + ")",
+  };
+}
+
 async function findCommand(name) {
   if (name.includes("/")) {
     const resolved = fs._resolve(name);
@@ -1141,9 +1321,13 @@ async function findCommand(name) {
       return { type: "badpath", path: resolved, err: "Is a directory" };
     }
     if (/\.wasm$/i.test(resolved)) {
+      const denied = customExecDenied(resolved);
+      if (denied) return denied;
       return { type: "wasm", path: resolved };
     }
     if (/\.(js|mjs)$/i.test(resolved)) {
+      const denied = customExecDenied(resolved);
+      if (denied) return denied;
       return { type: "file", path: resolved };
     }
     // The file exists but the shell can't run it (no interpreter here).
@@ -1159,7 +1343,10 @@ async function findCommand(name) {
     try {
       const entries = await fs.list(dir);
       if (entries.includes(name + ".wasm")) {
-        return { type: "wasm", path: dir + "/" + name + ".wasm" };
+        const p = dir + "/" + name + ".wasm";
+        const denied = customExecDenied(p);
+        if (denied) return denied;
+        return { type: "wasm", path: p };
       }
     } catch {
       // Directory doesn't exist, skip
@@ -1175,13 +1362,22 @@ async function findCommand(name) {
       for (const entry of entries) {
         const clean = entry.replace(/\/$/, "");
         if (clean === name || clean === name + ".js") {
-          return { type: "file", path: dir + "/" + clean };
+          const p = dir + "/" + clean;
+          const denied = customExecDenied(p);
+          if (denied) return denied;
+          return { type: "file", path: p };
         }
         if (clean === name + ".mjs") {
-          return { type: "file", path: dir + "/" + clean };
+          const p = dir + "/" + clean;
+          const denied = customExecDenied(p);
+          if (denied) return denied;
+          return { type: "file", path: p };
         }
         if (clean === name + ".wasm") {
-          return { type: "wasm", path: dir + "/" + clean };
+          const p = dir + "/" + clean;
+          const denied = customExecDenied(p);
+          if (denied) return denied;
+          return { type: "wasm", path: p };
         }
       }
     } catch {
@@ -1200,7 +1396,9 @@ async function resolveCommand(name) {
   if (name.includes("/")) return null;
 
   // Auto-load a wasm binary from the local server's wasm-bin/ on first
-  // use (cc is an alias for the compiler binary)
+  // use (cc is an alias for the compiler binary). Unprivileged users
+  // never auto-load (and couldn't write to /usr/bin anyway).
+  if (!isPrivilegedUser()) return null;
   let wasmName = name;
   if (name === "cc") wasmName = "compiler";
   try {
@@ -1810,6 +2008,13 @@ function tabComplete(line, callback) {
 const replState = { active: false, mode: null, perl: null, perlReady: null,
   perlSession: [], perlOut: "", perlMarker: "" };
 let shellHistory = [];  // the shell's readline history while a REPL owns it
+const suState = { prev: null };  // previous user context, for `su tinysh`
+
+// Prompt shows the current user — su'd users appear as nobody:/home/nobody$
+function shellPrompt() {
+  const user = env.USER && env.USER !== "tinysh" ? env.USER : "tinysh";
+  return `${user}:${fs.view ? fs.view(fs.cwd) : fs.cwd}$ `;
+}
 
 function enterPythonRepl() {
   if (!process.stdin.isTTY) { process.stderr.write("python: REPL requires an interactive terminal\n"); return; }
@@ -1861,7 +2066,7 @@ function exitRepl() {
   replState.perlReady = null;
   process.stdout.write(`\nLeaving ${mode === "perl" ? "Perl" : "Python"} REPL.\n`);
   rl.history = shellHistory;  // give the shell its history back
-  rl.setPrompt(`tinysh:${fs.cwd}$ `);
+  rl.setPrompt(shellPrompt());
   rl.prompt();
 }
 
@@ -1917,7 +2122,7 @@ async function runReplLine(line) {
 const rl = createInterface({
   input: process.stdin,
   output: process.stdout,
-  prompt: `tinysh:${fs.cwd}$ `,
+  prompt: shellPrompt(),
   terminal: process.stdin.isTTY,
   completer: tabComplete,
 });
@@ -1935,7 +2140,7 @@ if (process.stdin.isTTY) {
     lineQueue = lineQueue.then(async () => {
       if (replState.active) { await runReplLine(line); return; }
       await runInterruptible(handleLine(line));
-      rl.setPrompt(`tinysh:${fs.cwd}$ `);
+      rl.setPrompt(shellPrompt());
       rl.prompt();
     }).catch((e) => {
       process.stderr.write(`tinysh: ${e && e.message ? e.message : e}\n`);
@@ -1959,7 +2164,7 @@ if (process.stdin.isTTY) {
     }
     // Cancel the partially typed line and redraw the prompt.
     rl.write(null, { ctrl: true, name: "u" });
-    rl.setPrompt(`tinysh:${fs.cwd}$ `);
+    rl.setPrompt(shellPrompt());
     rl.prompt();
   });
 

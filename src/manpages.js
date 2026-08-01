@@ -47,8 +47,8 @@ const SHORT = {
   head: "print the first N lines of a file or stdin",
   grep: "search files or stdin for a pattern",
   find: "find files by name and type",
-  mount: "list mounts, or attach a remote repo as a filesystem",
-  unmount: "detach a user-created mount",
+  mount: "list mounts, attach a repo, or bind an existing dir (admin only)",
+  unmount: "detach a user-created mount (bind mounts too)",
   wasmer: "WASM package manager (list / install / search)",
   wat2wasm: "compile a .wat WebAssembly text file to .wasm",
   bash2js: "transpile bash to JavaScript (sh2perl → perl2js)",
@@ -72,6 +72,10 @@ const SHORT = {
   more: "page through a file (alias for cat)",
   less: "page through a file (alias for cat)",
   true: "always succeed (exit 0)",
+  whoami: "print the current user",
+  su: "switch users — drop to an unprivileged account",
+  chmod: "change file mode bits (octal, enforced)",
+  chroot: "change the root directory (admin only)",
   false: "always fail (exit 1)",
   exit: "exit the shell",
   man: "show manual pages for commands",
@@ -79,6 +83,78 @@ const SHORT = {
 
 // Full manual pages. Each entry is a template literal printed as-is.
 export const MAN_PAGES = {
+  whoami: `NAME
+     whoami — print the current user
+
+SYNOPSIS
+     whoami
+
+DESCRIPTION
+     Prints the effective user name (the $USER environment variable).
+     After "su nobody" this reports nobody.
+
+SEE ALSO
+     su
+`,
+  su: `NAME
+     su — switch users
+
+SYNOPSIS
+     su [user]
+     su -
+
+DESCRIPTION
+     su switches the shell to another account. With no argument it drops
+     to nobody, an unprivileged user with its own home directory
+     (/home/nobody). su tinysh (or su root) returns to the admin
+     account, restoring the directory you were in before su.
+
+     Switching to nobody, daemon, guest or www-data marks the session as
+     unprivileged: the prompt and status bar show the user name, and
+     the new account gets its own home directory with a welcome note on
+     first visit.
+
+     Permissions are real and enforced at the filesystem layer: files
+     carry an owner and Unix-style mode bits, and every read/write/list
+     checks the current user against them. su nobody cannot read a 0600
+     file owned by tinysh (EACCES), cannot write into tinysh's home,
+     and cannot chmod files it does not own. tinysh and root bypass the
+     checks. Modes are set with chmod.
+
+EXAMPLES
+     su                    drop to nobody
+     su daemon             switch to the daemon account
+     whoami                nobody
+     echo $HOME            /home/nobody
+     su tinysh             back to the admin account
+
+SEE ALSO
+     whoami
+`,  chmod: `NAME
+     chmod — change file mode bits
+
+SYNOPSIS
+     chmod OCTAL file...
+
+DESCRIPTION
+     Sets the Unix-style mode bits of a file or directory. Only the
+     owner (or tinysh/root) may change a mode. Octal forms: 600 =
+     owner read/write, 644 = also readable by others, 700 = private
+     directory, 755 = public directory.
+
+     The filesystem enforces these bits: reads need the read bit, writes
+     need the write bit (plus traverse on the parent directory), and
+     listing a directory needs its read bit.
+
+EXAMPLES
+     chmod 600 secret.txt     private — only the owner can read/write
+     chmod 644 notes.txt      owner rw, everyone else read
+     chmod 755 /home/public   traversable and listable by everyone
+
+SEE ALSO
+     su
+`,
+
   man: `NAME
      man — display the manual page for a command
 
@@ -421,32 +497,52 @@ EXAMPLES
 SEE ALSO
      grep, ls
 `,
+  chroot: `NAME
+     chroot — change the root directory
+
+SYNOPSIS
+     chroot <dir>
+     chroot -
+
+DESCRIPTION
+     Confines the shell to a new root: "/" becomes <dir>, so paths like
+     /etc/passwd resolve inside it. Only the admin (tinysh/root) may
+     chroot. The prompt, pwd and the status bar show the confined view;
+     chroot - returns to the real root and the directory you were in.
+
+     Permissions still apply inside the chroot — it confines the view,
+     it does not bypass ownership or mode bits. Combining chroot with su
+     gives a real jail: su nobody; chroot /home/nobody.
+
+EXAMPLES
+     chroot /home/nobody    "/" is now /home/nobody
+     ls /                   the chroot root's contents
+     chroot -               back to the real root
+
+SEE ALSO
+     su
+`,
   mount: `NAME
-     mount — list mounts, or attach a remote repo as a filesystem
+     mount — attach a filesystem at a path
 
 SYNOPSIS
      mount
-     mount github:USER/REPO /PATH
-     mount -h | --help
+     mount github:user/repo /path
+     mount --bind <src> <dst>
 
 DESCRIPTION
-     With no arguments mount lists the filesystems currently mounted
-     on the virtual directory tree, each with its type and path.
-     With a github:USER/REPO spec and a target path it attaches that
-     repository as a read-only filesystem: its files appear under
-     /PATH and can be listed and read like any local files.
-     (GitLab and plain git repos use the same syntax with gitlab:
-     and git: specs — see fs/gitlabfs.js and fs/gitfs.js.)
+     With no arguments mount lists the filesystems. mount
+     github:user/repo /path attaches a GitHub repository. mount --bind
+     re-exposes an existing directory at another path; both operations
+     are admin-only (an unprivileged user could otherwise bind a
+     directory over a protected one and bypass permissions).
 
-EXAMPLES
-     mount
-     mount github:gmatht/sh2perl /mymount
-     ls /mymount
-     cat /mymount/README.md
-     unmount /mymount
+     Bind mounts share the underlying files, so permission checks
+     translate back to the original paths — a bind never bypasses
+     ownership or mode bits. Detach with unmount.
 
 SEE ALSO
-     unmount, ls
+     unmount
 `,
   unmount: `NAME
      unmount — detach a user-created mount

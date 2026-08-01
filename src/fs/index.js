@@ -20,6 +20,7 @@
 //   /mount/git    → GitFS         (real git wire protocol over HTTP)
 // -------------------------------------------------------------------
 
+import { env } from "../env.js";
 import { RamFS } from "./ramfs.js";
 import { LocalStorageFS } from "./localstoragefs.js";
 import { IndexedDBFS } from "./indexeddbfs.js";
@@ -295,12 +296,47 @@ class OverlayFS {
   }
 }
 
+// ─── BindFS: re-expose one subtree at another path ─────────────
+// `mount --bind src dst` wraps the src backend with a path prefix, so
+// dst/X reads/writes src/X. Permissions follow the ORIGINAL paths (the
+// VirtualFS translates bind dsts back before checking attrs).
+class BindFS {
+  constructor(base, prefix) {
+    this.base = base;      // the backend hosting src (e.g. LocalStorageFS)
+    this.prefix = prefix;  // relative base inside it (e.g. "/nobody")
+  }
+  _p(p) {
+    const rel = p === "/" || p === "" ? "" : p.replace(/^\/+/, "");
+    return this.prefix + "/" + rel;
+  }
+  read(p) { return this.base.read(this._p(p)); }
+  readBlob(p) { return this.base.readBlob ? this.base.readBlob(this._p(p)) : this.base.read(this._p(p)); }
+  write(p, c) { return this.base.write(this._p(p), c); }
+  writeBlob(p, b) {
+    if (this.base.writeBlob) return this.base.writeBlob(this._p(p), b);
+    return this.base.write(this._p(p), typeof b === "string" ? b : b.text());
+  }
+  list(p) { return this.base.list(this._p(p)); }
+  remove(p) { return this.base.remove(this._p(p)); }
+  stat(p) { return this.base.stat ? this.base.stat(this._p(p)) : null; }
+  statSync(p) { return this.base.statSync ? this.base.statSync(this._p(p)) : null; }
+}
+
 // ─── VirtualFS ─────────────────────────────────────────────────
 
 class VirtualFS {
   constructor() {
     this.mounts = [];
     this.cwd = "/home";
+    // Ownership + mode bits, enforced at this layer: every command
+    // reaches the filesystem only through VirtualFS, so `su nobody`
+    // really cannot read a 0600 file owned by tinysh. In-memory only —
+    // a reload re-creates the world as the admin user, which is
+    // exactly what happens on a real boot.
+    this.attrs = new Map();  // resolved path → { owner, mode }
+    this.binds = new Map();  // bind-mount dst → original real path
+    this.root = "/";         // chroot root (view-space "/" maps here)
+    this.chrootSavedCwd = null;
 
     // Root filesystem — shows mount points as directories
     const root = new RootFS(this);
@@ -2877,6 +2913,54 @@ return 0;
     return lines.join("\n") + "\n";
   }
 
+  // ─── permissions ─────────────────────────────────────────────
+  _user() { return (env && env.USER) || "tinysh"; }
+  _isAdmin(user) { return user === "tinysh" || user === "root"; }
+  _parent(path) {
+    const p = path.replace(/\/+$/, "");
+    if (p === "" || p === "/") return "/";
+    const i = p.lastIndexOf("/");
+    return i === 0 ? "/" : p.slice(0, i);
+  }
+  // Owner/mode for a resolved path; unknown paths default to the admin's
+  // 0755 (legacy files stay accessible; new files get recorded attrs).
+  _attrFor(path) {
+    const a = this.attrs.get(this._orig(path));
+    return a || { owner: "tinysh", mode: 0o755 };
+  }
+  _setAttr(path, attr) { this.attrs.set(path, attr); }
+  // attrOf/setAttr are the shell's public API (chmod).
+  attrOf(path) {
+    let r;
+    try { r = this._resolve(path); } catch { return null; }
+    return this.attrs.get(r) || null;
+  }
+  setAttr(path, attr) {
+    this._setAttr(this._resolve(path), attr);
+  }
+  _can(path, op) {
+    const user = this._user();
+    if (this._isAdmin(user)) return true;
+    const a = this._attrFor(path);
+    const owner = user === a.owner;
+    const bit = op === "w" ? (owner ? 0o200 : 0o002)
+               : op === "x" ? (owner ? 0o100 : 0o001)
+               : (owner ? 0o400 : 0o004);
+    return (a.mode & bit) !== 0;
+  }
+  _check(path, op) {
+    if (!this._can(path, op)) {
+      throw new Error(`EACCES: permission denied: ${path}`);
+    }
+  }
+  _ensureParentAttrs(path, owner) {
+    let p = this._parent(path);
+    while (p !== "/" && !this.attrs.has(p)) {
+      this.attrs.set(p, { owner, mode: 0o755 });
+      p = this._parent(p);
+    }
+  }
+
   _resolve(path) {
     let resolved = path;
     if (!path.startsWith("/")) {
@@ -2888,7 +2972,41 @@ return 0;
       if (p === "..") out.pop();
       else if (p !== ".") out.push(p);
     }
-    return "/" + out.join("/");
+    let norm = "/" + out.join("/");
+    // chroot: view-space absolute paths map into the confined root.
+    if (this.root && this.root !== "/") {
+      norm = this.root.replace(/\/+$/, "") + (norm === "/" ? "" : norm);
+    }
+    return norm;
+  }
+
+  // Map a real path back into the chroot view (for prompts / pwd).
+  view(path) {
+    if (!this.root || this.root === "/") return path;
+    if (path === this.root) return "/";
+    if (path && path.startsWith(this.root + "/")) return path.slice(this.root.length);
+    return path;
+  }
+
+  // Bind-mount src (a real resolved path) at dst. Admin-only; the dst
+  // prefix is registered so permission checks translate back to the
+  // original paths (bind mounts never bypass ownership/mode).
+  bindMount(src, dst) {
+    const m = this._findBackend(src);
+    if (!m) throw new Error(`ENOENT: ${src}`);
+    const wrapper = new BindFS(m.backend, m.relative.replace(/\/$/, ""));
+    this.mount("bind", dst, wrapper, { user: true });
+    this.binds.set(dst, src);
+  }
+
+  // Translate a bind-mount dst back to the original real path.
+  _orig(r) {
+    if (this.binds.size === 0) return r;
+    for (const [dst, src] of this.binds) {
+      if (r === dst) return src;
+      if (r.startsWith(dst + "/")) return src + r.slice(dst.length);
+    }
+    return r;
   }
 
   _findBackend(resolvedPath) {
@@ -2907,6 +3025,8 @@ return 0;
 
   async read(path) {
     const r = this._resolve(path);
+    this._check(this._parent(r), "x");
+    this._check(r, "r");
     const m = this._findBackend(r);
     if (!m) throw new Error(`ENOENT: ${path} (no mount for ${r})`);
     return m.backend.read(m.relative);
@@ -2914,6 +3034,8 @@ return 0;
 
   async readBlob(path) {
     const r = this._resolve(path);
+    this._check(this._parent(r), "x");
+    this._check(r, "r");
     const m = this._findBackend(r);
     if (!m) throw new Error(`ENOENT: ${path} (no mount for ${r})`);
     if (m.backend.readBlob) {
@@ -2925,6 +3047,9 @@ return 0;
 
   async writeBlob(path, blob) {
     const r = this._resolve(path);
+    this._check(this._parent(r), "x");
+    if (this.attrs.has(r)) this._check(r, "w");
+    else this._check(this._parent(r), "w");
     const m = this._findBackend(r);
     if (!m) throw new Error(`ENOENT: ${path} (no mount for ${r})`);
     let result;
@@ -2936,20 +3061,36 @@ return 0;
       result = await m.backend.write(m.relative, text);
     }
     if (result && result.overlay) this._emitOverlayWarning(r, m.name);
+    this._recordWrite(r);
     return result;
   }
 
   async write(path, content) {
     const r = this._resolve(path);
+    this._check(this._parent(r), "x");
+    if (this.attrs.has(r)) this._check(r, "w");
+    else this._check(this._parent(r), "w");
     const m = this._findBackend(r);
     if (!m) throw new Error(`ENOENT: ${path} (no mount for ${r})`);
     const result = await m.backend.write(m.relative, content);
     if (result && result.overlay) this._emitOverlayWarning(r, m.name);
+    this._recordWrite(r);
     return result;
+  }
+
+  // After a successful write: attribute the file (and any parent dirs
+  // the backends auto-created) to the current user.
+  _recordWrite(r) {
+    const orig = this._orig(r);
+    const owner = this._user();
+    if (!this.attrs.has(orig)) this.attrs.set(orig, { owner, mode: 0o644 });
+    this._ensureParentAttrs(orig, owner);
   }
 
   async list(path) {
     const r = this._resolve(path);
+    this._check(this._parent(r), "x");
+    this._check(r, "r");
     const m = this._findBackend(r);
     if (!m) throw new Error(`ENOENT: ${path} (no mount for ${r})`);
     return m.backend.list(m.relative);
@@ -2987,6 +3128,8 @@ return 0;
 
   async remove(path) {
     const r = this._resolve(path);
+    this._check(this._parent(r), "w");
+    this._check(this._parent(r), "x");
     const m = this._findBackend(r);
     if (!m) throw new Error(`ENOENT: ${path} (no mount for ${r})`);
     const result = await m.backend.remove(m.relative);
@@ -3016,21 +3159,30 @@ return 0;
 
   async stat(path) {
     const r = this._resolve(path);
+    // stat is metadata: needs traverse (x) on the parent, not read on
+    // the file — `ls -l` shows real modes even when the content is
+    // private, exactly like Unix.
+    this._check(this._parent(r), "x");
     const m = this._findBackend(r);
     if (!m) throw new Error(`ENOENT: ${path} (no mount for ${r})`);
+    let st;
     if (m.backend.stat) {
-      return m.backend.stat(m.relative);
-    }
-    try {
-      const content = await m.backend.read(m.relative);
-      return { type: "file", size: content.length, mtime: undefined };
-    } catch (e) {
-      const msg = e.message || "";
-      if (msg.includes("EISDIR") || msg.includes("ENOTDIR")) {
-        return { type: "dir", size: 0, mtime: undefined };
+      st = await m.backend.stat(m.relative);
+    } else {
+      try {
+        const content = await m.backend.read(m.relative);
+        st = { type: "file", size: content.length, mtime: undefined };
+      } catch (e) {
+        const msg = e.message || "";
+        if (msg.includes("EISDIR") || msg.includes("ENOTDIR")) {
+          st = { type: "dir", size: 0, mtime: undefined };
+        } else {
+          throw e;
+        }
       }
-      throw e;
     }
+    const a = this._attrFor(r);
+    return { ...st, owner: a.owner, mode: a.mode };
   }
 
   // Synchronous stat, or null when the backend can't do it synchronously
@@ -3038,9 +3190,12 @@ return 0;
   statSync(path) {
     try {
       const r = this._resolve(path);
+      if (!this._can(this._parent(r), "x")) return null;
       const m = this._findBackend(r);
       if (!m || !m.backend.statSync) return null;
-      return m.backend.statSync(m.relative);
+      const st = m.backend.statSync(m.relative);
+      const a = this._attrFor(r);
+      return { ...st, owner: a.owner, mode: a.mode };
     } catch {
       return null;
     }
@@ -3117,8 +3272,10 @@ return 0;
       const size = st && st.size !== undefined ? st.size : (isDir ? 0 : "-");
       const mtime = st && st.mtime;
       const exe = type === "file" && isExecutableName(name);
+      const a = this._attrFor(path + "/" + entry);
       rows.push({
-        mode: type === "dir" ? "drwxr-xr-x" : exe ? "-rwxr-xr-x" : "-rw-r--r--",
+        mode: modeToString(type === "dir" ? "dir" : "file", a.mode),
+        owner: a.owner,
         size,
         date: formatMtime(mtime),
         name: colorize(name, type === "dir" ? "dir" : exe ? "exe" : "file"),
@@ -3127,7 +3284,7 @@ return 0;
     const sizeW = Math.max(...rows.map(r => String(r.size).length));
     const dateW = Math.max(...rows.map(r => r.date.length));
     return rows.map(r =>
-      `${r.mode} 1 tinysh tinysh ${String(r.size).padStart(sizeW)} ${r.date.padEnd(dateW)} ${r.name}`
+      `${r.mode} 1 ${r.owner} ${r.owner} ${String(r.size).padStart(sizeW)} ${r.date.padEnd(dateW)} ${r.name}`
     ).join("\n") + "\n";
   }
 }
@@ -3158,6 +3315,16 @@ function colorize(name, kind) {
 }
 
 // Unix-style date column: "Mon DD HH:MM" for this year, else "Mon DD  YYYY"
+// rwx string for a mode, no group concept (group bits displayed as other).
+function modeToString(type, mode) {
+  const seg = (r, w, x) =>
+    ((mode & r) ? "r" : "-") + ((mode & w) ? "w" : "-") + ((mode & x) ? "x" : "-");
+  const owner = seg(0o400, 0o200, 0o100);
+  const other = seg(0o004, 0o002, 0o001);
+  // group bits shown as other (no group concept in the VFS)
+  return (type === "dir" ? "d" : "-") + owner + other + other;
+}
+
 function formatMtime(ms) {
   if (!ms) return "-";
   const d = new Date(ms);
