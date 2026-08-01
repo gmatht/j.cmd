@@ -67,6 +67,7 @@ const SHORT = {
   arecord: "record microphone audio (arecord-compatible options)",
   perl: "Perl 5 interpreter (zeroperl wasm)",
   lua: "Lua 5.4 interpreter (wasmoon wasm)",
+  time: "run a command and report how long it took",
   screen: "split the terminal into panes (tmux-style, browser)",
   more: "page through a file (alias for cat)",
   less: "page through a file (alias for cat)",
@@ -925,6 +926,31 @@ EXAMPLES
 
 SEE ALSO
      perl, python, wasmer
+`,
+  time: `NAME
+     time — run a command and report how long it took
+
+SYNOPSIS
+     time [-p] <command> [args...]
+
+DESCRIPTION
+     time runs the given command line through the shell and reports
+     the elapsed wall-clock time (real), plus user/system CPU time in
+     the Node CLI (the command runs in-process, so the process CPU
+     counters cover it). The command's own output is passed through
+     and its exit status becomes time's exit status.
+
+OPTIONS
+     -p, --portable   POSIX-style output (real 0.01 / user 0.00 ...)
+     -h, --help       show help
+
+EXAMPLES
+     time ls /github
+     time bash -c 'echo hi'
+     time -p sleep 0.5
+
+SEE ALSO
+     /dev/time (current time device)
 `,
   more: `NAME
      more — page through a file (alias for cat)

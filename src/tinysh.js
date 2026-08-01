@@ -1881,10 +1881,14 @@ async function runReplLine(line) {
       // in the same eval; only the output after the marker is shown.
       replState.perlOut = "";
       const session = replState.perlSession;
-      const code = (session.length > 0 ? session.join("\n") + "\n" : "") +
+      // Separate statements with ";" — a bare newline doesn't end a Perl
+      // statement (my $x=9 works as the last line of an eval but breaks
+      // when more code follows), and only successful lines join the
+      // session so an error never poisons the replay.
+      const code = (session.length > 0 ? session.join(";\n") + ";\n" : "") +
         "print " + JSON.stringify(replState.perlMarker + "\n") + ";\n" +
         line;
-      await replState.perl.eval(code, []);
+      const res = await replState.perl.eval(code, []);
       try { replState.perl.flush(); } catch (e) {}
       const marker = replState.perlMarker;
       const splitAt = replState.perlOut.lastIndexOf(marker + "\n");
@@ -1892,7 +1896,8 @@ async function runReplLine(line) {
         const fresh = replState.perlOut.slice(splitAt + marker.length + 1);
         if (fresh) process.stdout.write(fresh);
       }
-      if (line.trim()) session.push(line);
+      if (res && res.success && line.trim()) session.push(line);
+      if (res && !res.success && res.error) process.stderr.write(String(res.error));
     } catch (e) {
       process.stderr.write(`perl: ${e.message}\n`);
     }
@@ -1915,11 +1920,20 @@ if (process.stdin.isTTY) {
   // Read the user's ~/.tinyshrc before the first prompt so exports
   // and setup commands are already in effect (like bash and .bashrc).
   await loadConfig();
-  rl.on("line", async (line) => {
-    if (replState.active) { await runReplLine(line); return; }
-    await runInterruptible(handleLine(line));
-    rl.setPrompt(`tinysh:${fs.cwd}$ `);
-    rl.prompt();
+  // readline fires 'line' without awaiting the handler, so fast typing
+  // (or a piped stream) would run commands concurrently — fatal for the
+  // perl REPL, which shares one interpreter and an output buffer across
+  // lines. Serialize everything through a queue, like the browser shell.
+  let lineQueue = Promise.resolve();
+  rl.on("line", (line) => {
+    lineQueue = lineQueue.then(async () => {
+      if (replState.active) { await runReplLine(line); return; }
+      await runInterruptible(handleLine(line));
+      rl.setPrompt(`tinysh:${fs.cwd}$ `);
+      rl.prompt();
+    }).catch((e) => {
+      process.stderr.write(`tinysh: ${e && e.message ? e.message : e}\n`);
+    });
   });
 
   // Ctrl+C: registering a SIGINT listener takes over from readline's

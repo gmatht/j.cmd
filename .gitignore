@@ -20,3 +20,9 @@ __pycache__/
 # Editor / OS
 .DS_Store
 *.swp
+
+# Vendored for the static (GitHub Pages) demo — committed despite *.wasm
+!www/wasm-bin/
+!www/wasm-bin/*.wasm
+!www/vendor/
+!www/vendor/*.wasm

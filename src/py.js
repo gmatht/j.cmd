@@ -47,7 +47,7 @@ function waitInitialized(module) {
 // ─── browser: inject the glue as a <script>, then use Module.cwrap ─
 async function loadGlueModule() {
   if (typeof document !== "undefined") {
-    const src = "/node_modules/@yeliulee/micropython-wasm/lib/micropython.js";
+    const src = "vendor/micropython.js";
     const existing = document.querySelector('script[src="' + src + '"]');
     if (!existing) {
       await new Promise((resolve, reject) => {
@@ -61,7 +61,7 @@ async function loadGlueModule() {
     const module = window.Module;  // emscripten module singleton
     if (!module || !module.cwrap) throw new Error("micropython glue did not expose Module");
     // Point the glue at the wasm next to the script (it fetches it itself).
-    module.locateFile = module.locateFile || ((p) => "/node_modules/@yeliulee/micropython-wasm/lib/" + p);
+    module.locateFile = module.locateFile || ((p) => "vendor/" + p);
     return module;
   }
   // ─── Node (CLI): require the glue with a fetch shim for the wasm ─

@@ -207,15 +207,15 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/codemirror.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/addon/dialog/dialog.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/keymap/vim.min.js"></script>
-<!-- pako (zlib): git object inflation for GitFS (served from node_modules by serve.py) -->
-<script src="../node_modules/pako/dist/pako_inflate.min.js"></script>
-<!-- Bare-specifier resolution for the WASM runtime packages (served from node_modules by serve.py) -->
+<!-- pako (zlib): git object inflation for GitFS (vendored in www/vendor/) -->
+<script src="vendor/pako.min.js"></script>
+<!-- Bare-specifier resolution for the WASM runtime packages (vendored in www/vendor/) -->
 <script type="importmap">
 {
   "imports": {
-    "@wasmer/wasi": "/node_modules/@wasmer/wasi/dist/Library.esm.js",
-    "@wasmer/wasmfs": "/node_modules/@wasmer/wasmfs/lib/index.esm.js",
-    "@6over3/zeroperl-ts": "/node_modules/@6over3/zeroperl-ts/dist/esm/index.js"
+    "@wasmer/wasi": "./vendor/wasmer-wasi.mjs",
+    "@wasmer/wasmfs": "./vendor/wasmer-wasmfs.mjs",
+    "@6over3/zeroperl-ts": "./vendor/zeroperl.mjs"
   }
 }
 </script>
@@ -3302,7 +3302,7 @@ function enterPerlRepl() {
         fileSystem: null,
         stdout: (d) => { replState.perlOut += decChunk(d); },
         stderr: (d) => stderr.write(decChunk(d)),
-        fetch: () => fetch("/node_modules/@6over3/zeroperl-ts/dist/esm/zeroperl.wasm"),
+        fetch: () => fetch("vendor/zeroperl.wasm"),
       });
       replState.perl = perl;
     } catch (e) {
@@ -3349,10 +3349,14 @@ async function runReplLine(line) {
       // in the same eval; only the output after the marker is shown.
       replState.perlOut = "";
       const session = replState.perlSession;
-      const code = (session.length > 0 ? session.join("\n") + "\n" : "") +
+      // Separate statements with ";" — a bare newline doesn't end a Perl
+      // statement (my $x=9 works as the last line of an eval but breaks
+      // when more code follows), and only successful lines join the
+      // session so an error never poisons the replay.
+      const code = (session.length > 0 ? session.join(";\n") + ";\n" : "") +
         "print " + JSON.stringify(replState.perlMarker + "\n") + ";\n" +
         line;
-      await replState.perl.eval(code, []);
+      const res = await replState.perl.eval(code, []);
       try { replState.perl.flush(); } catch (e) {}
       const marker = replState.perlMarker;
       const splitAt = replState.perlOut.lastIndexOf(marker + "\n");
@@ -3360,7 +3364,8 @@ async function runReplLine(line) {
         const fresh = replState.perlOut.slice(splitAt + marker.length + 1);
         if (fresh) stdout.write(fresh);
       }
-      if (line.trim()) session.push(line);
+      if (res && res.success && line.trim()) session.push(line);
+      if (res && !res.success && res.error) stderr.write(String(res.error));
     } catch (e) {
       stderr.write(`perl: ${e.message}\n`);
     }

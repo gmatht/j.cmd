@@ -1933,7 +1933,7 @@ try {
     stdout: function (d) { outChunks.push(dec(d)); },
     stderr: function (d) { errChunks.push(dec(d)); },
     fetch: isBrowser
-      ? function () { return fetch("/node_modules/@6over3/zeroperl-ts/dist/esm/zeroperl.wasm"); }
+      ? function () { return fetch("vendor/zeroperl.wasm"); }
       : undefined,
   });
 } catch (e) {
@@ -2070,7 +2070,7 @@ function loadScript(src) {
 var LuaFactory = null;
 try {
   if (isBrowser) {
-    await loadScript("/node_modules/wasmoon/dist/index.js");
+    await loadScript("vendor/wasmoon.mjs");
     LuaFactory = window.wasmoon && window.wasmoon.LuaFactory;
     if (!LuaFactory) throw new Error("wasmoon did not load (window.wasmoon missing)");
   } else {
@@ -2103,7 +2103,7 @@ var outChunks = [];
 var errChunks = [];
 var lua;
 try {
-  var factory = new LuaFactory(isBrowser ? "/node_modules/wasmoon/dist/glue.wasm" : undefined);
+  var factory = new LuaFactory(isBrowser ? "vendor/wasmoon-glue.wasm" : undefined);
   lua = await factory.createEngine({ openStandardLibs: true });
   lua.global.set("__lua_out", function (s) { outChunks.push(String(s)); });
   // Route print and io.write to the shell: they normally go to the C
@@ -2159,6 +2159,115 @@ return 0;
         }
       })
       .catch(() => syncWrite(this._getBackend("/bin/lua.js"), "/lua.js", luaContent));
+
+    // time — run a command line and report how long it took (uses the
+    // shell.runLine hook, like xterm). Version-gated (v1 marker).
+    const timeContent = `// time v1 — run a command and report how long it took
+//
+// NAME
+//      time — time a command
+//
+// SYNOPSIS
+//      time [-p] <command> [args...]
+//
+// DESCRIPTION
+//      Runs the given command line through the shell and reports the
+//      elapsed wall-clock time (real), plus user/system CPU time in
+//      the Node CLI (the command runs in-process, so the process CPU
+//      counters cover it). The command's own output is passed through
+//      and its exit status becomes time's exit status.
+//
+// OPTIONS
+//      -p, --portable   POSIX-style output (real 0.01 / user 0.00 ...)
+//      -h, --help       show this help
+//
+// EXAMPLES
+//      time ls /github
+//      time bash -c 'echo hi'
+//      time -p sleep 0.5
+
+var NL = String.fromCharCode(10);
+var TAB = String.fromCharCode(9);
+
+if (args.length === 0) {
+  console.log("time — run a command and report how long it took");
+  console.log("usage: time [-p] <command> [args...]");
+  console.log("examples: time ls /github · time bash -c 'echo hi' · time -p sleep 0.5");
+  return 2;
+}
+if (args[0] === "-h" || args[0] === "--help") {
+  console.log("time — run a command and report how long it took");
+  console.log("usage: time [-p] <command> [args...]");
+  console.log("");
+  console.log("  -p, --portable  POSIX-style output (real 0.01)");
+  console.log("  -h, --help      this help");
+  console.log("");
+  console.log("examples: time ls /github · time bash -c 'echo hi' · time -p sleep 0.5");
+  return 0;
+}
+var portable = args[0] === "-p" || args[0] === "--portable";
+if (portable) args = args.slice(1);
+if (args.length === 0) {
+  console.log("time: no command given");
+  return 2;
+}
+if (typeof shell === "undefined" || typeof shell.runLine !== "function") {
+  console.log("time: this shell has no runLine hook (needs the browser shell or tinysh CLI)");
+  return 1;
+}
+
+var cmd = args.join(" ");
+var t0 = Date.now();
+var cpu0 = typeof process !== "undefined" && process.cpuUsage ? process.cpuUsage() : null;
+var res;
+try {
+  res = await shell.runLine(cmd);
+} catch (e) {
+  console.log("time: " + (e && e.message ? e.message : String(e)));
+  return 1;
+}
+var realMs = Date.now() - t0;
+var cpu1 = typeof process !== "undefined" && process.cpuUsage && cpu0
+  ? process.cpuUsage(cpu0) : null;
+
+// The command's captured output — pass it through (strip trailing
+// newlines; console.log adds one).
+function emit(s) {
+  if (!s) return;
+  var t = String(s);
+  while (t.charAt(t.length - 1) === NL) t = t.slice(0, t.length - 1);
+  if (t) console.log(t);
+}
+emit(res && res.out);
+emit(res && res.err);
+
+function fmt(sec) {
+  var m = Math.floor(sec / 60);
+  var s = (sec - m * 60).toFixed(3);
+  return m + "m" + s + "s";
+}
+if (portable) {
+  console.log("real " + (realMs / 1000).toFixed(2));
+  if (cpu1) {
+    console.log("user " + (cpu1.user / 1000000).toFixed(2));
+    console.log("sys " + (cpu1.system / 1000000).toFixed(2));
+  }
+} else {
+  console.log("real" + TAB + fmt(realMs / 1000));
+  if (cpu1) {
+    console.log("user" + TAB + fmt(cpu1.user / 1000000));
+    console.log("sys" + TAB + fmt(cpu1.system / 1000000));
+  }
+}
+return res && typeof res.code === "number" ? res.code : 0;
+`;
+    this._getBackend("/bin/time.js").read("/time.js")
+      .then((existing) => {
+        if (!existing.includes("time v1")) {
+          syncWrite(this._getBackend("/bin/time.js"), "/time.js", timeContent);
+        }
+      })
+      .catch(() => syncWrite(this._getBackend("/bin/time.js"), "/time.js", timeContent));
 
     // sh2js.js — debashl toolchain command (uses the injected sh2lib facade).
     // Version-gated (v2 marker) so file/pipe support reaches existing installs.
@@ -2480,7 +2589,7 @@ if (typeof document === "undefined") {
   console.log("xterm: needs a browser (run in the web shell)");
   return 1;
 }
-// Load xterm.js + the fit addon from the local server (node_modules).
+// Load xterm.js + the fit addon from the vendored www/vendor/ dir.
 function loadScript(src) {
   return new Promise(function (resolve, reject) {
     if (document.querySelector('script[src="' + src + '"]')) return resolve();
@@ -2492,18 +2601,18 @@ function loadScript(src) {
   });
 }
 try {
-  await loadScript("/node_modules/xterm/lib/xterm.js");
-  await loadScript("/node_modules/@xterm/addon-fit/lib/addon-fit.js");
+  await loadScript("vendor/xterm.js");
+  await loadScript("vendor/xterm-fit.js");
 } catch (e) {
   console.log("xterm: " + e.message);
   return 1;
 }
 if (!window.Terminal) { console.log("xterm: Terminal not available after load"); return 1; }
 var Terminal = window.Terminal;
-if (!document.querySelector('link[href="/node_modules/xterm/css/xterm.css"]')) {
+if (!document.querySelector('link[href="vendor/xterm.css"]')) {
   var link = document.createElement("link");
   link.rel = "stylesheet";
-  link.href = "/node_modules/xterm/css/xterm.css";
+  link.href = "vendor/xterm.css";
   document.head.appendChild(link);
 }
 // ── floating window (draggable by the title bar) ──
