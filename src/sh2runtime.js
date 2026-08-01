@@ -274,8 +274,24 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     return orExpr();
   }
 
+  // Cooperative yielding: the generated JS is otherwise synchronous
+  // (a 100k while-loop would freeze the main thread). Every ~50ms of
+  // compute we let the event loop breathe — the spinner keeps spinning
+  // and clicks stay responsive. exec/capture/pipeline already await, so
+  // command-heavy loops yield naturally; this covers the pure-math ones.
+  let yieldClock = 0;
+  async function maybeYield() {
+    if (Date.now() - yieldClock > 50) {
+      yieldClock = Date.now();
+      await new Promise((r) => setTimeout(r, 0));
+    }
+  }
+
   async function forLoop(items, fn) {
-    for (const it of items || []) await fn(it);
+    for (const it of items || []) {
+      await fn(it);
+      await maybeYield();
+    }
   }
 
   // sh2.guard — this debashcl build wraps every command in it. Minimal
@@ -320,7 +336,10 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
   function setLastExit(code) { lastStatus = Number(code); }
 
   async function whileLoop(cond, body) {
-    while (await cond()) await body();
+    while (await cond()) {
+      await body();
+      await maybeYield();
+    }
   }
 
   function caseMatch(value, patterns) {
