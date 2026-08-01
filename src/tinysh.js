@@ -1342,7 +1342,6 @@ async function runSegment(segmentText, stdin, isLast) {
   const cmd = tokens[0];
   const args = tokens.slice(1);
 
-  // Handle redirection: > file
   let outputRedirect = null;
   const redirectIndex = args.indexOf(">");
   if (redirectIndex !== -1) {
@@ -1350,6 +1349,20 @@ async function runSegment(segmentText, stdin, isLast) {
     args.splice(redirectIndex, 2);
   }
 
+  // python — MicroPython engine (reactor, src/py.js): REPL, -c, script
+  // files and stdin. Intercepted before resolveCommand so it never
+  // auto-loads python.wasm.
+  if (cmd === "python" && !cmd.includes("/")) {
+    return await runPythonCmd(args, stdin, isLast, outputRedirect);
+  }
+  // perl — bare `perl` with no script/stdin opens the interactive REPL
+  // (the /bin perl command handles -e / script / stdin as before).
+  if (cmd === "perl" && !cmd.includes("/") && args.length === 0 && !(stdin && stdin.trim())) {
+    enterPerlRepl();
+    return { ok: true, code: 0, output: "" };
+  }
+
+  // Handle redirection: > file
   let output = "";
 
   const resolved = await resolveCommand(cmd);
@@ -1563,6 +1576,63 @@ function splitConditionals(line) {
 // Run one pipeline (`|`-separated commands), feeding each command's
 // stdout to the next command's stdin. Returns the pipeline's exit
 // status: the first failing command's status, else the last one's.
+// python — run through the MicroPython reactor (src/py.js). The engine
+// is a singleton, so state persists across lines and invocations.
+async function runPythonCmd(args, stdin, isLast, outputRedirect) {
+  if (args.length === 0) {
+    if (stdin && stdin.trim()) {
+      args = ["-"];
+    } else if (process.stdin.isTTY) {
+      enterPythonRepl();
+      return { ok: true, code: 0, output: "" };
+    } else {
+      process.stderr.write("python: no script given (python -c CODE | script.py | - for stdin)\n");
+      return { ok: false, code: 2, output: "" };
+    }
+  }
+  let source = null;
+  if (args[0] === "-c" || args[0] === "-e") {
+    source = args.slice(1).join(" ");
+  } else if (args[0] === "-") {
+    source = stdin;
+  } else if (!args[0].startsWith("-")) {
+    try {
+      source = await fs.read(args[0]);
+    } catch (e) {
+      process.stderr.write(`python: ${args[0]}: ${e.message}\n`);
+      return { ok: false, code: 1, output: "" };
+    }
+  } else {
+    process.stderr.write(`python: unknown option ${args[0]}\n`);
+    return { ok: false, code: 2, output: "" };
+  }
+  if (source === null) {
+    process.stderr.write("python: no script given (python -c CODE | script.py | - for stdin)\n");
+    return { ok: false, code: 2, output: "" };
+  }
+  const { pyExec } = await import("./py.js");
+  let output = "";
+  const origWrite = process.stdout.write;
+  process.stdout.write = (s) => { output += s; return true; };
+  let code;
+  try {
+    code = await pyExec(source, { stdout: process.stdout, stderr: process.stderr });
+  } catch (e) {
+    process.stderr.write(`python: ${e.message}\n`);
+    code = 1;
+  } finally {
+    process.stdout.write = origWrite;
+  }
+  if (outputRedirect) {
+    await fs.write(outputRedirect, output);
+    output = "";
+  } else if (isLast) {
+    process.stdout.write(output);
+    output = "";
+  }
+  return { ok: code === 0, code, output };
+}
+
 async function runPipeline(pipelineText, initialStdin = "") {
   const segments = splitPipe(pipelineText);
   let stdin = initialStdin;
@@ -1735,6 +1805,104 @@ function tabComplete(line, callback) {
 
 // ─── Main ───────────────────────────────────────────────────────
 
+// ─── Interactive REPLs (reactor-based — python via src/py.js, perl
+// via zeroperl; both state-preserving, no worker / SharedArrayBuffer).
+const replState = { active: false, mode: null, perl: null, perlReady: null,
+  perlSession: [], perlOut: "", perlMarker: "" };
+
+function enterPythonRepl() {
+  if (!process.stdin.isTTY) { process.stderr.write("python: REPL requires an interactive terminal\n"); return; }
+  replState.active = true;
+  replState.mode = "python";
+  process.stdout.write("MicroPython REPL — state persists per line · exit() or Ctrl-D to leave\n");
+  rl.setPrompt(">>> ");
+  rl.prompt();
+}
+
+function enterPerlRepl() {
+  if (!process.stdin.isTTY) { process.stderr.write("perl: REPL requires an interactive terminal\n"); return; }
+  replState.active = true;
+  replState.mode = "perl";
+  process.stdout.write("Perl REPL (zeroperl) — state persists per line · exit or Ctrl-D to leave\n");
+  rl.setPrompt("perl> ");
+  rl.prompt();
+  replState.perlSession = [];
+  replState.perlMarker = "__perl_repl_" + Date.now() + "_" +
+    Math.floor(Math.random() * 1e9) + "__";
+  replState.perlReady = (async () => {
+    try {
+      const mod = await import("@6over3/zeroperl-ts");
+      const perl = await mod.ZeroPerl.create({
+        env: env || {},
+        fileSystem: null,
+        stdout: (d) => { replState.perlOut += typeof d === "string" ? d : new TextDecoder().decode(d); },
+        stderr: (d) => process.stderr.write(typeof d === "string" ? d : new TextDecoder().decode(d)),
+      });
+      replState.perl = perl;
+    } catch (e) {
+      process.stderr.write(`perl: ${e.message}\n`);
+      exitRepl();
+    }
+  })();
+}
+
+function exitRepl() {
+  if (!replState.active) return;
+  const mode = replState.mode;
+  if (replState.perl) { try { replState.perl.shutdown(); } catch (e) {} }
+  replState.active = false;
+  replState.mode = null;
+  replState.perl = null;
+  replState.perlReady = null;
+  process.stdout.write(`\nLeaving ${mode === "perl" ? "Perl" : "Python"} REPL.\n`);
+  rl.setPrompt(`tinysh:${fs.cwd}$ `);
+  rl.prompt();
+}
+
+async function runReplLine(line) {
+  if (replState.mode === "python") {
+    const t = line.trim();
+    if (t === "exit()" || t === "quit()") { exitRepl(); return; }
+    try {
+      const { pyExec } = await import("./py.js");
+      await pyExec(line, { stdout: process.stdout, stderr: process.stderr });
+    } catch (e) {
+      process.stderr.write(`python: ${e.message}\n`);
+    }
+  } else {
+    const t = line.trim();
+    if (t === "exit" || t === "quit" || t === ":q") { exitRepl(); return; }
+    try {
+      await replState.perlReady;
+      if (!replState.active) return;
+      // Session replay: re-run every line so far plus the new one, with
+      // a marker printed between the old code and the new line. `my`
+      // lexicals from earlier lines survive because they're re-declared
+      // in the same eval; only the output after the marker is shown.
+      replState.perlOut = "";
+      const session = replState.perlSession;
+      const code = (session.length > 0 ? session.join("\n") + "\n" : "") +
+        "print " + JSON.stringify(replState.perlMarker + "\n") + ";\n" +
+        line;
+      await replState.perl.eval(code, []);
+      try { replState.perl.flush(); } catch (e) {}
+      const marker = replState.perlMarker;
+      const splitAt = replState.perlOut.lastIndexOf(marker + "\n");
+      if (splitAt !== -1) {
+        const fresh = replState.perlOut.slice(splitAt + marker.length + 1);
+        if (fresh) process.stdout.write(fresh);
+      }
+      if (line.trim()) session.push(line);
+    } catch (e) {
+      process.stderr.write(`perl: ${e.message}\n`);
+    }
+  }
+  if (replState.active) {
+    rl.setPrompt(replState.mode === "perl" ? "perl> " : ">>> ");
+    rl.prompt();
+  }
+}
+
 const rl = createInterface({
   input: process.stdin,
   output: process.stdout,
@@ -1748,6 +1916,7 @@ if (process.stdin.isTTY) {
   // and setup commands are already in effect (like bash and .bashrc).
   await loadConfig();
   rl.on("line", async (line) => {
+    if (replState.active) { await runReplLine(line); return; }
     await runInterruptible(handleLine(line));
     rl.setPrompt(`tinysh:${fs.cwd}$ `);
     rl.prompt();
@@ -1758,6 +1927,12 @@ if (process.stdin.isTTY) {
   // abort it (exit 130); at the prompt we cancel the current line.
   rl.on("SIGINT", () => {
     process.stdout.write("^C\n");
+    if (replState.active) {
+      process.stdout.write("KeyboardInterrupt\n");
+      rl.setPrompt(replState.mode === "perl" ? "perl> " : ">>> ");
+      rl.prompt();
+      return;
+    }
     if (running) {
       if (interruptSignal) interruptSignal();
       return;
@@ -1769,6 +1944,7 @@ if (process.stdin.isTTY) {
   });
 
   rl.on("close", () => {
+    if (replState.active) { exitRepl(); return; }
     process.stdout.write("\n");
     process.exit(0);
   });

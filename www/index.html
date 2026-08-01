@@ -325,8 +325,7 @@ function write(text, cls = "out", opts = {}) {
 // The prompt string for the current mode (shell / REPL / pager).
 function getPromptStr() {
   if (pagerState.active) return "";       // pager draws its own marker
-  if (replState.active) return ">>> ";
-  if (replReplayState.active) return replReplayState.pending.length > 0 ? "... " : ">>> ";
+  if (replState.active) return replState.mode === "perl" ? "perl> " : ">>> ";
   return `tinysh:${fs.cwd}$ `;
 }
 
@@ -803,23 +802,11 @@ function handleInterrupt() {
     return;
   }
   if (replState.active) {
-    // Worker-based Python REPL: the only way to stop a busy WASM
-    // worker is to terminate it (it may be blocked in Atomics.wait
-    // or busy computing — either way it can't receive a message).
-    write("^C\n", "info");
-    if (replState.worker) {
-      replState.worker.terminate();
-      replState.worker = null;
-    }
-    write("KeyboardInterrupt\n", "err");
-    exitPythonRepl();
-    input.focus();
-    return;
-  }
-  if (replReplayState.active) {
+    // Reactor REPL: can't interrupt a running asyncify'd line, but ^C
+    // gives a fresh prompt (like KeyboardInterrupt) and Ctrl+D exits.
     write("^C\n", "info");
     write("KeyboardInterrupt\n", "err");
-    exitPythonReplReplay();
+    updatePrompt();
     input.focus();
     return;
   }
@@ -2213,7 +2200,8 @@ Loops, conditionals, variables, arithmetic and pipes work:
   Features:
     Tab completion   — complete commands and file paths
     Ctrl+L           — clear terminal
-    Ctrl+C           — interrupt running command / cancel the line
+    Ctrl+C           — copy a text selection (then Ctrl+V pastes);
+                       otherwise interrupt running command / cancel line
     Up/Down          — command history
     Resizable terminal — COLUMNS/LINES track the window; ls reflows to fit
     edit <file>      — built-in text editor
@@ -2731,6 +2719,60 @@ function splitConditionals(line) {
   return parts;
 }
 
+// python — run through the MicroPython reactor (src/py.js). The engine
+// is a singleton, so state persists across lines and invocations.
+async function runPythonCmd(args, stdin, isLast, outputRedirect) {
+  if (args.length === 0) {
+    if (stdin && stdin.trim()) {
+      args = ["-"];
+    } else {
+      enterPythonRepl();
+      return { ok: true, code: 0, output: "" };
+    }
+  }
+  let source = null;
+  if (args[0] === "-c" || args[0] === "-e") {
+    source = args.slice(1).join(" ");
+  } else if (args[0] === "-") {
+    source = stdin;
+  } else if (!args[0].startsWith("-")) {
+    try {
+      source = await fs.read(args[0]);
+    } catch (e) {
+      stderr.write(`python: ${args[0]}: ${e.message}\n`);
+      return { ok: false, code: 1, output: "" };
+    }
+  } else {
+    stderr.write(`python: unknown option ${args[0]}\n`);
+    return { ok: false, code: 2, output: "" };
+  }
+  if (source === null) {
+    stderr.write("python: no script given (python -c CODE | script.py | - for stdin)\n");
+    return { ok: false, code: 2, output: "" };
+  }
+  const { pyExec } = await import("../src/py.js");
+  let output = "";
+  const origWrite = stdout.write;
+  stdout.write = (s) => { output += s; return true; };
+  let code;
+  try {
+    code = await pyExec(source, { stdout, stderr });
+  } catch (e) {
+    stderr.write(`python: ${e.message}\n`);
+    code = 1;
+  } finally {
+    stdout.write = origWrite;
+  }
+  if (outputRedirect) {
+    await fs.write(outputRedirect, output);
+    output = "";
+  } else if (isLast) {
+    stdout.write(output);
+    output = "";
+  }
+  return { ok: code === 0, code, output };
+}
+
 // Run one pipeline (`|`-separated commands), feeding each command's
 // stdout to the next command's stdin. Returns the pipeline's exit
 // status: the first failing command's status, else the last one's.
@@ -2835,6 +2877,19 @@ async function runSegment(segmentText, stdin, isLast) {
     args.splice(redirectIndex, 2);
   }
 
+  // python — MicroPython engine (reactor, src/py.js): REPL, -c, script
+  // files and stdin. Intercepted before resolveCommand so it never
+  // auto-loads python.wasm or needs a worker/SAB.
+  if (cmd === "python" && !cmd.includes("/")) {
+    return await runPythonCmd(args, stdin, isLast, outputRedirect);
+  }
+  // perl — bare `perl` with no script/stdin opens the interactive REPL
+  // (the /bin perl command handles -e / script / stdin as before).
+  if (cmd === "perl" && !cmd.includes("/") && args.length === 0 && !(stdin && stdin.trim())) {
+    enterPerlRepl();
+    return { ok: true, code: 0, output: "" };
+  }
+
   let output = "";
 
   const resolved = await resolveCommand(cmd);
@@ -2871,28 +2926,6 @@ async function runSegment(segmentText, stdin, isLast) {
   try {
     if (resolved.type === "wasm") {
       try {
-        // Interactive interpreters (python without args) enter a REPL.
-        // We implement it at the shell level using session replay: each
-        // line re-runs all previous snippets (preserving state) with a
-        // marker, then we split the output at the marker to show only
-        // the new output.
-        if (cmd === "python" && args.length === 0) {
-          enterPythonRepl();
-          return { ok: true, code: 0, output: "" };
-        }
-
-        // python /path/to/script.py → read file from VirtualFS, run as -c
-        let wasmArgs = [cmd, ...args];
-        if (cmd === "python" && args.length === 1 && !args[0].startsWith("-")) {
-          try {
-            const script = await fs.read(args[0]);
-            wasmArgs = [cmd, "-c", script];
-          } catch (e) {
-            stderr.write(`python: ${args[0]}: ${e.message}\n`);
-            return { ok: false, code: 1, output: "" };
-          }
-        }
-
         // cc: compile C → WAT, then to a .wasm binary.
         //   cc prog.c            → writes a.wasm (like gcc's a.out)
         //   cc -o out.wasm prog.c → writes out.wasm
@@ -3219,168 +3252,119 @@ let lastMatches = [];
 
 // ─── Python REPL (worker-based, WASI-level blocking stdin) ─────
 
+// ─── Interactive REPLs (reactor-based — no worker, no SAB) ───────
+// python runs the micropython classic build (src/py.js, asyncify'd) and
+// perl runs zeroperl — both state-preserving engines driven line by
+// line by the shell. No SharedArrayBuffer, no COOP/COEP: the whole
+// shell now works on plain GitHub Pages.
 const replState = {
   active: false,
-  worker: null,
-  sab: null,
+  mode: null,        // "python" | "perl"
+  perl: null,        // ZeroPerl instance (perl mode)
+  perlReady: null,   // promise that resolves when the perl instance is up
+  perlSession: [],   // accumulated REPL lines — replayed on every line so
+                     // `my` lexicals persist (Perl scopes `my` to one
+                     // eval; replaying the whole session keeps them alive)
+  perlOut: "",       // stdout captured during one run, split at the marker
+  perlMarker: "",    // unique string printed between old and new code
 };
 
-const SAB_DATA_OFFSET = 64;
-const SAB_BUF_SIZE = 65536;
-
-// Try to create a SharedArrayBuffer (requires COOP/COEP headers)
-function sabAvailable() {
-  return typeof SharedArrayBuffer !== "undefined";
+function decChunk(chunk) {
+  if (typeof chunk === "string") return chunk;
+  return new TextDecoder().decode(chunk);
 }
 
-async function enterPythonRepl() {
+function enterPythonRepl() {
   spinnerStop();  // modal mode takes over the prompt slot
-  if (!sabAvailable()) {
-    stderr.write("SharedArrayBuffer unavailable — serve with www/serve.py (COOP/COEP).\n");
-    stderr.write("Falling back to session-replay REPL...\n");
-    enterPythonReplReplay();
-    return;
-  }
-
   replState.active = true;
-  replState.sab = new SharedArrayBuffer(SAB_DATA_OFFSET + SAB_BUF_SIZE);
-
-  try {
-    const wasmBytes = await fetch("wasm-bin/python.wasm").then(r => r.arrayBuffer());
-    const blob = new Blob([wasmBytes]);
-
-    replState.worker = new Worker("wasi-worker.js");
-
-    replState.worker.onmessage = (e) => {
-      const msg = e.data;
-      if (msg.type === "stdout") {
-        stdout.write(msg.data);
-      } else if (msg.type === "exit") {
-        exitPythonRepl();
-      }
-    };
-
-    replState.worker.postMessage({ type: "run", wasmBytes, args: ["python"], sab: replState.sab });
-    stdout.write("MicroPython REPL (WASI-level stdin) — exit() or Ctrl-D to leave\n");
-  } catch (e) {
-    stderr.write(`python: ${e.message}\n`);
-    exitPythonRepl();
-  }
-
+  replState.mode = "python";
+  stdout.write("MicroPython REPL — state persists per line · exit() or Ctrl-D to leave\n");
   updatePrompt();
   recordReplPrompt();
 }
 
-function exitPythonRepl() {
-  replState.active = false;
-  if (replState.worker) {
-    replState.worker.terminate();
-    replState.worker = null;
-  }
-  replState.sab = null;
-  stdout.write("\nLeaving Python REPL.\n");
-  updatePrompt();
-  writeShellPrompt();
-}
-
-function sendPythonLine(line) {
-  const control = new Int32Array(replState.sab);
-  const dataView = new Uint8Array(replState.sab);
-
-  // Write the line + newline into the SAB data region
-  const enc = new TextEncoder();
-  const bytes = enc.encode(line + "\n");
-  const len = Math.min(bytes.length, SAB_BUF_SIZE);
-  dataView.set(bytes.subarray(0, len), SAB_DATA_OFFSET);
-
-  Atomics.store(control, 1, len);
-  Atomics.store(control, 0, 1);  // data ready
-  Atomics.notify(control, 0, 1);
-}
-
-function sendPythonEof() {
-  const control = new Int32Array(replState.sab);
-  Atomics.store(control, 0, 2);  // EOF state
-  Atomics.notify(control, 0, 1);
-}
-
-// ─── Fallback: session replay REPL (no SharedArrayBuffer) ──────
-
-const replReplayState = {
-  active: false,
-  snippets: [],
-  pending: [],
-};
-
-function enterPythonReplReplay() {
+function enterPerlRepl() {
   spinnerStop();  // modal mode takes over the prompt slot
-  replReplayState.active = true;
-  replReplayState.snippets = [];
-  replReplayState.pending = [];
-  stdout.write("MicroPython REPL (session replay) — exit() to leave\n");
+  replState.active = true;
+  replState.mode = "perl";
+  stdout.write("Perl REPL (zeroperl) — state persists per line · exit or Ctrl-D to leave\n");
   updatePrompt();
   recordReplPrompt();
+  replState.perlSession = [];
+  replState.perlMarker = "__perl_repl_" + Date.now() + "_" +
+    Math.floor(Math.random() * 1e9) + "__";
+  // The interpreter loads lazily (fetch + instantiate ~300KB wasm).
+  replState.perlReady = (async () => {
+    try {
+      const mod = await import("@6over3/zeroperl-ts");
+      const perl = await mod.ZeroPerl.create({
+        env: env || {},
+        fileSystem: null,
+        stdout: (d) => { replState.perlOut += decChunk(d); },
+        stderr: (d) => stderr.write(decChunk(d)),
+        fetch: () => fetch("/node_modules/@6over3/zeroperl-ts/dist/esm/zeroperl.wasm"),
+      });
+      replState.perl = perl;
+    } catch (e) {
+      stderr.write(`perl: ${e.message}\n`);
+      exitRepl();
+    }
+  })();
 }
 
-function exitPythonReplReplay() {
-  replReplayState.active = false;
-  replReplayState.snippets = [];
-  replReplayState.pending = [];
-  stdout.write("\nLeaving Python REPL.\n");
+function exitRepl() {
+  if (!replState.active) return;
+  const mode = replState.mode;
+  if (replState.perl) {
+    try { replState.perl.shutdown(); } catch (e) {}
+  }
+  replState.active = false;
+  replState.mode = null;
+  replState.perl = null;
+  replState.perlReady = null;
+  stdout.write(`\nLeaving ${mode === "perl" ? "Perl" : "Python"} REPL.\n`);
   updatePrompt();
   writeShellPrompt();
 }
 
-function isComplete(source) {
-  try {
-    let depth = 0;
-    for (const ch of source) {
-      if ("([{".includes(ch)) depth++;
-      if (")]}".includes(ch)) depth--;
+async function runReplLine(line) {
+  if (!replState.active) return;
+  const trimmed = line.trim();
+  if (replState.mode === "python") {
+    if (trimmed === "exit()" || trimmed === "quit()") { exitRepl(); return; }
+    try {
+      const { pyExec } = await import("../src/py.js");
+      await pyExec(line, { stdout, stderr });
+    } catch (e) {
+      stderr.write(`python: ${e.message}\n`);
     }
-    const lines = source.split("\n");
-    const last = lines[lines.length - 1].trimEnd();
-    if (last.endsWith(":")) return false;
-    return depth <= 0;
-  } catch {
-    return true;
+  } else {
+    if (trimmed === "exit" || trimmed === "quit" || trimmed === ":q") { exitRepl(); return; }
+    try {
+      await replState.perlReady;
+      if (!replState.active) return;  // load failed and exited
+      // Session replay: re-run every line so far plus the new one, with
+      // a marker printed between the old code and the new line. `my`
+      // lexicals from earlier lines survive because they're re-declared
+      // in the same eval; only the output after the marker is shown.
+      replState.perlOut = "";
+      const session = replState.perlSession;
+      const code = (session.length > 0 ? session.join("\n") + "\n" : "") +
+        "print " + JSON.stringify(replState.perlMarker + "\n") + ";\n" +
+        line;
+      await replState.perl.eval(code, []);
+      try { replState.perl.flush(); } catch (e) {}
+      const marker = replState.perlMarker;
+      const splitAt = replState.perlOut.lastIndexOf(marker + "\n");
+      if (splitAt !== -1) {
+        const fresh = replState.perlOut.slice(splitAt + marker.length + 1);
+        if (fresh) stdout.write(fresh);
+      }
+      if (line.trim()) session.push(line);
+    } catch (e) {
+      stderr.write(`perl: ${e.message}\n`);
+    }
   }
-}
-
-async function runPythonReplReplayLine(line) {
-  if (line.trim() === "exit()" || line.trim() === "quit()") {
-    exitPythonReplReplay();
-    return;
-  }
-
-  replReplayState.pending.push(line);
-  const source = replReplayState.pending.join("\n");
-
-  if (!isComplete(source)) {
-    updatePrompt();
-    recordReplPrompt();
-    return;
-  }
-  replReplayState.pending = [];
-
-  const marker = `__repl_marker_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}__`;
-  const transcript = [
-    ...replReplayState.snippets,
-    `import sys as __rs; __rs.stdout.write(${JSON.stringify(marker)} + "\n")`,
-    source,
-  ].join("\n");
-
-  try {
-    await wasmRunner.run("/usr/bin/python.wasm", ["python", "-c", transcript]);
-    let output = wasmRunner.getStdout();
-    const idx = output.indexOf(marker + "\n");
-    if (idx !== -1) output = output.slice(idx + marker.length + 1);
-    stdout.write(output);
-    replReplayState.snippets.push(source);
-  } catch (e) {
-    stderr.write(`python: ${e.message}\n`);
-  }
-
   updatePrompt();
   recordReplPrompt();
 }
@@ -3509,8 +3493,10 @@ function updateStatusBar() {
     statusHint.textContent = "Pager: space/f next · b back · /search · q quit";
     return;
   }
-  if (replState.active || replReplayState.active) {
-    statusHint.textContent = "Python REPL · exit() or Ctrl-D to leave";
+  if (replState.active) {
+    statusHint.textContent = replState.mode === "perl"
+      ? "Perl REPL · exit or Ctrl-D to leave"
+      : "Python REPL · exit() or Ctrl-D to leave";
     return;
   }
 
@@ -3601,20 +3587,9 @@ async function onCommand() {
     return;
   }
 
-  // Worker-based REPL: send line to WASM via SAB
+  // Reactor REPL (python / perl): run the line, keep state, re-prompt.
   if (replState.active) {
-    if (line.trim() === "exit()" || line.trim() === "quit()") {
-      sendPythonEof();
-    } else {
-      sendPythonLine(line);
-    }
-    input.focus();
-    return;
-  }
-
-  // Session-replay REPL (fallback)
-  if (replReplayState.active) {
-    await runPythonReplReplayLine(line);
+    await runReplLine(line);
     input.focus();
     return;
   }
@@ -3629,7 +3604,7 @@ async function onCommand() {
   spinnerStop();
   // Print the next prompt line so it's clear the command finished.
   // Modal modes (pager/REPL) manage their own prompts.
-  if (!pagerState.active && !replState.active && !replReplayState.active) {
+  if (!pagerState.active && !replState.active) {
     writeShellPrompt();
   }
   input.focus();
@@ -3665,6 +3640,27 @@ document.addEventListener("click", (e) => {
   if (justSelected) return;  // user selected text — keep it
   input.focus();
 });
+
+// Ctrl/Cmd+C with a text selection copies it, like a real terminal:
+// the browser's native copy does the work (no preventDefault), then we
+// deselect and hand focus to the hidden input so Ctrl+V pastes
+// straight into the line — no manual deselect step in between. The
+// event is stopped so the shell's own Ctrl+C (interrupt) handler never
+// sees it. Without a selection this handler does nothing and Ctrl+C
+// stays interrupt.
+document.addEventListener("keydown", (e) => {
+  if (!((e.ctrlKey || e.metaKey) && (e.key === "c" || e.key === "C"))) return;
+  if (e.target && e.target.closest &&
+      (e.target.closest("#editor-container") || e.target.closest(".xterm-window"))) return;
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.toString()) return;
+  e.stopPropagation();  // let the copy happen, keep interrupt out
+  setTimeout(() => {
+    sel.removeAllRanges();  // deselect
+    justSelected = false;
+    input.focus();          // so Ctrl+V lands in the line
+  }, 0);
+}, true);
 
 // Ctrl/Cmd+C in the editor copies the selection. Vim mode maps Ctrl+C to
 // ESC, so without this "select with the mouse, Ctrl+C to copy" can't
@@ -3944,13 +3940,9 @@ input.addEventListener("keydown", async (e) => {
   }
 
   // Ctrl+D — exit REPL (EOF)
-  if (e.ctrlKey && e.key === "d" && (replState.active || replReplayState.active)) {
+  if (e.ctrlKey && e.key === "d" && replState.active) {
     e.preventDefault();
-    if (replState.active) {
-      sendPythonEof();
-    } else {
-      exitPythonReplReplay();
-    }
+    exitRepl();
     return;
   }
 
@@ -4017,7 +4009,7 @@ input.addEventListener("keydown", async (e) => {
   write("║     JavaScript is the binary format  ║\n", "info");
   write("╚══════════════════════════════════════╝\n", "info");
   write("Type 'help' for available commands.\n\n", "info");
-  write("Features: Tab completion · Ctrl+L clear · Ctrl+C interrupt · Up/Down history\n", "info");
+  write("Features: Tab completion · Ctrl+L clear · Ctrl+C copy/interrupt · Up/Down history\n", "info");
   write("          edit <file> — built-in text editor\n", "info");
   write("          vi <file> — vim-style editor (hjkl, :wq)\n", "info");
   write("          nano/emacs → edit · less/more → cat · cls → clear\n", "info");
@@ -4028,7 +4020,7 @@ input.addEventListener("keydown", async (e) => {
   write("          screen — split the terminal into panes (+ split · x close · q exit)\n", "info");
   write("          xterm — floating terminal · arecord -d 5 rec.wav — record the mic\n", "info");
   write("          youtube · reddit · slashdot · lwn · hn — open sites in a tab (args search)\n", "info");
-  write("          python · perl · lua — interpreters (python/echoc auto-load from /wasm-bin/)\n", "info");
+  write("          python · perl · lua — interpreters (reactor-based, no wasm/worker)\n", "info");
   write("          history — persisted across refreshes\n", "info");
   write("          asciinema rec demo.cast · stop · play — record sessions\n", "info");
   write("          cp file /pc — download · cp /pc/file — upload\n", "info");
