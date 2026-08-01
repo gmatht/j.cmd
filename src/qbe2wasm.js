@@ -20,8 +20,12 @@
 //    errors clearly.
 //  - `call extern $f` resolves to the in-module $f when defined, else to
 //    a wasm import of the same signature (the host provides it).
+//  - `{ wasm64: true }` emits a memory64 module: the stack pointer global,
+//    alloc results and all address operands are genuine i64 — no wrap/extend
+//    conversions, and >4GiB addressable. Chrome/Node ≥ memory64; probe before
+//    using (wasm32 is the safe default).
 //
-// Usage: qbe2wasm(irText, { importBase }) → Uint8Array (wasm binary)
+// Usage: qbe2wasm(irText, { importBase, wasm64 }) → Uint8Array (wasm binary)
 // -----------------------------------------------------------------
 
 // ─── wasm binary writer ─────────────────────────────────────────
@@ -283,6 +287,8 @@ function parseIr(text) {
 const QBE_TYPE_TO_WASM = { w: I32, l: I64, s: S, d: D, b: I32, h: I32, v: VOID };
 
 function genFunction(fn, mod) {
+  const wasm64 = !!mod.wasm64;
+  const PTR = wasm64 ? I64 : I32;   // address type: wasm32 or memory64
   const code = [];
   const emit = (...b) => code.push(...b);
 
@@ -435,8 +441,11 @@ function genFunction(fn, mod) {
     if (op.startsWith("$")) {
       const off = mod.dataOffset.get(op);
       if (off === undefined) throw new Error(`qbe: undefined data symbol ${op}`);
-      emit(OP.i32_const, uleb(off));
-      if (expect === I64) emit(OP.i64_extend_i32_u);
+      if (wasm64) emit(OP.i64_const, sleb(BigInt(off)));
+      else {
+        emit(OP.i32_const, uleb(off));
+        if (expect === I64) emit(OP.i64_extend_i32_u);
+      }
       return;
     }
     const n = BigInt(op);
@@ -486,11 +495,18 @@ function genFunction(fn, mod) {
   const allocN = (size, align) => {
     const aligned = Math.ceil(size / align) * align;
     emit(OP.global_get, uleb(SP));          // result = old sp (pushed)
-    emit(OP.i32_const, uleb(aligned));
-    emit(OP.global_get, uleb(SP));
-    emit(OP.i32_add);
-    emit(OP.global_set, uleb(SP));          // sp += aligned
-    emit(OP.i64_extend_i32_u);              // l result
+    if (wasm64) {
+      emit(OP.i64_const, sleb(BigInt(aligned)));
+      emit(OP.global_get, uleb(SP));
+      emit(OP.i64_add);
+      emit(OP.global_set, uleb(SP));
+    } else {
+      emit(OP.i32_const, uleb(aligned));
+      emit(OP.global_get, uleb(SP));
+      emit(OP.i32_add);
+      emit(OP.global_set, uleb(SP));
+      emit(OP.i64_extend_i32_u);            // l result
+    }
   };
 
   const emitPhiStores = (predLabel) => {
@@ -520,7 +536,7 @@ function genFunction(fn, mod) {
           emit(OP.local_set, uleb(idx));
           return;
         case "loadub": case "loadsb": case "loaduh": case "loadsh": case "loadw": case "loadl": case "loads": case "loadd":
-          pushOperand(st.args[0], I32);
+          pushOperand(st.args[0], PTR);
           emit(loadOp(st.op), memarg(loadAlign(st.op)));
           emit(OP.local_set, uleb(idx));
           return;
@@ -531,7 +547,7 @@ function genFunction(fn, mod) {
         case "phi":
           return;
         case "blit":
-          for (const a of st.args) pushOperand(a, I32);
+          for (const a of st.args) pushOperand(a, PTR);
           emit(0xfc, 0x0a, 0x00, 0x00);   // memory.copy
           return;
       }
@@ -605,7 +621,7 @@ function genFunction(fn, mod) {
     if (st.kind === "store") {
       const stTy = storeTypeOf(st.op);
       // wasm stores pop [value, addr]: push addr first, then value
-      pushOperand(st.ptr, I32);
+      pushOperand(st.ptr, PTR);
       pushOperand(st.value, stTy);
       emit(storeOp(st.op), memarg(storeAlign(st.op)));
       return;
@@ -850,8 +866,9 @@ function genFunction(fn, mod) {
 
 // ─── module builder ─────────────────────────────────────────────
 
-export function qbe2wasm(irText, { importBase = "env" } = {}) {
+export function qbe2wasm(irText, { importBase = "env", wasm64 = false } = {}) {
   const mod = parseIr(irText);
+  mod.wasm64 = !!wasm64;
 
   // data segments → bytes with alignment
   const dataBytes = [];
@@ -980,15 +997,22 @@ export function qbe2wasm(irText, { importBase = "env" } = {}) {
   }
   sec(3, functions.map((f) => uleb(f.ti)));
   const pages = Math.max(1, Math.ceil((mod.stackSize + 65536) / 65536));
-  sec(5, [bytes(0x00, ...uleb(pages))]);
-  sec(6, [bytes(0x7f, 0x01, OP.i32_const, ...uleb(mod.stackSize), OP.end)]);
+  if (wasm64) {
+    // (memory i64 N): limits flags 0x04, min as u64
+    sec(5, [bytes(0x04, ...uleb(pages))]);
+    sec(6, [bytes(I64, 0x01, OP.i64_const, ...sleb(BigInt(mod.stackSize)), OP.end)]);
+  } else {
+    sec(5, [bytes(0x00, ...uleb(pages))]);
+    sec(6, [bytes(0x7f, 0x01, OP.i32_const, ...uleb(mod.stackSize), OP.end)]);
+  }
   const exports = [];
   for (const fn of mod.funcs) if (fn.exported) exports.push([fn.name, 0x00, finalIdx.get(fn.name)]);
   exports.push(["memory", 0x02, 0]);
   if (exports.length) sec(7, exports.map(([name, kind, idx]) => bytes(...vec(strBytes(name)), kind, ...uleb(idx))));
   sec(10, functions.map((f) => f.body));
   if (dataBytes.length) {
-    sec(11, [bytes(0x00, 0x41, 0x00, 0x0b, ...vec(dataBytes))]);
+    const offExpr = wasm64 ? bytes(0x42, 0x00, 0x0b) : bytes(0x41, 0x00, 0x0b);
+    sec(11, [bytes(0x00, ...offExpr, ...vec(dataBytes))]);
   }
 
   return new Uint8Array(bytes(header, ...sections));
