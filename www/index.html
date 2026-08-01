@@ -2104,6 +2104,7 @@ Usage:
   bash script.sh           execute a bash script file from the virtual FS
   cat script.sh | bash     execute from a pipe
   bash -                   execute from a pipe (explicit)
+  bash                     interactive REPL (state persists per line)
 
 Pipeline:  bash → ESTree (debashl.wasm) → JS (sh2.* runtime);
          falls back to sh2perl → perl2js if debashl is unavailable → executed
