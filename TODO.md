@@ -80,6 +80,11 @@ and device files. It runs in any browser with no build step.
       links and runs in the shell; js/wasm binaries run as commands via
       a node-fs-style fs shim over VirtualFS (net/http → fetch API).
       Stdlib shipped as one gzipped bundle (wasm-bin/goroot.dat).
+- [x] NetHack in the browser: the ACTUAL NetHack 3.6.7 compiled to WASM
+      (emscripten, win/shim window system + Asyncify — the neth4ck
+      monorepo, fetched by build-wasm-nethack.sh). `nethack` renders the
+      TTY game in the shell (status/map/messages, ESC q quits, Ctrl+C
+      returns); `nethack --demo` autoplays headlessly in the CLI.
 - [x] `ls -l` output format (permissions, size, date)
 - [x] Pipe operator: `cat README.md | head -3`
 - [x] `grep` builtin or command

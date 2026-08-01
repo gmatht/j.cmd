@@ -51,6 +51,7 @@ const SHORT = {
   unmount: "detach a user-created mount (bind mounts too)",
   wasmer: "WASM package manager (list / install / search)",
   go: "run/build Go programs — the REAL Go toolchain (cmd/compile + cmd/link) as WASM",
+  nethack: "play NetHack 3.6.7 — the real game, compiled to WASM (browser)",
   wat2wasm: "compile a .wat WebAssembly text file to .wasm",
   qbe2wasm: "compile QBE IR (cproc output) to a wasm binary",
   bash2js: "transpile bash to JavaScript (sh2perl → perl2js)",
@@ -1731,6 +1732,42 @@ EXAMPLES
 
 SEE ALSO
      wasmer, cc, help
+`,
+
+  nethack: `NAME
+     nethack — play NetHack 3.6.7, the real game compiled to WASM
+
+SYNOPSIS
+     nethack              (browser: full-screen TTY game)
+     nethack --demo       (CLI: headless autoplay)
+     nethack help
+
+DESCRIPTION
+     nethack runs the ACTUAL NetHack 3.6.7 — the 1980s roguelike —
+     compiled to WebAssembly with emscripten (apowers313/NetHackJS →
+     the neth4ck monorepo; the game data is embedded in the wasm).
+     The C game drives a single async window-system callback
+     (Asyncify), which this shell renders as a TTY: status line on
+     top, the dungeon map in the middle, messages at the bottom.
+
+     In the browser the game takes over the screen; keys go straight
+     to NetHack. ESC followed by q quits (the tty meta-key), like a
+     real terminal; Ctrl+C always returns to the shell.
+
+     nethack --demo plays a scripted game headlessly — it proves the
+     whole pipeline (window init, map glyphs, status, prompts, quit)
+     works without a browser.
+
+     Assets: www/vendor/nethack.{js,wasm} (the wasm is 4.9MB; the
+     game data /nhdat is embedded). Fetch with build-wasm-nethack.sh
+     from the @neth4ck/wasm-367 npm package.
+
+EXAMPLES
+     nethack                  # browser: start playing
+     nethack --demo           # CLI: autoplay a scripted game
+
+SEE ALSO
+     wasmer, cc, go, help
 `,
 };
 

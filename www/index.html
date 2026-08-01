@@ -258,10 +258,19 @@ import { bashToJS, runBash, buildSh2LibFacade } from "../src/bash2js.js";
 import { createSh2Runtime } from "../src/sh2runtime.js";
 import { getManPage, manIndex, searchManPages, MAN_PAGES } from "../src/manpages.js";
 import { GoRunner, createGoCommand } from "../src/go.js";
+import { createBrowserNethackCommand } from "../src/nethack.js";
 import { createJobScheduler } from "../src/jobs.js";
 const wasmRunner = new WasmRunner(fs);
 const goRunner = new GoRunner(fs);
 const goCmd = createGoCommand(goRunner, write, (s) => write(s, "err"));
+// nethack: real NetHack 3.6.7 (WASM) — key hook + Ctrl+C cleanup wired
+// to the shell's keyCallbacks / interruptCallbacks (declared below).
+const nethackCmd = createBrowserNethackCommand({
+  write: (s) => write(s, "out"),
+  err: (s) => write(s, "err"),
+  getKeyList: () => keyCallbacks,
+  onInterrupt: (fn) => { interruptCallbacks.push(fn); },
+});
 const sh2libFacade = buildSh2LibFacade(fs);  // debashl toolchain, injected into .js commands
 
 // Writes to read-only mounts (github/gitlab/http/git) land in a local
@@ -2137,6 +2146,13 @@ const builtins = {
     // cross-compiled to GOOS=js GOARCH=wasm) running in the browser shell.
     // See src/go.js and build-wasm-go.sh.
     return await goCmd(args);
+  },
+
+  async nethack(args) {
+    // nethack — real NetHack 3.6.7 (emscripten WASM, win/shim window
+    // system) as a full-screen TTY game. Keys via the shell key hook;
+    // Ctrl+C returns to the shell. See src/nethack.js.
+    return await nethackCmd(args);
   },
 
   async wat2wasm(args) {

@@ -23,6 +23,7 @@ import { createSh2Runtime } from "./sh2runtime.js";
 import { createJobScheduler } from "./jobs.js";
 import { getManPage, manIndex, searchManPages, MAN_PAGES } from "./manpages.js";
 import { GoRunner, createGoCommand } from "./go.js";
+import { createCliNethackCommand } from "./nethack.js";
 import { qbe2wasm } from "./qbe2wasm.js";
 
 const wasmRunner = new WasmRunner(fs);
@@ -30,6 +31,7 @@ const sh2libFacade = buildSh2LibFacade(fs);  // debashl toolchain, injected into
 const wasmerReg = new WasmerRegistry(fs);
 const goRunner = new GoRunner(fs, { baseUrl: "www/" });
 const goCmd = createGoCommand(goRunner);
+const nethackCmd = createCliNethackCommand();
 
 // Pipe input for the current command — the previous pipeline segment's
 // captured stdout. Builtins that read stdin (head, ...) consume this.
@@ -991,6 +993,13 @@ Once installed they run as native commands:
     return await goCmd(args);
   },
 
+  async nethack(args) {
+    // nethack [--demo] — real NetHack 3.6.7 (emscripten WASM) via
+    // win/shim window system. Browser: full-screen TTY game. CLI:
+    // --demo autoplays headlessly. See src/nethack.js.
+    return await nethackCmd(args);
+  },
+
   async bash2js(args) {
     // bash2js 'echo hello'  — transpile bash source to JavaScript
     // bash2js -f file.sh    — transpile a file from the VFS
@@ -1247,6 +1256,8 @@ Built-in commands:
   wasmer          WASM package manager (list / install <pkg> / search <term>)
   go              Run/build Go programs — the real Go toolchain as WASM
                   (go run main.go · go build main.go · go version · man go)
+  nethack         Play NetHack 3.6.7 — the real game, compiled to WASM
+                  (browser: full-screen TTY · CLI: nethack --demo autoplays · man nethack)
   bash2js         Transpile bash to JavaScript (sh2perl → perl2js)
   bash            Run bash commands: transpile to JS and execute
                   (bash 'echo hi' · bash script.sh · cat s.sh | bash)

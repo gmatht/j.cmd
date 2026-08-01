@@ -85,6 +85,23 @@ where you type directly on the prompt line, inline in the scrollback
 — like a real terminal emulator.
 No build step, no bundler — just ES modules served over HTTP.
 
+## NetHack — the Real Game as WASM
+
+`nethack` runs the **actual NetHack 3.6.7** (the 1982 roguelike) in the
+browser: the C game compiled to WASM with emscripten (apowers313/
+NetHackJS → the neth4ck monorepo), driven through its win/shim window
+system with Asyncify. The shell renders it as a TTY — status line, the
+dungeon map with colours, messages — and feeds keys straight to the
+game. ESC q quits like a real terminal; Ctrl+C returns to the shell.
+
+```
+nethack             # browser: full-screen game
+nethack --demo      # CLI: scripted autoplay (proves the pipeline)
+```
+
+Assets are `www/vendor/nethack.{js,wasm}` (wasm is 4.9MB, game data
+embedded); `build-wasm-nethack.sh` fetches them from the npm package.
+
 ## Go in the Browser — the Real Toolchain as WASM
 
 The `go` command runs the **real Go compiler and linker** — cmd/compile
