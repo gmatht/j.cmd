@@ -1060,6 +1060,41 @@ EXAMPLES
 SEE ALSO
      perl, python, wasmer
 `,
+  llm: `NAME
+     llm — agentic coder (pi-style read/write/edit/bash core)
+
+SYNOPSIS
+     llm <task>
+     llm --plain <question>
+     llm [-m MODEL] [--base URL] [-s N] <task>
+     llm --list
+
+DESCRIPTION
+     llm turns a prompt into an agent loop: the model gets a minimal
+     four-tool core — read, write, edit and bash — and iterates until
+     the task is done, showing each tool call as it happens. bash runs
+     through the shell itself, so the agent can use builtins, .js
+     commands and wasm binaries. Works in the browser (CORS) and the
+     CLI. Default provider is OpenRouter (BYOK: $LLM_API_KEY or
+     ~/.config/llm.key). Browser keys are visible to page visitors —
+     personal use only.
+
+OPTIONS
+     -m, --model=MODEL     model id (default openai/gpt-4o-mini)
+     --base=URL            API base URL (local models: --base http://localhost:11434/v1)
+     --plain               single completion, no tools
+     -s, --steps=N         max agent steps (default 25)
+     --list                list models (no key needed)
+     -h, --help            help
+
+EXAMPLES
+     llm 'fix the bug in main.js'
+     llm 'write a script that lists files by size'
+     llm --plain 'what is 2+2'
+
+SEE ALSO
+     time, watch
+`,
   time: `NAME
      time — run a command and report how long it took
 
