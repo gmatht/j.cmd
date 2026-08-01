@@ -186,12 +186,31 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     }
   }
 
+  // Tokenize a `[ ... ]` test expression. The emitter DROPS the spaces
+  // around operators (`[ $a == x ]` arrives as `$a==x`), so `=`, `==`,
+  // `!=`, `<`, `>` and `=~` split even when glued to word characters —
+  // the same rule the reference sh2 (sh2perl's harness) uses. Quoted
+  // parts expand $vars; `(` / `)` are grouping at word start.
+  const TEST_OP_START = (c) => c === "=" || c === "<" || c === ">";
   function tokenizeTest(s) {
     const tokens = [];
     let i = 0;
     while (i < s.length) {
       const c = s[i];
       if (c === " " || c === "\t") { i++; continue; }
+      if (TEST_OP_START(c)) {
+        let op = c;
+        i++;
+        if (c === "=" && (s[i] === "=" || s[i] === "~")) { op += s[i]; i++; }
+        tokens.push(op);
+        continue;
+      }
+      if (c === "!") {
+        if (s[i + 1] === "=") { tokens.push("!="); i += 2; }
+        else { tokens.push("!"); i++; }
+        continue;
+      }
+      if (c === "(" || c === ")") { tokens.push(c); i++; continue; }
       if (c === '"' || c === "'") {
         const q = c;
         let j = i + 1, out = "";
@@ -201,24 +220,33 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
         }
         tokens.push(expandOperand(out));
         i = j + 1;
-      } else {
-        let j = i;
-        while (j < s.length && s[j] !== " " && s[j] !== "\t" && s[j] !== '"' && s[j] !== "'") j++;
-        tokens.push(expandOperand(s.slice(i, j)));
-        i = j;
+        continue;
       }
+      let j = i;
+      while (j < s.length) {
+        const ch = s[j];
+        if (ch === " " || ch === "\t" || ch === '"' || ch === "'") break;
+        if (TEST_OP_START(ch)) break;
+        if (ch === "!" && s[j + 1] === "=") break;
+        j++;
+      }
+      tokens.push(expandOperand(s.slice(i, j)));
+      i = j;
     }
     return tokens;
   }
 
-  const BIN_OPS = new Set(["=", "!=", "-eq", "-ne", "-lt", "-le", "-gt", "-ge", "-nt", "-ot"]);
+  const BIN_OPS = new Set(["=", "==", "!=", "=~", "<", ">", "-eq", "-ne", "-lt", "-le", "-gt", "-ge", "-nt", "-ot"]);
   const UNARY_OPS = new Set(["-z", "-n", "-f", "-d", "-e", "-x", "-w", "-r", "-s"]);
 
   function applyBin(op, a, b) {
-    if (op === "=") return String(a) === String(b);
+    if (op === "=" || op === "==") return String(a) === String(b);
     if (op === "!=") return String(a) !== String(b);
+    if (op === "=~") { try { return new RegExp(String(b)).test(String(a)); } catch { return false; } }
     if (op === "-nt" || op === "-ot") return false;  // no mtime comparison — keep simple
     const na = Number(a), nb = Number(b);
+    if (op === "<") return na < nb;
+    if (op === ">") return na > nb;
     if (op === "-eq") return na === nb;
     if (op === "-ne") return na !== nb;
     if (op === "-lt") return na < nb;
@@ -289,7 +317,13 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
 
   async function forLoop(items, fn) {
     for (const it of items || []) {
-      await fn(it);
+      try {
+        await fn(it);
+      } catch (e) {
+        if (e instanceof LoopSignal && e.kind === "break") break;
+        if (e instanceof LoopSignal && e.kind === "continue") continue;
+        throw e;
+      }
       await maybeYield();
     }
   }
@@ -308,9 +342,18 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
   // calls this without await, so it must be synchronous.
   function arithEval(fn) { return String(fn()); }
 
-  // ─── arrays: arr=(a b c), ${arr[i]}, ${#arr[@]} ──────────────
+  // ─── arrays: arr=(a b c), ${arr[i]}, ${#arr[@]}, arr+=(x) ────
   function setArray(name, arr) {
     vars.set(name, (arr || []).map(String));
+  }
+  // arr+=(x y) — append items to an array variable.
+  function setArrayAppend(name, arr) {
+    const existing = vars.get(name);
+    const list = Array.isArray(existing)
+      ? existing.map(String)
+      : (existing !== undefined && existing !== "" ? [String(existing)] : []);
+    for (const item of arr || []) list.push(String(item));
+    vars.set(name, list);
   }
   function arrayIndex(name, idx) {
     const v = vars.get(name);
@@ -325,6 +368,47 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     return "0";
   }
 
+  // ─── compound assignment: a+=2, x+=s, a*=3, a<<=1 ... ────────
+  // bash semantics: += concatenates strings (unless the variable is
+  // integer, which we don't track); the other operators force arithmetic
+  // (integer, like bash).
+  function assign(name, op, value) {
+    const cur = String(getVar(name));
+    const v = String(value);
+    if (op === "+=") { setVar(name, cur + v); return; }
+    const n = Number(cur) || 0;
+    const m = Number(v) || 0;
+    let r;
+    if (op === "-=") r = n - m;
+    else if (op === "*=") r = n * m;
+    else if (op === "/=") r = m === 0 ? 0 : Math.trunc(n / m);
+    else if (op === "%=") r = m === 0 ? 0 : Math.trunc(n % m);
+    else if (op === "<<=") r = n << m;
+    else if (op === ">>=") r = n >> m;
+    else if (op === "&=") r = n & m;
+    else if (op === "|=") r = n | m;
+    else if (op === "^=") r = n ^ m;
+    else r = v;
+    setVar(name, String(Math.trunc(r)));
+  }
+
+  // ─── loop control: break / continue ───────────────────────────
+  // The generated JS calls sh2.break()/sh2.continue() inside a
+  // forLoop/whileLoop closure. They throw control signals that the
+  // enclosing loop catches — the same scheme the sh2perl harness's
+  // reference sh2 uses, and the only way to make break/continue act
+  // immediately (so the rest of the current iteration is skipped, like
+  // real bash). Nested loops each catch at their own level, so break
+  // always exits the innermost loop.
+  class LoopSignal extends Error {
+    constructor(kind) {
+      super("loop:" + kind);
+      this.kind = kind;
+    }
+  }
+  function breakLoop() { throw new LoopSignal("break"); }
+  function continueLoop() { throw new LoopSignal("continue"); }
+
   // bash integer division / modulo (guarding /0 → 0)
   function idiv(a, b) { const n = Number(b); return n === 0 ? 0 : Math.trunc(Number(a) / n); }
   function imod(a, b) { const n = Number(b); return n === 0 ? 0 : Math.trunc(Number(a) % n); }
@@ -337,7 +421,13 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
 
   async function whileLoop(cond, body) {
     while (await cond()) {
-      await body();
+      try {
+        await body();
+      } catch (e) {
+        if (e instanceof LoopSignal && e.kind === "break") break;
+        if (e instanceof LoopSignal && e.kind === "continue") continue;
+        throw e;
+      }
       await maybeYield();
     }
   }
@@ -460,7 +550,10 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       exec, pipeline, capture, captureWords, redirect, test,
       forLoop, whileLoop, caseMatch, define, brace, param, arith,
       guard, and, or, arithEval,
-      setArray, arrayIndex, arrayLen, idiv, imod, not, setLastExit,
+      setArray, setArrayAppend, arrayIndex, arrayLen,
+      assign,
+      "break": breakLoop, "continue": continueLoop,
+      idiv, imod, not, setLastExit,
       getVar, setVar,
     },
     get lastStatus() { return lastStatus; },
