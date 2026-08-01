@@ -52,6 +52,9 @@ const SHORT = {
   wasmer: "WASM package manager (list / install / search)",
   go: "run/build Go programs — the REAL Go toolchain (cmd/compile + cmd/link) as WASM",
   nethack: "play NetHack 3.6.7 — the real game, compiled to WASM (browser)",
+  jobs: "list background jobs (&)",
+  wait: "wait for background jobs",
+  kill: "terminate (or dismiss) a background job",
   wat2wasm: "compile a .wat WebAssembly text file to .wasm",
   qbe2wasm: "compile QBE IR (cproc output) to a wasm binary",
   bash2js: "transpile bash to JavaScript (sh2perl → perl2js)",
@@ -1768,6 +1771,53 @@ EXAMPLES
 
 SEE ALSO
      wasmer, cc, go, help
+`,
+
+  jobs: `NAME
+     jobs — list background jobs
+
+SYNOPSIS
+     jobs
+
+DESCRIPTION
+     Lists the shell's background jobs (\`cmd &\`): job id, pid, status
+     and the command line. Status is running, done (0), failed (N) or
+     killed (137). In the browser the same jobs appear in the right-hand
+     panel, split vertically among the non-minimized jobs.
+
+SEE ALSO
+     wait, kill
+`,
+
+  wait: `NAME
+     wait — wait for background jobs
+
+SYNOPSIS
+     wait [job-id | pid]
+
+DESCRIPTION
+     With no argument, waits for all background jobs and returns 0 if
+     they all succeeded. With a job id or pid, waits for that job and
+     returns its exit status (127 if no such job).
+
+SEE ALSO
+     jobs, kill
+`,
+
+  kill: `NAME
+     kill — terminate a background job
+
+SYNOPSIS
+     kill <job-id | pid>
+
+DESCRIPTION
+     Terminates a running background job (exit 137, like SIGKILL — the
+     pipeline is abandoned and its output discarded). For a finished
+     job, kill dismisses it from the job table and the browser panel.
+     In the browser the panel's ✕ button does the same.
+
+SEE ALSO
+     jobs, wait
 `,
 };
 
