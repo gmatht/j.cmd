@@ -3734,14 +3734,13 @@ async function runReplLine(line) {
         stderr: { write: (s) => { replState.bashOut += s; } },
       });
       const marker = replState.bashMarker;
-      const splitAt = replState.bashOut.lastIndexOf(marker + "\n");
-      if (splitAt === -1) {
-        // The marker echo never ran — debashcl silently dropped the
-        // whole statement (e.g. `echo )`), so the line was not executed.
-        stderr.write("bash: syntax error — nothing was run (the line is not in the session)\n");
-
+      const pi = replState.bashOut.indexOf(pre);
+      const pj = replState.bashOut.lastIndexOf(post);
+      if (pi === -1 || pj === -1 || pj < pi) {
+        // POST never printed — the statement was dropped/truncated
+        stderr.write("bash: syntax error — the line was not run (session unchanged)\n");
       } else {
-        const fresh = replState.bashOut.slice(splitAt + marker.length + 1);
+        const fresh = replState.bashOut.slice(pi + pre.length, pj);
         if (fresh) stdout.write(fresh);
         session.push(line);
       }

@@ -976,6 +976,7 @@ Usage:
   bash script.sh           execute a bash script file from the virtual FS
   cat script.sh | bash     execute from a pipe
   bash -                   execute from a pipe (explicit)
+    bash                     interactive REPL (state persists per line)
 
 Pipeline:  bash → ESTree (debashl.wasm) → JS (sh2.* runtime);
          falls back to sh2perl → perl2js if debashl is unavailable → executed
@@ -2194,28 +2195,32 @@ async function runReplLine(line) {
         t.indexOf("exit ") === 0 || t.indexOf("quit ") === 0) { exitRepl(); return; }
     try {
       // Session replay: re-transpile and re-run every line so far plus
-      // the new one, with an echo marker between old and new. Variables
-      // and functions persist because the whole session re-declares
-      // them; only the output after the marker is shown.
+      // the new one, bracketed by two echo markers (PRE before the new
+      // line, POST after). debashcl silently DROPS invalid statements
+      // (and everything after them), so if POST is missing the line was
+      // never run — we report it and leave the session untouched.
+      // Variables and functions persist because the whole session
+      // re-declares them; only the output between the markers is shown.
       replState.bashOut = "";
       const session = replState.bashSession;
+      const pre = replState.bashMarker;
+      const post = replState.bashMarker + "_end";
       const src = (session.length > 0 ? session.join("\n") + "\n" : "") +
-        "echo '" + replState.bashMarker + "'\n" + line;
+        "echo '" + pre + "'\n" + line + "\necho '" + post + "'\n";
       const { runBash } = await import("./bash2js.js");
       await runBash(fs, src, {
         runCmd: runNestedCommand,
         stdout: { write: (s) => { replState.bashOut += s; } },
         stderr: { write: (s) => { replState.bashOut += s; } },
       });
-      const marker = replState.bashMarker;
-      const splitAt = replState.bashOut.lastIndexOf(marker + "\n");
-      if (splitAt === -1) {
-        // The marker echo never ran — debashcl silently dropped the
-        // whole statement (e.g. `echo )`), so the line was not executed.
-        process.stderr.write("bash: syntax error — nothing was run (the line is not in the session)\n");
+      const pi = replState.bashOut.indexOf(pre);
+      const pj = replState.bashOut.lastIndexOf(post);
+      if (pi === -1 || pj === -1 || pj < pi) {
+        // POST never printed — the statement was dropped/truncated
+        process.stderr.write("bash: syntax error — the line was not run (session unchanged)\n");
 
       } else {
-        const fresh = replState.bashOut.slice(splitAt + marker.length + 1);
+        const fresh = replState.bashOut.slice(pi + pre.length, pj);
         if (fresh) process.stdout.write(fresh);
         session.push(line);
       }
