@@ -102,6 +102,18 @@ nethack --demo      # CLI: scripted autoplay (proves the pipeline)
 Assets are `www/vendor/nethack.{js,wasm}` (wasm is 4.9MB, game data
 embedded); `build-wasm-nethack.sh` fetches them from the npm package.
 
+## Async Commands — Type Ahead While They Run
+
+Non-interactive commands (`echo`, `ls`, `grep`, `sleep`, `go build`, …)
+now run as **tasks**: the prompt returns within ~100ms with a busy
+suffix — a spinner plus the red count of unfinished jobs (the task
+itself plus any `&` background jobs) — and you can keep typing while
+they complete. Their output appears when they finish. Commands that
+change shell state (`cd`, `export`, `mount`, …) or take over the
+terminal (`vi`, `nethack`, the Python/Perl/Bash REPLs, pagers) still
+run to completion before the next prompt, as before. `Ctrl+C` aborts
+all running tasks; `wait` waits for them too.
+
 ## Background Jobs (&) — the Right-Hand Panel
 
 `cmd &` runs a pipeline in the background. `jobs` / `wait [id]` /

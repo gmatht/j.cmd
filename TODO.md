@@ -85,6 +85,12 @@ and device files. It runs in any browser with no build step.
       monorepo, fetched by build-wasm-nethack.sh). `nethack` renders the
       TTY game in the shell (status/map/messages, ESC q quits, Ctrl+C
       returns); `nethack --demo` autoplays headlessly in the CLI.
+- [x] Async commands: non-interactive commands (echo/ls/grep/sleep/go…)
+      run as tasks — the prompt returns within ~100ms with a busy
+      suffix (spinner + red unfinished-jobs count) and you can type
+      ahead while they finish. State-modifying (cd/export/mount) and
+      interactive (vi/nethack/REPLs/pagers) commands still block.
+      Ctrl+C aborts all tasks; wait waits for them.
 - [x] Background jobs: `cmd &` runs in the background (jobs/wait/kill
       builtins + man pages). In the browser the right quarter of the
       display is a jobs panel: non-minimized jobs split it equally

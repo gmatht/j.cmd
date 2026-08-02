@@ -319,6 +319,7 @@
   .err { color: #d6a0a0; }
   .info { color: #7ec8e3; }
   .prompt { color: #7ec8e3; }
+  .busy-suffix { color: #ff5050; font-weight: bold; }
   .dir { color: #7ec8e3; }
   .file { color: #e0e0e0; }
 </style>
@@ -541,6 +542,7 @@ function renderBgPanel() {
   const jobs = getBgJobs().list();
   bgPanel.classList.toggle("active", jobs.length > 0);
   mainRow.classList.toggle("has-bg", jobs.length > 0);
+  refreshBusySuffix();   // bg jobs count in the prompt's unfinished-jobs suffix
   bgCountEl.textContent = jobs.length ? `${jobs.length} job${jobs.length === 1 ? "" : "s"}` : "";
   bgSlicesEl.textContent = "";
   bgDockEl.textContent = "";
@@ -703,6 +705,15 @@ function getPromptStr() {
 // Redraw the inline input line: prompt + typed text + blinking cursor.
 function renderInput() {
   promptEl.textContent = getPromptStr();
+  const busyN = unfinishedJobs();
+  if (busyN > 0) {
+    busySuffixEl = document.createElement("span");
+    busySuffixEl.className = "busy-suffix";
+    busySuffixEl.textContent = ` ${BUSY_FRAMES[busyFrame % BUSY_FRAMES.length]} ${busyN}`;
+    promptEl.appendChild(busySuffixEl);
+  } else {
+    busySuffixEl = null;
+  }
   inputSpan.textContent = "";
   const before = document.createTextNode(currentLine.slice(0, cursorPos));
   const cursor = document.createElement("span");
@@ -774,6 +785,106 @@ function spinnerStop() {
   if (spinner.interval) { clearInterval(spinner.interval); spinner.interval = null; }
   if (spinner.el) { spinner.el.remove(); spinner.el = null; }
   spinner.active = false;
+}
+
+// ─── Async command tasks ─────────────────────────────────────
+// Non-interactive, non-state-modifying commands run as tasks: the
+// prompt returns within ~100ms with a busy suffix (spinner + red count
+// of unfinished jobs — the task itself plus any & background jobs), and
+// the user can keep typing while they complete. State-modifying (cd,
+// export, mount…) and interactive (vi, nethack, REPLs, pagers…)
+// commands still run to completion before the next prompt.
+const shellTasks = new Map();
+let taskSeq = 0;
+
+function unfinishedJobs() {
+  return shellTasks.size + getBgJobs().list().filter((j) => j.running).length;
+}
+
+function runAsyncCommand(line) {
+  const id = ++taskSeq;
+  let abortResolve = null;
+  const abort = new Promise((resolve) => { abortResolve = resolve; });
+  const task = { id, cmd: line.trim(), abortResolve, done: false, aborted: false };
+  shellTasks.set(id, task);
+  abortCurrent = abort;   // interruptible builtins (sleep) stop on ^C
+  task.promise = (async () => {
+    try {
+      return await Promise.race([
+        handleLine(line),
+        abort.then(() => { task.aborted = true; return 130; }),
+      ]);
+    } catch (e) {
+      return 1;
+    }
+  })().finally(() => {
+    task.done = true;
+    shellTasks.delete(id);
+    if (abortCurrent === abort) abortCurrent = null;
+    refreshBusySuffix();
+  });
+  // Show the busy suffix only if the task is still running after 100ms
+  // — a fast command (echo, ls) finishes before the user notices.
+  setTimeout(() => { if (!task.done) refreshBusySuffix(); }, 100);
+  return task;
+}
+
+// Commands that must run to completion before the next prompt.
+const BLOCKING_COMMANDS = new Set([
+  // state-modifying
+  "cd", "export", "mount", "unmount", "su", "chroot", "chmod", "chown",
+  "umask", "unset", "set",
+  // interactive / full-screen / REPLs / editors / pagers
+  "vi", "vim", "edit", "nethack", "python", "perl", "bash", "watch",
+  "screen", "typist", "man", "help", "less", "more",
+  // job control that must wait
+  "wait",
+]);
+
+// Does any command in the line change shell state or take over the
+// terminal? (bg `&` segments detach already, so only the fg commands
+// decide.)
+function lineIsBlocking(line) {
+  for (const seg of splitBgList(line)) {
+    if (seg.bg) continue;
+    for (const part of splitConditionals(seg.text)) {
+      for (const pipe of splitPipe(part.text)) {
+        const tokens = tokenize(pipe.trim());
+        if (tokens.length === 0) continue;
+        const name = tokens[0].split("/").pop();
+        if (BLOCKING_COMMANDS.has(name)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+// Busy prompt suffix: a spinner plus the red count of unfinished jobs.
+const BUSY_FRAMES = ["\u280b", "\u2819", "\u2839", "\u2838", "\u283c", "\u2834", "\u2826", "\u2827", "\u280f", "\u280b"];
+let busyFrame = 0;
+let busyTimer = null;
+let busySuffixEl = null;   // the suffix span on the inline prompt (if any)
+
+function refreshBusySuffix() {
+  const n = unfinishedJobs();
+  if (n === 0) {
+    if (busyTimer) { clearInterval(busyTimer); busyTimer = null; }
+    renderInput();   // drops the suffix
+    return;
+  }
+  if (!busyTimer) {
+    busyTimer = setInterval(() => {
+      busyFrame = (busyFrame + 1) % BUSY_FRAMES.length;
+      // update just the suffix — don't rebuild the input line (the
+      // blinking cursor would restart every tick)
+      if (busySuffixEl) {
+        busySuffixEl.textContent = ` ${BUSY_FRAMES[busyFrame]} ${unfinishedJobs()}`;
+      } else {
+        renderInput();
+      }
+    }, 100);
+  }
+  renderInput();
 }
 
 // ─── asciinema recording (v2 cast format) ──────────────────────
@@ -1232,6 +1343,18 @@ function handleInterrupt() {
     cursorPos = 0;
     renderInput();
     if (interruptSignal) interruptSignal();
+    input.focus();
+    return;
+  }
+  if (shellTasks.size > 0) {
+    // Abort every async command task (SIGINT to the process group).
+    write("^C\n", "info");
+    currentLine = "";
+    cursorPos = 0;
+    renderInput();
+    for (const t of shellTasks.values()) {
+      try { t.abortResolve(true); } catch {}
+    }
     input.focus();
     return;
   }
@@ -2479,7 +2602,8 @@ const builtins = {
   },
 
   async wait(args) {
-    // wait [id|pid] — wait for a background job, or all of them
+    // wait [id|pid] — wait for a background job (or all of them),
+    // including any still-running async command tasks
     if (args.length > 1) {
       stderr.write("wait: too many arguments\n");
       return 2;
@@ -2487,6 +2611,14 @@ const builtins = {
     const code = await getBgJobs().wait(args[0]);
     if (code === 127 && args[0] !== undefined) {
       stderr.write(`wait: no such job '${args[0]}'\n`);
+      return 127;
+    }
+    if (args[0] === undefined) {
+      const tasks = [...shellTasks.values()];
+      if (tasks.length > 0) {
+        const codes = await Promise.all(tasks.map((t) => t.promise.catch(() => 1)));
+        if (!codes.every((c) => c === 0)) return 1;
+      }
     }
     return code;
   },
@@ -4792,6 +4924,17 @@ async function onCommand() {
     // commands run concurrently and the earlier one's completion draws a
     // spurious prompt while the later one (e.g. watch) is still going.
     commandQueue.push(line);
+    return;
+  }
+
+  // Async-safe lines (echo, ls, grep, sleep, …) run as tasks: the
+  // prompt returns within ~100ms with a busy suffix (spinner + red
+  // unfinished-jobs count) and the user can keep typing while they
+  // complete. State-modifying / interactive lines run to completion
+  // first (spinner, then the prompt), as before.
+  if (!lineIsBlocking(line)) {
+    runAsyncCommand(line);
+    input.focus();
     return;
   }
 
