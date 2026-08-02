@@ -1528,7 +1528,20 @@ function customExecDenied(path) {
   };
 }
 
+// Mobile keyboards auto-capitalize the first letter of a sentence, so
+// `Ls` and `ls` should be the same command. Exact-name matches always
+// win; the fold only applies to bare command names (no "/") whose
+// first letter is uppercase. `which Ls` benefits too.
 async function findCommand(name) {
+  const found = await findCommandExact(name);
+  if (found) return found;
+  if (!name.includes("/") && /^[A-Z]/.test(name)) {
+    return await findCommandExact(name[0].toLowerCase() + name.slice(1));
+  }
+  return null;
+}
+
+async function findCommandExact(name) {
   if (name.includes("/")) {
     const resolved = fs._resolve(name);
     let st;
@@ -1767,8 +1780,16 @@ async function runSegment(segmentText, stdin, isLast) {
     return { ok: false, code: 2, output: "" };
   }
   if (tokens.length === 0) return { ok: false, code: 2, output: "" };
-  const cmd = tokens[0];
+  let cmd = tokens[0];
   const args = tokens.slice(1);
+  // Mobile keyboards auto-capitalize the first letter — tolerate `Ls`
+  // for `ls` by folding a bare name's first letter (exact wins, paths
+  // are untouched). The folded name flows through intercepts, hints,
+  // resolution and /proc alike.
+  if (!cmd.includes("/") && /^[A-Z]/.test(cmd)) {
+    const folded = cmd[0].toLowerCase() + cmd.slice(1);
+    if (folded !== cmd) cmd = folded;
+  }
 
   let outputRedirect = null;
   let appendRedirect = false;
