@@ -250,6 +250,18 @@ const builtins = {
     return 0;
   },
 
+  async clear(args) {
+    // ANSI clear-screen (keeps the readline scrollback, like real clear)
+    process.stdout.write("\x1b[2J\x1b[H");
+    return 0;
+  },
+
+  async cls(args) {
+    // cls — Windows-style alias for clear
+    process.stdout.write("\x1b[2J\x1b[H");
+    return 0;
+  },
+
   async false(args) {
     // Always fails (exit 1) — handy with `||`
     return 1;

@@ -1295,12 +1295,15 @@ function clearViewport() {
 
   // Find the first/last line intersecting the viewport. A line that
   // only peeks into the viewport is erased whole, just as a real
-  // terminal erases entire rows.
+  // terminal erases entire rows. Structural children that are out of
+  // flow — the fixed toolbar — are neither counted nor removed.
   let y = 0;
   let first = -1;
   let last = -1;
   for (let i = 0; i < children.length; i++) {
-    const h = children[i].offsetHeight;
+    const el = children[i];
+    if (el === tbToolbar) continue;   // position:fixed — no flow space
+    const h = el.offsetHeight;
     if (y + h > top && y < bottom) {
       if (first === -1) first = i;
       last = i;
@@ -1311,9 +1314,9 @@ function clearViewport() {
   if (first === -1) return;
 
   // Remove the visible lines (newest first so indices stay valid),
-  // but never the prompt line itself.
+  // but never the prompt line or the toolbar.
   for (let i = last; i >= first; i--) {
-    if (children[i] !== promptLine) children[i].remove();
+    if (children[i] !== promptLine && children[i] !== tbToolbar) children[i].remove();
   }
 
   // Pad below the scrollback with a blank area so the bottom of the
@@ -3151,6 +3154,13 @@ Loops, conditionals, variables, arithmetic and pipes work:
     // Respect scrollback: only blank the visible viewport, leaving
     // scrolled-above history intact (Ctrl+L does the same).
     clearViewport();
+    return 0;
+  },
+
+  async cls(args) {
+    // cls — Windows-style alias for clear
+    clearViewport();
+    return 0;
   },
 
   async resize(args) {
