@@ -67,6 +67,11 @@ and device files. It runs in any browser with no build step.
       - Wire @wasmer/wasmfs to our VirtualFS
       - Then any wasm32-wasi binary works as a command:
         grep, curl, python, etc.
+- [x] Real C compiler (cproc): the `cc` command runs michaelforney/cproc
+      (wasm32-wasi, fork gmatht/cproc) → QBE IR → qbe2wasm → wasm binary.
+      libc calls resolve to the shell's env runtime (src/c-runtime.js:
+      printf/puts/malloc/string/memory funcs + a bump heap). cc hello.c
+      && ./a.wasm works end to end.
 - [x] C-to-WASM compiler: compile steinerkelvin/c-to-wasm-compiler-project
       to wasm32-wasi. It's a C compiler written in C++ that targets WASM
       (uses flex/bison, outputs .wasm). Currently has build errors with

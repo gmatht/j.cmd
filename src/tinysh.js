@@ -30,6 +30,7 @@ const wasmRunner = new WasmRunner(fs);
 const sh2libFacade = buildSh2LibFacade(fs);  // debashl toolchain, injected into .js commands
 const wasmerReg = new WasmerRegistry(fs);
 const goRunner = new GoRunner(fs, { baseUrl: "www/" });
+let ccCounter = 0;
 const goCmd = createGoCommand(goRunner);
 const nethackCmd = createCliNethackCommand();
 
@@ -1813,6 +1814,51 @@ async function runSegment(segmentText, stdin, isLast) {
     args.splice(redirectIndex, 2);
   }
 
+  // cc — the REAL C compiler: cproc (wasm32-wasi) → QBE IR → qbe2wasm.
+  // Intercepted before resolveCommand (bare `cc` has no fetch-based
+  // auto-load in node). cproc reads the source from the WASI sandbox
+  // and writes QBE IR to stdout; libc calls resolve to the env runtime.
+  if ((cmd === "cc" || cmd === "compiler") && args.length > 0 && !cmd.includes("/")) {
+    const resolve = (p) => (p && p.startsWith("/") ? p : fs._resolve(p));
+    let ccOutput = null, srcFile = null, ccIR = false;
+    if (args[0] === "-o" && args[1]) { ccOutput = resolve(args[1]); srcFile = resolve(args[2]); }
+    else if (args[0] === "-S") { ccIR = true; srcFile = resolve(args[1]); }
+    else if (args[0].endsWith(".wasm") && args[1]) { ccOutput = resolve(args[0]); srcFile = resolve(args[1]); }
+    else { ccOutput = resolve("a.wasm"); srcFile = resolve(args[0]); }
+    if (!srcFile) { process.stderr.write("cc: missing source file\n"); return { ok: false, code: 1, output: "" }; }
+    let original;
+    try { original = await fs.read(srcFile); }
+    catch (e) { process.stderr.write(`cc: cannot read ${srcFile}: ${e.message}\n`); return { ok: false, code: 1, output: "" }; }
+    const body = original.split("\n").filter((l) => !l.trim().startsWith("#")).join("\n");
+    const decls = `int printf(const char*, ...);\nint puts(const char*);\nint putchar(int);\nint fprintf(void*, const char*, ...);\nint sprintf(char*, const char*, ...);\nvoid *malloc(unsigned long);\nvoid *calloc(unsigned long, unsigned long);\nvoid *realloc(void*, unsigned long);\nvoid free(void*);\nunsigned long strlen(const char*);\nint strcmp(const char*, const char*);\nchar *strcpy(char*, const char*);\nchar *strncpy(char*, const char*, unsigned long);\nchar *strcat(char*, const char*);\nvoid *memcpy(void*, const void*, unsigned long);\nvoid *memmove(void*, const void*, unsigned long);\nvoid *memset(void*, int, unsigned long);\nint memcmp(const void*, const void*, unsigned long);\nvoid exit(int);\nvoid abort(void);\n`;
+    const prepped = body.includes("int printf(") ? body : decls + body;
+    const tmpSrc = "/tmp/cc-src-" + (ccCounter++) + ".c";
+    await fs.write(tmpSrc, prepped);
+    const cprocPath = "/usr/bin/cproc.wasm";
+    if (!(await fs.stat(cprocPath).catch(() => null))) {
+      const { readFileSync } = await import("node:fs");
+      await fs.writeBlob(cprocPath, new Blob([readFileSync("www/wasm-bin/cproc.wasm")]));
+    }
+    await wasmRunner.run(cprocPath, ["cproc-qbe", "-t", "wasm64", tmpSrc]);
+    const qbeErr = wasmRunner.getStderr();
+    if (wasmRunner.getExitCode() !== 0) {
+      process.stderr.write(qbeErr || `cc: cproc failed (exit ${wasmRunner.getExitCode()})\n`);
+      return { ok: false, code: wasmRunner.getExitCode(), output: "" };
+    }
+    const ir = wasmRunner.getStdout();
+    if (ccIR) { process.stdout.write(ir); return { ok: true, code: 0, output: ir }; }
+    try {
+      const { qbe2wasm } = await import("./qbe2wasm.js");
+      const bytes = qbe2wasm(ir, {});
+      await fs.writeBlob(ccOutput, new Blob([bytes], { type: "application/wasm" }));
+      process.stdout.write(`${ccOutput}: ${bytes.length} bytes\n`);
+      return { ok: true, code: 0, output: "" };
+    } catch (e) {
+      process.stderr.write(`cc: qbe2wasm: ${e.message}\n`);
+      return { ok: false, code: 1, output: "" };
+    }
+  }
+
   // python — MicroPython engine (reactor, src/py.js): REPL, -c, script
   // files and stdin. Intercepted before resolveCommand so it never
   // auto-loads python.wasm.
@@ -1915,18 +1961,7 @@ async function runSegment(segmentText, stdin, isLast) {
       // Run a wasm32-wasi binary (full WASI via @wasmer/wasi, filesystem
       // bridged to our VirtualFS via @wasmer/wasmfs)
       let wasmArgs = [cmd, ...args];
-      // cc/compiler reads its C source via WASI at the VFS root — resolve
-      // relative paths ("t.c") against the shell cwd first (/home/t.c)
-      if ((cmd === "cc" || cmd === "compiler") && args.length > 0) {
-        const resolve = (p) => (p && p.startsWith("/") ? p : fs._resolve(p));
-        if (args[0] === "-o" && args[1]) {
-          wasmArgs = [cmd, resolve(args[2])];
-        } else if (args[0] === "-S") {
-          wasmArgs = [cmd, resolve(args[1])];
-        } else {
-          wasmArgs = [cmd, resolve(args[0])];
-        }
-      }
+      // cc is intercepted before resolveCommand (see runSegment top)
       await wasmRunner.run(resolved.path, wasmArgs, stdin);
       // Raw stdout bytes (binary-safe) — decode only for the terminal;
       // a pipe carries the bytes so gzip | gunzip round-trips intact.

@@ -1850,6 +1850,38 @@ function preprocessC(src) {
   return body.includes("println_int(") ? rewritePrintf(body) : rewritePrintf(C_RUNTIME_DECLS + body);
 }
 
+// Declarations for the REAL compiler (cproc → QBE IR → qbe2wasm). The
+// preprocessor strips #include/#define lines, so the shell provides the
+// libc decls matching src/c-runtime.js's env module.
+const CPROC_DECLS =
+  `int printf(const char*, ...);\n` +
+  `int puts(const char*);\n` +
+  `int putchar(int);\n` +
+  `int fprintf(void*, const char*, ...);\n` +
+  `int sprintf(char*, const char*, ...);\n` +
+  `void *malloc(unsigned long);\n` +
+  `void *calloc(unsigned long, unsigned long);\n` +
+  `void *realloc(void*, unsigned long);\n` +
+  `void free(void*);\n` +
+  `unsigned long strlen(const char*);\n` +
+  `int strcmp(const char*, const char*);\n` +
+  `char *strcpy(char*, const char*);\n` +
+  `char *strncpy(char*, const char*, unsigned long);\n` +
+  `char *strcat(char*, const char*);\n` +
+  `void *memcpy(void*, const void*, unsigned long);\n` +
+  `void *memmove(void*, const void*, unsigned long);\n` +
+  `void *memset(void*, int, unsigned long);\n` +
+  `int memcmp(const void*, const void*, unsigned long);\n` +
+  `void exit(int);\n` +
+  `void abort(void);\n`;
+
+function preprocessCproc(src) {
+  // Strip preprocessor lines; the shell supplies the libc declarations
+  // (matching the env runtime). Keeps user declarations if present.
+  const body = src.split("\n").filter(l => !l.trim().startsWith("#")).join("\n");
+  return body.includes("int printf(") ? body : CPROC_DECLS + body;
+}
+
 // ─── Binary content detection ───────────────────────────────────
 // If a text read contains NUL bytes or an unusual ratio of control
 // characters, it's binary — don't dump it as garbage.
@@ -4194,6 +4226,14 @@ async function runSegment(segmentText, stdin, isLast, target = null) {
         // The compiler (compiler.wasm) sees the WASI filesystem rooted at
         // '/', so relative paths like 't.c' must be resolved to absolute
         // VFS paths (/home/t.c) or it looks for /t.c and fails.
+        // cc — the REAL C compiler: cproc (wasm32-wasi) → QBE IR →
+        // qbe2wasm → wasm binary. cproc reads the source from the WASI
+        // sandbox and writes the QBE IR to stdout, so no file harvest
+        // is needed. libc calls (printf/puts/malloc/…) resolve to the
+        // shell's env runtime (src/c-runtime.js) when the binary runs.
+        //   cc prog.c              → a.wasm (like gcc's a.out)
+        //   cc -o out.wasm prog.c  → writes out.wasm
+        //   cc -S prog.c           → emits QBE IR to stdout (assembly)
         let ccOutput = null;
         let ccWatOnly = false;
         if ((cmd === "cc" || cmd === "compiler") && args.length > 0) {
@@ -4203,7 +4243,7 @@ async function runSegment(segmentText, stdin, isLast, target = null) {
             ccOutput = resolveSrc(args[1]);
             srcFile = resolveSrc(args[2]);
           } else if (args[0] === "-S") {
-            ccWatOnly = true;
+            ccWatOnly = true;   // -S: emit QBE IR (the assembly listing)
             srcFile = resolveSrc(args[1]);
           } else if (args[0].endsWith(".wasm") && args[1]) {
             ccOutput = resolveSrc(args[0]);
@@ -4213,22 +4253,55 @@ async function runSegment(segmentText, stdin, isLast, target = null) {
             srcFile = resolveSrc(args[0]);
           }
 
-          // This compiler is a C subset: no preprocessor, no printf. Pre-
-          // process standard C: strip #lines, inject the runtime function
-          // declarations, and rewrite printf → print/println/println_int.
-          if (srcFile) {
+          if (!srcFile) {
+            stderr.write("cc: missing source file\n");
+            return { ok: false, code: 1, output: "" };
+          }
+          let original;
+          try {
+            original = await fs.read(srcFile);
+          } catch (e) {
+            stderr.write(`cc: cannot read ${srcFile}: ${e.message}\n`);
+            return { ok: false, code: 1, output: "" };
+          }
+          const prepped = preprocessCproc(original);
+          const tmpSrc = "/tmp/cc-src-" + (ccCounter++) + ".c";
+          await fs.write(tmpSrc, prepped);
+
+          // Load cproc.wasm (RAM, re-downloaded per boot).
+          const cprocPath = "/usr/bin/cproc.wasm";
+          if (!(await fs.stat(cprocPath).catch(() => null))) {
             try {
-              const original = await fs.read(srcFile);
-              const prepped = preprocessC(original);
-              const tmpSrc = "/tmp/cc-src-" + (ccCounter++) + ".c";
-              await fs.write(tmpSrc, prepped);
-              srcFile = tmpSrc;
+              const resp = await fetch("wasm-bin/cproc.wasm");
+              await fs.writeBlob(cprocPath, await resp.blob());
             } catch (e) {
-              // read failed — leave srcFile as-is (compiler will report)
+              stderr.write(`cc: cproc.wasm not available (${e.message})\n`);
+              return { ok: false, code: 1, output: "" };
             }
           }
-          wasmArgs = [cmd, srcFile];
+          await wasmRunner.run(cprocPath, ["cproc-qbe", "-t", "wasm64", tmpSrc]);
+          const qbeErr = wasmRunner.getStderr();
+          if (wasmRunner.getExitCode() !== 0) {
+            stderr.write(qbeErr || `cc: cproc failed (exit ${wasmRunner.getExitCode()})\n`);
+            return { ok: false, code: wasmRunner.getExitCode(), output: "" };
+          }
+          const ir = wasmRunner.getStdout();
+          if (ccWatOnly) {
+            // -S: the QBE IR is the "assembly"
+            stdout.write(ir);
+            return { ok: true, code: 0, output: ir };
+          }
+          try {
+            const bytes = qbe2wasm(ir, {});
+            await fs.writeBlob(ccOutput, new Blob([bytes], { type: "application/wasm" }));
+            stdout.write(`${ccOutput}: ${bytes.length} bytes\n`);
+            return { ok: true, code: 0, output: "" };
+          } catch (e) {
+            stderr.write(`cc: qbe2wasm: ${e.message}\n`);
+            return { ok: false, code: 1, output: "" };
+          }
         }
+
 
         // Go js/wasm binaries (`go build` output, or anything compiled with
         // GOOS=js GOARCH=wasm) run through the Go runner (wasm_exec.js +

@@ -57,6 +57,7 @@ const SHORT = {
   kill: "terminate (or dismiss) a background job",
   wat2wasm: "compile a .wat WebAssembly text file to .wasm",
   qbe2wasm: "compile QBE IR (cproc output) to a wasm binary",
+  cc: "compile C with the real cproc compiler (cproc → QBE IR → qbe2wasm)",
   bash2js: "transpile bash to JavaScript (sh2perl → perl2js)",
   bash: "run bash commands: transpile to JS and execute",
   which: "show the path (or builtin) the shell would run",
@@ -692,6 +693,42 @@ EXAMPLES
 
 SEE ALSO
      cc, wat2wasm
+`,
+
+  cc: `NAME
+     cc — compile C with the real cproc compiler
+
+SYNOPSIS
+     cc prog.c
+     cc -o out.wasm prog.c
+     cc -S prog.c
+
+DESCRIPTION
+     cc is the REAL C compiler in the shell: cproc (michaelforney/cproc,
+     compiled to wasm32-wasi) parses the C and emits QBE IR, which
+     qbe2wasm translates into a wasm binary — the whole gcc-style
+     pipeline runs in the browser, no server.
+
+     The preprocessor is minimal: #include / #define / #if lines are
+     stripped, and the shell injects the libc declarations (printf,
+     puts, malloc, free, string/memory functions) that match the shell's
+     C runtime (src/c-runtime.js). printf supports %d %i %u %x %X %o %c
+     %s %f %p %%.
+
+     The produced binary runs as a shell command:
+       cc hello.c && ./a.wasm
+     -S emits the QBE IR (the assembly listing) to stdout.
+
+     Note: all printf calls in one program must share a single argument
+     signature (qbe2wasm builds one import per extern function).
+
+EXAMPLES
+     cc hello.c
+     ./a.wasm
+     cc -S hello.c          # look at the QBE IR
+
+SEE ALSO
+     qbe2wasm, wasmer, go
 `,
   bash2js: `NAME
      bash2js — transpile bash to JavaScript

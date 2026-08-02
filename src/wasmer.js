@@ -66,6 +66,10 @@ const REGISTRY = {
     url: "wasm-bin/sh2perl.wasm",
     desc: "Shell→Perl transpiler (gmatht/sh2perl debashc CLI, wasm32-wasip1 — see build-wasm-sh2perl.sh). Usage: sh2perl parse --perl 'echo hi'",
   },
+  "cproc": {
+    url: "wasm-bin/cproc.wasm",
+    desc: "C compiler emitting QBE IR (michaelforney/cproc, wasm32-wasi). The cc command runs cproc → qbe2wasm: cc prog.c && ./a.wasm",
+  },
   "compiler": {
     url: "wasm-bin/compiler.wasm",
     desc: "C compiler targeting WebAssembly (c-to-wasm-compiler-project, wasi-sdk build). Usage: compiler prog.c > prog.wat",

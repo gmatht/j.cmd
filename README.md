@@ -114,6 +114,23 @@ terminal (`vi`, `nethack`, the Python/Perl/Bash REPLs, pagers) still
 run to completion before the next prompt, as before. `Ctrl+C` aborts
 all running tasks; `wait` waits for them too.
 
+## C in the Browser — the Real Compiler (cproc)
+
+`cc` now runs the **real C compiler**: cproc (Michael Forney's C
+compiler, built to wasm32-wasi) parses C and emits QBE IR, which the
+in-shell `qbe2wasm` backend translates into a wasm binary — the whole
+gcc-style pipeline in the browser, no server:
+
+```
+cc hello.c && ./a.wasm
+```
+
+libc calls (printf/puts/malloc/string/memory functions) resolve to the
+shell's C runtime (`src/c-runtime.js`); the preprocessor is minimal
+(`#include`/`#define` lines are stripped and the libc declarations are
+injected). `cc -S` shows the QBE IR. Build: `build-wasm-cproc.sh`
+(fork: gmatht/cproc).
+
 ## Background Jobs (&) — the Right-Hand Panel
 
 `cmd &` runs a pipeline in the background. `jobs` / `wait [id]` /

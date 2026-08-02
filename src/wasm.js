@@ -27,6 +27,7 @@
 import { init, WASI, MemFS } from "@wasmer/wasi";
 import { WasmFs } from "@wasmer/wasmfs";
 import { env } from "./env.js";
+import { createCRuntime } from "./c-runtime.js";
 
 // @wasmer/wasi embeds its WASI runtime wasm as a base64 data URI and
 // decodes it with Buffer.from(). Browsers have no Buffer, so provide a
@@ -123,11 +124,15 @@ export class WasmRunner {
     if (!hasWasi) {
       const instance = await WebAssembly.instantiate(module, custom);
       if (instance.exports.memory) memRef.memory = instance.exports.memory;
-      if (instance.exports.main) {
-        instance.exports.main();
-        this._exitCode = 0;
-      } else {
-        this._exitCode = 0;
+      try {
+        // qbe2wasm compiles export the QBE symbol verbatim ($main); the
+        // old c-to-wasm compiler exports main.
+        const entry = instance.exports.$main || instance.exports.main;
+        if (entry) { entry(); this._exitCode = 0; }
+        else { this._exitCode = 0; }
+      } catch (e) {
+        if (e && e.name === "CExit") this._exitCode = e.code;
+        else throw e;
       }
       this._stdout = this._stdCustomOut || "";
       this._stdoutBytes = new TextEncoder().encode(this._stdout);
@@ -450,6 +455,15 @@ export class WasmRunner {
     const runner = this;
 
     const custom = {
+      // Runtime for cproc → qbe2wasm-compiled C programs: extern calls
+      // become env.* imports. printf/puts output to the terminal, the
+      // heap is a bump allocator above the stack zone.
+      "env": createCRuntime({
+        getMem: () => new Uint8Array(memRef.memory.buffer),
+        memory: () => memRef.memory,
+        out: (t) => { runner._stdCustomOut += t; },
+        err: (t) => { runner._stderr += t; },
+      }),
       "micropython_wasm": {
         host_result_cap: () => 256 * 1024,
         host_call: (np, nl, pp, pl, rp, rc) => {
