@@ -32,10 +32,68 @@
     min-width: 0;
     min-height: 0;  /* allow shrink so flex layout works */
     padding: 16px;
+    padding-top: 8px;
     overflow-y: auto;
     white-space: pre-wrap;
     word-wrap: break-word;
   }
+
+  /* Faint touch/mouse toolbar pinned to the top of the terminal:
+     arrow keys, a Ctrl-key popup, history popup, home and cd .. */
+  #term-toolbar {
+    position: sticky;
+    top: 0;
+    z-index: 6;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 6px;
+    margin-bottom: 6px;
+    background: rgba(13, 13, 22, 0.92);
+    border-bottom: 1px solid rgba(42, 42, 58, 0.6);
+    font-size: 12px;
+    flex-wrap: wrap;
+  }
+  #term-toolbar button {
+    background: transparent;
+    border: 1px solid rgba(126, 200, 227, 0.18);
+    color: rgba(216, 216, 224, 0.55);
+    opacity: 0.55;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    line-height: 1.2;
+    padding: 3px 8px;
+  }
+  #term-toolbar button:hover { opacity: 1; color: #fff; border-color: #7ec8e3; }
+  #term-toolbar .tb-arrows { display: flex; gap: 3px; }
+  #term-toolbar .tb-arrows button { padding: 3px 7px; }
+  .tb-pop {
+    position: absolute;
+    top: 100%;
+    left: 10px;
+    z-index: 7;
+    display: flex;
+    flex-direction: column;
+    background: rgba(16, 16, 24, 0.97);
+    border: 1px solid #2a2a3a;
+    border-radius: 6px;
+    padding: 4px;
+    min-width: 150px;
+    max-height: 50vh;
+    overflow: auto;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+  }
+  .tb-pop.hidden { display: none; }
+  .tb-pop button {
+    border: none;
+    text-align: left;
+    color: #c8c8d8;
+    opacity: 1;
+    border-radius: 3px;
+    padding: 4px 8px;
+  }
+  .tb-pop button:hover { background: #2a2a3a; color: #fff; }
 
   /* Drag handle between the terminal and the background panel. */
   #bg-divider {
@@ -328,6 +386,28 @@
 
 <div id="main-row">
 <div id="terminal">
+  <div id="term-toolbar" title="">
+    <span class="tb-arrows">
+      <button data-key="ArrowLeft" title="Left">&#9664;</button>
+      <button data-key="ArrowUp" title="Up / history">&#9650;</button>
+      <button data-key="ArrowDown" title="Down / history">&#9660;</button>
+      <button data-key="ArrowRight" title="Right">&#9654;</button>
+    </span>
+    <button id="tb-ctrl" title="Ctrl-key shortcuts">Ctrl</button>
+    <div id="tb-ctrl-pop" class="tb-pop hidden">
+      <button data-ctrl="c">Ctrl+C &nbsp;interrupt</button>
+      <button data-ctrl="l">Ctrl+L &nbsp;clear</button>
+      <button data-ctrl="a">Ctrl+A &nbsp;line start</button>
+      <button data-ctrl="e">Ctrl+E &nbsp;line end</button>
+      <button data-ctrl="u">Ctrl+U &nbsp;kill line</button>
+      <button data-ctrl="k">Ctrl+K &nbsp;kill to end</button>
+      <button data-ctrl="w">Ctrl+W &nbsp;kill word</button>
+    </div>
+    <button id="tb-history" title="Command history">Hist</button>
+    <div id="tb-history-pop" class="tb-pop hidden"></div>
+    <button id="tb-home" title="Go to $HOME">~</button>
+    <button id="tb-cdup" title="Parent directory (cd ..)">..</button>
+  </div>
   <div id="prompt-line"><span id="prompt" class="prompt"></span><span id="input-span"></span></div>
 </div>
 
@@ -4641,15 +4721,16 @@ async function runReplLine(line) {
       // them; only the output after the marker is shown.
       replState.bashOut = "";
       const session = replState.bashSession;
+      const pre = replState.bashMarker;
+      const post = replState.bashMarker + "_end";
       const src = (session.length > 0 ? session.join("\n") + "\n" : "") +
-        "echo '" + replState.bashMarker + "'\n" + line;
+        "echo '" + pre + "'\n" + line + "\necho '" + post + "'\n";
       const { runBash } = await import("../src/bash2js.js");
       await runBash(fs, src, {
         runCmd: runNestedCommand,
         stdout: { write: (s) => { replState.bashOut += s; } },
         stderr: { write: (s) => { replState.bashOut += s; } },
       });
-      const marker = replState.bashMarker;
       const pi = replState.bashOut.indexOf(pre);
       const pj = replState.bashOut.lastIndexOf(post);
       if (pi === -1 || pj === -1 || pj < pi) {
@@ -5392,6 +5473,98 @@ input.addEventListener("keydown", async (e) => {
   }
 
   lastMatches = [];
+});
+
+// ─── Terminal toolbar (touch/mouse controls) ─────────────────
+// Faint arrow keys, a Ctrl-key popup, a history popup, home and cd ..
+// pinned to the top of the terminal. The buttons drive the shell
+// through the same key events / command path as the keyboard.
+function tbDispatch(key, ctrl = false) {
+  input.focus();
+  input.dispatchEvent(new KeyboardEvent("keydown", {
+    key, ctrlKey: ctrl, bubbles: true, cancelable: true,
+  }));
+}
+
+const tbToolbar = document.getElementById("term-toolbar");
+const tbCtrlBtn = document.getElementById("tb-ctrl");
+const tbCtrlPop = document.getElementById("tb-ctrl-pop");
+const tbHistBtn = document.getElementById("tb-history");
+const tbHistPop = document.getElementById("tb-history-pop");
+
+// Arrows — dispatch to the hidden input (cursor moves / history).
+tbToolbar.querySelectorAll(".tb-arrows button").forEach((b) => {
+  b.addEventListener("click", () => tbDispatch(b.dataset.key));
+});
+
+// Ctrl-key palette.
+tbCtrlBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  tbCtrlPop.classList.toggle("hidden");
+  tbHistPop.classList.add("hidden");
+});
+tbCtrlPop.querySelectorAll("button[data-ctrl]").forEach((b) => {
+  b.addEventListener("click", () => {
+    tbDispatch(b.dataset.ctrl, true);
+    tbCtrlPop.classList.add("hidden");
+  });
+});
+
+// History popup — click a past command to bring it back to the line.
+function renderHistoryPop() {
+  tbHistPop.textContent = "";
+  if (history.length === 0) {
+    const empty = document.createElement("div");
+    empty.style.cssText = "padding:4px 8px;color:#8b949e;";
+    empty.textContent = "(no history yet)";
+    tbHistPop.appendChild(empty);
+    return;
+  }
+  for (let i = history.length - 1; i >= 0; i--) {
+    const item = document.createElement("button");
+    item.textContent = history[i];
+    item.addEventListener("click", () => {
+      currentLine = history[i];
+      historyIndex = i;
+      cursorPos = currentLine.length;
+      renderInput();
+      tbHistPop.classList.add("hidden");
+      input.focus();
+    });
+    tbHistPop.appendChild(item);
+  }
+}
+tbHistBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  renderHistoryPop();
+  tbHistPop.classList.toggle("hidden");
+  tbCtrlPop.classList.add("hidden");
+});
+
+// Home / cd .. — run through the normal command path (recorded, like
+// a typed line).
+async function tbRunCommand(cmd) {
+  tbCtrlPop.classList.add("hidden");
+  tbHistPop.classList.add("hidden");
+  currentLine = cmd;
+  cursorPos = cmd.length;
+  renderInput();
+  input.focus();
+  await onCommand();
+}
+document.getElementById("tb-home").addEventListener("click", () => tbRunCommand("cd"));
+document.getElementById("tb-cdup").addEventListener("click", () => tbRunCommand("cd .."));
+
+// Clicking outside the toolbar closes the popups; buttons keep the
+// hidden input focused (no blur on mousedown).
+tbToolbar.querySelectorAll("button").forEach((b) => {
+  b.addEventListener("mousedown", (e) => e.preventDefault());
+});
+document.addEventListener("click", (e) => {
+  if (!e.target.closest("#term-toolbar")) {
+    tbCtrlPop.classList.add("hidden");
+    tbHistPop.classList.add("hidden");
+  }
 });
 
 // ─── Welcome ────────────────────────────────────────────────────

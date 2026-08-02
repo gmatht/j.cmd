@@ -1865,8 +1865,15 @@ async function runSegment(segmentText, stdin, isLast) {
   // or newer run may have replaced it).
   const realOut = process.stdout.write;
   const realErr = process.stderr.write;
+  // Transparent suppression wrapper: forwards to its captured target. The
+  // `__wraps` link lets nested captures (runNestedCommand) recognise that
+  // they're still in the active write chain even while this guard sits on
+  // top of them — without it, `bash 'echo x' | grep x` would leak output
+  // to the terminal instead of into the pipe.
   const guardedOut = (chunk) => (suppressOutput ? true : realOut.call(process.stdout, chunk));
+  guardedOut.__wraps = realOut;
   const guardedErr = (chunk) => (suppressOutput ? true : realErr.call(process.stderr, chunk));
+  guardedErr.__wraps = realErr;
   process.stdout.write = guardedOut;
   process.stderr.write = guardedErr;
 
@@ -2161,14 +2168,31 @@ async function runNestedCommand(cmdLine, stdin = "") {
   const origWrite = process.stdout.write;
   const origErrWrite = process.stderr.write;
   const capOut = (chunk) => {
-    if (process.stdout.write === capOut) {
+    // Capture while we're in the current write chain. The suppression
+    // guard wraps us during nested runs (bash → runNestedCommand →
+    // runSegment), so walk __wraps links — only forward to the original
+    // writer when an UNRELATED capture (a background job's) owns the
+    // output.
+    let w = process.stdout.write;
+    let mine = w === capOut;
+    while (!mine && w && typeof w.__wraps === "function") {
+      w = w.__wraps;
+      mine = w === capOut;
+    }
+    if (mine) {
       captured += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
       return true;
     }
     return origWrite.call(process.stdout, chunk);
   };
   const capErr = (chunk) => {
-    if (process.stderr.write === capErr) {
+    let w = process.stderr.write;
+    let mine = w === capErr;
+    while (!mine && w && typeof w.__wraps === "function") {
+      w = w.__wraps;
+      mine = w === capErr;
+    }
+    if (mine) {
       capturedErr += chunk;
       return true;
     }
