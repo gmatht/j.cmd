@@ -18,6 +18,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 echo "Fetching @neth4ck/wasm-367 from npm…"
+echo "  (source: our fork gmatht/neth4ck-monorepo — NetHack licence, see docs/licences.md)"
 cd "$WORK"
 npm pack @neth4ck/wasm-367 >/dev/null
 tar xzf neth4ck-wasm-367-*.tgz

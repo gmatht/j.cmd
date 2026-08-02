@@ -24,7 +24,7 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
 PATCH="$REPO/wasm-compiler.patch"
-UPSTREAM="https://github.com/steinerkelvin/c-to-wasm-compiler-project.git"
+UPSTREAM="https://github.com/gmatht/c-to-wasm-compiler-project.git"  # our fork (j-cmd-build branch carries wasm-compiler.patch)
 WASI_SDK="${WASI_SDK:-/opt/wasi-sdk-25.0-x86_64-linux}"
 CXX="$WASI_SDK/bin/wasm32-wasi-clang++"
 CXXFLAGS="-std=c++17 -O2 -Wall -fno-exceptions -Isrc"

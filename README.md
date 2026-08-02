@@ -172,4 +172,11 @@ page's own code — keep keys personal or proxy them server-side.
 
 ## License
 
-GPL-3.0 (same as sh2perl)
+GPL-3.0 (same as sh2perl) — see `LICENSE.md`.
+
+The shell ships third-party components (WASM toolchains, interpreters,
+libraries). Their licences, source repositories and the compliance audit
+live in **`docs/licences.md`** (license texts in `docs/licenses/`), and are
+readable in-shell: `cat /docs/licences.md`. Code we patch and rebuild from
+other projects is published as GitHub forks under
+github.com/gmatht — see the audit for the fork list.

@@ -36,7 +36,8 @@ SRC="$BUILD/zstd-src"
 if [[ ! -d "$SRC/.git" ]]; then
   mkdir -p "$(dirname "$SRC")"
   echo "Cloning facebook/zstd ..."
-  git clone --depth 1 https://github.com/facebook/zstd.git "$SRC"
+  # our fork of facebook/zstd (BSD-3 / GPL-2.0 dual) — see docs/licences.md
+  git clone --depth 1 https://github.com/gmatht/zstd.git "$SRC"
 fi
 echo "Using zstd checkout: $SRC"
 cd "$SRC"

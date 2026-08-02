@@ -433,7 +433,7 @@ CFLAGS="-I$STUBS -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_MMAN -D_WASI_EMULATED_
 LDFLAGS="-Wl,--undefined=main -Wl,--undefined=__main_argc_argv"
 
 # 3. Busybox source
-UPSTREAM="https://git.busybox.net/busybox"
+UPSTREAM="https://github.com/gmatht/busybox.git"  # our fork of busybox (GPL-2.0); build config lives in this script
 if [[ ! -d "$BB_DIR/.git" ]]; then
   mkdir -p "$(dirname "$BB_DIR")"
   echo "Cloning busybox from $UPSTREAM ..."

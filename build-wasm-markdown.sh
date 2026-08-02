@@ -36,7 +36,8 @@ SRC="$BUILD/src"
 if [[ ! -d "$SRC/md4c.c" ]]; then
   mkdir -p "$(dirname "$SRC")"
   echo "Cloning rsms/markdown-wasm ..."
-  git clone --depth 1 https://github.com/rsms/markdown-wasm.git "$BUILD"
+  # our fork of rsms/markdown-wasm (MIT) — see docs/licences.md
+  git clone --depth 1 https://github.com/gmatht/markdown-wasm.git "$BUILD"
   SRC="$BUILD/src"
 fi
 echo "Using markdown-wasm checkout: $BUILD"
