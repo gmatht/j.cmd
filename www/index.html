@@ -744,11 +744,6 @@ function write(text, cls = "out", opts = {}) {
       // init banner: motd goes into the left column of the welcome row
       welcomeText.appendChild(span);
     } else {
-      // After `clear` the prompt is pinned to the top with a blank
-      // spacer below; the first new output drops the spacer and returns
-      // the prompt to its normal place at the bottom.
-      const clearSpacer = term.querySelector(".clear-spacer");
-      if (clearSpacer) clearSpacer.remove();
       // Output goes before the prompt line so it stays the last visible
       // line. While a command is running, output goes above the busy
       // spinner instead, so the spinner always sits where the next
@@ -1325,29 +1320,13 @@ function clearViewport() {
     if (children[i] !== promptLine && children[i] !== tbToolbar) children[i].remove();
   }
 
-  // Blank the screen BELOW the prompt and pin the prompt to the TOP of
-  // the cleared viewport, like a real terminal's clear (and the CLI's
-  // ANSI \x1b[2J\x1b[H): the scrollback above stays reachable by
-  // scrolling up. The spacer sits AFTER the prompt (promptLine must
-  // stay the last element for inline editing) and is removed again as
-  // soon as new output arrives (write()), restoring the normal
-  // bottom-anchored prompt.
-  const oldSpacer = term.querySelector(".clear-spacer");
-  if (oldSpacer) oldSpacer.remove();
-  const spacer = document.createElement("div");
-  spacer.className = "clear-spacer";
-  spacer.style.height = term.clientHeight + "px";
-  term.appendChild(spacer);
-  // Scroll so the prompt sits just below the fixed toolbar: its scroll
-  // position is padding-top(52) + the children above it; aligning those
-  // children to the top puts the prompt at y≈52.
-  let above = 0;
-  for (const c of term.children) {
-    if (c === promptLine) break;
-    if (c === tbToolbar || c === spacer) continue;
-    above += c.offsetHeight || 0;
-  }
-  term.scrollTop = Math.max(0, above);
+  // No spacer: the prompt is the only remaining line in the common case
+  // (nothing was scrolled above), so it sits at the top of the now-empty
+  // viewport — exactly like a real terminal's clear. Preserved scrollback
+  // stays reachable by scrolling up. The next renderInput() re-anchors
+  // the prompt to the bottom as usual.
+  lastCharNewline = true;   // don't let writeShellPrompt pad a "\n" above the prompt
+  term.scrollTop = 0;
 }
 
 const stdout = { write: (s) => { if (!suppressOutput) write(s, "out"); } };
