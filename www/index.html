@@ -4214,6 +4214,7 @@ async function runSegment(segmentText, stdin, isLast, target = null) {
     if (e instanceof InterruptError) throw e;
     stderr.write(`${cmd}: error: ${e.message}\n`);
     return { ok: false, code: 1, output: "" };
+  }
   } finally {
     restoreWriters();
   }
