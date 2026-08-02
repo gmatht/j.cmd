@@ -35,7 +35,7 @@
     min-width: 0;
     min-height: 0;  /* allow shrink so flex layout works */
     padding: 16px;
-    padding-top: 52px;   /* clear the fixed toolbar overlay */
+    padding-top: 52px;   /* starting value; syncToolbarPad() overrides with the toolbar's real (wrapping) height */
     overflow-y: auto;
     white-space: pre-wrap;
     word-wrap: break-word;
@@ -1450,6 +1450,7 @@ function measureTermCell() {
 }
 
 function updateTermSize() {
+  syncToolbarPad();
   const { charW, lineH } = measureTermCell();
   const cs = getComputedStyle(term);
   const width = Math.max(40, term.clientWidth
@@ -1461,6 +1462,17 @@ function updateTermSize() {
   env.COLUMNS = String(cols);
   env.LINES = String(rows);
   return { cols, rows };
+}
+
+// The top toolbar is a fixed overlay and its buttons wrap on narrow
+// screens, so its real height varies. The terminal's top padding must
+// clear it, or after `clear` the prompt (and any content at the top)
+// sits underneath the toolbar — looking like blank lines above the
+// prompt. Measure the toolbar and push the content below it.
+function syncToolbarPad() {
+  if (!tbToolbar || !term) return;
+  const h = tbToolbar.offsetHeight || 0;
+  term.style.paddingTop = (h + 8) + "px";
 }
 
 // Re-measure whenever the browser window changes size (this also
@@ -5506,8 +5518,21 @@ input.addEventListener("keydown", async (e) => {
     return;
   }
 
-  // Ctrl+C — interrupt the running command / cancel the current line
+  // Ctrl+C — interrupt the running command / cancel the current line.
+  // A text selection means copy instead (the document capture handler
+  // normally intercepts that case; this fallback keeps copy working if
+  // it ever doesn't fire — e.g. focus quirks). No preventDefault, so
+  // the browser's native copy runs.
   if (e.ctrlKey && (e.key === "c" || e.key === "C")) {
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && sel.toString()) {
+      setTimeout(() => {
+        try { sel.removeAllRanges(); } catch {}
+        justSelected = false;
+        input.focus();
+      }, 0);
+      return;
+    }
     e.preventDefault();
     handleInterrupt();
     return;
