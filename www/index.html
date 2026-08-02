@@ -3984,14 +3984,30 @@ async function runNestedCommand(cmdLine, stdin = "") {
   const origWrite = stdout.write;
   const origErrWrite = stderr.write;
   const capOut = (chunk) => {
-    if (stdout.write === capOut) {
+    // Capture while we're in the current write chain. The per-command
+    // router wraps us during nested runs (bash REPL → runNestedCommand
+    // → runSegment), so walk __wraps links — only forward to the
+    // original writer when an UNRELATED capture owns the output.
+    let w = stdout.write;
+    let mine = w === capOut;
+    while (!mine && w && typeof w.__wraps === "function") {
+      w = w.__wraps;
+      mine = w === capOut;
+    }
+    if (mine) {
       captured += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
       return true;
     }
     return origWrite(chunk);
   };
   const capErr = (chunk) => {
-    if (stderr.write === capErr) {
+    let w = stderr.write;
+    let mine = w === capErr;
+    while (!mine && w && typeof w.__wraps === "function") {
+      w = w.__wraps;
+      mine = w === capErr;
+    }
+    if (mine) {
       capturedErr += chunk;
       return true;
     }
@@ -4078,12 +4094,19 @@ async function runSegment(segmentText, stdin, isLast, target = null) {
     if (target && target.appendOut) { target.appendOut(chunk); return true; }
     return preOut(chunk);
   };
+  // Transparent router: forwards to its saved writer. The __wraps link
+  // lets nested captures (runNestedCommand) recognise they're still in
+  // the active write chain while this router sits on top — without it,
+  // the bash REPL's PRE/POST markers leak to the terminal instead of
+  // reaching the capture buffer.
+  routerOut.__wraps = preOut;
   const routerErr = (chunk) => {
     if (stderr.write !== routerErr) return preErr(chunk);
     if (suppressOutput) return true;
     if (target && target.appendErr) { target.appendErr(chunk); return true; }
     return preErr(chunk);
   };
+  routerErr.__wraps = preErr;
   stdout.write = routerOut;
   stderr.write = routerErr;
   const restoreWriters = () => {
