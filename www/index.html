@@ -1284,47 +1284,18 @@ async function playCast(content) {
 }
 
 function clearViewport() {
-  // Erase only the visible viewport, keeping the scrollback (lines the
-  // user has scrolled above) intact — like a real terminal's `clear`,
-  // which blanks the screen but leaves saved lines reachable by
-  // scrolling up (unlike `reset`, which wipes scrollback too).
+  // Wipe the terminal: remove every line except the toolbar and the
+  // prompt line. One `clear` really clears — the previous version only
+  // erased the visible viewport and kept everything above as
+  // "scrollback", which then filled the screen again on the next
+  // scroll-to-bottom (old lines above the prompt, and a second clear
+  // needed to finish the job). The prompt line is kept (it's the
+  // anchor for inline editing) and simply sits at the top of the
+  // empty screen.
   const children = Array.from(term.children);
-  if (children.length === 0) return;
-
-  const top = term.scrollTop;
-  const bottom = top + term.clientHeight;
-
-  // Find the first/last line intersecting the viewport. A line that
-  // only peeks into the viewport is erased whole, just as a real
-  // terminal erases entire rows. Structural children that are out of
-  // flow — the fixed toolbar — are neither counted nor removed.
-  let y = 0;
-  let first = -1;
-  let last = -1;
-  for (let i = 0; i < children.length; i++) {
-    const el = children[i];
-    if (el === tbToolbar) continue;   // position:fixed — no flow space
-    const h = el.offsetHeight;
-    if (y + h > top && y < bottom) {
-      if (first === -1) first = i;
-      last = i;
-    }
-    y += h;
-    if (y >= bottom && first !== -1) break;
+  for (const el of children) {
+    if (el !== promptLine && el !== tbToolbar) el.remove();
   }
-  if (first === -1) return;
-
-  // Remove the visible lines (newest first so indices stay valid),
-  // but never the prompt line or the toolbar.
-  for (let i = last; i >= first; i--) {
-    if (children[i] !== promptLine && children[i] !== tbToolbar) children[i].remove();
-  }
-
-  // No spacer: the prompt is the only remaining line in the common case
-  // (nothing was scrolled above), so it sits at the top of the now-empty
-  // viewport — exactly like a real terminal's clear. Preserved scrollback
-  // stays reachable by scrolling up. The next renderInput() re-anchors
-  // the prompt to the bottom as usual.
   lastCharNewline = true;   // don't let writeShellPrompt pad a "\n" above the prompt
   term.scrollTop = 0;
 }
