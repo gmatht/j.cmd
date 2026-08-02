@@ -2599,7 +2599,11 @@ async function runReplLine(line) {
         process.stderr.write("bash: syntax error — the line was not run (session unchanged)\n");
 
       } else {
-        const fresh = replState.bashOut.slice(pi + pre.length, pj);
+        // The PRE marker's echo appends its own newline, so the slice
+        // after it starts with "\n" — strip it, or every command's
+        // output would be preceded by a blank line (and no-output lines
+        // like `x=5` would print one).
+        const fresh = replState.bashOut.slice(pi + pre.length, pj).replace(/^\n+/, "");
         if (fresh) process.stdout.write(fresh);
         session.push(line);
       }
