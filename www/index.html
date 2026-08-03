@@ -485,6 +485,33 @@
   }
   #bug-form-hint b { color: #c9d1d9; font-weight: 600; }
   #bug-form-hint .bf-note { margin-top: 4px; color: #6e7681; font-style: italic; }
+  /* Touch controls (mobile has no arrow keys) — also fine with a mouse. */
+  #bug-form-keys {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    padding: 8px 14px;
+    border-top: 1px solid #30363d;
+    flex: 0 0 auto;
+  }
+  #bug-form-keys button {
+    background: #21262d;
+    border: 1px solid #30363d;
+    color: #c9d1d9;
+    font-size: 14px;
+    min-height: 42px;          /* comfortable touch target */
+    padding: 8px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  #bug-form-keys button:hover { background: #30363d; }
+  #bug-form-keys button:active { background: #388bfd33; }
+  #bug-form-keys button.bf-keys-file { color: #7ee39a; border-color: rgba(126, 227, 154, 0.45); }
+  #bug-form-keys button.bf-keys-cancel { color: #ff9090; border-color: rgba(255, 144, 144, 0.45); }
+  #bug-form-keys .bf-keys-sep { flex: 1; }
+  #bug-form-hint > div + div { margin-top: 3px; }
   #editor-header {
     background: #161b22;
     padding: 8px 16px;
@@ -621,11 +648,23 @@
 <div id="bug-form" class="hidden">
   <div id="bug-form-header"></div>
   <div id="bug-form-text"></div>
+  <div id="bug-form-keys">
+    <button data-marker="top" title="Select the ▲ top-of-snippet marker">▲</button>
+    <button data-marker="title" title="Select the ● title-line marker">●</button>
+    <button data-marker="bottom" title="Select the ▼ bottom-of-snippet marker">▼</button>
+    <span class="bf-keys-sep"></span>
+    <button data-move="-1" title="Move the active marker up (↑)">↑</button>
+    <button data-move="1" title="Move the active marker down (↓)">↓</button>
+    <span class="bf-keys-sep"></span>
+    <button data-act="file" class="bf-keys-file" title="File the report (Enter)">✓ file</button>
+    <button data-act="cancel" class="bf-keys-cancel" title="Cancel (Esc)">✕ cancel</button>
+  </div>
   <div id="bug-form-hint">
     <div>
       <b>←/→</b> select marker (▲ top · ● title · ▼ bottom) &nbsp;<b>↑/↓</b> move it
       &nbsp;<b>Enter</b> file the report &nbsp;<b>Esc</b> cancel
     </div>
+    <div>On a phone: tap <b>▲ ● ▼</b> to pick a marker, tap any line to place it, <b>✓ file</b> / <b>✕ cancel</b>.</div>
     <div class="bf-note">You can add more detail on GitHub later — it probably won't be required (if it's broken,
       it's probably obviously and completely broken). Don't worry about duplicates either.</div>
   </div>
@@ -3482,6 +3521,7 @@ Loops, conditionals, variables, arithmetic and pipes work:
           + (isActive ? " bf-active" : "")
           + (i === state.title ? " bf-title" : "")
           + (inSnippet ? "" : " bf-out");
+        div.dataset.i = i; // tap-to-place target
         const mark = document.createElement("span");
         mark.className = "bf-mark";
         const syms = [];
@@ -3538,8 +3578,41 @@ Loops, conditionals, variables, arithmetic and pipes work:
     interruptCallbacks.push(onIntr);
     document.addEventListener("keydown", onKey, true);
 
+    // Touch controls: the ▲/●/▼ and ↑/↓/✓/✕ button bar, plus tap-a-line
+    // to place the ACTIVE marker there (a drag still selects text for
+    // copying — taps move < 6px).
+    const bugFormKeys = document.getElementById("bug-form-keys");
+    const onBarClick = (e) => {
+      const b = e.target.closest("button");
+      if (!b) return;
+      if (b.dataset.marker) { state.active = b.dataset.marker; render(); }
+      else if (b.dataset.move) { move(state.active, parseInt(b.dataset.move, 10)); }
+      else if (b.dataset.act === "file") resolveForm({ ...state });
+      else if (b.dataset.act === "cancel") resolveForm(null);
+    };
+    let tapX = null, tapY = null;
+    const onTextDown = (e) => { tapX = e.clientX; tapY = e.clientY; };
+    const onTextUp = (e) => {
+      if (tapX === null) return;
+      const dx = e.clientX - tapX, dy = e.clientY - tapY;
+      tapX = tapY = null;
+      if (dx * dx + dy * dy > 36) return; // it was a drag (selection)
+      const line = e.target.closest(".bf-line");
+      if (!line) return;
+      const i = parseInt(line.dataset.i, 10);
+      if (isNaN(i)) return;
+      if (state.active === "top") state.top = Math.max(0, Math.min(state.bottom, i));
+      else if (state.active === "bottom") state.bottom = Math.min(n - 1, Math.max(state.top, i));
+      else state.title = Math.max(0, Math.min(n - 1, i));
+      render();
+    };
+    bugFormKeys.addEventListener("click", onBarClick);
+    bugFormText.addEventListener("pointerdown", onTextDown);
+    bugFormText.addEventListener("pointerup", onTextUp);
+
     bugFormEl.classList.add("active");
     promptLine.style.display = "none";
+    input.blur(); // hide the mobile soft keyboard while the form is open
     render();
 
     let sel;
@@ -3547,6 +3620,9 @@ Loops, conditionals, variables, arithmetic and pipes work:
       sel = await formDone;
     } finally {
       document.removeEventListener("keydown", onKey, true);
+      bugFormKeys.removeEventListener("click", onBarClick);
+      bugFormText.removeEventListener("pointerdown", onTextDown);
+      bugFormText.removeEventListener("pointerup", onTextUp);
       interruptCallbacks = interruptCallbacks.filter((f) => f !== onIntr);
       bugFormEl.classList.remove("active");
       promptLine.style.display = "";
@@ -3559,10 +3635,21 @@ Loops, conditionals, variables, arithmetic and pipes work:
     const titleLine = (state.lines[sel.title] || "").replace(/^[^$]*\$ /, "").trim();
     const title = "bug: " + ((titleLine || summary0 || "").trim().slice(0, 100) || "terminal snippet report");
 
-    // System info: /dev/info, sha256 of the core files actually served
+    // System info: the deployed commit (www/version.txt, written by the
+    // Pages build), /dev/info, sha256 of the core files actually served
     // (pins the exact code the user ran), and the recent commands.
+    let commit = "";
     const system = await (async () => {
       const parts = [];
+      try {
+        const vr = await fetch("version.txt");
+        if (vr.ok) {
+          const txt = (await vr.text()).trim();
+          const m = txt.match(/^commit:\s*(\S+)/m);
+          if (m) commit = m[1];
+          if (txt) parts.push(txt);
+        }
+      } catch {}
       try {
         const info = await fs.read("/dev/info");
         if (info) parts.push(info.trim());
@@ -3591,7 +3678,7 @@ Loops, conditionals, variables, arithmetic and pipes work:
 
     // No follow-up prompts — the report goes out as-is (the GitHub form
     // lets the user add more detail later; it's probably not required).
-    const body = buildReport({ summary: summary0 || "", expected: "", snippet, scope: "form", system });
+    const body = buildReport({ summary: summary0 || "", expected: "", snippet, scope: "form", system, commit });
 
     // Save + clipboard regardless (cheap — the web form needs the copy anyway).
     try { await fs.write("/tmp/bug-report.md", body); } catch {}

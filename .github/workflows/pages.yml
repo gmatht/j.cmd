@@ -33,6 +33,13 @@ jobs:
           mkdir -p site
           cp -r www site/www
           cp -r src site/src
+          # Build stamp: the exact commit + date this site was built
+          # from — the shell's bug reports read www/version.txt to pin
+          # the deployed version.
+          {
+            echo "commit: ${{ github.sha }}";
+            echo "built: $(date -u +%Y-%m-%dT%H:%M:%SZ)";
+          } > site/www/version.txt
           # /j.cmd/ → /j.cmd/www/ (the shell imports ../src, so it
           # can't live at the repo-root path; redirect the bare root)
           # /j.cmd/ → /j.cmd/www/ with tagged-version fallbacks (the

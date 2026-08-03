@@ -14,7 +14,10 @@
 export const BUG_REPO = "gmatht/j.cmd";
 export const BUG_LABEL = "bug-report";
 export const BUG_SITE = "https://gmatht.github.io/j.cmd/www/";
-export const SHELL_VERSION = "0.1.0"; // keep in step with package.json
+// "0.1.0+": the deployed shell is beyond the 0.1.0 tag (no 0.1.1 has
+// been cut yet). The exact deployed commit comes from www/version.txt
+// (browser) or git (CLI) and lands in the report's Version line.
+export const SHELL_VERSION = "0.1.0+"; // keep in step with package.json
 
 /**
  * Assemble the markdown report body.
@@ -22,8 +25,9 @@ export const SHELL_VERSION = "0.1.0"; // keep in step with package.json
  *  system: pre-built "## System" content (version, core-file sha256
  *          hashes, recent commands, /dev/info) — see collectSystem in
  *          the shells.
+ *  commit: exact deployed commit (from www/version.txt / git).
  */
-export function buildReport({ summary = "", expected = "", snippet = "", scope = "20", system = "" }) {
+export function buildReport({ summary = "", expected = "", snippet = "", scope = "20", system = "", commit = "" }) {
   const scopeLabel =
     scope === "500" ? "Terminal (last 500 lines)"
     : scope === "terminal" ? "Terminal (whole scrollback)"
@@ -35,10 +39,11 @@ export function buildReport({ summary = "", expected = "", snippet = "", scope =
     : "— (user trusts us to infer the expected behavior from the snippet)";
   const summaryText = summary.trim() || "— (see snippet)";
   const sys = system.trim() ? `\n## System\n${system.trim()}\n` : "";
+  const versionLine = `**Version:** jtsh ${SHELL_VERSION}${commit ? ` · commit ${commit}` : ""}`;
   return `<!-- jtsh bug report · filed by the shell's \`bug\` command · ${BUG_LABEL} -->
 **Reported:** ${new Date().toISOString().replace("T", " ").slice(0, 16)} UTC
 **Source:** ${BUG_SITE} (browser shell) / node CLI
-**Version:** jtsh ${SHELL_VERSION}
+${versionLine}
 
 ## Summary
 ${summaryText}

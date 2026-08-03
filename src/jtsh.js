@@ -61,6 +61,21 @@ async function collectSystem() {
   }
   return parts.join("\n");
 }
+
+// The exact commit the shell was built from: git in a repo clone,
+// else www/version.txt (the Pages build stamp).
+async function collectCommit() {
+  try {
+    const { execSync } = await import("node:child_process");
+    return execSync("git rev-parse HEAD", { cwd: process.cwd() }).toString().trim();
+  } catch {
+    try {
+      const { readFileSync } = await import("node:fs");
+      const m = readFileSync("www/version.txt", "utf8").match(/^commit:\s*(\S+)/m);
+      return m ? m[1] : "";
+    } catch { return ""; }
+  }
+}
 const _bugBaseOut = process.stdout.write.bind(process.stdout);
 const _bugBaseErr = process.stderr.write.bind(process.stderr);
 process.stdout.write = (s, ...rest) => { ringPush(s); return _bugBaseOut(s, ...rest); };
@@ -344,7 +359,7 @@ const builtins = {
     const summary = rest.join(" ");
     const snippet = outRing.slice(-lines).join("\n").replace(/^\s+|\s+$/g, "");
     const scope = lines === 20 ? "20" : String(lines);
-    const body = buildReport({ summary, expected: expect, snippet, scope, system: await collectSystem() });
+    const body = buildReport({ summary, expected: expect, snippet, scope, system: await collectSystem(), commit: await collectCommit() });
     if (dryRun) { process.stdout.write(body); return 0; }
     const title = "bug: " + ((summary || "").trim().slice(0, 100) || "terminal snippet report");
     const token = webform ? null : await getBugToken(null);
