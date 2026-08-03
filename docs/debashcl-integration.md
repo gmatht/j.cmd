@@ -1,6 +1,6 @@
 # debashcl integration — bash support via the sh2 toolchain
 
-tinysh now runs bash through the **debashcl ESTree path** (from
+jtsh now runs bash through the **debashcl ESTree path** (from
 `root@10.42.0.1:/nvme/ai`, vendored under `vendor/sh2/` and
 `www/wasm-bin/`):
 

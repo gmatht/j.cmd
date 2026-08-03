@@ -1,14 +1,14 @@
-// ─── tinysh: Minimal shell that runs .js files as commands ──────
+// ─── jtsh: Minimal shell that runs .js files as commands ──────
 //
-// tinysh is to the virtual filesystem what /bin/sh is to a Unix kernel.
+// jtsh is to the virtual filesystem what /bin/sh is to a Unix kernel.
 // It reads lines, splits on spaces, and executes .js files.
 //
 // JavaScript is the "machine code" of this architecture.
-// tinysh is the "CPU" that runs it — minimal, dumb, reliable.
+// jtsh is the "CPU" that runs it — minimal, dumb, reliable.
 //
 // Usage:
-//   node src/tinysh.js           # interactive REPL
-//   node src/tinysh.js < file    # batch mode from stdin
+//   node src/jtsh.js           # interactive REPL
+//   node src/jtsh.js < file    # batch mode from stdin
 // -----------------------------------------------------------------
 
 import { createInterface } from "readline";
@@ -1286,7 +1286,7 @@ Loops, conditionals, variables, arithmetic and pipes work:
   },
 
   async help(args) {
-    process.stdout.write(`tinysh — minimal shell for the virtual filesystem
+    process.stdout.write(`jtsh — minimal shell for the virtual filesystem
 
 Built-in commands:
   ls [dir]        List directory contents (ls -l: long format)
@@ -1327,12 +1327,12 @@ Built-in commands:
   help            This help
   exit            Exit the shell
 
-Startup config (~/.tinyshrc):
-  $HOME/.tinyshrc is read at startup (interactive mode); each line
+Startup config (~/.jtshrc):
+  $HOME/.jtshrc is read at startup (interactive mode); each line
   runs as a shell command, '#' starts a comment.
     export EDITOR=edit
     echo "Welcome back"
-  (in the browser, edit it with: edit ~/.tinyshrc)
+  (in the browser, edit it with: edit ~/.jtshrc)
 
 Pipes: cmd1 | cmd2 — cmd1's stdout becomes cmd2's stdin
   Example: cat README.md | head -3
@@ -1357,7 +1357,7 @@ Aliases: vi/vim/nano = edit · less/more = cat · cls = clear
 Environment variables:
   $PATH  /bin:/usr/bin   command search path
   $HOME  /home                     default directory (bare cd goes there)
-  $USER  tinysh                    current user
+  $USER  jtsh                    current user
   $PWD   current directory
   Expand with $NAME or \${NAME}: echo $HOME · cd $HOME · cat $HOME/examples/note.txt
   (single quotes or a \$ keep the $ literal: echo '$HOME' prints $HOME)
@@ -1373,7 +1373,7 @@ Write new commands by creating .js files in /bin/.
   },
 
   async chmod(args) {
-    // chmod OCTAL file... — only the owner (or tinysh/root) may change a
+    // chmod OCTAL file... — only the owner (or jtsh/root) may change a
     // file's mode. Modes are Unix-style: 600 = owner rw, 644 = +other r,
     // 755 = dir default, 700 = private dir.
     if (args.length === 0 || args[0] === "-h" || args[0] === "--help") {
@@ -1385,7 +1385,7 @@ Write new commands by creating .js files in /bin/.
       return 2;
     }
     const mode = parseInt(args[0], 8);
-    const user = env.USER || "tinysh";
+    const user = env.USER || "jtsh";
     let hadError = false;
     for (const file of args.slice(1)) {
       const a = fs.attrOf(file);
@@ -1394,7 +1394,7 @@ Write new commands by creating .js files in /bin/.
         hadError = true;
         continue;
       }
-      if (user !== "tinysh" && user !== "root" && user !== a.owner) {
+      if (user !== "jtsh" && user !== "root" && user !== a.owner) {
         process.stderr.write(`chmod: ${file}: operation not permitted (owned by ${a.owner})\n`);
         hadError = true;
         continue;
@@ -1405,13 +1405,13 @@ Write new commands by creating .js files in /bin/.
   },
 
   async whoami(args) {
-    process.stdout.write((env.USER || "tinysh") + "\n");
+    process.stdout.write((env.USER || "jtsh") + "\n");
     return 0;
   },
 
   async su(args) {
     // su                  → drop to nobody (unprivileged)
-    // su <name>           → switch to that user (su tinysh / su root → back)
+    // su <name>           → switch to that user (su jtsh / su root → back)
     let target = (args[0] || "nobody").trim().toLowerCase();
     if (target === "-") target = "nobody";
     if (!/^[a-z_][a-z0-9_-]*$/.test(target)) {
@@ -1426,7 +1426,7 @@ Write new commands by creating .js files in /bin/.
       suState.prev = { user: env.USER, home: env.HOME, cwd: fs.cwd };
     }
     env.USER = target;
-    const home = target === "tinysh" ? "/home" : "/home/" + target;
+    const home = target === "jtsh" ? "/home" : "/home/" + target;
     env.HOME = home;
     try {
       await fs.stat(home);
@@ -1435,16 +1435,16 @@ Write new commands by creating .js files in /bin/.
         await fs.write(home + "/README.txt",
           `Welcome, ${target}!\n` +
           `This is your home directory (${home}).\n` +
-          `You are ${target === "nobody" ? "an unprivileged user" : "running as " + target} on tinysh.\n` +
-          `Run 'su tinysh' to return to the admin account.\n`);
+          `You are ${target === "nobody" ? "an unprivileged user" : "running as " + target} on jtsh.\n` +
+          `Run 'su jtsh' to return to the admin account.\n`);
       } catch {}
     }
     // The new home is owned by the target user (su runs as admin, so
-    // the writes above would otherwise attribute it to tinysh — leaving
+    // the writes above would otherwise attribute it to jtsh — leaving
     // the account unable to write in its own home).
     fs.setAttr(home, { owner: target, mode: 0o700 });
     try { fs.setAttr(home + "/README.txt", { owner: target, mode: 0o644 }); } catch {}
-    if (target === "tinysh" && suState.prev) {
+    if (target === "jtsh" && suState.prev) {
       fs.cwd = suState.prev.cwd;
       suState.prev = null;
     } else {
@@ -1453,7 +1453,7 @@ Write new commands by creating .js files in /bin/.
     env.PWD = fs.cwd;
     const unpriv = ["nobody", "daemon", "guest", "www-data"].includes(target);
     process.stdout.write(`su: switched to ${target} — ${unpriv ? "unprivileged" : "user"}\n`);
-    process.stdout.write(`    HOME=${env.HOME} · run 'su tinysh' to return\n`);
+    process.stdout.write(`    HOME=${env.HOME} · run 'su jtsh' to return\n`);
     rl.setPrompt(shellPrompt());
     rl.prompt();
     return 0;
@@ -1521,19 +1521,19 @@ Write new commands by creating .js files in /bin/.
 // ../run.mjs) instead of being looked up in $PATH. Bare names never
 // fall back to the cwd — that's what the leading ./ is for.
 // Unprivileged users (su nobody/daemon/guest/...) may only run
-// admin-trusted code: builtins and .js/.wasm files owned by tinysh.
+// admin-trusted code: builtins and .js/.wasm files owned by jtsh.
 // Custom code (anything they — or another non-admin — created) is
 // refused, so an unprivileged session can't escalate by dropping a
 // .js/.wasm file and running it.
 function isPrivilegedUser() {
-  const u = env.USER || "tinysh";
-  return u === "tinysh" || u === "root";
+  const u = env.USER || "jtsh";
+  return u === "jtsh" || u === "root";
 }
 function customExecDenied(path) {
   if (isPrivilegedUser()) return null;
   const a = fs.attrOf(path);
-  const owner = a ? a.owner : "tinysh";
-  if (owner === "tinysh") return null;
+  const owner = a ? a.owner : "jtsh";
+  if (owner === "jtsh") return null;
   return {
     type: "badpath",
     path,
@@ -1789,7 +1789,7 @@ async function runSegment(segmentText, stdin, isLast) {
   try {
     tokens = tokenize(segmentText);
   } catch (e) {
-    process.stderr.write(`tinysh: ${e.message}\n`);
+    process.stderr.write(`jtsh: ${e.message}\n`);
     return { ok: false, code: 2, output: "" };
   }
   if (tokens.length === 0) return { ok: false, code: 2, output: "" };
@@ -2192,7 +2192,7 @@ async function runPipeline(pipelineText, initialStdin = "") {
   let exitCode = 0;
   for (let i = 0; i < segments.length; i++) {
     if (!segments[i].trim()) {
-      process.stderr.write(`tinysh: syntax error near unexpected token '|'\n`);
+      process.stderr.write(`jtsh: syntax error near unexpected token '|'\n`);
       return 2;
     }
     const result = await runSegment(segments[i], stdin, i === segments.length - 1);
@@ -2260,25 +2260,25 @@ async function runNestedCommand(cmdLine, stdin = "") {
 function getJobScheduler() {
   // One shared scheduler per shell process/page, so at/cron commands and
   // the boot-time restore all see the same job queue. Jobs run through
-  // runNestedCommand; cron jobs persist to /home/.tinyshcron.
-  if (!globalThis.__tinyshJobs) {
-    globalThis.__tinyshJobs = createJobScheduler({
+  // runNestedCommand; cron jobs persist to /home/.jtshcron.
+  if (!globalThis.__jtshJobs) {
+    globalThis.__jtshJobs = createJobScheduler({
       fs,
       runLine: (cmd) => runNestedCommand(cmd),
       stdout: process.stdout,
       stderr: process.stderr,
-      storagePath: "/home/.tinyshcron",
+      storagePath: "/home/.jtshcron",
     });
   }
-  return globalThis.__tinyshJobs;
+  return globalThis.__jtshJobs;
 }
 
 // Background jobs (`cmd &`): one shared table per shell. Output goes
 // straight to the terminal (live); the completion notice is printed by
 // onUpdate. See createBgJobs in src/jobs.js.
 function getBgJobs() {
-  if (!globalThis.__tinyshBgJobs) {
-    globalThis.__tinyshBgJobs = createBgJobs({
+  if (!globalThis.__jtshBgJobs) {
+    globalThis.__jtshBgJobs = createBgJobs({
       runLine: async (job) => (await runPipeline(job.cmd)) ?? 0,
       onUpdate: (job) => {
         if (job.running || job.notified) return;
@@ -2288,7 +2288,7 @@ function getBgJobs() {
       },
     });
   }
-  return globalThis.__tinyshBgJobs;
+  return globalThis.__jtshBgJobs;
 }
 
 // Split a line into background segments on a single `&` (respecting
@@ -2346,12 +2346,12 @@ async function handleLine(line, initialStdin) {
   try {
     segments = splitBgList(trimmed);
   } catch (e) {
-    process.stderr.write(`tinysh: ${e.message}\n`);
+    process.stderr.write(`jtsh: ${e.message}\n`);
     return;
   }
   for (const seg of segments) {
     if (!seg.text.trim()) {
-      process.stderr.write(`tinysh: syntax error near unexpected token '&'\n`);
+      process.stderr.write(`jtsh: syntax error near unexpected token '&'\n`);
       return;
     }
     // Validate a background segment's conditional structure now, so a
@@ -2362,13 +2362,13 @@ async function handleLine(line, initialStdin) {
       try {
         cond = splitConditionals(seg.text);
       } catch (e) {
-        process.stderr.write(`tinysh: ${e.message}\n`);
+        process.stderr.write(`jtsh: ${e.message}\n`);
         return;
       }
       const bad = cond.find((p) => !p.text.trim());
       if (bad) {
         const token = bad.op || "newline";
-        process.stderr.write(`tinysh: syntax error near unexpected token '${token}'\n`);
+        process.stderr.write(`jtsh: syntax error near unexpected token '${token}'\n`);
         return;
       }
     }
@@ -2393,7 +2393,7 @@ async function runConditionalList(text, initialStdin) {
   try {
     parts = splitConditionals(text);
   } catch (e) {
-    process.stderr.write(`tinysh: ${e.message}\n`);
+    process.stderr.write(`jtsh: ${e.message}\n`);
     return 2;
   }
   // An empty segment means the segment started with an operator, ended
@@ -2403,7 +2403,7 @@ async function runConditionalList(text, initialStdin) {
     if (!parts[i].text.trim()) {
       const nextOp = i + 1 < parts.length ? parts[i + 1].op : null;
       const token = nextOp ? `'${nextOp}'` : "newline";
-      process.stderr.write(`tinysh: syntax error near unexpected token ${token}\n`);
+      process.stderr.write(`jtsh: syntax error near unexpected token ${token}\n`);
       return 2;
     }
   }
@@ -2419,24 +2419,32 @@ async function runConditionalList(text, initialStdin) {
   return exitCode;
 }
 
-// ─── Startup config (~/.tinyshrc) ─────────────────────────────
-// Like a Unix shell's rc file (.bashrc / .zshrc), $HOME/.tinyshrc
+// ─── Startup config (~/.jtshrc) ─────────────────────────────
+// Like a Unix shell's rc file (.bashrc / .zshrc), $HOME/.jtshrc
 // is read at startup and each non-comment line is run as a shell
 // command. Use it for persistent environment variables and setup:
 //
-//   # sample ~/.tinyshrc  (i.e. /home/.tinyshrc)
+//   # sample ~/.jtshrc  (i.e. /home/.jtshrc)
 //   export EDITOR=edit
 //   echo "Welcome back!"
 //
 // Lines starting with # are comments; a missing file is not an
 // error (bash skips a nonexistent .bashrc the same way).
 async function loadConfig() {
-  const configPath = (env.HOME.replace(/\/+$/, "") || "/") + "/.tinyshrc";
+  const home = env.HOME.replace(/\/+$/, "") || "/";
+  // .jtshrc is the name now; read a pre-rebrand .tinyshrc as a fallback
+  // so existing users keep their config.
+  let configPath = home + "/.jtshrc";
   let content;
   try {
     content = await fs.read(configPath);
   } catch {
-    return; // no config file — not an error
+    try {
+      configPath = home + "/.tinyshrc";
+      content = await fs.read(configPath);
+    } catch {
+      return; // no config file — not an error
+    }
   }
   for (const line of content.split("\n")) {
     const trimmed = line.trim();
@@ -2514,11 +2522,11 @@ const replState = { active: false, mode: null, perl: null, perlReady: null,
   perlSession: [], perlOut: "", perlMarker: "",
   bashSession: [], bashOut: "", bashMarker: "" };
 let shellHistory = [];  // the shell's readline history while a REPL owns it
-const suState = { prev: null };  // previous user context, for `su tinysh`
+const suState = { prev: null };  // previous user context, for `su jtsh`
 
 // Prompt shows the current user — su'd users appear as nobody:/home/nobody$
 function shellPrompt() {
-  const user = env.USER && env.USER !== "tinysh" ? env.USER : "tinysh";
+  const user = env.USER && env.USER !== "jtsh" ? env.USER : "jtsh";
   return `${user}:${fs.view ? fs.view(fs.cwd) : fs.cwd}$ `;
 }
 
@@ -2693,7 +2701,7 @@ const rl = createInterface({
 });
 
 if (process.stdin.isTTY) {
-  // Read the user's ~/.tinyshrc before the first prompt so exports
+  // Read the user's ~/.jtshrc before the first prompt so exports
   // and setup commands are already in effect (like bash and .bashrc).
   await loadConfig();
   await getJobScheduler().restore();  // re-arm persisted cron jobs
@@ -2709,7 +2717,7 @@ if (process.stdin.isTTY) {
       rl.setPrompt(shellPrompt());
       rl.prompt();
     }).catch((e) => {
-      process.stderr.write(`tinysh: ${e && e.message ? e.message : e}\n`);
+      process.stderr.write(`jtsh: ${e && e.message ? e.message : e}\n`);
     });
   });
 

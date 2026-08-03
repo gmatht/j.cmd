@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ─── serve.py ───────────────────────────────────────────────────
-# Static server for the tinysh browser shell with cross-origin
+# Static server for the jtsh browser shell with cross-origin
 # isolation headers so SharedArrayBuffer (needed for the WASI
 # blocking-stdin REPL) is available.
 #
@@ -31,9 +31,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         super().end_headers()
 
     def log_message(self, fmt, *args):
-        sys.stderr.write(f"[tinysh] {self.address_string()} {fmt % args}\n")
+        sys.stderr.write(f"[jtsh] {self.address_string()} {fmt % args}\n")
 
 
 with socketserver.ThreadingTCPServer(("", PORT), Handler) as httpd:
-    print(f"tinysh server on http://localhost:{PORT}/www/  (COOP/COEP enabled)")
+    print(f"jtsh server on http://localhost:{PORT}/www/  (COOP/COEP enabled)")
     httpd.serve_forever()

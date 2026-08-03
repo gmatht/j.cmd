@@ -331,7 +331,7 @@ class VirtualFS {
     this.cwd = "/home";
     // Ownership + mode bits, enforced at this layer: every command
     // reaches the filesystem only through VirtualFS, so `su nobody`
-    // really cannot read a 0600 file owned by tinysh. In-memory only —
+    // really cannot read a 0600 file owned by jtsh. In-memory only —
     // a reload re-creates the world as the admin user, which is
     // exactly what happens on a real boot.
     this.attrs = new Map();  // resolved path → { owner, mode }
@@ -381,7 +381,7 @@ class VirtualFS {
     this.mount("docs", "/docs", new OverlayFS(new DocsFS(), "docs", "fs:ovl:docs:"));
     this.mount("download", "/pc", new DownloadFS());
     // /proc/ — process info + browser stats. ProcFS keeps a registry of
-    // every command tinysh runs (procfs.start/finish) and generates the
+    // every command jtsh runs (procfs.start/finish) and generates the
     // rest of the files from browser APIs (hardwareConcurrency, device-
     // Memory, performance.memory, navigation timing, mount table, ...).
     this.mount("proc", "/proc", procfs);
@@ -408,13 +408,13 @@ class VirtualFS {
     // mode). All lines here are commented out so first-run behaviour is
     // unchanged; uncomment to try the feature.
     const sampleRc =
-      "# ~/.tinyshrc — tinysh startup config (read at shell startup)\n" +
+      "# ~/.jtshrc — jtsh startup config (read at shell startup)\n" +
       "# Each line is run as a shell command; '#' starts a comment.\n" +
       "# Uncomment to try:\n" +
       "# export EDITOR=edit\n" +
       "# export PATH=/bin:/usr/bin\n" +
-      "# echo \"Welcome back to tinysh!\"\n";
-    syncWrite(this._getBackend("/home/.tinyshrc"), "/.tinyshrc", sampleRc);
+      "# echo \"Welcome back to jtsh!\"\n";
+    syncWrite(this._getBackend("/home/.jtshrc"), "/.jtshrc", sampleRc);
     syncWrite(this._getBackend("/tmp/README"), "/README",
       "This is ramfs. Contents lost on reload.\n");
 
@@ -1282,7 +1282,7 @@ return 0;
     // Uses the window.shellPaneRun hook from www/index.html to run
     // commands per-pane (own cwd, own output). Version-gated (v2
     // marker) so updates reach existing installs.
-    const screenContent = `// screen v2 — tmux/screen-style panes for tinysh (browser)
+    const screenContent = `// screen v2 — tmux/screen-style panes for jtsh (browser)
 //
 // NAME
 //      screen — split the terminal into panes (like tmux / GNU screen)
@@ -1315,7 +1315,7 @@ return 0;
 //
 // OPTIONS
 //      -n, --panes=N     start with N panes (default 1, max 16)
-//      -S, --session=N   session name shown in the toolbar (default tinysh)
+//      -S, --session=N   session name shown in the toolbar (default jtsh)
 //      -h, --help        show this help
 //
 // EXAMPLES
@@ -1329,7 +1329,7 @@ return 0;
 
 // ─── parse options ───
 var NL = String.fromCharCode(10);
-var sessionName = "tinysh";
+var sessionName = "jtsh";
 var paneCount = 1;
 var i = 0;
 var posCount = null;
@@ -1344,11 +1344,11 @@ while (i < args.length) {
   }
   var val;
   if (opt === "-h" || opt === "--help") {
-    console.log("screen — tmux-style panes for tinysh (browser)");
+    console.log("screen — tmux-style panes for jtsh (browser)");
     console.log("usage: screen [-n N] [-S name]");
     console.log("");
     console.log("  -n, --panes=N    start with N panes (default 1, max 16)");
-    console.log("  -S, --session=N  session name (default tinysh)");
+    console.log("  -S, --session=N  session name (default jtsh)");
     console.log("  -h, --help       this help");
     console.log("");
     console.log("buttons: + split · x close · C clear · = reset · q/Esc exit");
@@ -2316,7 +2316,7 @@ if (args.length === 0) {
   return 2;
 }
 if (typeof shell === "undefined" || typeof shell.runLine !== "function") {
-  console.log("time: this shell has no runLine hook (needs the browser shell or tinysh CLI)");
+  console.log("time: this shell has no runLine hook (needs the browser shell or jtsh CLI)");
   return 1;
 }
 
@@ -3293,7 +3293,7 @@ return 0;
 //
 // DESCRIPTION
 //      cron runs commands on a schedule, like the classic crontab.
-//      Jobs persist in /home/.tinyshcron and are re-armed when the
+//      Jobs persist in /home/.jtshcron and are re-armed when the
 //      shell starts, so they survive reloads. The scheduler ticks
 //      every 30s and runs each due job through the shell (its output
 //      appears in the terminal).
@@ -4580,7 +4580,7 @@ function headerFor(entry) {
   var mag = enc.encode("ustar");
   for (var m = 0; m < 5; m++) h[257 + m] = mag[m];
   h[262] = 0; h[263] = 48; h[264] = 48;
-  asciiInto(h, 265, 32, "tinysh");
+  asciiInto(h, 265, 32, "jtsh");
   // checksum: sum with the field as 8 spaces, then 6 octal digits + NUL + space
   for (var sp = 148; sp < 156; sp++) h[sp] = 32;
   var chk = 0;
@@ -5736,7 +5736,7 @@ function runSession(cmd) {
 var line = "";
 var history = [];
 var histIdx = 0;
-function prompt() { term.write("tinysh:" + termCwd + "$ "); }
+function prompt() { term.write("jtsh:" + termCwd + "$ "); }
 function setLine(s) {
   while (line.length > 0) { line = line.slice(0, -1); term.write(BS + " " + BS); }
   line = s;
@@ -5801,7 +5801,7 @@ var waitResolve = null;
 var wait = new Promise(function (r) { waitResolve = r; });
 function closeIt() { cleanup(); waitResolve(); }
 closeBtn.onclick = closeIt;
-term.write("tinysh floating session — own cwd and env, shared filesystem" + NL);
+term.write("jtsh floating session — own cwd and env, shared filesystem" + NL);
 prompt();
 term.focus();
 try {
@@ -6336,7 +6336,7 @@ return 1;
 
     // Sample content for new users
     syncWrite(this._getBackend("/home/examples/README.txt"), "/examples/README.txt",
-      `Welcome to tinysh!\n\n` +
+      `Welcome to jtsh!\n\n` +
       `Try these commands:\n` +
       `  ls /mount/github/gmatht/sh2perl  -- browse a GitHub repo\n` +
       `  cat /mount/github/gmatht/sh2perl/README.md  -- read a file\n` +
@@ -6423,8 +6423,8 @@ return 1;
   }
 
   // ─── permissions ─────────────────────────────────────────────
-  _user() { return (env && env.USER) || "tinysh"; }
-  _isAdmin(user) { return user === "tinysh" || user === "root"; }
+  _user() { return (env && env.USER) || "jtsh"; }
+  _isAdmin(user) { return user === "jtsh" || user === "root"; }
   _parent(path) {
     const p = path.replace(/\/+$/, "");
     if (p === "" || p === "/") return "/";
@@ -6435,7 +6435,7 @@ return 1;
   // 0755 (legacy files stay accessible; new files get recorded attrs).
   _attrFor(path) {
     const a = this.attrs.get(this._orig(path));
-    return a || { owner: "tinysh", mode: 0o755 };
+    return a || { owner: "jtsh", mode: 0o755 };
   }
   _setAttr(path, attr) { this.attrs.set(path, attr); }
   // attrOf/setAttr are the shell's public API (chmod).

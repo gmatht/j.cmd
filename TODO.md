@@ -27,7 +27,7 @@ and device files. It runs in any browser with no build step.
       resolve naturally
 
 - [x] VirtualFS with mount-based routing (RootFS, RamFS, LocalStorageFS)
-- [x] tinysh — minimal shell REPL (CLI + browser)
+- [x] jtsh — minimal shell REPL (CLI + browser)
 - [x] HttpFS — fetch CORS-enabled URLs as files
 - [x] GitHubFS — browse repos as a filesystem with featured listing
 - [x] DevFS — /dev/ devices (info, cpu, mem, webgl, clipboard, random...)
@@ -107,7 +107,7 @@ and device files. It runs in any browser with no build step.
 - [x] Pipe operator: `cat README.md | head -3`
 - [x] `grep` builtin or command
 - [x] `find` builtin or command
-- [x] Quoted arguments parsing in tinysh (currently splits on spaces blindly)
+- [x] Quoted arguments parsing in jtsh (currently splits on spaces blindly)
 - [x] `&&` and `||` conditional chaining
 - [x] Environment variables ($PATH, $HOME, $USER)
 - [x] `export` command
@@ -142,14 +142,14 @@ and device files. It runs in any browser with no build step.
 - [x] Resizable terminal
 - [x] Color output for `ls` (dirs in blue, files in white, executables in green)
 - [x] Ctrl+C interrupt handling
-- [x] Config file (~/.tinyshrc or similar)
+- [x] Config file (~/.jtshrc or similar)
 - [x] `which` command
 - [x] `man <command>` or help pages
 - [x] Tab completion for partial paths (e.g., /mount/github/g<Tab> → /mount/github/gmatht/)
 
 ## Known Issues
 
-- tinysh tokenizes quoted arguments: `echo "hello world"` is one argument
+- jtsh tokenizes quoted arguments: `echo "hello world"` is one argument
   (single quotes, double quotes, backslash escapes, empty args all handled)
 - Pipes (`|`) are not supported — they fall through to `cat` which tries to
   read them as file paths

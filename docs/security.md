@@ -1,6 +1,6 @@
 # Security Model
 
-j.cmd (tinysh) is a JavaScript shell that runs entirely in the browser (or the
+j.cmd (jtsh) is a JavaScript shell that runs entirely in the browser (or the
 Node CLI) over a virtual filesystem. This document describes what is actually
 enforced, what is cooperative, and where the real trust boundaries lie — so a
 user knows exactly what `su nobody` does, why a browser API key is safe from
@@ -41,17 +41,17 @@ host machine  ─── browser sandbox ───  page origin (one trust domain
 each path's owner and Unix mode bits.
 
 - **Files/dirs carry owner + mode** (e.g. `0644`, `0700`). New files are
-  attributed to the writer; unknown/legacy paths default to `tinysh` `0755`.
+  attributed to the writer; unknown/legacy paths default to `jtsh` `0755`.
 - **Enforcement points**: `read`, `write`, `list`, `remove`, `stat`,
   `statSync` (the sync path powers `[ -f ]` inside bash). Reads need the read
   bit; writes need the write bit plus traverse on the parent; listing needs
   the read bit; stat needs only traverse (metadata is visible, content is
   not — like Unix).
-- **`su nobody` consequences**: cannot read a `0600` tinysh file (`EACCES`),
-  cannot write into tinysh's home, cannot `chmod` files it doesn't own.
+- **`su nobody` consequences**: cannot read a `0600` jtsh file (`EACCES`),
+  cannot write into jtsh's home, cannot `chmod` files it doesn't own.
   Unprivileged users are `nobody`, `daemon`, `guest`, `www-data`.
-- **Admin bypass**: `tinysh` and `root` bypass all checks (the boot-created
-  world is tinysh's).
+- **Admin bypass**: `jtsh` and `root` bypass all checks (the boot-created
+  world is jtsh's).
 - **`su` homes** are owned by the target user (`0700`) — an account can always
   write in its own home.
 - **`chmod OCTAL file...`** — owner or admin only.
@@ -82,7 +82,7 @@ application's own code, hard against everything else that matters.
 ## Custom-code execution gate
 
 Unprivileged users may run only **builtins and `.js`/`.wasm` files owned by
-`tinysh`** (the admin-trusted set). Anything they — or another non-admin —
+`jtsh`** (the admin-trusted set). Anything they — or another non-admin —
 created is refused:
 
 ```

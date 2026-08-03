@@ -12,7 +12,7 @@
 // build-wasm-grep.sh (real busybox grep as wasm32-wasi),
 // build-wasm-sh2perl.sh (gmatht/sh2perl shell→Perl transpiler).
 //
-// Usage in tinysh:
+// Usage in jtsh:
 //   wasmer list              → list available packages
 //   wasmer install echo      → install from /wasm-bin/echo.wasm
 //   wasmer search python     → search registry

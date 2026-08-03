@@ -12,7 +12,7 @@
 //    Perl into statement-level JavaScript against the `rt` runtime
 //    below and the shell's `env` object.
 //
-// Usage in tinysh:
+// Usage in jtsh:
 //   bash2js 'echo hello world'     → prints the generated JS
 //   bash2js -f script.sh           → transpile a file from the VFS
 //   cat script.sh | bash2js        → transpile from a pipe
@@ -53,7 +53,7 @@ const rt = {
   join: (sep, ...lists) => lists.flat(1).map((x) => String(x)).join(String(sep)),
   split: (s) => Array.isArray(s) ? s : String(s).trim().split(/\\s+/),
   match: (s, re) => re.test(String(s)),
-  whoami: () => (typeof env !== "undefined" && env.USER) || "tinysh",
+  whoami: () => (typeof env !== "undefined" && env.USER) || "jtsh",
   errstr: () => "(browser shell)",
   warn: (...a) => rt.print(...a),
   sleep: (s) => new Promise((r) => setTimeout(r, Number(s) * 1000)),

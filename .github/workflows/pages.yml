@@ -5,7 +5,7 @@
 # under the site root. (Assembling www/* at the root would put index.html
 # at /j.cmd/ where ../src resolves to /src — one level too high — and
 # every module import 404s.) Everything else in the repo (build scripts,
-# docs, the tinysh CLI) stays out of the published site.
+# docs, the jtsh CLI) stays out of the published site.
 name: Deploy to GitHub Pages
 
 on:

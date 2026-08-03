@@ -12,7 +12,7 @@ command surface** — it is an internal JS interface for generated code.
 
 ## 1. Shell builtins — native JS, both shells (28)
 
-`src/tinysh.js` and `www/index.html` each define the same `builtins`
+`src/jtsh.js` and `www/index.html` each define the same `builtins`
 table; async JS functions run in the shell process.
 
 | command | how |
@@ -146,7 +146,7 @@ break continue idiv imod not setLastExit getVar setVar
 
 ```bash
 # shell builtins
-grep -oE '^  async [a-zA-Z0-9_]+\(args\)' src/tinysh.js | sed 's/async \([a-z0-9_]*\)(args)/\1/'
+grep -oE '^  async [a-zA-Z0-9_]+\(args\)' src/jtsh.js | sed 's/async \([a-z0-9_]*\)(args)/\1/'
 # browser-only
 comm -13 <(…CLI…) <(…index.html…)
 # /bin seeds

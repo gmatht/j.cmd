@@ -3,7 +3,7 @@
 # Build a wasm32-wasi Zig compiler for the browser shell.
 #
 # The shell runs wasm32-wasi binaries as native commands (src/wasm.js).
-# A wasm build of the Zig compiler lets you write Zig inside tinysh:
+# A wasm build of the Zig compiler lets you write Zig inside jtsh:
 #
 #   zig version
 #   zig build-exe hello.zig -target wasm32-wasi

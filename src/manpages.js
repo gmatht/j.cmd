@@ -1,7 +1,7 @@
 // ─── manpages.js: `man <command>` help pages ──────────────────
 //
 // Static Unix-style manual pages for every builtin command, shared
-// by the CLI shell (src/tinysh.js) and the browser shell
+// by the CLI shell (src/jtsh.js) and the browser shell
 // (www/index.html). Pages follow the classic layout:
 //
 //   NAME
@@ -138,7 +138,7 @@ SYNOPSIS
 DESCRIPTION
      su switches the shell to another account. With no argument it drops
      to nobody, an unprivileged user with its own home directory
-     (/home/nobody). su tinysh (or su root) returns to the admin
+     (/home/nobody). su jtsh (or su root) returns to the admin
      account, restoring the directory you were in before su.
 
      Switching to nobody, daemon, guest or www-data marks the session as
@@ -149,8 +149,8 @@ DESCRIPTION
      Permissions are real and enforced at the filesystem layer: files
      carry an owner and Unix-style mode bits, and every read/write/list
      checks the current user against them. su nobody cannot read a 0600
-     file owned by tinysh (EACCES), cannot write into tinysh's home,
-     and cannot chmod files it does not own. tinysh and root bypass the
+     file owned by jtsh (EACCES), cannot write into jtsh's home,
+     and cannot chmod files it does not own. jtsh and root bypass the
      checks. Modes are set with chmod.
 
 EXAMPLES
@@ -158,7 +158,7 @@ EXAMPLES
      su daemon             switch to the daemon account
      whoami                nobody
      echo $HOME            /home/nobody
-     su tinysh             back to the admin account
+     su jtsh             back to the admin account
 
 SEE ALSO
      whoami
@@ -170,7 +170,7 @@ SYNOPSIS
 
 DESCRIPTION
      Sets the Unix-style mode bits of a file or directory. Only the
-     owner (or tinysh/root) may change a mode. Octal forms: 600 =
+     owner (or jtsh/root) may change a mode. Octal forms: 600 =
      owner read/write, 644 = also readable by others, 700 = private
      directory, 755 = public directory.
 
@@ -493,7 +493,7 @@ EXAMPLES
      grep TODO README.md
      echo "hello world" | grep -i hello
      grep -rn "mount" /home
-     grep -c "^#" ~/.tinyshrc        count comment lines in config
+     grep -c "^#" ~/.jtshrc        count comment lines in config
      grep -l wasm /bin/*.js
 
 SEE ALSO
@@ -538,7 +538,7 @@ SYNOPSIS
 
 DESCRIPTION
      Confines the shell to a new root: "/" becomes <dir>, so paths like
-     /etc/passwd resolve inside it. Only the admin (tinysh/root) may
+     /etc/passwd resolve inside it. Only the admin (jtsh/root) may
      chroot. The prompt, pwd and the status bar show the confined view;
      chroot - returns to the real root and the directory you were in.
 
@@ -881,7 +881,7 @@ EX COMMANDS
      :q!       quit without saving
 
 EXAMPLES
-     vi ~/.tinyshrc     edit the shell's startup config
+     vi ~/.jtshrc     edit the shell's startup config
      vi /home/notes.txt
 
 SEE ALSO
@@ -899,7 +899,7 @@ DESCRIPTION
      a vi-style experience use vi (vim is an alias).
 
 EXAMPLES
-     edit ~/.tinyshrc
+     edit ~/.jtshrc
      edit /home/note.txt
 
 SEE ALSO
@@ -1196,7 +1196,7 @@ DESCRIPTION
 
 OPTIONS
      -n, --panes=N     start with N panes (default 1, max 16)
-     -S, --session=N   session name shown in the toolbar (default tinysh)
+     -S, --session=N   session name shown in the toolbar (default jtsh)
      -h, --help        show this help
 
 EXAMPLES
@@ -1497,7 +1497,7 @@ SYNOPSIS
 
 DESCRIPTION
      cron runs commands on a schedule, like the classic crontab. Jobs
-     persist in /home/.tinyshcron and are re-armed when the shell
+     persist in /home/.jtshcron and are re-armed when the shell
      starts, so they survive reloads. The scheduler ticks every 30s
      and runs each due job through the shell.
 

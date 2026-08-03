@@ -5,10 +5,10 @@
   "type": "module",
   "main": "src/index.js",
   "bin": {
-    "tinysh": "src/tinysh.js"
+    "jtsh": "src/jtsh.js"
   },
   "scripts": {
-    "start": "node src/tinysh.js"
+    "start": "node src/jtsh.js"
   },
   "keywords": [
     "shell",

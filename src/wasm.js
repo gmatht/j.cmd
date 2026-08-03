@@ -1,4 +1,4 @@
-// ─── WASM/WASI command runtime for tinysh ──────────────────────
+// ─── WASM/WASI command runtime for jtsh ──────────────────────
 //
 // Runs any wasm32-wasi binary as a shell command. The old hand-rolled
 // WASI syscall stub is gone — @wasmer/wasi (the wasmer-wasi Rust crate

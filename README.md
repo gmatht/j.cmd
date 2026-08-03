@@ -12,7 +12,7 @@ that imports this library and calls its virtual filesystem API.
 
 ```
 ┌──────────────────────────────────────────┐
-│  tinysh — minimal shell                  │
+│  jtsh — minimal shell                  │
 │  (splits input on spaces, runs commands) │
 │         │                                │
 │         ▼                                │
@@ -30,24 +30,24 @@ that imports this library and calls its virtual filesystem API.
 - **HttpFS**: Read-only fetch-backed filesystem at `/http/` (for CORS APIs)
 - **More to come**: localStorage, IndexedDB, WebGL, GitHub API, clipboard
 
-## tinysh — The Minimal Shell
+## jtsh — The Minimal Shell
 
-tinysh is to the virtual filesystem what `/bin/sh` is to a Unix kernel.
+jtsh is to the virtual filesystem what `/bin/sh` is to a Unix kernel.
 It reads lines, splits on spaces, and runs the matching command.
 
 ```
-$ node src/tinysh.js
-tinysh:/home$ ls
+$ node src/jtsh.js
+jtsh:/home$ ls
 hello.txt
-tinysh:/home$ cat hello.txt
+jtsh:/home$ cat hello.txt
 Hello from the virtual filesystem!
-tinysh:/home$ sayhello
+jtsh:/home$ sayhello
 Hello, world!
-tinysh:/home$ counter
+jtsh:/home$ counter
 Invocation #1
-tinysh:/home$ counter
+jtsh:/home$ counter
 Invocation #2
-tinysh:/home$ help
+jtsh:/home$ help
 ```
 
 ### Running .js Files as Commands
@@ -58,8 +58,8 @@ virtual filesystem's command path (`/bin/`, `/usr/bin/`).
 These are the "compiled binaries" of this architecture:
 
 ```
-tinysh:/home$ echo "console.log(args[0])" > /bin/echo.js
-tinysh:/home$ echo hello
+jtsh:/home$ echo "console.log(args[0])" > /bin/echo.js
+jtsh:/home$ echo hello
 hello
 ```
 
@@ -169,7 +169,7 @@ This follows Plan 9's philosophy: **everything is a file**.
 
 | Traditional | Here |
 |---|---|
-| `/bin/sh` | `tinysh` |
+| `/bin/sh` | `jtsh` |
 | ELF binaries | `.js` files |
 | `/dev/sd0` (disk) | `/home/` (localStorage) |
 | `/dev/ip` (network) | `/http/` (fetch) |

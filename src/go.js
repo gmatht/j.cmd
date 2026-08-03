@@ -1,4 +1,4 @@
-// ─── Go (GOOS=js GOARCH=wasm) toolchain runner for tinysh ────────
+// ─── Go (GOOS=js GOARCH=wasm) toolchain runner for jtsh ────────
 //
 // The REAL Go compiler and linker (cmd/compile, cmd/link) cross-compiled
 // to GOOS=js GOARCH=wasm — go.wasm + link.wasm in wasm-bin/. They run in
@@ -78,7 +78,7 @@ export class GoRunner {
     // at module init, so we reset capture state between runs instead.
     this.fs = this._makeFsShim();
     this.process = {
-      argv0: "tinysh",  // not node → net/http uses fetch in the browser
+      argv0: "jtsh",  // not node → net/http uses fetch in the browser
       cwd: () => this._cwd,
       chdir: (p) => { this._cwd = p; },
       getuid: () => 0,

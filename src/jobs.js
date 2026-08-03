@@ -1,13 +1,13 @@
 // ─── jobs.js: the at/cron job scheduler ─────────────────────────
 //
-// Shared by the CLI shell (src/tinysh.js) and the browser shell
+// Shared by the CLI shell (src/jtsh.js) and the browser shell
 // (www/index.html). Each shell creates one scheduler (attached to
 // shellApi.jobs for /bin/at.js and /bin/cron.js) and calls restore()
 // at boot so persisted cron jobs survive reloads.
 //
 //   at     one-shot jobs via setTimeout (session-only, like real at)
 //   cron   periodic jobs on a 30s tick, persisted to storagePath
-//          (default /home/.tinyshcron) so they survive reloads
+//          (default /home/.jtshcron) so they survive reloads
 //
 // Jobs run through the shell's runLine hook (runNestedCommand), so
 // builtins, .js commands and wasm binaries all work; their stdout and

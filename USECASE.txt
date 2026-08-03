@@ -6,7 +6,7 @@ What it is
 j.cmd (the sh2runtime browser shell) is a full command-line operating
 environment that runs in a web page — no install, no build step, no
 server beyond a static file host. The same shell runs as a Node CLI
-(`node src/tinysh.js`). JavaScript is the "binary format": every
+(`node src/jtsh.js`). JavaScript is the "binary format": every
 command is a `.js` file in a virtual filesystem, and real compiled
 tools (busybox grep, zstd, the md4c Markdown engine, MicroPython, a C
 compiler, even the Go toolchain) run as wasm32-wasi binaries — fetched
@@ -269,7 +269,7 @@ Everything is in the page: /tmp is memory, /home persists per browser
 (localStorage/IndexedDB), and the whole OS is recreated on load. The
 identical shell runs in Node for scripts and automation:
 
-    echo "ls /home" | node src/tinysh.js    # batch mode from stdin
+    echo "ls /home" | node src/jtsh.js    # batch mode from stdin
 
 Why it matters: a zero-footprint environment for kiosks, labs, and
 "please just show me".

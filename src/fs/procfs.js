@@ -23,8 +23,8 @@
 //       fd/             open file descriptors (0=stdin,1=stdout,2=stderr)
 //   /proc/self          the shell process itself (pid 1)
 //
-// tinysh registers every command it runs as a process via
-// procfs.start()/finish() (see runSegment in tinysh.js), so `ls /proc`
+// jtsh registers every command it runs as a process via
+// procfs.start()/finish() (see runSegment in jtsh.js), so `ls /proc`
 // shows shell activity as process entries and
 // `cat /proc/<pid>/cmdline` shows the command that ran.
 //
@@ -49,13 +49,13 @@ class ProcFS {
     this._history = [];               // sliding window of {end, dur} for loadavg
     this._log = ["procfs ready.\n"];
 
-    // pid 1 — the shell itself (tinysh), waiting for input
+    // pid 1 — the shell itself (jtsh), waiting for input
     this._processes.set(SHELL_PID, {
       pid: SHELL_PID,
       ppid: 0,
-      name: "tinysh",
+      name: "jtsh",
       kind: "shell",
-      path: "/bin/tinysh",
+      path: "/bin/jtsh",
       cmdline: this._shellCmdline(),
       state: "sleeping",
       start: this._bootTime,
@@ -75,7 +75,7 @@ class ProcFS {
     if (this._log.length > 200) this._log.shift();
   }
 
-  // ─── Process registry (used by tinysh) ──────────────────────
+  // ─── Process registry (used by jtsh) ──────────────────────
 
   start(name, cmdline, opts = {}) {
     const pid = this._nextPid++;
@@ -129,9 +129,9 @@ class ProcFS {
 
   _shellCmdline() {
     if (typeof process !== "undefined" && process.argv && process.argv.length > 1) {
-      return ["tinysh", ...process.argv.slice(2)];
+      return ["jtsh", ...process.argv.slice(2)];
     }
-    return ["tinysh", "-i"];
+    return ["jtsh", "-i"];
   }
 
   _proc(pid) {
@@ -268,7 +268,7 @@ class ProcFS {
       ? this._nav().platform
       : (typeof process !== "undefined" ? process.platform : "unknown");
     const line =
-      `tinysh 0.1.0 (browser kernel) #1 SMP PREEMPT_DYNAMIC ` +
+      `jtsh 0.1.0 (browser kernel) #1 SMP PREEMPT_DYNAMIC ` +
       `${this._browserLabel()} on ${plat}`;
     return `${line}\n${ua}\n`;
   }
@@ -438,8 +438,8 @@ class ProcFS {
       `State:\t${STATE_CHAR[p.state] || "?"} (${stateDesc})`,
       `Pid:\t${p.pid}`,
       `PPid:\t${p.ppid}`,
-      `Uid:\ttinysh`,
-      `Gid:\ttinysh`,
+      `Uid:\tjtsh`,
+      `Gid:\tjtsh`,
       `Threads:\t1`,
       `VmSize:\t0 kB (virtual)`,
       `VmRSS:\t0 kB (virtual)`,
@@ -584,7 +584,7 @@ class ProcFS {
   }
 }
 
-// Singleton shared by fs/index.js (mounts it at /proc) and tinysh.js
+// Singleton shared by fs/index.js (mounts it at /proc) and jtsh.js
 // (registers every command it runs as a process).
 export const procfs = new ProcFS();
 export { ProcFS };

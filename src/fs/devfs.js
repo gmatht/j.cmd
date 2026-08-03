@@ -59,7 +59,7 @@ export class DevFS {
 
       case "/info":
         return [
-          `tinysh browser shell`,
+          `jtsh browser shell`,
           `runtime: sh2runtime 0.1.0`,
           `platform: ${navigator.platform || "unknown"}`,
           `language: ${navigator.language || "unknown"}`,

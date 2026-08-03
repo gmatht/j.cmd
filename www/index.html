@@ -511,7 +511,7 @@ const bgDivider = document.getElementById("bg-divider");
 
 // ─── Draggable resize: drag the divider to change the panel share ──
 // Saved to localStorage so the split survives reloads.
-const BG_W_KEY = "tinysh:bg-panel-width";
+const BG_W_KEY = "jtsh:bg-panel-width";
 try {
   const saved = parseFloat(localStorage.getItem(BG_W_KEY));
   if (saved >= 10 && saved <= 60) mainRow.style.setProperty("--bg-panel-w", saved + "%");
@@ -540,8 +540,8 @@ bgDivider.addEventListener("pointerup", endDrag);
 bgDivider.addEventListener("pointercancel", endDrag);
 
 function getBgJobs() {
-  if (!globalThis.__tinyshBgJobs) {
-    globalThis.__tinyshBgJobs = createBgJobs({
+  if (!globalThis.__jtshBgJobs) {
+    globalThis.__jtshBgJobs = createBgJobs({
       // Capture the job's output into its panel slice — but only while
       // this job owns the writer (guarded), so concurrent foreground
       // output is forwarded to the terminal instead of being eaten.
@@ -561,7 +561,7 @@ function getBgJobs() {
       onUpdate: renderBgPanel,
     });
   }
-  return globalThis.__tinyshBgJobs;
+  return globalThis.__jtshBgJobs;
 }
 
 function bgStatus(job) {
@@ -722,7 +722,7 @@ let currentLine = "";
 // terminal — the init banner routes into the motd column of the
 // welcome row so the xkcd comic can sit to its right.
 let welcomeText = null;
-// su — remembers the previous user context so `su tinysh` returns home.
+// su — remembers the previous user context so `su jtsh` returns home.
 const suState = { prev: null };
 let cursorPos = 0;
 
@@ -792,7 +792,7 @@ function write(text, cls = "out", opts = {}) {
 function getPromptStr() {
   if (pagerState.active) return "";       // pager draws its own marker
   if (replState.active) return replState.mode === "perl" ? "perl> " : replState.mode === "bash" ? "bash> " : ">>> ";
-  const user = env.USER && env.USER !== "tinysh" ? env.USER : "tinysh";
+  const user = env.USER && env.USER !== "jtsh" ? env.USER : "jtsh";
   return `${user}:${fs.view ? fs.view(fs.cwd) : fs.cwd}$ `;
 }
 
@@ -1092,7 +1092,7 @@ function stopRecording() {
     width: recording.width,
     height: recording.height,
     timestamp: Math.floor(recording.startTime / 1000),
-    env: { SHELL: "/bin/tinysh" },
+    env: { SHELL: "/bin/jtsh" },
   };
   const lines = [JSON.stringify(cast)];
   for (const ev of recording.events) lines.push(JSON.stringify(ev));
@@ -3065,7 +3065,7 @@ Loops, conditionals, variables, arithmetic and pipes work:
   },
 
   async help(args) {
-    stdout.write(`tinysh — browser shell
+    stdout.write(`jtsh — browser shell
 
   Built-in commands:
     ls [dir]        List directory contents
@@ -3142,15 +3142,15 @@ Loops, conditionals, variables, arithmetic and pipes work:
                     cp /pc/file uploads (file picker)
 
   Environment:
-    $PATH  /bin:/usr/bin · $HOME /home · $USER tinysh · $PWD current dir
+    $PATH  /bin:/usr/bin · $HOME /home · $USER jtsh · $PWD current dir
     $COLUMNS × $LINES — terminal size (auto-updates on window resize)
     Expand with $NAME or \${NAME}: echo $HOME · cd $HOME
     Tilde: ~ expands to $HOME — cat ~/file · cd ~/Downloads
     (single quotes or \$ keep the $ literal: echo '$HOME' prints $HOME)
 
-  Startup config: ~/.tinyshrc (i.e. /home/.tinyshrc) is read at
+  Startup config: ~/.jtshrc (i.e. /home/.jtshrc) is read at
     startup; each line runs as a shell command, '#' comments.
-    edit ~/.tinyshrc · export EDITOR=edit · echo "Welcome back"
+    edit ~/.jtshrc · export EDITOR=edit · echo "Welcome back"
 
   /dev/ devices: cat /dev/info · cat /dev/cpu · cat /dev/time
                 cat /dev/webgl · cat /dev/webgl/extensions
@@ -3409,7 +3409,7 @@ Loops, conditionals, variables, arithmetic and pipes work:
   },
 
   async chmod(args) {
-    // chmod OCTAL file... — only the owner (or tinysh/root) may change a
+    // chmod OCTAL file... — only the owner (or jtsh/root) may change a
     // file's mode. Modes are Unix-style: 600 = owner rw, 644 = +other r,
     // 755 = dir default, 700 = private dir.
     if (args.length === 0 || args[0] === "-h" || args[0] === "--help") {
@@ -3421,7 +3421,7 @@ Loops, conditionals, variables, arithmetic and pipes work:
       return 2;
     }
     const mode = parseInt(args[0], 8);
-    const user = env.USER || "tinysh";
+    const user = env.USER || "jtsh";
     let hadError = false;
     for (const file of args.slice(1)) {
       const a = fs.attrOf(file);
@@ -3430,7 +3430,7 @@ Loops, conditionals, variables, arithmetic and pipes work:
         hadError = true;
         continue;
       }
-      if (user !== "tinysh" && user !== "root" && user !== a.owner) {
+      if (user !== "jtsh" && user !== "root" && user !== a.owner) {
         stderr.write(`chmod: ${file}: operation not permitted (owned by ${a.owner})\n`);
         hadError = true;
         continue;
@@ -3441,13 +3441,13 @@ Loops, conditionals, variables, arithmetic and pipes work:
   },
 
   async whoami(args) {
-    stdout.write((env.USER || "tinysh") + "\n");
+    stdout.write((env.USER || "jtsh") + "\n");
     return 0;
   },
 
   async su(args) {
     // su                  → drop to nobody (unprivileged)
-    // su <name>           → switch to that user (su tinysh / su root → back)
+    // su <name>           → switch to that user (su jtsh / su root → back)
     // su -                → same as bare su (login-shell style)
     let target = (args[0] || "nobody").trim().toLowerCase();
     if (target === "-") target = "nobody";
@@ -3463,7 +3463,7 @@ Loops, conditionals, variables, arithmetic and pipes work:
       suState.prev = { user: env.USER, home: env.HOME, cwd: fs.cwd };
     }
     env.USER = target;
-    const home = target === "tinysh" ? "/home" : "/home/" + target;
+    const home = target === "jtsh" ? "/home" : "/home/" + target;
     env.HOME = home;
     try {
       await fs.stat(home);
@@ -3473,16 +3473,16 @@ Loops, conditionals, variables, arithmetic and pipes work:
         await fs.write(home + "/README.txt",
           `Welcome, ${target}!\n` +
           `This is your home directory (${home}).\n` +
-          `You are ${target === "nobody" ? "an unprivileged user" : "running as " + target} on tinysh.\n` +
-          `Run 'su tinysh' to return to the admin account.\n`);
+          `You are ${target === "nobody" ? "an unprivileged user" : "running as " + target} on jtsh.\n` +
+          `Run 'su jtsh' to return to the admin account.\n`);
       } catch {}
     }
     // The new home is owned by the target user (su runs as admin, so
-    // the writes above would otherwise attribute it to tinysh — leaving
+    // the writes above would otherwise attribute it to jtsh — leaving
     // the account unable to write in its own home).
     fs.setAttr(home, { owner: target, mode: 0o700 });
     try { fs.setAttr(home + "/README.txt", { owner: target, mode: 0o644 }); } catch {}
-    if (target === "tinysh" && suState.prev) {
+    if (target === "jtsh" && suState.prev) {
       fs.cwd = suState.prev.cwd;   // return to where we were before su
       suState.prev = null;
     } else {
@@ -3491,7 +3491,7 @@ Loops, conditionals, variables, arithmetic and pipes work:
     env.PWD = fs.cwd;
     const unpriv = ["nobody", "daemon", "guest", "www-data"].includes(target);
     stdout.write(`su: switched to ${target} — ${unpriv ? "unprivileged" : "user"}\n`);
-    stdout.write(`    HOME=${env.HOME} · run 'su tinysh' to return\n`);
+    stdout.write(`    HOME=${env.HOME} · run 'su jtsh' to return\n`);
     updatePrompt();
     return 0;
   },
@@ -3617,19 +3617,19 @@ Loops, conditionals, variables, arithmetic and pipes work:
 // ─── Command Resolution ─────────────────────────────────────────
 
 // Unprivileged users (su nobody/daemon/guest/...) may only run
-// admin-trusted code: builtins and .js/.wasm files owned by tinysh.
+// admin-trusted code: builtins and .js/.wasm files owned by jtsh.
 // Custom code (anything they — or another non-admin — created) is
 // refused, so an unprivileged session can't escalate by dropping a
 // .js/.wasm file and running it.
 function isPrivilegedUser() {
-  const u = env.USER || "tinysh";
-  return u === "tinysh" || u === "root";
+  const u = env.USER || "jtsh";
+  return u === "jtsh" || u === "root";
 }
 function customExecDenied(path) {
   if (isPrivilegedUser()) return null;
   const a = fs.attrOf(path);
-  const owner = a ? a.owner : "tinysh";
-  if (owner === "tinysh") return null;
+  const owner = a ? a.owner : "jtsh";
+  if (owner === "jtsh") return null;
   return {
     type: "badpath",
     path,
@@ -3976,7 +3976,7 @@ async function runPipeline(pipelineText, initialStdin = "", target = null) {
   let exitCode = 0;
   for (let i = 0; i < segments.length; i++) {
     if (!segments[i].trim()) {
-      stderr.write(`tinysh: syntax error near unexpected token '|'\n`);
+      stderr.write(`jtsh: syntax error near unexpected token '|'\n`);
       return 2;
     }
     const result = await runSegment(segments[i], stdin, i === segments.length - 1, target);
@@ -3996,17 +3996,17 @@ async function runPipeline(pipelineText, initialStdin = "", target = null) {
 function getJobScheduler() {
   // One shared scheduler per shell page, so at/cron commands and the
   // boot-time restore all see the same job queue. Jobs run through
-  // runNestedCommand; cron jobs persist to /home/.tinyshcron.
-  if (!globalThis.__tinyshJobs) {
-    globalThis.__tinyshJobs = createJobScheduler({
+  // runNestedCommand; cron jobs persist to /home/.jtshcron.
+  if (!globalThis.__jtshJobs) {
+    globalThis.__jtshJobs = createJobScheduler({
       fs,
       runLine: (cmd) => runNestedCommand(cmd),
       stdout,
       stderr,
-      storagePath: "/home/.tinyshcron",
+      storagePath: "/home/.jtshcron",
     });
   }
-  return globalThis.__tinyshJobs;
+  return globalThis.__jtshJobs;
 }
 
 async function runNestedCommand(cmdLine, stdin = "") {
@@ -4097,7 +4097,7 @@ async function runSegment(segmentText, stdin, isLast, target = null) {
   try {
     tokens = tokenize(segmentText);
   } catch (e) {
-    stderr.write(`tinysh: ${e.message}\n`);
+    stderr.write(`jtsh: ${e.message}\n`);
     return { ok: false, code: 2, output: "" };
   }
   if (tokens.length === 0) return { ok: false, code: 2, output: "" };
@@ -4497,12 +4497,12 @@ async function handleLine(line, initialStdin, target = null) {
   try {
     segments = splitBgList(trimmed);
   } catch (e) {
-    stderr.write(`tinysh: ${e.message}\n`);
+    stderr.write(`jtsh: ${e.message}\n`);
     return;
   }
   for (const seg of segments) {
     if (!seg.text.trim()) {
-      stderr.write(`tinysh: syntax error near unexpected token '&'\n`);
+      stderr.write(`jtsh: syntax error near unexpected token '&'\n`);
       return;
     }
     // Validate a background segment's conditional structure now, so a
@@ -4513,13 +4513,13 @@ async function handleLine(line, initialStdin, target = null) {
       try {
         cond = splitConditionals(seg.text);
       } catch (e) {
-        stderr.write(`tinysh: ${e.message}\n`);
+        stderr.write(`jtsh: ${e.message}\n`);
         return;
       }
       const bad = cond.find((p) => !p.text.trim());
       if (bad) {
         const token = bad.op || "newline";
-        stderr.write(`tinysh: syntax error near unexpected token '${token}'\n`);
+        stderr.write(`jtsh: syntax error near unexpected token '${token}'\n`);
         return;
       }
     }
@@ -4544,7 +4544,7 @@ async function runConditionalList(text, initialStdin, target = null) {
   try {
     parts = splitConditionals(text);
   } catch (e) {
-    stderr.write(`tinysh: ${e.message}\n`);
+    stderr.write(`jtsh: ${e.message}\n`);
     return 2;
   }
   // An empty segment means the segment started with an operator, ended
@@ -4554,7 +4554,7 @@ async function runConditionalList(text, initialStdin, target = null) {
     if (!parts[i].text.trim()) {
       const nextOp = i + 1 < parts.length ? parts[i + 1].op : null;
       const token = nextOp ? `'${nextOp}'` : "newline";
-      stderr.write(`tinysh: syntax error near unexpected token ${token}\n`);
+      stderr.write(`jtsh: syntax error near unexpected token ${token}\n`);
       return 2;
     }
   }
@@ -4570,19 +4570,27 @@ async function runConditionalList(text, initialStdin, target = null) {
   return exitCode;
 }
 
-// ─── Startup config (~/.tinyshrc) ─────────────────────────────
-// Like a Unix shell's rc file (.bashrc / .zshrc), $HOME/.tinyshrc
+// ─── Startup config (~/.jtshrc) ─────────────────────────────
+// Like a Unix shell's rc file (.bashrc / .zshrc), $HOME/.jtshrc
 // is read at startup and each non-comment line is run as a shell
 // command — set environment variables, tweak the path, print a
 // banner, whatever. Lines starting with # are comments; a missing
 // file is not an error.
 async function loadConfig() {
-  const configPath = (env.HOME.replace(/\/+$/, "") || "/") + "/.tinyshrc";
+  const home = env.HOME.replace(/\/+$/, "") || "/";
+  // .jtshrc is the name now; read a pre-rebrand .tinyshrc as a fallback
+  // so existing users keep their config.
+  let configPath = home + "/.jtshrc";
   let content;
   try {
     content = await fs.read(configPath);
   } catch {
-    return; // no config file — not an error
+    try {
+      configPath = home + "/.tinyshrc";
+      content = await fs.read(configPath);
+    } catch {
+      return; // no config file — not an error
+    }
   }
   for (const line of content.split("\n")) {
     const trimmed = line.trim();
@@ -4594,7 +4602,7 @@ async function loadConfig() {
 
 // ─── Command History (persists across refreshes) ───────────────
 
-const HISTORY_KEY = "tinysh:history";
+const HISTORY_KEY = "jtsh:history";
 const HISTORY_MAX = 500;
 
 // Load history from localStorage (browser) or empty
@@ -5022,7 +5030,7 @@ async function handlePagerInput(line) {
 
 function updateStatusBar() {
   const cwd = fs.view ? fs.view(fs.cwd) : fs.cwd;
-  statusContext.textContent = env.USER && env.USER !== "tinysh" ? `${env.USER}:${cwd}` : cwd;
+  statusContext.textContent = env.USER && env.USER !== "jtsh" ? `${env.USER}:${cwd}` : cwd;
 
   // REPL mode hint
   if (pagerState.active) {
@@ -5039,8 +5047,8 @@ function updateStatusBar() {
   }
 
   // Context-sensitive hints
-  if (env.USER && env.USER !== "tinysh") {
-    statusHint.textContent = "running as " + env.USER + " (su) — 'su tinysh' returns";
+  if (env.USER && env.USER !== "jtsh") {
+    statusHint.textContent = "running as " + env.USER + " (su) — 'su jtsh' returns";
     return;
   }
   if (cwd.startsWith("/github") || cwd.startsWith("/mount/github")) {
@@ -5733,7 +5741,7 @@ document.addEventListener("click", (e) => {
   write("          nano/emacs → edit · less/more → cat · cls → clear\n", "info");
   write("          ls /dev/ · cat /dev/info · cat /dev/cpu\n", "info");
   write("          cat image.png · play music.mp3\n", "info");
-  write("          su — switch user (su → nobody · su tinysh/root → back) · whoami\n", "info");
+  write("          su — switch user (su → nobody · su jtsh/root → back) · whoami\n", "info");
   write("          chmod 600 file · chmod 755 dir — permissions (owner only)\n", "info");
   write("          browse /github/user/repo — open in tab\n", "info");
   write("          mail to@x.com — compose email in a new tab (mailto:)\n", "info");
@@ -5805,7 +5813,7 @@ document.addEventListener("click", (e) => {
     })
     .catch(() => {});
 
-  // Read ~/.tinyshrc (persistent config in /home/) before the shell
+  // Read ~/.jtshrc (persistent config in /home/) before the shell
   // is usable — exports, banner, aliases etc. take effect immediately.
   await loadConfig();
   await getJobScheduler().restore();  // re-arm persisted cron jobs

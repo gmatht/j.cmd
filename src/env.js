@@ -1,7 +1,7 @@
 // ─── Environment Variables ─────────────────────────────────────
 //
 // The shell's environment — $PATH, $HOME, $USER and friends.
-// One shared singleton so the CLI (src/tinysh.js), the browser
+// One shared singleton so the CLI (src/jtsh.js), the browser
 // shell (www/index.html) and the WASI runtime (src/wasm.js) all
 // see the same values.
 //
@@ -16,7 +16,7 @@
 export const env = {
   PATH: "/bin:/usr/bin",
   HOME: "/home",
-  USER: "tinysh",
+  USER: "jtsh",
   PWD: "/home",
   // Terminal geometry (columns × rows). The browser shell keeps these
   // in sync with the window size; a conventional 80×24 default matches
