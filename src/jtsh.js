@@ -1850,7 +1850,12 @@ async function runSegment(segmentText, stdin, isLast) {
       return { ok: false, code: wasmRunner.getExitCode(), output: "" };
     }
     const ir = wasmRunner.getStdout();
-    if (ccIR) { process.stdout.write(ir); return { ok: true, code: 0, output: ir }; }
+    if (ccIR) {
+      // -S: the QBE IR is the "assembly"; > file redirects it
+      if (outputRedirect) await writeOut(outputRedirect, ir, appendRedirect);
+      else process.stdout.write(ir);
+      return { ok: true, code: 0, output: ir };
+    }
     try {
       const { qbe2wasm } = await import("./qbe2wasm.js");
       const bytes = qbe2wasm(ir, {});
@@ -1892,7 +1897,8 @@ async function runSegment(segmentText, stdin, isLast) {
       return { ok: false, code: wasmRunner.getExitCode(), output: "" };
     }
     const ir = wasmRunner.getStdout();
-    if (cprocOut) { await fs.write(cprocOut, ir); process.stdout.write(`${cprocOut}: ${ir.length} bytes\n`); }
+    if (outputRedirect) { await writeOut(outputRedirect, ir, appendRedirect); }
+    else if (cprocOut) { await fs.write(cprocOut, ir); process.stdout.write(`${cprocOut}: ${ir.length} bytes\n`); }
     else process.stdout.write(ir);
     return { ok: true, code: 0, output: ir };
   }

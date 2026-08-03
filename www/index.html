@@ -4276,8 +4276,9 @@ async function runSegment(segmentText, stdin, isLast, target = null) {
           }
           const ir = wasmRunner.getStdout();
           if (ccWatOnly) {
-            // -S: the QBE IR is the "assembly"
-            stdout.write(ir);
+            // -S: the QBE IR is the "assembly"; > file redirects it
+            if (outputRedirect) await writeOut(outputRedirect, ir, appendRedirect);
+            else stdout.write(ir);
             return { ok: true, code: 0, output: ir };
           }
           try {
@@ -4334,7 +4335,9 @@ async function runSegment(segmentText, stdin, isLast, target = null) {
             return { ok: false, code: wasmRunner.getExitCode(), output: "" };
           }
           const ir = wasmRunner.getStdout();
-          if (cprocOut) {
+          if (outputRedirect) {
+            await writeOut(outputRedirect, ir, appendRedirect);
+          } else if (cprocOut) {
             await fs.write(cprocOut, ir);
             stdout.write(`${cprocOut}: ${ir.length} bytes\n`);
           } else {
