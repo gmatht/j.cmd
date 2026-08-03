@@ -4291,6 +4291,58 @@ async function runSegment(segmentText, stdin, isLast, target = null) {
           }
         }
 
+        // cproc — the raw C frontend (C → QBE IR), like `cc -S` with
+        // cproc's own CLI. Same preprocessing as cc (strip #lines,
+        // inject the libc decls) and the wasm64 target, so `cproc t.c`
+        // emits IR qbe2wasm can compile — or writes it with
+        // `cproc -o out.qbe t.c`.
+        if (cmd === "cproc" && args.length > 0 && !cmd.includes("/")) {
+          const resolveSrc = (p) => (p && p.startsWith("/") ? p : fs._resolve(p));
+          let srcFile = null, cprocOut = null;
+          if (args[0] === "-o" && args[1]) { cprocOut = resolveSrc(args[1]); srcFile = resolveSrc(args[2]); }
+          else { srcFile = resolveSrc(args[0]); }
+          if (!srcFile) {
+            stderr.write("cproc: missing source file\n");
+            return { ok: false, code: 1, output: "" };
+          }
+          let original;
+          try {
+            original = await fs.read(srcFile);
+          } catch (e) {
+            stderr.write(`cproc: cannot read ${srcFile}: ${e.message}\n`);
+            return { ok: false, code: 1, output: "" };
+          }
+          const prepped = preprocessCproc(original);
+          const tmpSrc = "/tmp/cc-src-" + (ccCounter++) + ".c";
+          await fs.write(tmpSrc, prepped);
+
+          // Load cproc.wasm (RAM, re-downloaded per boot).
+          const cprocPath = "/usr/bin/cproc.wasm";
+          if (!(await fs.stat(cprocPath).catch(() => null))) {
+            try {
+              const resp = await fetch("wasm-bin/cproc.wasm");
+              await fs.writeBlob(cprocPath, await resp.blob());
+            } catch (e) {
+              stderr.write(`cproc: cproc.wasm not available (${e.message})\n`);
+              return { ok: false, code: 1, output: "" };
+            }
+          }
+          await wasmRunner.run(cprocPath, ["cproc-qbe", "-t", "wasm64", tmpSrc]);
+          const qbeErr = wasmRunner.getStderr();
+          if (wasmRunner.getExitCode() !== 0) {
+            stderr.write(qbeErr || `cproc: failed (exit ${wasmRunner.getExitCode()})\n`);
+            return { ok: false, code: wasmRunner.getExitCode(), output: "" };
+          }
+          const ir = wasmRunner.getStdout();
+          if (cprocOut) {
+            await fs.write(cprocOut, ir);
+            stdout.write(`${cprocOut}: ${ir.length} bytes\n`);
+          } else {
+            stdout.write(ir);
+          }
+          return { ok: true, code: 0, output: ir };
+        }
+
 
         // Go js/wasm binaries (`go build` output, or anything compiled with
         // GOOS=js GOARCH=wasm) run through the Go runner (wasm_exec.js +
@@ -4306,6 +4358,9 @@ async function runSegment(segmentText, stdin, isLast, target = null) {
           return { ok: true, code: 0, output: gr.stdout };
         }
 
+        // Run a wasm32-wasi binary (full WASI via @wasmer/wasi, filesystem
+        // bridged to our VirtualFS via @wasmer/wasmfs)
+        let wasmArgs = [cmd, ...args];
         await wasmRunner.run(resolved.path, wasmArgs, stdin);
         const exitCode = wasmRunner.getExitCode();
         let wasmOut = wasmRunner.getStdout();        // text (WAT for cc, or program output)

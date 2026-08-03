@@ -31,6 +31,10 @@ const sh2libFacade = buildSh2LibFacade(fs);  // debashl toolchain, injected into
 const wasmerReg = new WasmerRegistry(fs);
 const goRunner = new GoRunner(fs, { baseUrl: "www/" });
 let ccCounter = 0;
+// libc declarations for C source compiled by cproc: the shell strips
+// #include/#define lines (no stdio.h in the sandbox) and injects these,
+// matching the env runtime (src/c-runtime.js) that the binaries link to.
+const CPROC_DECLS = `int printf(const char*, ...);\nint puts(const char*);\nint putchar(int);\nint fprintf(void*, const char*, ...);\nint sprintf(char*, const char*, ...);\nvoid *malloc(unsigned long);\nvoid *calloc(unsigned long, unsigned long);\nvoid *realloc(void*, unsigned long);\nvoid free(void*);\nunsigned long strlen(const char*);\nint strcmp(const char*, const char*);\nchar *strcpy(char*, const char*);\nchar *strncpy(char*, const char*, unsigned long);\nchar *strcat(char*, const char*);\nvoid *memcpy(void*, const void*, unsigned long);\nvoid *memmove(void*, const void*, unsigned long);\nvoid *memset(void*, int, unsigned long);\nint memcmp(const void*, const void*, unsigned long);\nvoid exit(int);\nvoid abort(void);\n`;
 const goCmd = createGoCommand(goRunner);
 const nethackCmd = createCliNethackCommand();
 
@@ -1830,7 +1834,7 @@ async function runSegment(segmentText, stdin, isLast) {
     try { original = await fs.read(srcFile); }
     catch (e) { process.stderr.write(`cc: cannot read ${srcFile}: ${e.message}\n`); return { ok: false, code: 1, output: "" }; }
     const body = original.split("\n").filter((l) => !l.trim().startsWith("#")).join("\n");
-    const decls = `int printf(const char*, ...);\nint puts(const char*);\nint putchar(int);\nint fprintf(void*, const char*, ...);\nint sprintf(char*, const char*, ...);\nvoid *malloc(unsigned long);\nvoid *calloc(unsigned long, unsigned long);\nvoid *realloc(void*, unsigned long);\nvoid free(void*);\nunsigned long strlen(const char*);\nint strcmp(const char*, const char*);\nchar *strcpy(char*, const char*);\nchar *strncpy(char*, const char*, unsigned long);\nchar *strcat(char*, const char*);\nvoid *memcpy(void*, const void*, unsigned long);\nvoid *memmove(void*, const void*, unsigned long);\nvoid *memset(void*, int, unsigned long);\nint memcmp(const void*, const void*, unsigned long);\nvoid exit(int);\nvoid abort(void);\n`;
+    const decls = CPROC_DECLS;
     const prepped = body.includes("int printf(") ? body : decls + body;
     const tmpSrc = "/tmp/cc-src-" + (ccCounter++) + ".c";
     await fs.write(tmpSrc, prepped);
@@ -1857,6 +1861,40 @@ async function runSegment(segmentText, stdin, isLast) {
       process.stderr.write(`cc: qbe2wasm: ${e.message}\n`);
       return { ok: false, code: 1, output: "" };
     }
+  }
+
+  // cproc — the raw C frontend (C → QBE IR), like `cc -S` with cproc's
+  // own CLI. Same preprocessing as cc (strip #lines, inject the libc
+  // decls) and the wasm64 target, so `cproc t.c` emits IR qbe2wasm can
+  // compile — or writes it with `cproc -o out.qbe t.c`.
+  if (cmd === "cproc" && args.length > 0 && !cmd.includes("/")) {
+    const resolve = (p) => (p && p.startsWith("/") ? p : fs._resolve(p));
+    let srcFile = null, cprocOut = null;
+    if (args[0] === "-o" && args[1]) { cprocOut = resolve(args[1]); srcFile = resolve(args[2]); }
+    else { srcFile = resolve(args[0]); }
+    if (!srcFile) { process.stderr.write("cproc: missing source file\n"); return { ok: false, code: 1, output: "" }; }
+    let original;
+    try { original = await fs.read(srcFile); }
+    catch (e) { process.stderr.write(`cproc: cannot read ${srcFile}: ${e.message}\n`); return { ok: false, code: 1, output: "" }; }
+    const body = original.split("\n").filter((l) => !l.trim().startsWith("#")).join("\n");
+    const prepped = body.includes("int printf(") ? body : CPROC_DECLS + body;
+    const tmpSrc = "/tmp/cc-src-" + (ccCounter++) + ".c";
+    await fs.write(tmpSrc, prepped);
+    const cprocPath = "/usr/bin/cproc.wasm";
+    if (!(await fs.stat(cprocPath).catch(() => null))) {
+      const { readFileSync } = await import("node:fs");
+      await fs.writeBlob(cprocPath, new Blob([readFileSync("www/wasm-bin/cproc.wasm")]));
+    }
+    await wasmRunner.run(cprocPath, ["cproc-qbe", "-t", "wasm64", tmpSrc]);
+    const qbeErr = wasmRunner.getStderr();
+    if (wasmRunner.getExitCode() !== 0) {
+      process.stderr.write(qbeErr || `cproc: failed (exit ${wasmRunner.getExitCode()})\n`);
+      return { ok: false, code: wasmRunner.getExitCode(), output: "" };
+    }
+    const ir = wasmRunner.getStdout();
+    if (cprocOut) { await fs.write(cprocOut, ir); process.stdout.write(`${cprocOut}: ${ir.length} bytes\n`); }
+    else process.stdout.write(ir);
+    return { ok: true, code: 0, output: ir };
   }
 
   // python — MicroPython engine (reactor, src/py.js): REPL, -c, script
