@@ -1,0 +1,299 @@
+USECASE.txt — j.cmd, a JavaScript Command Line OS
+===================================================
+
+What it is
+----------
+j.cmd (the sh2runtime browser shell) is a full command-line operating
+environment that runs in a web page — no install, no build step, no
+server beyond a static file host. The same shell runs as a Node CLI
+(`node src/tinysh.js`). JavaScript is the "binary format": every
+command is a `.js` file in a virtual filesystem, and real compiled
+tools (busybox grep, zstd, the md4c Markdown engine, MicroPython, a C
+compiler, even the Go toolchain) run as wasm32-wasi binaries — fetched
+on first use, no plugins.
+
+Live: https://gmatht.github.io/j.cmd/www/
+
+This file collects real, concrete use cases, each with a short "why
+this matters" and example commands that actually work.
+
+------------------------------------------------------------------------
+1. LEARN THE SHELL — with zero setup
+------------------------------------------------------------------------
+Scenario: a student (or anyone) wants to learn Unix-style commands but
+has no terminal, or is on a locked-down machine / school Chromebook.
+
+Just open the URL. There is nothing to install; the shell, filesystem,
+and tools are all in the page. `help` lists every command, `man <cmd>`
+gives a manual page, tab completion works, and the keybar offers
+touch-friendly keys (arrows, Ctrl menu, history, home, cd ..) for
+tablets and phones.
+
+    ls /home
+    man grep
+    cd /tmp && echo "hello" > note.txt && cat note.txt
+    find /home -name "*.txt" | head -5
+
+Why it matters: the first lesson is "open a terminal", and here the
+first lesson is "open a URL".
+
+------------------------------------------------------------------------
+2. WRITE YOUR OWN COMMANDS — JavaScript is the binary format
+------------------------------------------------------------------------
+Scenario: you want to teach (or learn) that a shell is just a place
+where small programs become powerful tools.
+
+Any `.js` file in `/bin/` is a command. The shell hands it the args,
+the filesystem, a console, stdin, and the environment:
+
+    echo 'console.log("Hello, " + args[0] + "!")' > /bin/hello.js
+    hello world          # → Hello, world!
+
+Commands can be pipelines of real tools and werem binaries, read files,
+write files, and are immediately available everywhere (browser and CLI
+share the same command surface):
+
+    # a JSON-ish counter that survives reloads (persisted /home)
+    echo 'let n = Number(await fs.read("/home/.n")) + 1; await fs.write("/home/.n", String(n)); console.log("run #" + n);' > /bin/next.js
+    next ; next ; next
+
+Why it matters: "machine code" here is a language students already
+know or can read, and the feedback loop (write, run, see output) is
+seconds long.
+
+------------------------------------------------------------------------
+3. REAL PIPELINES — the Unix plumbing, in the browser
+------------------------------------------------------------------------
+Scenario: you want to filter, transform, and chain data exactly like a
+real shell, including through compressed streams.
+
+Pipes, redirection, and the classic filter utilities all work, and the
+pipe is binary-safe — so compression round-trips:
+
+    echo "hello world" | grep -o world
+    cat README.md | head -10
+    echo hi | gzip | gunzip              # round-trips through real gzip
+    echo hi | zstd | zstd -d             # round-trips through real zstd
+    echo hello | gzip > /tmp/h.gz && cat /tmp/h.gz | gunzip
+    ls /home | grep -c txt               # count matches, piped
+    find /home -name "*.md" | grep -v node_modules | head -20
+
+Why it matters: pipelines are the heart of shell fluency, and they
+work identically on a phone in a browser tab as on a laptop terminal.
+
+------------------------------------------------------------------------
+4. READ AND PROCESS MARKDOWN — render docs where they live
+------------------------------------------------------------------------
+Scenario: you keep notes or docs in Markdown and want to preview them
+without leaving the shell.
+
+The `markdown` command (the real md4c CommonMark engine compiled to
+WASM, with tables/strikethrough/tasklists) renders to HTML:
+
+    markdown README.md > /pc/readme.html     # and download it
+    echo "# Hi" | markdown
+
+`edit README.md` opens the built-in CodeMirror editor with a live
+rendered preview pane beside the source (`:preview` toggles it; .md
+files get it automatically), so you can write and see at once.
+
+Why it matters: a documentation-first workflow that never leaves the
+terminal, on any device.
+
+------------------------------------------------------------------------
+5. COMPILE AND RUN REAL CODE — C and Go, fully in the browser
+------------------------------------------------------------------------
+Scenario: you're teaching/learning C or Go, or you want to demo
+"compiling" without a toolchain on the machine.
+
+`cc` is the real cproc C compiler (C → QBE IR → wasm) running
+entirely in the page; `go` is the actual Go toolchain (cmd/compile +
+cmd/link) cross-compiled to WASM:
+
+    echo 'int main(){ println("hi from C"); }' > /tmp/t.c
+    cc /tmp/t.c && ./a.wasm
+
+    echo 'package main
+import "fmt"
+func main(){ fmt.Println("hi from Go") }' > /tmp/main.go
+    go run /tmp/main.go
+
+`wasmer list` shows the other installable engines (grep, python,
+zstd, markdown, make, ...); `wasmer install <name>` drops the binary
+into /usr/bin/ and it becomes a command.
+
+Why it matters: "there is no compiler here" stops being an excuse —
+the toolchain ships with the web page.
+
+------------------------------------------------------------------------
+6. BROWSE GITHUB AS A FILESYSTEM
+------------------------------------------------------------------------
+Scenario: you want to explore a repository's tree and read files
+without cloning or leaving the browser.
+
+GitHub, GitLab, and git-over-HTTP repos mount as directories:
+
+    ls /mount/github/gmatht/sh2perl
+    cat /mount/github/gmatht/sh2perl/README.md
+    grep -n "print" /mount/github/gmatht/sh2perl/README.md
+    mount github:gmatht/sh2perl /mymount && ls /mymount
+
+`browse` opens the current repo directory in a new tab. The persistent
+ls cache keeps repeat visits cheap.
+
+Why it matters: a repo becomes just another folder — `grep`, `find`,
+and pipelines work over the network tree like any local one.
+
+------------------------------------------------------------------------
+7. DOWNLOAD AND PACKAGE FILES — /pc is your real disk
+------------------------------------------------------------------------
+Scenario: the shell lives in a sandbox, but you still want files out.
+
+The `/pc` mount streams writes to your real downloads (StreamSaver);
+`cp` a file to it and the browser saves it:
+
+    cp /home/notes.txt /pc/
+    markdown README.md > /pc/readme.html
+    zip /pc/backup.zip /home/examples
+    tar -czf /pc/backup.tgz /home
+
+Binary files work too (`writeBlob`), and images/audio render inline
+with `cat` and `play`.
+
+Why it matters: a safe, self-contained environment that can still hand
+you its results.
+
+------------------------------------------------------------------------
+8. PROCESS IMAGES AND MEDIA
+------------------------------------------------------------------------
+Scenario: resize, convert, or inspect images and media without opening
+a photo app.
+
+`magick`/`convert` (canvas-based) convert between png/jpeg/webp/gif,
+resize, and identify; `ffmpeg` (browser) runs the real ffmpeg.wasm for
+video/audio conversion:
+
+    magick -info /home/photo.png
+    magick /home/photo.png /home/thumb.jpg -resize 25%
+    ffmpeg -i /home/in.mp4 -vf scale=320:240 /home/out.gif
+    cat /home/photo.png               # renders inline in the terminal
+
+Why it matters: quick media tasks stay inside the workflow instead of
+tab-switching to a separate tool.
+
+------------------------------------------------------------------------
+9. PLOT DATA — ASCII charts in the terminal
+------------------------------------------------------------------------
+Scenario: you have numbers in a file (or stdin) and want to see their
+shape in one glance, or plot a function for a lesson.
+
+    plot -e "sin(x)" -xmax 6.283
+    cat /tmp/temps.dat | plot -w 80 -h 20 -t "sensor 1"
+    plot -e "x*x/4 - 2" -xmin -4 -xmax 4
+
+Why it matters: instant, dependency-free data visualization that works
+in any terminal and any browser.
+
+------------------------------------------------------------------------
+10. RUN BASH SCRIPTS — the transpiler
+------------------------------------------------------------------------
+Scenario: you have bash snippets (loops, conditionals, variables) and
+want to run them here — or you're testing what the sh2perl/debashcl
+transpiler does to your code.
+
+`bash` transpiles bash → JS and executes it; `bash2js` just shows the
+generated JS:
+
+    bash 'for i in 1 2 3; do echo $i; done'
+    bash 'x=5; echo $((x * 2))'
+    echo "echo hi | grep h" | bash2js     # see the generated code
+
+There are interactive REPLs for python, perl, and bash (bare `python`,
+`perl`, `bash`), with state that persists across lines.
+
+Why it matters: it is a live classroom for "what does this bash
+actually do?", and a compatibility testbed for the transpiler project
+itself.
+
+------------------------------------------------------------------------
+11. THE WHOLE SHELL AS A GAME / TOY BOX
+------------------------------------------------------------------------
+Scenario: a coffee-break demo, or a fun way to keep a class engaged.
+
+    nethack              # the REAL NetHack 3.6.7, WASM, full TTY
+    fortune | cowsay     # the classics work together
+    sl ; cmatrix ; typist ; watch -n 1 ls /tmp ; xeyes
+
+Why it matters: the shell doubles as a toybox — the best way to get
+people to keep typing commands is to make it fun.
+
+------------------------------------------------------------------------
+12. A SANDBOX TO PLAY WITH PERMISSIONS AND PROCESSES
+------------------------------------------------------------------------
+Scenario: explore users, permissions, and process tables safely.
+
+    su nobody            # drop privileges; custom code is then refused
+    whoami ; chmod 600 /home/secret.txt
+    chroot /tmp          # confine the shell to a new root; chroot -
+    ls /proc             # process table + browser stats
+    sleep 3 & jobs       # background jobs, the right-hand panel
+    kill <id> ; wait
+
+Why it matters: a realistic security model (ownership, modes, an
+unprivileged user, chroot, /proc) to experiment with — and nothing
+real can break.
+
+------------------------------------------------------------------------
+13. RECORD TUTORIALS — asciinema, built in
+------------------------------------------------------------------------
+Scenario: make a terminal walkthrough video without installing a
+recorder.
+
+The shell records sessions to asciinema v2 casts:
+
+    asciinema start /home/session.cast
+    ...do stuff...
+    asciinema stop
+    cp /home/session.cast /pc/          # share it
+
+Why it matters: terminal-recorded teaching material produced from the
+same page you teach with.
+
+------------------------------------------------------------------------
+14. EPHEMERAL / PORTABLE COMPUTING
+------------------------------------------------------------------------
+Scenario: a public or shared machine — you want a usable environment
+that leaves no trace and needs no permissions.
+
+Everything is in the page: /tmp is memory, /home persists per browser
+(localStorage/IndexedDB), and the whole OS is recreated on load. The
+identical shell runs in Node for scripts and automation:
+
+    echo "ls /home" | node src/tinysh.js    # batch mode from stdin
+
+Why it matters: a zero-footprint environment for kiosks, labs, and
+"please just show me".
+
+------------------------------------------------------------------------
+15. A DOCUMENTATION-MOUNTED SHELL — /docs and /mount
+------------------------------------------------------------------------
+Scenario: the shell itself is the docs viewer — the project's own
+manuals are mounted inside it.
+
+    ls /docs
+    cat /docs/security.md
+    man wasmer ; man gzip ; man zstd ; man plot
+
+Why it matters: dogfooding — the documentation is a filesystem, so all
+the normal tools (grep, find, pipelines) work on it.
+
+------------------------------------------------------------------------
+One-line summary
+------------------------------------------------------------------------
+A URL is a computer: learn the shell, write commands, compile C and
+Go, browse GitHub, gzip/zstd, render Markdown, plot data, convert
+images and media, play NetHack, and download the results — all in a
+browser tab, no install, JavaScript as the machine code.
+
+Live demo: https://gmatht.github.io/j.cmd/www/
+Repo:        https://github.com/gmatht/j.cmd
