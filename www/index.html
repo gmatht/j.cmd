@@ -202,7 +202,8 @@
      a filter box on top. Categories: builtin · wasm (auto-loads from
      wasm-bin/) · js (command files). */
   #term-toolbar .tb-cmd-pop {
-    width: min(94vw, 560px);
+    width: 560px;
+    max-width: 94vw;
     max-height: 60vh;
     padding: 6px;
   }
@@ -219,9 +220,13 @@
     flex: 0 0 auto;
   }
   #term-toolbar .tb-cmd-filter:focus { outline: none; border-color: #7ec8e3; }
+  /* Same layout engine as the Files grid: flex-wrap with fixed-size
+     squares — no CSS-grid auto-fill quirks, works in every browser. */
   #term-toolbar .tb-cmd-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(74px, 1fr));
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    align-content: flex-start;
     gap: 6px;
     overflow: auto;
     max-height: calc(60vh - 48px);
@@ -230,9 +235,11 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: center;
+    justify-content: flex-start;
     gap: 2px;
-    min-height: 58px;
+    width: 74px;
+    height: 62px;
+    flex: 0 0 74px;
     padding: 6px 4px;
     border-radius: 8px;
     border: 1px solid #30363d;
