@@ -78,6 +78,14 @@
     padding: 7px 16px;        /* 2x */
   }
   #term-toolbar button:hover { opacity: 1; color: #fff; border-color: #7ec8e3; }
+  /* the red bug button — report a bug (runs the shell's `bug` command) */
+  #term-toolbar #tb-bug {
+    opacity: 0.9;
+    color: #ff9090;
+    border-color: rgba(255, 144, 144, 0.45);
+    background: rgba(255, 144, 144, 0.08);
+  }
+  #term-toolbar #tb-bug:hover { opacity: 1; color: #fff; background: rgba(255, 144, 144, 0.25); }
   #term-toolbar .tb-arrows { display: flex; gap: 6px; }
   #term-toolbar .tb-arrows button { padding: 7px 14px; }  /* 2x */
 
@@ -461,12 +469,14 @@
     overflow: auto;
     flex: 1 1 auto;
     font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    /* rows: [left gutter (▲▼ handles)] [line text] [right gutter (● handle)] */
+  }
+  /* each row is its OWN 3-column grid: [left gutter] [line] [right gutter].
+     (A single shared grid + display:contents got scrambled by the
+     ellipsis rows' explicit column placement — text landed in the
+     gutter.) */
+  #bug-form-text .bf-row {
     display: grid;
     grid-template-columns: 54px minmax(0, 1fr) 54px;
-  }
-  #bug-form-text .bf-row {
-    display: contents;   /* cells participate in the grid */
   }
   #bug-form-text .bf-row .bf-text {
     padding: 0 6px;
@@ -536,9 +546,10 @@
   #bug-form-text .bf-row.bf-title .bf-text { font-weight: 700; }
   #bug-form-text .bf-row.bf-out .bf-text { color: #6e7681; } /* outside the ▲…▼ snippet range */
   #bug-form-text .bf-row.bf-ellipsis { display: block; color: #6e7681; font-style: italic; padding: 0 14px; }
-  /* the ellipsis only occupies the text column, so the marker labels
-     hanging below a handle in the gutters are never covered by it */
-  #bug-form-text .bf-ellipsis { grid-column: 2; color: #6e7681; font-style: italic; padding: 0 14px; }
+  /* the ellipsis is a plain full-width row; its text aligns with the
+     line column (60px = 54px gutter + 6px cell padding) and stays
+     clear of the marker labels hanging in the gutters */
+  #bug-form-text .bf-ellipsis { display: block; color: #6e7681; font-style: italic; padding: 0 14px 0 60px; }
   #bug-form-hint {
     padding: 7px 14px;
     color: #8b949e;
@@ -678,6 +689,9 @@
     <button id="tb-cdup" title="Parent directory (cd ..)">..</button>
     <button id="tb-files" title="Current folder's files &amp; folders as buttons">Files</button>
     <div id="tb-files-grid" class="tb-files hidden"></div>
+    <span class="tb-arrows">
+      <button id="tb-bug" title="Report a bug — opens a selection form, prefills a GitHub issue">🐞 bug</button>
+    </span>
   </div>
   <div id="prompt-line"><span id="prompt" class="prompt"></span><span id="input-span"></span></div>
 </div>
@@ -6587,6 +6601,7 @@ async function tbRunCommand(cmd) {
 }
 document.getElementById("tb-home").addEventListener("click", () => tbRunCommand("cd"));
 document.getElementById("tb-cdup").addEventListener("click", () => tbRunCommand("cd .."));
+document.getElementById("tb-bug").addEventListener("click", () => tbRunCommand("bug"));
 
 // ─── Files/folders grid in the toolbar ──────────────────────────
 // The "Files" toggle shows the current directory's entries as square
