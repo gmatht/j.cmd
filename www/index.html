@@ -566,6 +566,7 @@
       <button data-key="ArrowDown" title="Down / history">&#9660;</button>
       <button data-key="ArrowRight" title="Right">&#9654;</button>
     </span>
+    <button id="tb-tab" title="Tab: complete the word under the cursor (tap twice to list all matches)">Tab</button>
     <button id="tb-ctrl" title="Ctrl-key shortcuts">Ctrl</button>
     <div id="tb-ctrl-pop" class="tb-pop hidden">
       <button data-ctrl="c">Ctrl+C &nbsp;interrupt</button>
@@ -3504,7 +3505,6 @@ Loops, conditionals, variables, arithmetic and pipes work:
     bugFormEl.classList.add("active");
     promptLine.style.display = "none";
     render();
-    input.focus();
 
     let sel;
     try {
