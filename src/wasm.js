@@ -313,11 +313,22 @@ export class WasmRunner {
 
   // ─── wasi.fs → WasmFs (harvest) ───────────────────────────
 
+  _skipHarvestPrefixes() {
+    // Read-only input dirs the program never modifies (zig's std lib etc.):
+    // they are seeded into the sandbox but skipped when harvesting back, so
+    // a big lib doesn't cost an O(n) wasm-boundary re-read on every run.
+    const raw = env.WASM_SKIP_HARVEST || "";
+    return raw.split(":").filter(Boolean).map((p) => (p.endsWith("/") ? p.slice(0, -1) : p));
+  }
+
   _copyWasiToWasmFs(wasiFs, wasmfs) {
     // The mirror may hold files the program deleted from its fs — clear
     // it first so wasmfs exactly reflects what the program left behind
     // (deletions then propagate to VirtualFS in _flushRemoved).
+    const skip = this._skipHarvestPrefixes();
+    const isSkipped = (path) => skip.some((p) => path === p || path.startsWith(p + "/"));
     const removeAll = (dir) => {
+      if (isSkipped(dir)) return;
       let entries;
       try {
         entries = wasmfs.fs.readdirSync(dir, { withFileTypes: true });
@@ -345,6 +356,7 @@ export class WasmRunner {
       }
       for (const e of entries) {
         const path = e.path;
+        if (isSkipped(path)) continue;
         const ft = e.metadata && e.metadata.filetype;
         if (ft && ft.dir) {
           wasmfs.fs.mkdirSync(path, { recursive: true });
@@ -403,6 +415,8 @@ export class WasmRunner {
   }
 
   async _flushWasmFs(wasmfs) {
+    const skip = this._skipHarvestPrefixes();
+    const isSkipped = (path) => skip.some((p) => path === p || path.startsWith(p + "/"));
     const walk = async (dir) => {
       let entries;
       try {
@@ -412,6 +426,7 @@ export class WasmRunner {
       }
       for (const e of entries) {
         const path = (dir === "/" ? "/" : dir + "/") + e.name;
+        if (isSkipped(path)) continue;
         if (e.isDirectory()) {
           await walk(path);
         } else if (e.isFile()) {

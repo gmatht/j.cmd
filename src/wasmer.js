@@ -55,6 +55,10 @@ const REGISTRY = {
     url: "wasm-bin/python.wasm",
     desc: "Python interpreter (MicroPython, 363K)",
   },
+  "zig": {
+    url: "wasm-bin/zig.wasm",
+    desc: "Zig compiler (wasm32-wasi, self-hosted codegen — see build-wasm-zig.sh). Usage: zig version · zig build-exe hello.zig -target wasm32-wasi",
+  },
   // perl is implemented as a /bin JS command embedding the zeroperl
   // reactor (@6over3/zeroperl-ts) — it is NOT a wasm32-wasi binary, so
   // there is nothing to install here. `perl` works out of the box.

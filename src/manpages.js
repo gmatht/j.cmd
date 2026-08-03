@@ -695,6 +695,34 @@ SEE ALSO
      cc, wat2wasm
 `,
 
+  zig: `NAME
+     zig — Zig compiler (wasm32-wasi build)
+
+SYNOPSIS
+     wasmer install zig
+     zig version
+     zig build-exe hello.zig -target wasm32-wasi
+
+DESCRIPTION
+     zig is the Zig compiler compiled to wasm32-wasi with the self-hosted
+     codegen (no LLVM, no C frontend — see build-wasm-zig.sh for the full
+     zig-bootstrap pipeline and the source patches). It can compile Zig
+     source to wasm32-wasi binaries.
+
+     The shell stages a zig lib (std + compiler_rt) into the WASI sandbox
+     and sets ZIG_LIB_DIR / ZIG_LOCAL_CACHE_DIR / ZIG_GLOBAL_CACHE_DIR.
+
+LIMITATIONS
+     The shell's wasmer-wasi runtime currently mangles data written via
+     fd_pwrite (which zig's file writes use), so emitted binaries are
+     corrupt in the browser shell. Under a V8-based WASI (node:wasi,
+     wasmtime) the same compiler produces correct output. 'zig version'
+     and 'zig help' work everywhere.
+
+SEE ALSO
+     cc, qbe2wasm, wat2wasm
+`,
+
   cc: `NAME
      cc — compile C with the real cproc compiler
 
