@@ -455,17 +455,11 @@
   #bug-form {
     display: none;
     position: fixed;
-    left: 50%; top: 50%;
-    transform: translate(-50%, -50%);
-    width: min(960px, 94vw);
-    max-height: 85vh;
+    top: 0; left: 0; right: 0; bottom: 0;
+    width: 100vw; height: 100vh;
     background: #0d1117;
-    border: 1px solid #30363d;
-    border-radius: 10px;
     z-index: 20;
     flex-direction: column;
-    box-shadow: 0 10px 50px rgba(0, 0, 0, 0.65);
-    overflow: hidden;
   }
   #bug-form.active { display: flex; }
   #bug-form-header {
@@ -480,10 +474,12 @@
   #bug-form-header #bug-form-status { color: #8b949e; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #bug-form-text {
     margin: 0;
-    overflow: auto;
+    overflow: hidden;   /* no scrollbar — the window auto-fits (see render) */
+    scrollbar-width: none;
     flex: 1 1 auto;
     font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
+  #bug-form-text::-webkit-scrollbar { display: none; }
   /* each row is its OWN 3-column grid: [left gutter] [line] [right gutter].
      (A single shared grid + display:contents got scrambled by the
      ellipsis rows' explicit column placement — text landed in the
@@ -565,31 +561,31 @@
      clear of the marker labels hanging in the gutters */
   #bug-form-text .bf-ellipsis { display: block; color: #6e7681; font-style: italic; padding: 0 14px 0 60px; }
   #bug-form-hint {
-    padding: 7px 14px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 14px;
     color: #8b949e;
     font-size: 12px;
     border-top: 1px solid #30363d;
     flex: 0 0 auto;
   }
+  #bug-form-hint .bf-hint-text { flex: 1; min-width: 0; }
   #bug-form-hint b { color: #c9d1d9; font-weight: 600; }
   #bug-form-hint .bf-note { margin-top: 4px; color: #6e7681; font-style: italic; }
-  /* Touch controls (mobile has no arrow keys) — also fine with a mouse. */
+  /* the ↑ ↓ ✓ file ✕ cancel buttons, right of the hint text */
   #bug-form-keys {
     display: flex;
-    flex-wrap: wrap;
     gap: 6px;
-    align-items: center;
-    padding: 8px 14px;
-    border-top: 1px solid #30363d;
     flex: 0 0 auto;
   }
   #bug-form-keys button {
     background: #21262d;
     border: 1px solid #30363d;
     color: #c9d1d9;
-    font-size: 14px;
-    min-height: 42px;          /* comfortable touch target */
-    padding: 8px 16px;
+    font-size: 13px;
+    min-height: 38px;          /* comfortable touch target */
+    padding: 6px 12px;
     border-radius: 6px;
     cursor: pointer;
     touch-action: manipulation;
@@ -598,8 +594,6 @@
   #bug-form-keys button:active { background: #388bfd33; }
   #bug-form-keys button.bf-keys-file { color: #7ee39a; border-color: rgba(126, 227, 154, 0.45); }
   #bug-form-keys button.bf-keys-cancel { color: #ff9090; border-color: rgba(255, 144, 144, 0.45); }
-  #bug-form-keys .bf-keys-sep { flex: 1; }
-  #bug-form-hint > div + div { margin-top: 3px; }
   #editor-header {
     background: #161b22;
     padding: 8px 16px;
@@ -744,21 +738,20 @@
     <div id="bug-form-status"></div>
   </div>
   <div id="bug-form-text"></div>
-  <div id="bug-form-keys">
-    <button data-move="-1" title="Move the active marker up (↑)">↑</button>
-    <button data-move="1" title="Move the active marker down (↓)">↓</button>
-    <span class="bf-keys-sep"></span>
-    <button data-act="file" class="bf-keys-file" title="File the report (Enter)">✓ file</button>
-    <button data-act="cancel" class="bf-keys-cancel" title="Cancel (Esc)">✕ cancel</button>
-  </div>
   <div id="bug-form-hint">
-    <div>
-      Drag the <b>▲ ● ▼</b> markers · tap a line to place the active marker · <b>←/→</b> select marker
-      (▲ top · ● title · ▼ bottom) · <b>↑/↓</b> move · <b>Enter</b> file · <b>Esc</b> cancel
+    <div class="bf-hint-text">
+      <div>Drag the <b>▲ ● ▼</b> markers · tap a line to place the active marker · <b>←/→</b> select marker
+        (▲ top · ● title · ▼ bottom) · <b>↑/↓</b> move · <b>Enter</b> file · <b>Esc</b> cancel</div>
+      <div>On a phone: drag the markers, tap a line to place.</div>
+      <div class="bf-note">You can add more detail on GitHub later — it probably won't be required (if it's broken,
+        it's probably obviously and completely broken). Don't worry about duplicates either.</div>
     </div>
-    <div>On a phone: drag the markers, tap a line to place, <b>✓ file</b> / <b>✕ cancel</b>.</div>
-    <div class="bf-note">You can add more detail on GitHub later — it probably won't be required (if it's broken,
-      it's probably obviously and completely broken). Don't worry about duplicates either.</div>
+    <div id="bug-form-keys">
+      <button data-move="-1" title="Move the active marker up (↑)">↑</button>
+      <button data-move="1" title="Move the active marker down (↓)">↓</button>
+      <button data-act="file" class="bf-keys-file" title="File the report (Enter)">✓ file</button>
+      <button data-act="cancel" class="bf-keys-cancel" title="Cancel (Esc)">✕ cancel</button>
+    </div>
   </div>
 </div>
 
@@ -3584,8 +3577,8 @@ Loops, conditionals, variables, arithmetic and pipes work:
     const formDone = new Promise((res) => { resolveForm = res; });
     // Display a window around the ACTIVE marker instead of a scrollbar —
     // the hidden parts become ellipsis lines, so ↑/↓ always shows the
-    // marker moving (no window scrolling).
-    const WIN = 12; // lines above and below the active marker
+    // marker moving. The window half-size is chosen per-render so
+    // everything always fits (no scrollbar; overflow is hidden).
 
     const render = () => {
       const t = (state.lines[state.title] || "").replace(/^[^$]*\$ /, "").trim() || "(empty line)";
@@ -3594,8 +3587,6 @@ Loops, conditionals, variables, arithmetic and pipes work:
         `title: ${t.slice(0, 60)} · ▲${state.top} ●${state.title} ▼${state.bottom} · ${state.active} active · snippet: ${state.bottom - state.top + 1} lines`;
       bugFormText.textContent = "";
       const center = pos[state.active];
-      const start = Math.max(0, center - WIN);
-      const end = Math.min(n - 1, center + WIN);
       const mkEllipsis = (label) => {
         const div = document.createElement("div");
         div.className = "bf-ellipsis";
@@ -3649,29 +3640,42 @@ Loops, conditionals, variables, arithmetic and pipes work:
       // when they fall outside the active-marker window — the ellipsis
       // rows bridge the gaps so every handle stays visible & draggable
       // (the ▼ button appears after its ellipsis, with context rows).
-      const ranges = [
-        [Math.max(0, state.top - 2), state.top],                                // ▲ context
-        [Math.max(0, state.title - 1), Math.min(n - 1, state.title + 1)],      // ● context
-        [start, end],                                                           // active window
-        [state.bottom, Math.min(n - 1, state.bottom + 2)],                      // ▼ context
-      ].sort((a, b) => a[0] - b[0]);
-      const merged = [];
-      for (const [a, b] of ranges) {
-        const last = merged[merged.length - 1];
-        if (last && a <= last[1] + 1) { if (b > last[1]) last[1] = b; }
-        else merged.push([a, b]);
-      }
-      for (let r = 0; r < merged.length; r++) {
-        const [a, b] = merged[r];
-        if (r === 0 && a > 0) mkEllipsis(`${a} line${a === 1 ? "" : "s"} above`);
-        else if (r > 0 && a > merged[r - 1][1] + 1) {
-          const gap = a - merged[r - 1][1] - 1;
-          mkEllipsis(`${gap} line${gap === 1 ? "" : "s"} between`);
+      // Window around the active marker, shrunk until everything fits
+      // (overflow is hidden — no scrollbar). While a marker is being
+      // dragged, skip the final scrollIntoView so the view never jumps
+      // under the finger; it re-centres when the drag ends.
+      let half = 12;
+      for (;;) {
+        const start = Math.max(0, center - half);
+        const end = Math.min(n - 1, center + half);
+        bugFormText.textContent = "";
+        activeCell = null;
+        const ranges = [
+          [Math.max(0, state.top - 2), state.top],                                // ▲ context
+          [Math.max(0, state.title - 2), Math.min(n - 1, state.title + 2)],      // ● context
+          [start, end],                                                           // active window
+          [state.bottom, Math.min(n - 1, state.bottom + 2)],                      // ▼ context
+        ].sort((a, b) => a[0] - b[0]);
+        const merged = [];
+        for (const [a, b] of ranges) {
+          const last = merged[merged.length - 1];
+          if (last && a <= last[1] + 1) { if (b > last[1]) last[1] = b; }
+          else merged.push([a, b]);
         }
-        for (let i = a; i <= b; i++) renderRow(i);
-        if (r === merged.length - 1 && b < n - 1) mkEllipsis(`${n - 1 - b} line${n - 1 - b === 1 ? "" : "s"} below`);
+        for (let r = 0; r < merged.length; r++) {
+          const [a, b] = merged[r];
+          if (r === 0 && a > 0) mkEllipsis(`${a} line${a === 1 ? "" : "s"} above`);
+          else if (r > 0 && a > merged[r - 1][1] + 1) {
+            const gap = a - merged[r - 1][1] - 1;
+            mkEllipsis(`${gap} line${gap === 1 ? "" : "s"} between`);
+          }
+          for (let i = a; i <= b; i++) renderRow(i);
+          if (r === merged.length - 1 && b < n - 1) mkEllipsis(`${n - 1 - b} line${n - 1 - b === 1 ? "" : "s"} below`);
+        }
+        if (bugFormText.scrollHeight <= bugFormText.clientHeight + 4 || half <= 2) break;
+        half -= 2;
       }
-      if (activeCell) activeCell.scrollIntoView({ block: "nearest" });
+      if (activeCell && !dragState) activeCell.scrollIntoView({ block: "nearest" });
     };
 
     const placeMarker = (marker, i) => {
@@ -3770,7 +3774,11 @@ Loops, conditionals, variables, arithmetic and pipes work:
       render();
     };
     const onTextUp = (e) => {
-      if (dragState) { dragState = null; return; } // a handle drag/tap
+      if (dragState) {
+        dragState = null;
+        render(); // drag over — re-centre the view on the active marker
+        return;
+      }
       if (tapX === null) return;
       const dx = e.clientX - tapX, dy = e.clientY - tapY;
       tapX = tapY = null;
