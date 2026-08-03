@@ -943,8 +943,15 @@ DESCRIPTION
      with three markers — ▲ top of the snippet, ● the line to use as
      the title, ▼ bottom of the snippet. Left/right arrows choose the
      marker, up/down move it, Enter files the report, Esc cancels.
+     The view shows a window around the active marker (hidden lines
+     collapse to "…") so the markers never scroll out of sight.
      One prompt then asks what you expected to happen (or you trust
      us to infer it from the snippet).
+
+     Every report carries a ## System section: the shell version,
+     /dev/info (browser info in the browser shell; node/platform in
+     the CLI), the sha256 of each core file actually served (so the
+     exact code is pinned), and the recently run commands.
 
      Posting: with a saved GitHub token (bug --token <PAT>, or the
      first-run prompt) the report posts directly via the API. Without

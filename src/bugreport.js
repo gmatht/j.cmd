@@ -14,12 +14,16 @@
 export const BUG_REPO = "gmatht/j.cmd";
 export const BUG_LABEL = "bug-report";
 export const BUG_SITE = "https://gmatht.github.io/j.cmd/www/";
+export const SHELL_VERSION = "0.1.0"; // keep in step with package.json
 
 /**
  * Assemble the markdown report body.
- *  scope: "20" | "500" | "terminal" | "dom" — how much context was sent
+ *  scope: "20" | "500" | "terminal" | "dom" | "form" — how much context was sent
+ *  system: pre-built "## System" content (version, core-file sha256
+ *          hashes, recent commands, /dev/info) — see collectSystem in
+ *          the shells.
  */
-export function buildReport({ summary = "", expected = "", snippet = "", scope = "20" }) {
+export function buildReport({ summary = "", expected = "", snippet = "", scope = "20", system = "" }) {
   const scopeLabel =
     scope === "500" ? "Terminal (last 500 lines)"
     : scope === "terminal" ? "Terminal (whole scrollback)"
@@ -30,17 +34,18 @@ export function buildReport({ summary = "", expected = "", snippet = "", scope =
     ? expected.trim()
     : "— (user trusts us to infer the expected behavior from the snippet)";
   const summaryText = summary.trim() || "— (see snippet)";
+  const sys = system.trim() ? `\n## System\n${system.trim()}\n` : "";
   return `<!-- jtsh bug report · filed by the shell's \`bug\` command · ${BUG_LABEL} -->
 **Reported:** ${new Date().toISOString().replace("T", " ").slice(0, 16)} UTC
 **Source:** ${BUG_SITE} (browser shell) / node CLI
-**Version:** jtsh 0.1.0
+**Version:** jtsh ${SHELL_VERSION}
 
 ## Summary
 ${summaryText}
 
 ## Expected
 ${expectedText}
-
+${sys}
 ## ${scopeLabel}
 \`\`\`text
 ${String(snippet).replace(/\s+$/, "")}

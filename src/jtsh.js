@@ -42,6 +42,25 @@ function ringPush(s) {
   for (const line of s.split("\n")) outRing.push(line);
   while (outRing.length > 1000) outRing.shift();
 }
+
+// System info for bug reports: node/platform line + sha256 of the core
+// files (pins the exact code) — the CLI analogue of /dev/info.
+async function collectSystem() {
+  const parts = [];
+  parts.push(`node ${process.version} · ${process.platform}/${process.arch}`);
+  const { createHash } = await import("node:crypto");
+  const { readFileSync } = await import("node:fs");
+  const core = ["www/index.html", "src/jtsh.js", "src/fs/index.js", "src/wasm.js", "src/c-runtime.js", "src/qbe2wasm.js", "src/bugreport.js"];
+  for (const f of core) {
+    try {
+      const hex = createHash("sha256").update(readFileSync(f)).digest("hex");
+      parts.push(`sha256 ${f}: ${hex}`);
+    } catch {
+      parts.push(`sha256 ${f}: (unreadable)`);
+    }
+  }
+  return parts.join("\n");
+}
 const _bugBaseOut = process.stdout.write.bind(process.stdout);
 const _bugBaseErr = process.stderr.write.bind(process.stderr);
 process.stdout.write = (s, ...rest) => { ringPush(s); return _bugBaseOut(s, ...rest); };
@@ -325,7 +344,7 @@ const builtins = {
     const summary = rest.join(" ");
     const snippet = outRing.slice(-lines).join("\n").replace(/^\s+|\s+$/g, "");
     const scope = lines === 20 ? "20" : String(lines);
-    const body = buildReport({ summary, expected: expect, snippet, scope });
+    const body = buildReport({ summary, expected: expect, snippet, scope, system: await collectSystem() });
     if (dryRun) { process.stdout.write(body); return 0; }
     const title = "bug: " + ((summary || "").trim().slice(0, 100) || "terminal snippet report");
     const token = webform ? null : await getBugToken(null);

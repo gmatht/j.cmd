@@ -471,6 +471,7 @@
   }
   #bug-form-text .bf-line .bf-mark { font-weight: 700; }
   #bug-form-text .bf-line.bf-active { background: rgba(126, 200, 227, 0.13); }
+  #bug-form-text .bf-line.bf-ellipsis { color: #6e7681; font-style: italic; padding-left: 30px; }
   #bug-form-hint {
     padding: 7px 14px;
     color: #8b949e;
@@ -3433,13 +3434,28 @@ Loops, conditionals, variables, arithmetic and pipes work:
     const bugFormHeader = document.getElementById("bug-form-header");
     let resolveForm = null;
     const formDone = new Promise((res) => { resolveForm = res; });
+    // Display a window around the ACTIVE marker instead of a scrollbar —
+    // the hidden parts become ellipsis lines, so ↑/↓ always shows the
+    // marker moving (no window scrolling).
+    const WIN = 12; // lines above and below the active marker
 
     const render = () => {
       const t = (state.lines[state.title] || "").replace(/^[^$]*\$ /, "").trim() || "(empty line)";
-      bugFormHeader.textContent = `bug report · title: ${t.slice(0, 70)} · snippet: ${state.bottom - state.top + 1} lines · ${state.active} marker active`;
+      const pos = { top: state.top, title: state.title, bottom: state.bottom };
+      bugFormHeader.textContent = `bug report · title: ${t.slice(0, 60)} · ▲${state.top} ●${state.title} ▼${state.bottom} · ${state.active} active · snippet: ${state.bottom - state.top + 1} lines`;
       bugFormText.textContent = "";
+      const center = pos[state.active];
+      const start = Math.max(0, center - WIN);
+      const end = Math.min(n - 1, center + WIN);
+      const ellipsis = (label) => {
+        const div = document.createElement("div");
+        div.className = "bf-line bf-ellipsis";
+        div.textContent = `⋯ ${label}`;
+        bugFormText.appendChild(div);
+      };
+      if (start > 0) ellipsis(`${start} line${start === 1 ? "" : "s"} above`);
       let activeEl = null;
-      for (let i = 0; i < state.lines.length; i++) {
+      for (let i = start; i <= end; i++) {
         const isActive = (i === state.top && state.active === "top") || (i === state.title && state.active === "title") || (i === state.bottom && state.active === "bottom");
         const div = document.createElement("div");
         div.className = "bf-line" + (isActive ? " bf-active" : "");
@@ -3455,6 +3471,7 @@ Loops, conditionals, variables, arithmetic and pipes work:
         if (isActive) activeEl = div;
         bugFormText.appendChild(div);
       }
+      if (end < n - 1) ellipsis(`${n - 1 - end} line${n - 1 - end === 1 ? "" : "s"} below`);
       if (activeEl) activeEl.scrollIntoView({ block: "nearest" });
     };
 
@@ -3465,21 +3482,26 @@ Loops, conditionals, variables, arithmetic and pipes work:
       render();
     };
 
-    const onKey = (key) => {
-      if (key === "ArrowLeft") { state.active = state.active === "top" ? "title" : state.active === "title" ? "bottom" : "top"; render(); return true; }
-      if (key === "ArrowRight") { state.active = state.active === "top" ? "bottom" : state.active === "bottom" ? "title" : "top"; render(); return true; }
-      if (key === "ArrowUp") { move(state.active, -1); return true; }
-      if (key === "ArrowDown") { move(state.active, 1); return true; }
-      if (key === "Enter") { resolveForm({ ...state }); return true; }
-      if (key === "Escape") { resolveForm(null); return true; }
+    // Keys go through a document-level CAPTURE listener so arrows/Enter/
+    // Esc work no matter where focus is (the form div, the page, …).
+    // stopPropagation keeps the shell's line editor from also reacting
+    // (no history navigation, no typing).
+    const onKey = (key, e) => {
+      if (key === "ArrowLeft") { state.active = state.active === "top" ? "title" : state.active === "title" ? "bottom" : "top"; render(); e.preventDefault(); e.stopPropagation(); return true; }
+      if (key === "ArrowRight") { state.active = state.active === "top" ? "bottom" : state.active === "bottom" ? "title" : "top"; render(); e.preventDefault(); e.stopPropagation(); return true; }
+      if (key === "ArrowUp") { move(state.active, -1); e.preventDefault(); e.stopPropagation(); return true; }
+      if (key === "ArrowDown") { move(state.active, 1); e.preventDefault(); e.stopPropagation(); return true; }
+      if (key === "Enter") { resolveForm({ ...state }); e.preventDefault(); e.stopPropagation(); return true; }
+      if (key === "Escape") { resolveForm(null); e.preventDefault(); e.stopPropagation(); return true; }
+      if (key === "c" && (e.ctrlKey || e.metaKey)) { write("^C\n", "info"); resolveForm(null); e.preventDefault(); e.stopPropagation(); return true; }
+      e.preventDefault(); e.stopPropagation();
       return true; // modal — swallow everything else
     };
     const onIntr = () => resolveForm(null);
-    keyCallbacks.push(onKey);
     interruptCallbacks.push(onIntr);
+    document.addEventListener("keydown", onKey, true);
 
     bugFormEl.classList.add("active");
-    input.disabled = true;
     promptLine.style.display = "none";
     render();
     input.focus();
@@ -3488,10 +3510,9 @@ Loops, conditionals, variables, arithmetic and pipes work:
     try {
       sel = await formDone;
     } finally {
-      keyCallbacks = keyCallbacks.filter((f) => f !== onKey);
+      document.removeEventListener("keydown", onKey, true);
       interruptCallbacks = interruptCallbacks.filter((f) => f !== onIntr);
       bugFormEl.classList.remove("active");
-      input.disabled = false;
       promptLine.style.display = "";
       input.focus();
     }
@@ -3509,7 +3530,37 @@ Loops, conditionals, variables, arithmetic and pipes work:
       if (expected === null) { stdout.write("bug: cancelled\n"); return 0; }
     }
 
-    const body = buildReport({ summary: summary0 || "", expected, snippet, scope: "form" });
+    // System info: /dev/info, sha256 of the core files actually served
+    // (pins the exact code the user ran), and the recent commands.
+    const system = await (async () => {
+      const parts = [];
+      try {
+        const info = await fs.read("/dev/info");
+        if (info) parts.push(info.trim());
+      } catch {}
+      const core = ["index.html", "../src/fs/index.js", "../src/wasm.js", "../src/c-runtime.js", "../src/qbe2wasm.js", "../src/bugreport.js"];
+      for (const f of core) {
+        try {
+          const res = await fetch(f);
+          if (!res.ok) throw new Error(res.status);
+          const buf = await res.arrayBuffer();
+          const digest = await crypto.subtle.digest("SHA-256", buf);
+          const hex = Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+          parts.push(`sha256 ${f}: ${hex}`);
+        } catch {
+          parts.push(`sha256 ${f}: (unreadable)`);
+        }
+      }
+      try {
+        const hist = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
+        if (Array.isArray(hist) && hist.length) {
+          parts.push("recent commands: " + hist.slice(-10).join(" · "));
+        }
+      } catch {}
+      return parts.join("\n");
+    })();
+
+    const body = buildReport({ summary: summary0 || "", expected, snippet, scope: "form", system });
 
     // Save + clipboard regardless (cheap — the web form needs the copy anyway).
     try { await fs.write("/tmp/bug-report.md", body); } catch {}
