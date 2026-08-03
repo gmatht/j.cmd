@@ -27,7 +27,7 @@
 import { init, WASI, MemFS } from "@wasmer/wasi";
 import { WasmFs } from "@wasmer/wasmfs";
 import { env } from "./env.js";
-import { createCRuntime } from "./c-runtime.js";
+import { createCRuntime, CExit } from "./c-runtime.js";
 
 // @wasmer/wasi embeds its WASI runtime wasm as a base64 data URI and
 // decodes it with Buffer.from(). Browsers have no Buffer, so provide a
@@ -99,10 +99,25 @@ export class WasmRunner {
     await this._initPromise;
   }
 
+  // Drop the cached compiled module for a path — cc/tcc overwrite a.wasm
+  // in place, and the next run must see the new bytes, not the stale one.
+  invalidate(path) {
+    this.cache.delete(path);
+  }
+
   // ─── Run a wasm32-wasi binary ─────────────────────────────
 
   async run(path, args, stdin = "") {
     await this._ensureInit();
+
+    // Fresh output state per run — a previous run that threw (e.g. a
+    // CExit escape) must not leak its partial stdout into this one
+    // (the IR of the next compile would come out prefixed with junk).
+    this._stdout = "";
+    this._stdoutBytes = new Uint8Array(0);
+    this._stderr = "";
+    this._stdCustomOut = "";
+    this._exitCode = 0;
 
     let module = this.cache.get(path);
     if (!module) {
@@ -144,6 +159,43 @@ export class WasmRunner {
         const entry = instance.exports.$main || instance.exports.main;
         if (entry) { entry(); this._exitCode = 0; }
         else { this._exitCode = 0; }
+      } catch (e) {
+        if (e && e.name === "CExit") this._exitCode = e.code;
+        else throw e;
+      }
+      this._stdout = this._stdCustomOut || "";
+      this._stdoutBytes = new TextEncoder().encode(this._stdout);
+      this._stderr = "";
+      this._stdCustomOut = "";
+      return instance;
+    }
+
+    // wasmer-js 1.2.2 cannot bind more than one custom JS import function
+    // (it traps "unreachable" at instantiate, or silently corrupts call
+    // arguments when several env.* functions are imported — the tcc
+    // backend emits env.$printf/$malloc/$strlen… plus wasi fd_write/
+    // proc_exit). Modules with BOTH WASI and custom imports (tcc-compiled
+    // C programs) go through plain V8 instantiation with a minimal WASI
+    // shim instead: their WASI surface is just proc_exit (fd_write is
+    // imported but never called — all libc comes from the env runtime).
+    const customMods = WebAssembly.Module.imports(module)
+      .filter((i) => i.module !== "wasi_snapshot_preview1");
+    if (hasWasi && customMods.length > 0) {
+      const instance = await WebAssembly.instantiate(module, {
+        ...custom,
+        wasi_snapshot_preview1: this._wasiShim(),
+      });
+      if (instance.exports.memory) memRef.memory = instance.exports.memory;
+      try {
+        if (instance.exports._start) {
+          instance.exports._start();
+          this._exitCode = 0;
+        } else if (instance.exports.main) {
+          instance.exports.main();
+          this._exitCode = 0;
+        } else {
+          this._exitCode = 0;
+        }
       } catch (e) {
         if (e && e.name === "CExit") this._exitCode = e.code;
         else throw e;
@@ -579,5 +631,26 @@ export class WasmRunner {
     const p = path.replace(/\/+$/, "") || "/";
     const i = p.lastIndexOf("/");
     return i <= 0 ? "/" : p.slice(0, i);
+  }
+
+  // Minimal WASI for V8-instantiated modules with custom imports (tcc
+  // output — see run()). proc_exit drives the exit code (CExit); the
+  // other tcc-imported functions are never called by generated code.
+  _wasiShim() {
+    const shim = {
+      proc_exit: (code) => { throw new CExit(code); },
+      fd_write: () => 0,
+      fd_close: () => 0,
+      fd_seek: () => 0,
+      fd_read: () => 0,
+      clock_time_get: () => 0,
+      random_get: () => 0,
+    };
+    return new Proxy(shim, {
+      get(t, prop) {
+        if (prop in t) return t[prop];
+        return () => { throw new Error(`wasi: ${String(prop)} not implemented in the V8 shim`); };
+      },
+    });
   }
 }

@@ -14,7 +14,7 @@
 
 // Program-exit marker — thrown by $exit/$abort, caught by the shell runner.
 export class CExit extends Error {
-  constructor(code) { super("exit(" + code + ")"); this.code = code; }
+  constructor(code) { super("exit(" + code + ")"); this.name = "CExit"; this.code = code; }
 }
 
 export function createCRuntime({ getMem, memory, out, err }) {

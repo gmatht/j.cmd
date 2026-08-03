@@ -4284,6 +4284,7 @@ async function runSegment(segmentText, stdin, isLast, target = null) {
           try {
             const bytes = qbe2wasm(ir, {});
             await fs.writeBlob(ccOutput, new Blob([bytes], { type: "application/wasm" }));
+            wasmRunner.invalidate(ccOutput); // recompiled in place — drop the stale module
             const ccMsg = `${ccOutput}: ${bytes.length} bytes\n`;
             if (outputRedirect) await writeOut(outputRedirect, ccMsg, appendRedirect);
             else stdout.write(ccMsg);
@@ -4373,7 +4374,7 @@ async function runSegment(segmentText, stdin, isLast, target = null) {
             stderr.write(`tcc: cannot read ${srcFile}: ${e.message}\n`);
             return { ok: false, code: 1, output: "" };
           }
-          const prepped = preprocessCproc(original);
+          const prepped = preprocessCproc(original).replace(/\bvoid\s+main\s*\(/g, "int main(");
           const tmpSrc = "/tmp/cc-src-" + (ccCounter++) + ".c";
           await fs.write(tmpSrc, prepped);
 
@@ -4396,6 +4397,7 @@ async function runSegment(segmentText, stdin, isLast, target = null) {
             return { ok: false, code: wasmRunner.getExitCode(), output: "" };
           }
           const outBlob = await fs.readBlob(outFile);
+          wasmRunner.invalidate(outFile); // recompiled in place — drop the stale module
           const tccMsg = `${outFile}: ${outBlob.size} bytes\n`;
           if (outputRedirect) await writeOut(outputRedirect, tccMsg, appendRedirect);
           else stdout.write(tccMsg);
@@ -4431,6 +4433,7 @@ async function runSegment(segmentText, stdin, isLast, target = null) {
           try {
             const bytes = await watToWasm(wasmOut, "cc-output.wat");
             await fs.writeBlob(ccOutput, new Blob([bytes], { type: "application/wasm" }));
+            wasmRunner.invalidate(ccOutput); // recompiled in place — drop the stale module
             stdout.write(`${ccOutput}: ${bytes.length} bytes\n`);
             wasmOut = "";       // binary written to file, not stdout
             wasmBytes = new Uint8Array(0);

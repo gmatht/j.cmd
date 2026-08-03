@@ -35,6 +35,20 @@ let ccCounter = 0;
 // #include/#define lines (no stdio.h in the sandbox) and injects these,
 // matching the env runtime (src/c-runtime.js) that the binaries link to.
 const CPROC_DECLS = `int printf(const char*, ...);\nint puts(const char*);\nint putchar(int);\nint fprintf(void*, const char*, ...);\nint sprintf(char*, const char*, ...);\nvoid *malloc(unsigned long);\nvoid *calloc(unsigned long, unsigned long);\nvoid *realloc(void*, unsigned long);\nvoid free(void*);\nunsigned long strlen(const char*);\nint strcmp(const char*, const char*);\nchar *strcpy(char*, const char*);\nchar *strncpy(char*, const char*, unsigned long);\nchar *strcat(char*, const char*);\nvoid *memcpy(void*, const void*, unsigned long);\nvoid *memmove(void*, const void*, unsigned long);\nvoid *memset(void*, int, unsigned long);\nint memcmp(const void*, const void*, unsigned long);\nvoid exit(int);\nvoid abort(void);\n`;
+
+// Preprocess C source for the compilers: strip #include/#define lines
+// (no headers in the sandbox — the decls above stand in for stdio.h
+// etc.) while keeping any user declarations.
+function preprocessC(src) {
+  const body = src.split("\n").filter((l) => !l.trim().startsWith("#")).join("\n");
+  return body.includes("int printf(") ? body : CPROC_DECLS + body;
+}
+// tcc's wasm32 backend emits an INVALID module for void main (its
+// _start does `call main; call proc_exit` and nothing is pushed) — the
+// only broken construct we've found. Normalize to int main (C99 gives
+// main an implicit return 0). cc/cproc handle void main fine and keep
+// the source untouched.
+const TCC_VOID_MAIN_FIX = (src) => src.replace(/\bvoid\s+main\s*\(/g, "int main(");
 const goCmd = createGoCommand(goRunner);
 const nethackCmd = createCliNethackCommand();
 
@@ -1833,9 +1847,7 @@ async function runSegment(segmentText, stdin, isLast) {
     let original;
     try { original = await fs.read(srcFile); }
     catch (e) { process.stderr.write(`cc: cannot read ${srcFile}: ${e.message}\n`); return { ok: false, code: 1, output: "" }; }
-    const body = original.split("\n").filter((l) => !l.trim().startsWith("#")).join("\n");
-    const decls = CPROC_DECLS;
-    const prepped = body.includes("int printf(") ? body : decls + body;
+    const prepped = preprocessC(original);
     const tmpSrc = "/tmp/cc-src-" + (ccCounter++) + ".c";
     await fs.write(tmpSrc, prepped);
     const cprocPath = "/usr/bin/cproc.wasm";
@@ -1860,6 +1872,7 @@ async function runSegment(segmentText, stdin, isLast) {
       const { qbe2wasm } = await import("./qbe2wasm.js");
       const bytes = qbe2wasm(ir, {});
       await fs.writeBlob(ccOutput, new Blob([bytes], { type: "application/wasm" }));
+      wasmRunner.invalidate(ccOutput); // recompiled in place — drop the stale module
       const ccMsg = `${ccOutput}: ${bytes.length} bytes\n`;
       if (outputRedirect) await writeOut(outputRedirect, ccMsg, appendRedirect);
       else process.stdout.write(ccMsg);
@@ -1883,8 +1896,7 @@ async function runSegment(segmentText, stdin, isLast) {
     let original;
     try { original = await fs.read(srcFile); }
     catch (e) { process.stderr.write(`cproc: cannot read ${srcFile}: ${e.message}\n`); return { ok: false, code: 1, output: "" }; }
-    const body = original.split("\n").filter((l) => !l.trim().startsWith("#")).join("\n");
-    const prepped = body.includes("int printf(") ? body : CPROC_DECLS + body;
+    const prepped = preprocessC(original);
     const tmpSrc = "/tmp/cc-src-" + (ccCounter++) + ".c";
     await fs.write(tmpSrc, prepped);
     const cprocPath = "/usr/bin/cproc.wasm";
@@ -1923,8 +1935,7 @@ async function runSegment(segmentText, stdin, isLast) {
     let original;
     try { original = await fs.read(srcFile); }
     catch (e) { process.stderr.write(`tcc: cannot read ${srcFile}: ${e.message}\n`); return { ok: false, code: 1, output: "" }; }
-    const body = original.split("\n").filter((l) => !l.trim().startsWith("#")).join("\n");
-    const prepped = body.includes("int printf(") ? body : CPROC_DECLS + body;
+    const prepped = TCC_VOID_MAIN_FIX(preprocessC(original));
     const tmpSrc = "/tmp/cc-src-" + (ccCounter++) + ".c";
     await fs.write(tmpSrc, prepped);
     const tccPath = "/usr/bin/tcc.wasm";
@@ -1940,6 +1951,7 @@ async function runSegment(segmentText, stdin, isLast) {
       return { ok: false, code: wasmRunner.getExitCode(), output: "" };
     }
     const outBlob = await fs.readBlob(outFile);
+    wasmRunner.invalidate(outFile); // recompiled in place — drop the stale module
     const tccMsg = `${outFile}: ${outBlob.size} bytes\n`;
     if (outputRedirect) await writeOut(outputRedirect, tccMsg, appendRedirect);
     else process.stdout.write(tccMsg);
