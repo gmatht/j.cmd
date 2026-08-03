@@ -58,6 +58,7 @@ const SHORT = {
   wat2wasm: "compile a .wat WebAssembly text file to .wasm",
   qbe2wasm: "compile QBE IR (cproc output) to a wasm binary",
   cc: "compile C with the real cproc compiler (cproc → QBE IR → qbe2wasm)",
+  bug: "file a bug report as a GitHub issue (with terminal context)",
   bash2js: "transpile bash to JavaScript (debashcl ESTree)",
   bash: "run bash commands: transpile to JS and execute",
   which: "show the path (or builtin) the shell would run",
@@ -922,6 +923,45 @@ EXAMPLES
 
 SEE ALSO
      resize, stty
+`,
+  bug: `NAME
+     bug — file a bug report as a GitHub issue
+
+SYNOPSIS
+     bug [summary...]
+     bug --expect "expected behaviour" [summary...]   (CLI)
+     bug --lines 50 [summary...]                       (CLI)
+     bug --dry-run [summary...]                        (CLI)
+     bug --token <PAT> · bug --clear-token             (CLI)
+
+DESCRIPTION
+     bug files a report against this shell on
+     https://github.com/gmatht/j.cmd/issues (label: bug-report),
+     carrying the terminal context plus what the user expected.
+
+     In the browser the command walks you through it: it grabs the
+     last 20 lines of the terminal, asks whether that is enough
+     (y = yes / m = more, 500 lines / w = whole terminal / d = whole
+     page DOM), asks what you expected to happen instead (or trusts
+     us to infer it from the snippet), previews the report and posts
+     it. The first time, it asks for a GitHub personal access token
+     (https://github.com/settings/tokens, scopes repo / public_repo)
+     and saves it in localStorage. Without a token the report is
+     saved to /tmp/bug-report.md and copied to the clipboard.
+
+     In the CLI the same command is non-interactive: the snippet is
+     the last 20 lines of terminal output (ring buffer), the summary
+     is the argument list, and the expected behaviour is --expect.
+     The token comes from $JTSH_GITHUB_TOKEN or ~/.jtsh-gh-token
+     (bug --token saves one).
+
+EXAMPLES
+     bug "cc a.wasm says 'undefined data symbol'"
+     bug --expect "it should print the sum" "sum didn't print"
+     bug --dry-run "what will the report look like?"
+
+SEE ALSO
+     help, about, man
 `,
   resize: `NAME
      resize — report the terminal size

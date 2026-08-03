@@ -131,6 +131,48 @@ shell's C runtime (`src/c-runtime.js`); the preprocessor is minimal
 injected). `cc -S` shows the QBE IR. Build: `build-wasm-cproc.sh`
 (fork: gmatht/cproc).
 
+## Filing a Bug Report — the `bug` Command
+
+`bug` files a report against this shell as a **GitHub issue** on
+`gmatht/j.cmd` (label: `bug-report`), carrying the terminal context so
+nobody has to ask "what happened?".
+
+```
+jtsh:/home$ bug "cc says 'undefined data symbol'"
+── bug report · last 20 lines of the terminal ──
+...
+```
+
+In the browser it walks you through it: it shows the last 20 lines and
+asks whether that is enough (**y**) or you want more — 500 lines (**m**),
+the whole terminal (**w**), or the whole page DOM (**d**). It then asks
+what you expected to happen (or you trust us to infer it from the
+snippet), previews the report, and posts it. The first time, it asks
+for a GitHub personal access token (https://github.com/settings/tokens,
+`repo`/`public_repo` scope) and saves it in localStorage. Without a
+token the report is saved to `/tmp/bug-report.md` and copied to the
+clipboard instead.
+
+The CLI form is non-interactive (snippet = the last 20 lines of
+terminal output):
+
+```
+$ node src/jtsh.js
+jtsh:/home$ bug --expect "it should print 55" "fib printed nothing"
+jtsh:/home$ bug --dry-run "preview the report without posting"
+```
+
+The token comes from `$JTSH_GITHUB_TOKEN` or `~/.jtsh-gh-token`
+(`bug --token <PAT>` saves one).
+
+To triage reports on the repo side:
+
+```
+./bug-triage.sh            # list open reports (number · date · title)
+./bug-triage.sh show 12    # full report
+./bug-triage.sh pick       # walk each report, then choose numbers to fix
+```
+
 ## Background Jobs (&) — the Right-Hand Panel
 
 `cmd &` runs a pipeline in the background. `jobs` / `wait [id]` /

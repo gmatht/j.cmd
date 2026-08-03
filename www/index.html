@@ -3233,6 +3233,8 @@ Loops, conditionals, variables, arithmetic and pipes work:
                     (bash 'echo hi' · bash script.sh · cat s.sh | bash)
     man [cmd]       Manual page for a command (man alone: index;
                     man -k <word>: search pages, like apropos)
+    bug            File a bug report as a GitHub issue (terminal context +
+                    what you expected; man bug · triage: ./bug-triage.sh)
     jobs            List background jobs (&) · wait [id] · kill <id>
                     (cmd & runs in the background; see the right-hand
                     panel — each job has minimise and kill buttons)
@@ -3316,6 +3318,79 @@ Loops, conditionals, variables, arithmetic and pipes work:
   async cls(args) {
     // cls — Windows-style alias for clear
     clearViewport();
+    return 0;
+  },
+
+  async bug(args) {
+    // bug — file a bug report as a GitHub issue (gmatht/j.cmd, label
+    // bug-report) with terminal context: last 20 lines by default, or
+    // more / the whole scrollback / the whole page DOM. Asks what the
+    // user expected (or trusts us to infer it from the snippet). With
+    // no GitHub token the report is saved to /tmp + copied to the
+    // clipboard instead. Triage: ./bug-triage.sh (list / show / pick).
+    const { buildReport, postIssue, getBugToken, setBugToken, BUG_REPO } = await import("../src/bugreport.js");
+    const lastLines = (n) => (term.innerText || "").split("\n").slice(-n).join("\n");
+    const cap = (s) => s.length > 55000 ? s.slice(0, 55000) + "\n… (truncated — GitHub issue bodies cap at 64KB)" : s;
+    const summary0 = args.filter((a) => !a.startsWith("-")).join(" ") || null;
+    const inFrame = window.top !== window; // embedded iframes can't show prompt()/confirm()
+
+    // 1. capture the last 20 lines BEFORE writing anything
+    let snippet = lastLines(20);
+    let scope = "20";
+    stdout.write("\n── bug report · last 20 lines of the terminal ──\n");
+    stdout.write(snippet + "\n── end snippet ──\n");
+
+    // 2. how much context?
+    if (!inFrame) {
+      const choice = prompt("How much context should the report include?\n  y = just these 20 lines (shown above)\n  m = more (last 500 lines)\n  w = whole terminal scrollback\n  d = whole page DOM\n\n(enter y / m / w / d)", "y");
+      if (choice === null) { stdout.write("bug: cancelled\n"); return 0; }
+      const c = (choice || "y").trim().toLowerCase();
+      if (c === "m") { snippet = lastLines(500); scope = "500"; }
+      else if (c === "w") { snippet = cap(lastLines(100000)); scope = "terminal"; }
+      else if (c === "d") { snippet = cap(document.documentElement.outerHTML); scope = "dom"; }
+    }
+
+    // 3. one-line summary (optional when passed as args)
+    let summary = summary0;
+    if (!summary && !inFrame) summary = prompt("One-line summary of the bug (optional):", "");
+    if (summary === null) { stdout.write("bug: cancelled\n"); return 0; }
+
+    // 4. what did they expect?
+    let expected = "";
+    if (!inFrame) {
+      expected = prompt("What did you expect to happen instead?\n(Leave empty to trust us to figure it out from the snippet)", "");
+      if (expected === null) { stdout.write("bug: cancelled\n"); return 0; }
+    }
+
+    // 5. token (saved on first use)
+    let token = await getBugToken(localStorage);
+    if (!token && !inFrame) {
+      const t = prompt("No GitHub token saved. To file issues automatically, create one at\n  https://github.com/settings/tokens (scopes: repo / public_repo)\nand paste it here — or press Cancel to save the report locally instead.", "");
+      if (t && t.trim()) { token = t.trim(); await setBugToken(localStorage, token); }
+    }
+
+    // 6. assemble + preview
+    const body = buildReport({ summary: summary || "", expected, snippet, scope });
+    const title = "bug: " + ((summary || "").trim().slice(0, 100) || "terminal snippet report");
+    stdout.write("\n── report preview (first 50 lines) ──\n" + body.split("\n").slice(0, 50).join("\n") + "\n── end preview ──\n");
+
+    if (!token) {
+      try { await fs.write("/tmp/bug-report.md", body); } catch {}
+      let clipMsg = "";
+      try { await navigator.clipboard.writeText(body); clipMsg = " (also copied to your clipboard)"; } catch {}
+      stdout.write(`bug: no GitHub token — report saved to /tmp/bug-report.md${clipMsg}.\n`);
+      stdout.write(`     Paste it into an issue: https://github.com/${BUG_REPO}/issues/new\n`);
+      return 0;
+    }
+    if (!inFrame && !confirm(`Post this report to github.com/${BUG_REPO}/issues?`)) { stdout.write("bug: not posted.\n"); return 0; }
+    try {
+      const url = await postIssue({ token, title, body });
+      stdout.write(`bug: filed → ${url}\n`);
+    } catch (e) {
+      stderr.write(`bug: ${e.message}\n`);
+      try { await fs.write("/tmp/bug-report.md", body); } catch {}
+      stdout.write("bug: report saved to /tmp/bug-report.md — paste it into an issue manually.\n");
+    }
     return 0;
   },
 

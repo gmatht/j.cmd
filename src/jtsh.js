@@ -31,6 +31,21 @@ const sh2libFacade = buildSh2LibFacade(fs);  // debashl toolchain, injected into
 const wasmerReg = new WasmerRegistry(fs);
 const goRunner = new GoRunner(fs, { baseUrl: "www/" });
 let ccCounter = 0;
+
+// Terminal-output ring buffer (for the `bug` command): the last 1000
+// lines written to stdout/stderr, so a report can carry the terminal
+// context even without the browser DOM. Patched in at the bottom of
+// the write chain — every guard/capture wrapper restores to this.
+const outRing = [];
+function ringPush(s) {
+  if (typeof s !== "string") return;
+  for (const line of s.split("\n")) outRing.push(line);
+  while (outRing.length > 1000) outRing.shift();
+}
+const _bugBaseOut = process.stdout.write.bind(process.stdout);
+const _bugBaseErr = process.stderr.write.bind(process.stderr);
+process.stdout.write = (s, ...rest) => { ringPush(s); return _bugBaseOut(s, ...rest); };
+process.stderr.write = (s, ...rest) => { ringPush(s); return _bugBaseErr(s, ...rest); };
 // libc declarations for C source compiled by cproc: the shell strips
 // #include/#define lines (no stdio.h in the sandbox) and injects these,
 // matching the env runtime (src/c-runtime.js) that the binaries link to.
@@ -278,6 +293,56 @@ const builtins = {
   async cls(args) {
     // cls — Windows-style alias for clear
     process.stdout.write("\x1b[2J\x1b[H");
+    return 0;
+  },
+
+  async bug(args) {
+    // bug — file a bug report as a GitHub issue (gmatht/j.cmd, label
+    // bug-report) carrying the last terminal lines (the ring buffer)
+    // plus an expected-behaviour note. CLI form is non-interactive:
+    //   bug "can't compile hello"            → report from the ring buffer
+    //   bug --expect "should print 42" "msg"  → what the user expected
+    //   bug --lines 50 "msg"                 → more terminal context
+    //   bug --dry-run "msg"                  → print the report, post nothing
+    //   bug --token <PAT>                    → save a token (~/.jtsh-gh-token)
+    //   bug --clear-token                    → forget it
+    // Token: $JTSH_GITHUB_TOKEN or ~/.jtsh-gh-token. Without one, the
+    // report is written to /tmp/bug-report.md. Triage: ./bug-triage.sh
+    const { buildReport, postIssue, getBugToken, setBugToken, clearBugToken, BUG_REPO } = await import("./bugreport.js");
+    let expect = "", lines = 20, dryRun = false, rest = [];
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (a === "--expect" && args[i + 1]) expect = args[++i];
+      else if (a === "--lines" && args[i + 1]) lines = Math.max(1, parseInt(args[++i], 10) || 20);
+      else if (a === "--dry-run") dryRun = true;
+      else if (a === "--token" && args[i + 1]) { await setBugToken(null, args[++i]); process.stdout.write("bug: token saved to ~/.jtsh-gh-token\n"); return 0; }
+      else if (a === "--clear-token") { clearBugToken(null); try { const { rmSync } = await import("node:fs"); rmSync(`${process.env.HOME || process.cwd()}/.jtsh-gh-token`, { force: true }); } catch {} process.stdout.write("bug: token cleared\n"); return 0; }
+      else if (!a.startsWith("-")) rest.push(a);
+    }
+    const summary = rest.join(" ");
+    const snippet = outRing.slice(-lines).join("\n").replace(/^\s+|\s+$/g, "");
+    const scope = lines === 20 ? "20" : String(lines);
+    const body = buildReport({ summary, expected: expect, snippet, scope });
+    if (dryRun) { process.stdout.write(body); return 0; }
+    const token = await getBugToken(null);
+    if (!token) {
+      const { writeFileSync } = await import("node:fs");
+      writeFileSync("jtsh-bug-report.md", body);
+      process.stdout.write("bug: no GitHub token — report saved to ./jtsh-bug-report.md.\n");
+      process.stdout.write(`     Set one with: bug --token <PAT>  (or $JTSH_GITHUB_TOKEN)\n`);
+      process.stdout.write(`     Or paste it into: https://github.com/${BUG_REPO}/issues/new\n`);
+      return 0;
+    }
+    const title = "bug: " + ((summary || "").trim().slice(0, 100) || "terminal snippet report");
+    try {
+      const url = await postIssue({ token, title, body });
+      process.stdout.write(`bug: filed → ${url}\n`);
+    } catch (e) {
+      process.stderr.write(`bug: ${e.message}\n`);
+      const { writeFileSync } = await import("node:fs");
+      writeFileSync("jtsh-bug-report.md", body);
+      process.stdout.write("bug: report saved to ./jtsh-bug-report.md — paste it into an issue manually.\n");
+    }
     return 0;
   },
 
@@ -1473,6 +1538,8 @@ Built-in commands:
                   (wasm binary → builtin → .js/.mjs/.wasm files in $PATH)
   man [cmd]       Manual page for a command (man alone: index;
                   man -k <word>: search pages, like apropos)
+  bug            File a bug report as a GitHub issue (terminal context +
+                  what you expected; man bug · triage: ./bug-triage.sh)
   help            This help
   exit            Exit the shell
 
