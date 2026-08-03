@@ -163,6 +163,8 @@
   #term-toolbar .tb-file-btn .tb-fs-type.video { color: #ff8fb8; border-color: rgba(255, 143, 184, 0.4); }
   #term-toolbar .tb-file-btn.tb-fs-dir  { color: #7ec8e3; border-color: rgba(126, 200, 227, 0.45); }
   #term-toolbar .tb-file-btn.tb-fs-exe  { color: #7ee39a; border-color: rgba(126, 227, 154, 0.4); }
+  /* Zip archives mount as directories — amber like the ZIP badge. */
+  #term-toolbar .tb-file-btn.tb-fs-zip  { color: #ffa64d; border-color: rgba(255, 166, 77, 0.45); }
   /* Image files show the picture itself as a dimmed (~50%) background;
      the name gets a dark chip at the bottom of the thumb. */
   #term-toolbar .tb-file-btn.tb-fs-img {
@@ -471,7 +473,9 @@
   }
   #bug-form-text .bf-line .bf-mark { font-weight: 700; }
   #bug-form-text .bf-line.bf-active { background: rgba(126, 200, 227, 0.13); }
-  #bug-form-text .bf-line.bf-ellipsis { color: #6e7681; font-style: italic; padding-left: 30px; }
+  #bug-form-text .bf-line.bf-title { font-weight: 700; }
+  #bug-form-text .bf-line.bf-out { color: #6e7681; } /* outside the ▲…▼ snippet range */
+  #bug-form-text .bf-line.bf-ellipsis { color: #6e7681; font-style: italic; }
   #bug-form-hint {
     padding: 7px 14px;
     color: #8b949e;
@@ -2200,8 +2204,14 @@ const builtins = {
         try {
           const blob = await fs.readBlob(file);
           const bytes = new Uint8Array(await blob.arrayBuffer());
+          // Decode as UTF-8; when that fails the file is usually another
+          // text encoding (latin-1/ISO-8859-1 old ChangeLogs, ...), so
+          // fall back to latin-1 — it never fails and preserves every
+          // byte. looksBinary() still flags real binaries (NUL/control
+          // bytes, replacement chars).
           let content = null;
           try { content = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch {}
+          if (content === null) content = new TextDecoder("latin1").decode(bytes);
           if (content !== null && !looksBinary(content)) {
             stdout.write(content);
             if (!content.endsWith("\n")) stdout.write("\n");
@@ -3448,31 +3458,40 @@ Loops, conditionals, variables, arithmetic and pipes work:
       const center = pos[state.active];
       const start = Math.max(0, center - WIN);
       const end = Math.min(n - 1, center + WIN);
-      const ellipsis = (label) => {
+      const mkEllipsis = (label) => {
         const div = document.createElement("div");
         div.className = "bf-line bf-ellipsis";
-        div.textContent = `⋯ ${label}`;
+        const mark = document.createElement("span");
+        mark.className = "bf-mark";
+        mark.textContent = "⋯  "; // same 4-char cell as the markers
+        div.append(mark, document.createTextNode(label));
         bugFormText.appendChild(div);
       };
-      if (start > 0) ellipsis(`${start} line${start === 1 ? "" : "s"} above`);
+      if (start > 0) mkEllipsis(`${start} line${start === 1 ? "" : "s"} above`);
       let activeEl = null;
       for (let i = start; i <= end; i++) {
         const isActive = (i === state.top && state.active === "top") || (i === state.title && state.active === "title") || (i === state.bottom && state.active === "bottom");
+        const inSnippet = i >= state.top && i <= state.bottom;
         const div = document.createElement("div");
-        div.className = "bf-line" + (isActive ? " bf-active" : "");
+        div.className = "bf-line"
+          + (isActive ? " bf-active" : "")
+          + (i === state.title ? " bf-title" : "")
+          + (inSnippet ? "" : " bf-out");
         const mark = document.createElement("span");
         mark.className = "bf-mark";
         const syms = [];
         if (i === state.top) syms.push(state.active === "top" ? "▲" : "△");
         if (i === state.title) syms.push(state.active === "title" ? "●" : "○");
         if (i === state.bottom) syms.push(state.active === "bottom" ? "▼" : "▽");
-        mark.textContent = syms.length ? syms.join("") + " " : "   ";
+        // Constant 4-char marker cell: with markers or without, every
+        // line's text starts at the same column (no sideways shift).
+        mark.textContent = (syms.join("") + "   ").slice(0, 3) + " ";
         mark.style.color = syms.length ? "#7ec8e3" : "";
         div.append(mark, document.createTextNode(state.lines[i]));
         if (isActive) activeEl = div;
         bugFormText.appendChild(div);
       }
-      if (end < n - 1) ellipsis(`${n - 1 - end} line${n - 1 - end === 1 ? "" : "s"} below`);
+      if (end < n - 1) mkEllipsis(`${n - 1 - end} line${n - 1 - end === 1 ? "" : "s"} below`);
       if (activeEl) activeEl.scrollIntoView({ block: "nearest" });
     };
 
@@ -3486,17 +3505,29 @@ Loops, conditionals, variables, arithmetic and pipes work:
     // Keys go through a document-level CAPTURE listener so arrows/Enter/
     // Esc work no matter where focus is (the form div, the page, …).
     // stopPropagation keeps the shell's line editor from also reacting
-    // (no history navigation, no typing).
-    const onKey = (key, e) => {
-      if (key === "ArrowLeft") { state.active = state.active === "top" ? "title" : state.active === "title" ? "bottom" : "top"; render(); e.preventDefault(); e.stopPropagation(); return true; }
-      if (key === "ArrowRight") { state.active = state.active === "top" ? "bottom" : state.active === "bottom" ? "title" : "top"; render(); e.preventDefault(); e.stopPropagation(); return true; }
-      if (key === "ArrowUp") { move(state.active, -1); e.preventDefault(); e.stopPropagation(); return true; }
-      if (key === "ArrowDown") { move(state.active, 1); e.preventDefault(); e.stopPropagation(); return true; }
-      if (key === "Enter") { resolveForm({ ...state }); e.preventDefault(); e.stopPropagation(); return true; }
-      if (key === "Escape") { resolveForm(null); e.preventDefault(); e.stopPropagation(); return true; }
-      if (key === "c" && (e.ctrlKey || e.metaKey)) { write("^C\n", "info"); resolveForm(null); e.preventDefault(); e.stopPropagation(); return true; }
+    // (no history navigation, no typing). Note: addEventListener passes
+    // the event as the ONLY argument — read e.key inside.
+    const onKey = (e) => {
+      const key = e.key;
+      if (key === "ArrowLeft") { state.active = state.active === "top" ? "title" : state.active === "title" ? "bottom" : "top"; render(); e.preventDefault(); e.stopPropagation(); return; }
+      if (key === "ArrowRight") { state.active = state.active === "top" ? "bottom" : state.active === "bottom" ? "title" : "top"; render(); e.preventDefault(); e.stopPropagation(); return; }
+      if (key === "ArrowUp") { move(state.active, -1); e.preventDefault(); e.stopPropagation(); return; }
+      if (key === "ArrowDown") { move(state.active, 1); e.preventDefault(); e.stopPropagation(); return; }
+      if (key === "Enter") { resolveForm({ ...state }); e.preventDefault(); e.stopPropagation(); return; }
+      if (key === "Escape") { resolveForm(null); e.preventDefault(); e.stopPropagation(); return; }
+      if (key === "c" && (e.ctrlKey || e.metaKey)) {
+        // With a text selection, Ctrl/Cmd+C copies it — the page's own
+        // copy handler already ran (same document node, capture order,
+        // so its stopPropagation doesn't reach us) and the browser's
+        // default copy must NOT be prevented. Keep the form open.
+        // Without a selection, Ctrl+C cancels the report.
+        const sel = window.getSelection();
+        const hasSel = !!(sel && !sel.isCollapsed && sel.toString());
+        if (!hasSel) { write("^C\n", "info"); resolveForm(null); e.preventDefault(); }
+        e.stopPropagation();
+        return;
+      }
       e.preventDefault(); e.stopPropagation();
-      return true; // modal — swallow everything else
     };
     const onIntr = () => resolveForm(null);
     interruptCallbacks.push(onIntr);
@@ -3755,15 +3786,21 @@ Loops, conditionals, variables, arithmetic and pipes work:
     }
 
     // 2. Raw localStorage scan — catch files not reachable via the dirs
-    //    index (e.g. written to a path whose parent dir wasn't recorded)
+    //    index (e.g. written to a path whose parent dir wasn't recorded).
+    //    LocalStorageFS keys are namespaced per mount: fs:home:file:…
+    //    → /home, fs:bin:file:… → /bin (the pre-v2 flat fs:file: keyspace
+    //    is migrated away and ignored here).
     try {
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key && key.startsWith("fs:file:")) {
-          const p = key.slice("fs:file:".length);
-          const name = p.split("/").pop();
-          if (re.test(name)) {
-            results.add("/home" + p);
+      for (const [ns, mount] of [["home:", "/home"], ["bin:", "/bin"]]) {
+        const prefix = "fs:" + ns + "file:";
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if (key && key.startsWith(prefix)) {
+            const p = key.slice(prefix.length);
+            const name = p.split("/").pop();
+            if (re.test(name)) {
+              results.add(mount + p);
+            }
           }
         }
       }
@@ -5017,7 +5054,19 @@ async function runSegment(segmentText, stdin, isLast, target = null) {
       in: stdin,          // raw pipe input (string or Uint8Array)
       out: (data) => logChunks.push(data),  // capture into the pipe
     };
-    const ret = await fn(args, fs, fakeConsole, pipeText(stdin), env, sh2rt.sh2, sh2libFacade, shellApi, qbe2wasm, pipe);
+    const keyCbsBefore = keyCallbacks.length;
+    const intrCbsBefore = interruptCallbacks.length;
+    let ret;
+    try {
+      ret = await fn(args, fs, fakeConsole, pipeText(stdin), env, sh2rt.sh2, sh2libFacade, shellApi, qbe2wasm, pipe);
+    } finally {
+      // Commands may register key/interrupt callbacks (typist, watch,
+      // ...). Once the command finishes — normally or via Ctrl+C — the
+      // shell owns the keyboard again: drop whatever it left registered
+      // so a stale callback can never swallow typing or Tab completion.
+      keyCallbacks.length = keyCbsBefore;
+      interruptCallbacks.length = intrCbsBefore;
+    }
     // A command file may return a number to set its exit status
     const code = typeof ret === "number" ? ret : 0;
     output = joinOut(logChunks);
@@ -5243,6 +5292,7 @@ async function complete(line, cursorPos) {
 
   let matches = [];
   const isPath = prefix.includes("/");
+  const isFirstWord = wordStart === 0;
 
   if (isPath) {
     // Filesystem path completion
@@ -5255,13 +5305,10 @@ async function complete(line, cursorPos) {
       const entries = await fs.list(resolvedDir);
       matches = entries
         .filter(e => e.startsWith(filePrefix))
-        .map(e => {
-          const isDir = e.endsWith("/");
-          return isDir ? dir + e : dir + e;
-        });
+        .map(e => dir + e);
     } catch { /* directory doesn't exist or no permission */ }
-  } else {
-    // Command completion
+  } else if (isFirstWord) {
+    // Command completion (first word is the command, like a real shell)
     matches.push(...Object.keys(builtins).filter(name => name.startsWith(prefix)));
 
     // Search command paths: /bin (.js commands) and /usr/bin (.wasm)
@@ -5276,13 +5323,33 @@ async function complete(line, cursorPos) {
         }
       } catch { /* dir doesn't exist */ }
     }
+
+    // Real shells also offer runnable files in the cwd: after `cd`ing
+    // somewhere with foo.js, `foo<Tab>` completes it (it IS runnable).
+    if (matches.length === 0) {
+      try {
+        const cwdEntries = await fs.list(fs.cwd || "/home");
+        for (const e of cwdEntries) {
+          if (e.startsWith(prefix)) matches.push(e);
+        }
+      } catch { /* cwd not listable */ }
+    }
+  } else {
+    // Argument completion — later words are files/dirs in the cwd:
+    // `cat hel<Tab>` → hello.txt, `cd ex<Tab>` → examples/.
+    try {
+      const cwdEntries = await fs.list(fs.cwd || "/home");
+      for (const e of cwdEntries) {
+        if (e.startsWith(prefix)) matches.push(e);
+      }
+    } catch { /* cwd not listable */ }
   }
 
   matches = [...new Set(matches)].sort();
 
   if (matches.length === 1) {
     const m = matches[0];
-    const suffix = isPath && m.endsWith("/") ? "" : " ";
+    const suffix = m.endsWith("/") ? "" : " ";
     const newLine = beforeCursor.slice(0, wordStart) + m + suffix + line.slice(cursorPos);
     const newPos = wordStart + m.length + suffix.length;
     return { line: newLine, cursorPos: newPos, matches: [] };
@@ -6241,6 +6308,11 @@ tbToolbar.querySelectorAll(".tb-arrows button").forEach((b) => {
   b.addEventListener("click", () => tbDispatch(b.dataset.key));
 });
 
+// Tab — the same completion path as the keyboard Tab key. Handy on
+// touch where the soft keyboard has no Tab (tap twice quickly to list
+// all matches, like a double-Tab).
+document.getElementById("tb-tab").addEventListener("click", () => tbDispatch("Tab"));
+
 // Ctrl-key palette.
 tbCtrlBtn.addEventListener("click", (e) => {
   e.stopPropagation();
@@ -6412,19 +6484,22 @@ function makeFileButton(name) {
   const isDir = name.endsWith("/");
   const clean = isDir ? name.slice(0, -1) : name;
   const exe = !isDir && isRunnableFile(clean);
+  // Zip archives mount as directories — pressing one cd's into it.
+  const isZip = !isDir && /\.zip$/i.test(clean);
   // Image files get the picture itself as a dimmed background.
   const isImg = !isDir && /\.(png|jpe?g|gif|svg|webp|bmp|ico)$/i.test(clean);
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "tb-file-btn" + (isDir ? " tb-fs-dir" : exe ? " tb-fs-exe" : "") +
+                  (isZip ? " tb-fs-zip" : "") +
                   (isImg ? " tb-fs-img" : "");
-  const action = isDir ? "cd into" : exe ? "run" : "cat";
-  btn.title = (isDir ? "folder: " : "file: ") + fsEntryPath(name) +
+  const action = isDir ? "cd into" : isZip ? "cd into" : exe ? "run" : "cat";
+  btn.title = (isDir ? "folder: " : isZip ? "zip archive: " : "file: ") + fsEntryPath(name) +
               "\npress: " + action + " · long-press: more";
 
   const icon = document.createElement("span");
   icon.className = "tb-fs-icon";
-  icon.textContent = isDir ? "\u25B8" : isImg ? "" : "\u00B7";  // images: no dot
+  icon.textContent = isDir || isZip ? "\u25B8" : isImg ? "" : "\u00B7";  // zips navigate like folders
   const label = document.createElement("span");
   label.className = "tb-fs-name";
   label.textContent = isDir ? clean + "/" : clean;
@@ -6442,7 +6517,7 @@ function makeFileButton(name) {
     closeFileMenu();
     if (gridLpTriggered) { gridLpTriggered = false; return; }
     const q = shellQuote(clean);
-    if (isDir) tbRunCommand("cd " + q);
+    if (isDir || isZip) tbRunCommand("cd " + q);
     else if (exe) tbRunCommand(runCommandFor(clean));
     else tbRunCommand("cat " + q);
   });
@@ -6519,6 +6594,7 @@ function showFileMenu(btn, name) {
   const path = fsEntryPath(name);
   const base = path.split("/").filter(Boolean).pop() || path;
   const exe = !isDir && isRunnableFile(clean);
+  const isZip = !isDir && /\.zip$/i.test(clean);
   const menu = document.createElement("div");
   menu.className = "tb-pop tb-fs-menu";
   // Anchor to the button's right edge if the menu would overflow the
@@ -6562,6 +6638,8 @@ function showFileMenu(btn, name) {
 
   if (isDir) {
     add("cd into", () => tbRunCommand("cd " + shellQuote(clean)));
+  } else if (isZip) {
+    add("cd into (browse)", () => tbRunCommand("cd " + shellQuote(clean)));
   } else {
     add("view (cat)", () => tbRunCommand("cat " + shellQuote(clean)));
   }
@@ -6573,12 +6651,12 @@ function showFileMenu(btn, name) {
     fsClipboard = { mode: "copy", path };
     write(`copied ${path} — long-press Paste to duplicate it\n`, "info");
   });
-  // Paste lands in the long-pressed folder, else the current directory.
+  // Paste lands in the long-pressed folder/zip, else the current directory.
   if (fsClipboard) {
     const clipBase = fsClipboard.path.split("/").filter(Boolean).pop();
-    const destDir = isDir ? path : fs.cwd;
+    const destDir = (isDir || isZip) ? path : fs.cwd;
     const destPath = (destDir === "/" ? "" : destDir.replace(/\/+$/, "")) + "/" + clipBase;
-    add(isDir ? "Paste into folder" : "Paste here", () => {
+    add(isDir ? "Paste into folder" : isZip ? "Paste into zip" : "Paste here", () => {
       if (destPath === fsClipboard.path) { stderr.write("paste: already here\n"); return; }
       if (destPath.startsWith(fsClipboard.path + "/")) {
         stderr.write("paste: cannot copy a folder into itself\n");
@@ -6622,7 +6700,7 @@ function showFileMenu(btn, name) {
     })();
   });
   if (!isDir) {
-    add("Edit", () => tbRunCommand("edit " + shellQuote(clean)));
+    if (!isZip) add("Edit", () => tbRunCommand("edit " + shellQuote(clean)));
     if (exe) add("Run", () => tbRunCommand(runCommandFor(clean)));
     add("Download", () => {
       (async () => {
