@@ -6352,10 +6352,15 @@ return 1;
       `  mount github:gmatht/sh2perl /mymount  -- attach a repo at a path\n` +
       `  ls /git/github.com/torvalds/linux/  -- real git protocol, any repo\n` +
       `  cat /home/examples/hello.sh      -- a sample script\n` +
+      `  python /home/examples/sample.py  -- run a Python script\n` +
+      `  perl /home/examples/sample.pl    -- run a Perl script\n` +
+      `  lua /home/examples/sample.lua    -- run a Lua script\n` +
+      `  cc /home/examples/sample.c && ./a.wasm  -- compile & run C\n` +
       `  edit /home/examples/note.txt     -- edit a file\n` +
       `  ls /home/examples/               -- includes symlinked sample files\n` +
       `  cat /home/examples/sample.txt    -- a sample text file (via symlink)\n` +
       `  ls -l /home/examples/sample.mp3  -- a symlink into /http/\n` +
+      `  cd /home/examples/sample.zip && ls && cat Hello.txt  -- browse a zip\n` +
       `  ls /dev/                         -- browser devices\n` +
       `  cat /dev/info                    -- system info\n` +
       `  ls /proc/                        -- processes + browser stats\n` +
@@ -6371,6 +6376,55 @@ return 1;
       `Notes\n=====\n\nEdit this file with:  edit /home/examples/note.txt\n` +
       `Ctrl+S to save, Esc to cancel.\n`);
 
+    // Sample programs in the languages the shell can run. Run them from
+    // the file grid's long-press menu (Run), or type the command:
+    //   python sample.py · perl sample.pl · lua sample.lua
+    //   tcc sample.c && ./a.wasm   (in-shell C compiler — wasm32 tcc)
+    //   cc sample.c && ./a.wasm    (cproc → QBE → wasm)
+    syncWrite(this._getBackend("/home/examples/sample.c"), "/examples/sample.c",
+`/* sample.c - compile & run:  tcc sample.c && ./a.wasm
+   (or cc sample.c && ./a.wasm — the cproc pipeline) */
+#include <stdio.h>
+
+int main(void) {
+    printf("Hello from C! %d\\n", 2024);
+    int total = 0;
+    for (int i = 1; i <= 10; i++) total += i;
+    if (total == 55) {
+        puts("sum 1..10 = 55");
+        return 0;
+    }
+    puts("wrong!");
+    return 1;
+}
+`);
+    syncWrite(this._getBackend("/home/examples/sample.py"), "/examples/sample.py",
+`# sample.py — run with:  python sample.py
+total = 0
+for i in range(1, 11):
+    total += i
+    print("i = {:2d}, running total = {:2d}".format(i, total))
+print("sum 1..10 =", total)
+`);
+    syncWrite(this._getBackend("/home/examples/sample.pl"), "/examples/sample.pl",
+`# sample.pl — run with:  perl sample.pl
+my $total = 0;
+for my $i (1 .. 10) {
+    $total += $i;
+    printf "i = %2d, running total = %2d\\n", $i, $total;
+}
+print "sum 1..10 = $total\\n";
+`);
+    syncWrite(this._getBackend("/home/examples/sample.lua"), "/examples/sample.lua",
+`-- sample.lua — run with:  lua sample.lua
+local total = 0
+for i = 1, 10 do
+  total = total + i
+  print(string.format("i = %2d, running total = %2d", i, total))
+end
+print("sum 1..10 = " .. total)
+`);
+
     // Sample files, one per common file type — symlinks into /http/'s
     // featured CORS-enabled archives. Symlinks live in the VFS layer,
     // so this is cheap, crosses mounts, and never copies bytes; they're
@@ -6383,15 +6437,14 @@ return 1;
     // Wikimedia Commons and GitHub Pages instead.
     this._linkSync("/http/raw.githubusercontent.com/mdn/webaudio-examples/main/audio-analyser/viper.mp3", "/home/examples/sample.mp3");
     this._linkSync("/http/upload.wikimedia.org/wikipedia/commons/d/db/Alligatorbellowedit.ogg", "/home/examples/sample.ogg");
-    // ogv is Theora: plays in Firefox, NOT in Chromium browsers
-    // (Chrome/Brave/Edge dropped Theora). Kept as a format sample;
-    // sample.webm (VP9) and sample.mp4 (H.264) play everywhere.
-    this._linkSync("/http/upload.wikimedia.org/wikipedia/commons/3/3b/Big_Buck_Bunny_extract.ogv", "/home/examples/sample.ogv");
+    // Video samples: mp4 (H.264) and webm (VP9) play in every browser.
     this._linkSync("/http/upload.wikimedia.org/wikipedia/commons/c/c1/Diehl_Wecker_%28ca._1955%29.webm", "/home/examples/sample.webm");
     this._linkSync("/http/upload.wikimedia.org/wikipedia/commons/6/6a/JavaScript-logo.png", "/home/examples/sample.png");
     this._linkSync("/http/picsum.photos/id/237/200/300", "/home/examples/sample.jpg");
     this._linkSync("/http/mdn.github.io/learning-area/html/multimedia-and-embedding/video-and-audio-content/rabbit320.mp4", "/home/examples/sample.mp4");
     this._linkSync("/http/raw.githubusercontent.com/git/git/master/README.md", "/home/examples/sample.txt");
+    // Zip archives mount lazily as directories — cd into this one.
+    this._linkSync("/http/raw.githubusercontent.com/Stuk/jszip/main/test/ref/all.zip", "/home/examples/sample.zip");
   }
 
   _getBackend(resolvedPath) {
@@ -6531,6 +6584,14 @@ return 1;
   zipUnmounted(resolvedPath) {
     this.autoUnmounted.add(resolvedPath);
     this.zipCache.delete(resolvedPath);
+  }
+
+  // True when path resolves to exactly a mounted .zip archive (so cat
+  // can say "cd into it" instead of a generic binary hint).
+  async isZipMount(path) {
+    const r = this._resolve(path);
+    await this._ensureZipMounts(r);
+    return this.mounts.some((m) => m.zip && m.prefix === r);
   }
 
   // Human-readable mount table, for `mount` / /proc/mounts

@@ -81,7 +81,15 @@ export async function runTcc({ vfs, runner, args, fetchBundle }) {
     .filter(Boolean);
   env.WASM_SKIP_HARVEST = skips.join(":");
   try {
-    return await runner.run(tccPath, ["tcc", ...args]);
+    // cc convention: `tcc prog.c` compiles to a.wasm. The wasm32 build
+    // has no linker, so without -c tcc would run its link step and write
+    // a.out; without -o it writes <src>.o. Normalize both so a bare
+    // `tcc sample.c` is a compile that lands in ./a.wasm (like cc).
+    let tccArgs = args;
+    if (!tccArgs.includes("-c") && !tccArgs.includes("-S"))
+      tccArgs = ["-c", ...tccArgs];
+    if (!tccArgs.includes("-o")) tccArgs = [...tccArgs, "-o", "a.wasm"];
+    return await runner.run(tccPath, ["tcc", ...tccArgs]);
   } finally {
     env.WASM_SKIP_HARVEST = prevSkip || "";
   }

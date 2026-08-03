@@ -384,7 +384,14 @@ const builtins = {
       return 2;
     }
     const src = args[0];
-    const dest = args[1];
+    let dest = args[1];
+    // If dest is a directory (trailing /), a bare mount point like /pc,
+    // or the current dir '.' — append the source basename (same as the
+    // browser shell's cp).
+    const base = src.split("/").pop();
+    if (dest.endsWith("/") || dest === "/pc" || dest === "." || dest === "..") {
+      dest = dest.endsWith("/") ? dest + base : dest + "/" + base;
+    }
     try {
       // Binary-aware copy (readBlob/writeBlob); falls back to text for
       // backends without blob support.
@@ -408,7 +415,11 @@ const builtins = {
       return 2;
     }
     const src = args[0];
-    const dest = args[1];
+    let dest = args[1];
+    const base = src.split("/").pop();
+    if (dest.endsWith("/") || dest === "/pc" || dest === "." || dest === "..") {
+      dest = dest.endsWith("/") ? dest + base : dest + "/" + base;
+    }
     try {
       // Moving a symlink relinks it — the target is never copied or
       // moved (mv follows the link's path, not its destination).
@@ -2049,10 +2060,9 @@ async function runSegment(segmentText, stdin, isLast) {
       const buf = await readFile(new URL(`../www/${rel}`, import.meta.url));
       return new Uint8Array(buf);
     };
-    // Default output a.wasm (like cc); tcc's own default is <src>.o.
-    const tccArgs = args.some((a) => a === "-o") ? args : [...args, "-o", "a.wasm"];
+    // runTcc normalizes to `-c <src> -o a.wasm` (cc convention).
     try {
-      const r = await runTcc({ vfs: fs, runner: wasmRunner, args: tccArgs, fetchBundle });
+      const r = await runTcc({ vfs: fs, runner: wasmRunner, args, fetchBundle });
       const out = wasmRunner.getStdout(), err = wasmRunner.getStderr();
       const code = wasmRunner.getExitCode();
       if (code === 0 && !args.some((a) => a === "-o")) {

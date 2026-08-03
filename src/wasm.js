@@ -236,7 +236,12 @@ export class WasmRunner {
     // "." → "/" (the original behaviour).
     const seededDirs = ["/home", "/tmp", "/bin"];
     const sandboxCwd = this.vfs.cwd || "/home";
-    const preopenCwd = seededDirs.includes(sandboxCwd) ? sandboxCwd : "/";
+    // cwd under a seeded dir is reachable in the sandbox (e.g.
+    // /home/examples) — preopen it directly so relative file args
+    // (`cd /home/examples; tcc sample.c`) resolve like a real shell's.
+    const underSeeded = (p) =>
+      seededDirs.includes(p) || seededDirs.some((d) => p.startsWith(d + "/"));
+    const preopenCwd = underSeeded(sandboxCwd) ? sandboxCwd : "/";
     const preopens = {};
     for (const dir of seededDirs) preopens[dir] = dir;
     preopens["."] = preopenCwd; // last entry → the guest's cwd

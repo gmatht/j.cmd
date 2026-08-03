@@ -2143,6 +2143,11 @@ const builtins = {
             // Binary in a pipe/redirect: pass the raw bytes so
             // `cat file.gz | gunzip` round-trips intact.
             stdout.write(bytes);
+          } else if (await fs.isZipMount(file)) {
+            // A mounted .zip archive: it's browsable as a directory,
+            // so the generic "view via edit" hint doesn't apply.
+            stderr.write(`cat: ${file}: zip archive — cd into it to browse (ls ${file}/), or cp ${file} /pc to download\n`);
+            continue;
           } else {
             stderr.write(`cat: ${file}: binary file (use 'cp ${file} /pc' to download or view via edit)\n`);
             continue;
@@ -4597,6 +4602,15 @@ async function runSegment(segmentText, stdin, isLast, target = null) {
           const outText = wasmRunner.getStdout();
           if (outputRedirect) await writeOut(outputRedirect, outText, appendRedirect);
           else if (outText) stdout.write(outText);
+          // cc-style confirmation: tcc -c compiles to a.wasm by default
+          // (runTcc adds -o a.wasm) — report the artifact like cc does.
+          if (code === 0 && !args.includes("-o")) {
+            const outFile = fs._resolve("a.wasm");
+            const st = await fs.stat(outFile).catch(() => null);
+            const msg = `${outFile}: ${st ? st.size : 0} bytes\n`;
+            if (outputRedirect) await writeOut(outputRedirect, msg, appendRedirect);
+            else stdout.write(msg);
+          }
           return { ok: true, code: 0, output: outText };
         }
 
@@ -6087,10 +6101,32 @@ function fileTypeBadge(clean) {
   return b;
 }
 
+// What command runs this file? .js/.mjs/.wasm are the shell's native
+// executable formats (./file); everything else goes through its
+// interpreter — cc for C (→ ./a.wasm, the classic a.out flow), the
+// reactors for python/perl/lua, the bash transpiler for shell scripts.
+function runCommandFor(file) {
+  const q = shellQuote(file);
+  const ext = file.includes(".") ? file.slice(file.lastIndexOf(".") + 1).toLowerCase() : "";
+  if (/^(js|mjs|wasm)$/.test(ext)) return "./" + q;
+  if (ext === "c") return "cc " + q + " && ./a.wasm";
+  if (ext === "py") return "python " + q;
+  if (ext === "pl") return "perl " + q;
+  if (ext === "lua") return "lua " + q;
+  if (ext === "sh" || ext === "bash" || ext === "jtsh") return "bash " + q;
+  return "./" + q;
+}
+
+// Files the shell can run directly from the grid: native executables
+// plus the interpreter-backed script formats.
+function isRunnableFile(name) {
+  return /\.(js|mjs|wasm|c|py|pl|lua|sh|bash|jtsh)$/i.test(name);
+}
+
 function makeFileButton(name) {
   const isDir = name.endsWith("/");
   const clean = isDir ? name.slice(0, -1) : name;
-  const exe = !isDir && /\.(js|mjs|wasm)$/i.test(clean);
+  const exe = !isDir && isRunnableFile(clean);
   // Image files get the picture itself as a dimmed background.
   const isImg = !isDir && /\.(png|jpe?g|gif|svg|webp|bmp|ico)$/i.test(clean);
   const btn = document.createElement("button");
@@ -6122,7 +6158,7 @@ function makeFileButton(name) {
     if (gridLpTriggered) { gridLpTriggered = false; return; }
     const q = shellQuote(clean);
     if (isDir) tbRunCommand("cd " + q);
-    else if (exe) tbRunCommand("./" + q);
+    else if (exe) tbRunCommand(runCommandFor(clean));
     else tbRunCommand("cat " + q);
   });
 
@@ -6197,7 +6233,7 @@ function showFileMenu(btn, name) {
   const clean = name.replace(/\/+$/, "");
   const path = fsEntryPath(name);
   const base = path.split("/").filter(Boolean).pop() || path;
-  const exe = !isDir && /\.(js|mjs|wasm)$/i.test(clean);
+  const exe = !isDir && isRunnableFile(clean);
   const menu = document.createElement("div");
   menu.className = "tb-pop tb-fs-menu";
   // Anchor to the button's right edge if the menu would overflow the
@@ -6302,7 +6338,7 @@ function showFileMenu(btn, name) {
   });
   if (!isDir) {
     add("Edit", () => tbRunCommand("edit " + shellQuote(clean)));
-    if (exe) add("Run", () => tbRunCommand("./" + shellQuote(clean)));
+    if (exe) add("Run", () => tbRunCommand(runCommandFor(clean)));
     add("Download", () => {
       (async () => {
         try {
