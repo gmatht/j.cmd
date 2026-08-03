@@ -423,6 +423,62 @@
     display: flex;
     flex-direction: column;
   }
+  /* ── bug-report form (the `bug` command) ────────────────────────
+     A single-screen selection form: the terminal scrollback with three
+     markers (▲ top of snippet · ● title line · ▼ bottom of snippet).
+     ←/→ choose which marker is active, ↑/↓ move it, Enter files the
+     report, Esc cancels. */
+  #bug-form {
+    display: none;
+    position: fixed;
+    left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    width: min(960px, 94vw);
+    max-height: 85vh;
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 10px;
+    z-index: 20;
+    flex-direction: column;
+    box-shadow: 0 10px 50px rgba(0, 0, 0, 0.65);
+    overflow: hidden;
+  }
+  #bug-form.active { display: flex; }
+  #bug-form-header {
+    background: #161b22;
+    padding: 8px 14px;
+    color: #7ec8e3;
+    font-size: 12px;
+    border-bottom: 1px solid #30363d;
+    flex: 0 0 auto;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #bug-form-text {
+    margin: 0;
+    padding: 8px 0;
+    overflow: auto;
+    flex: 1 1 auto;
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  #bug-form-text .bf-line {
+    display: block;
+    padding: 0 14px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: #c9d1d9;
+  }
+  #bug-form-text .bf-line .bf-mark { font-weight: 700; }
+  #bug-form-text .bf-line.bf-active { background: rgba(126, 200, 227, 0.13); }
+  #bug-form-hint {
+    padding: 7px 14px;
+    color: #8b949e;
+    font-size: 12px;
+    border-top: 1px solid #30363d;
+    flex: 0 0 auto;
+  }
+  #bug-form-hint b { color: #c9d1d9; font-weight: 600; }
   #editor-header {
     background: #161b22;
     padding: 8px 16px;
@@ -553,6 +609,14 @@
     <div id="editor-preview">
       <div id="editor-preview-note"></div>
     </div>
+  </div>
+</div>
+<div id="bug-form" class="hidden">
+  <div id="bug-form-header"></div>
+  <div id="bug-form-text"></div>
+  <div id="bug-form-hint">
+    <b>←/→</b> select marker (▲ top · ● title · ▼ bottom) &nbsp;<b>↑/↓</b> move it
+    &nbsp;<b>Enter</b> file the report &nbsp;<b>Esc</b> cancel
   </div>
 </div>
 
@@ -3323,76 +3387,171 @@ Loops, conditionals, variables, arithmetic and pipes work:
 
   async bug(args) {
     // bug — file a bug report as a GitHub issue (gmatht/j.cmd, label
-    // bug-report) with terminal context: last 20 lines by default, or
-    // more / the whole scrollback / the whole page DOM. Asks what the
-    // user expected (or trusts us to infer it from the snippet). With
-    // no GitHub token the report is saved to /tmp + copied to the
-    // clipboard instead. Triage: ./bug-triage.sh (list / show / pick).
-    const { buildReport, postIssue, getBugToken, setBugToken, BUG_REPO } = await import("../src/bugreport.js");
-    const lastLines = (n) => (term.innerText || "").split("\n").slice(-n).join("\n");
-    const cap = (s) => s.length > 55000 ? s.slice(0, 55000) + "\n… (truncated — GitHub issue bodies cap at 64KB)" : s;
-    const summary0 = args.filter((a) => !a.startsWith("-")).join(" ") || null;
-    const inFrame = window.top !== window; // embedded iframes can't show prompt()/confirm()
+    // bug-report). A single form opens with the terminal scrollback and
+    // three markers — ▲ top of snippet · ● title line · ▼ bottom of
+    // snippet. ←/→ pick the marker, ↑/↓ move it, Enter files the report,
+    // Esc cancels. One prompt then asks what the user expected (Enter =
+    // trust us to infer it). Posting: with a saved GitHub token the
+    // report posts via the API; without one the shell prefills a GitHub
+    // web form (issues/new?title=…&body=…) the user submits in their own
+    // browser — no token in this shell. Either way the report is saved
+    // to /tmp/bug-report.md + copied to the clipboard. Triage:
+    // ./bug-triage.sh (list / show / pick).
+    const { buildReport, postIssue, getBugToken, setBugToken, clearBugToken, BUG_REPO } = await import("../src/bugreport.js");
+    const inFrame = window.top !== window; // embedded iframes can't show prompt()
 
-    // 1. capture the last 20 lines BEFORE writing anything
-    let snippet = lastLines(20);
-    let scope = "20";
-    stdout.write("\n── bug report · last 20 lines of the terminal ──\n");
-    stdout.write(snippet + "\n── end snippet ──\n");
-
-    // 2. how much context?
-    if (!inFrame) {
-      const choice = prompt("How much context should the report include?\n  y = just these 20 lines (shown above)\n  m = more (last 500 lines)\n  w = whole terminal scrollback\n  d = whole page DOM\n\n(enter y / m / w / d)", "y");
-      if (choice === null) { stdout.write("bug: cancelled\n"); return 0; }
-      const c = (choice || "y").trim().toLowerCase();
-      if (c === "m") { snippet = lastLines(500); scope = "500"; }
-      else if (c === "w") { snippet = cap(lastLines(100000)); scope = "terminal"; }
-      else if (c === "d") { snippet = cap(document.documentElement.outerHTML); scope = "dom"; }
+    // flags: bug --token <PAT> · bug --clear-token · bug --webform
+    let webform = false, rest = [];
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (a === "--token" && args[i + 1]) { await setBugToken(localStorage, args[++i]); stdout.write("bug: token saved\n"); return 0; }
+      else if (a === "--clear-token") { clearBugToken(localStorage); stdout.write("bug: token cleared\n"); return 0; }
+      else if (a === "--webform") webform = true;
+      else if (!a.startsWith("-")) rest.push(a);
     }
+    const summary0 = rest.join(" ") || null;
 
-    // 3. one-line summary (optional when passed as args)
-    let summary = summary0;
-    if (!summary && !inFrame) summary = prompt("One-line summary of the bug (optional):", "");
-    if (summary === null) { stdout.write("bug: cancelled\n"); return 0; }
+    // Snapshot the terminal BEFORE writing anything. The last line is
+    // the current prompt with "bug" typed — the bottom marker defaults
+    // there, the title marker to the last real command line above it.
+    const lines = (term.innerText || "").split("\n");
+    while (lines.length && lines[lines.length - 1] === "") lines.pop();
+    const n = lines.length;
+    if (n === 0) { stdout.write("bug: nothing in the terminal to report\n"); return 0; }
+    const isPrompt = (l) => /^[^$]*\$ /.test(l);
+    // Default title: the last real command above the prompt (skip the
+    // current "bug" line itself).
+    let titleIdx = n - 1;
+    for (let i = n - 1; i >= 0; i--) {
+      const cmd = (lines[i] || "").replace(/^[^$]*\$ /, "").trim();
+      if (isPrompt(lines[i]) && i < n - 1 && !cmd.startsWith("bug")) { titleIdx = i; break; }
+    }
+    const state = { lines, top: Math.max(0, titleIdx - 20), title: titleIdx, bottom: n - 1, active: "top" };
 
-    // 4. what did they expect?
+    const bugFormEl = document.getElementById("bug-form");
+    const bugFormText = document.getElementById("bug-form-text");
+    const bugFormHeader = document.getElementById("bug-form-header");
+    let resolveForm = null;
+    const formDone = new Promise((res) => { resolveForm = res; });
+
+    const render = () => {
+      const t = (state.lines[state.title] || "").replace(/^[^$]*\$ /, "").trim() || "(empty line)";
+      bugFormHeader.textContent = `bug report · title: ${t.slice(0, 70)} · snippet: ${state.bottom - state.top + 1} lines · ${state.active} marker active`;
+      bugFormText.textContent = "";
+      let activeEl = null;
+      for (let i = 0; i < state.lines.length; i++) {
+        const isActive = (i === state.top && state.active === "top") || (i === state.title && state.active === "title") || (i === state.bottom && state.active === "bottom");
+        const div = document.createElement("div");
+        div.className = "bf-line" + (isActive ? " bf-active" : "");
+        const mark = document.createElement("span");
+        mark.className = "bf-mark";
+        const syms = [];
+        if (i === state.top) syms.push(state.active === "top" ? "▲" : "△");
+        if (i === state.title) syms.push(state.active === "title" ? "●" : "○");
+        if (i === state.bottom) syms.push(state.active === "bottom" ? "▼" : "▽");
+        mark.textContent = syms.length ? syms.join("") + " " : "   ";
+        mark.style.color = syms.length ? "#7ec8e3" : "";
+        div.append(mark, document.createTextNode(state.lines[i]));
+        if (isActive) activeEl = div;
+        bugFormText.appendChild(div);
+      }
+      if (activeEl) activeEl.scrollIntoView({ block: "nearest" });
+    };
+
+    const move = (marker, d) => {
+      if (marker === "top") state.top = Math.max(0, Math.min(state.bottom, state.top + d));
+      else if (marker === "bottom") state.bottom = Math.min(n - 1, Math.max(state.top, state.bottom + d));
+      else state.title = Math.max(0, Math.min(n - 1, state.title + d));
+      render();
+    };
+
+    const onKey = (key) => {
+      if (key === "ArrowLeft") { state.active = state.active === "top" ? "title" : state.active === "title" ? "bottom" : "top"; render(); return true; }
+      if (key === "ArrowRight") { state.active = state.active === "top" ? "bottom" : state.active === "bottom" ? "title" : "top"; render(); return true; }
+      if (key === "ArrowUp") { move(state.active, -1); return true; }
+      if (key === "ArrowDown") { move(state.active, 1); return true; }
+      if (key === "Enter") { resolveForm({ ...state }); return true; }
+      if (key === "Escape") { resolveForm(null); return true; }
+      return true; // modal — swallow everything else
+    };
+    const onIntr = () => resolveForm(null);
+    keyCallbacks.push(onKey);
+    interruptCallbacks.push(onIntr);
+
+    bugFormEl.classList.add("active");
+    input.disabled = true;
+    promptLine.style.display = "none";
+    render();
+    input.focus();
+
+    let sel;
+    try {
+      sel = await formDone;
+    } finally {
+      keyCallbacks = keyCallbacks.filter((f) => f !== onKey);
+      interruptCallbacks = interruptCallbacks.filter((f) => f !== onIntr);
+      bugFormEl.classList.remove("active");
+      input.disabled = false;
+      promptLine.style.display = "";
+      input.focus();
+    }
+    if (!sel) { stdout.write("bug: cancelled\n"); return 0; }
+
+    let snippet = state.lines.slice(sel.top, sel.bottom + 1).join("\n").trim();
+    if (snippet.length > 50000) snippet = snippet.slice(0, 50000) + "\n… (truncated — GitHub issue bodies cap at 64KB)";
+    const titleLine = (state.lines[sel.title] || "").replace(/^[^$]*\$ /, "").trim();
+    const title = "bug: " + ((titleLine || summary0 || "").trim().slice(0, 100) || "terminal snippet report");
+
+    // What did they expect? (one prompt; empty = trust us)
     let expected = "";
     if (!inFrame) {
       expected = prompt("What did you expect to happen instead?\n(Leave empty to trust us to figure it out from the snippet)", "");
       if (expected === null) { stdout.write("bug: cancelled\n"); return 0; }
     }
 
-    // 5. token (saved on first use)
-    let token = await getBugToken(localStorage);
+    const body = buildReport({ summary: summary0 || "", expected, snippet, scope: "form" });
+
+    // Save + clipboard regardless (cheap — the web form needs the copy anyway).
+    try { await fs.write("/tmp/bug-report.md", body); } catch {}
+    let copied = false;
+    try { await navigator.clipboard.writeText(body); copied = true; } catch {}
+
+    // Post via the saved token, or prefill a GitHub web form (no token
+    // in this shell — the user submits in their own GitHub session).
+    let token = webform ? null : await getBugToken(localStorage);
     if (!token && !inFrame) {
-      const t = prompt("No GitHub token saved. To file issues automatically, create one at\n  https://github.com/settings/tokens (scopes: repo / public_repo)\nand paste it here — or press Cancel to save the report locally instead.", "");
-      if (t && t.trim()) { token = t.trim(); await setBugToken(localStorage, token); }
+      const t = prompt("Paste a GitHub token to post directly (saved for next time) —\nor press Enter to open the prefilled GitHub form instead.\n\nToken link: https://github.com/settings/tokens (scopes: repo / public_repo)", "");
+      if (t !== null && t.trim()) { token = t.trim(); await setBugToken(localStorage, token); }
     }
-
-    // 6. assemble + preview
-    const body = buildReport({ summary: summary || "", expected, snippet, scope });
-    const title = "bug: " + ((summary || "").trim().slice(0, 100) || "terminal snippet report");
-    stdout.write("\n── report preview (first 50 lines) ──\n" + body.split("\n").slice(0, 50).join("\n") + "\n── end preview ──\n");
-
-    if (!token) {
-      try { await fs.write("/tmp/bug-report.md", body); } catch {}
-      let clipMsg = "";
-      try { await navigator.clipboard.writeText(body); clipMsg = " (also copied to your clipboard)"; } catch {}
-      stdout.write(`bug: no GitHub token — report saved to /tmp/bug-report.md${clipMsg}.\n`);
-      stdout.write(`     Paste it into an issue: https://github.com/${BUG_REPO}/issues/new\n`);
-      return 0;
+    if (token) {
+      try {
+        const url = await postIssue({ token, title, body });
+        stdout.write(`bug: filed → ${url}\n`);
+        return 0;
+      } catch (e) {
+        stderr.write(`bug: ${e.message} — opening the web form instead.\n`);
+      }
     }
-    if (!inFrame && !confirm(`Post this report to github.com/${BUG_REPO}/issues?`)) { stdout.write("bug: not posted.\n"); return 0; }
-    try {
-      const url = await postIssue({ token, title, body });
-      stdout.write(`bug: filed → ${url}\n`);
-    } catch (e) {
-      stderr.write(`bug: ${e.message}\n`);
-      try { await fs.write("/tmp/bug-report.md", body); } catch {}
-      stdout.write("bug: report saved to /tmp/bug-report.md — paste it into an issue manually.\n");
+    const url = `https://github.com/${BUG_REPO}/issues/new?title=${encodeURIComponent(title)}&body=${encodeURIComponent(body)}`;
+    let opened = false;
+    try { opened = !!window.open(url, "_blank"); } catch {}
+    if (opened) {
+      stdout.write(`bug: opened the prefilled GitHub form — review & submit there (${BUG_REPO})\n`);
+    } else {
+      // Popup blocked — render a clickable link in the terminal instead.
+      const a = document.createElement("a");
+      a.href = url; a.target = "_blank"; a.rel = "noopener";
+      a.textContent = url;
+      a.style.color = "#7ec8e3"; a.style.textDecoration = "underline";
+      const span = document.createElement("span");
+      span.className = "out";
+      span.append(document.createTextNode("bug: click to review & submit: "), a, document.createTextNode("\n"));
+      term.insertBefore(span, spinner.active ? spinner.el : promptLine);
     }
+    stdout.write(`bug: report saved to /tmp/bug-report.md${copied ? " + copied to clipboard" : ""}\n`);
     return 0;
   },
+
 
   async resize(args) {
     // The terminal tracks the window size automatically; this builtin

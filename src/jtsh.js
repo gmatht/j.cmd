@@ -304,17 +304,20 @@ const builtins = {
     //   bug --expect "should print 42" "msg"  → what the user expected
     //   bug --lines 50 "msg"                 → more terminal context
     //   bug --dry-run "msg"                  → print the report, post nothing
+    //   bug --webform "msg"                  → print the prefilled GitHub form URL
     //   bug --token <PAT>                    → save a token (~/.jtsh-gh-token)
     //   bug --clear-token                    → forget it
     // Token: $JTSH_GITHUB_TOKEN or ~/.jtsh-gh-token. Without one, the
-    // report is written to /tmp/bug-report.md. Triage: ./bug-triage.sh
+    // report is written to ./jtsh-bug-report.md and the prefilled
+    // GitHub form URL is printed. Triage: ./bug-triage.sh
     const { buildReport, postIssue, getBugToken, setBugToken, clearBugToken, BUG_REPO } = await import("./bugreport.js");
-    let expect = "", lines = 20, dryRun = false, rest = [];
+    let expect = "", lines = 20, dryRun = false, webform = false, rest = [];
     for (let i = 0; i < args.length; i++) {
       const a = args[i];
       if (a === "--expect" && args[i + 1]) expect = args[++i];
       else if (a === "--lines" && args[i + 1]) lines = Math.max(1, parseInt(args[++i], 10) || 20);
       else if (a === "--dry-run") dryRun = true;
+      else if (a === "--webform") webform = true;
       else if (a === "--token" && args[i + 1]) { await setBugToken(null, args[++i]); process.stdout.write("bug: token saved to ~/.jtsh-gh-token\n"); return 0; }
       else if (a === "--clear-token") { clearBugToken(null); try { const { rmSync } = await import("node:fs"); rmSync(`${process.env.HOME || process.cwd()}/.jtsh-gh-token`, { force: true }); } catch {} process.stdout.write("bug: token cleared\n"); return 0; }
       else if (!a.startsWith("-")) rest.push(a);
@@ -324,16 +327,17 @@ const builtins = {
     const scope = lines === 20 ? "20" : String(lines);
     const body = buildReport({ summary, expected: expect, snippet, scope });
     if (dryRun) { process.stdout.write(body); return 0; }
-    const token = await getBugToken(null);
+    const title = "bug: " + ((summary || "").trim().slice(0, 100) || "terminal snippet report");
+    const token = webform ? null : await getBugToken(null);
     if (!token) {
       const { writeFileSync } = await import("node:fs");
       writeFileSync("jtsh-bug-report.md", body);
       process.stdout.write("bug: no GitHub token — report saved to ./jtsh-bug-report.md.\n");
       process.stdout.write(`     Set one with: bug --token <PAT>  (or $JTSH_GITHUB_TOKEN)\n`);
-      process.stdout.write(`     Or paste it into: https://github.com/${BUG_REPO}/issues/new\n`);
+      const url = `https://github.com/${BUG_REPO}/issues/new?title=${encodeURIComponent(title)}&body=${encodeURIComponent(body)}`;
+      process.stdout.write(`     …or open the prefilled GitHub form:\n     ${url}\n`);
       return 0;
     }
-    const title = "bug: " + ((summary || "").trim().slice(0, 100) || "terminal snippet report");
     try {
       const url = await postIssue({ token, title, body });
       process.stdout.write(`bug: filed → ${url}\n`);

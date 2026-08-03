@@ -24,6 +24,7 @@ export function buildReport({ summary = "", expected = "", snippet = "", scope =
     scope === "500" ? "Terminal (last 500 lines)"
     : scope === "terminal" ? "Terminal (whole scrollback)"
     : scope === "dom" ? "Page DOM (first 200KB)" // the DOM dump is capped in the shell
+    : scope === "form" ? "Terminal (range selected with the bug form)"
     : "Terminal (last 20 lines)";
   const expectedText = expected.trim()
     ? expected.trim()

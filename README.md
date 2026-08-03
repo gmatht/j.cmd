@@ -143,15 +143,21 @@ jtsh:/home$ bug "cc says 'undefined data symbol'"
 ...
 ```
 
-In the browser it walks you through it: it shows the last 20 lines and
-asks whether that is enough (**y**) or you want more — 500 lines (**m**),
-the whole terminal (**w**), or the whole page DOM (**d**). It then asks
-what you expected to happen (or you trust us to infer it from the
-snippet), previews the report, and posts it. The first time, it asks
-for a GitHub personal access token (https://github.com/settings/tokens,
-`repo`/`public_repo` scope) and saves it in localStorage. Without a
-token the report is saved to `/tmp/bug-report.md` and copied to the
-clipboard instead.
+In the browser it opens a single selection form: the terminal scrollback
+with three markers — **▲** top of the snippet, **●** the line to use as
+the title, **▼** bottom of the snippet. Left/right arrows pick the
+marker, up/down move it, Enter files the report, Esc cancels. One
+prompt then asks what you expected to happen (or you trust us to infer
+it from the snippet).
+
+Posting is token-free by default: the shell opens a **prefilled GitHub
+web form** — title and body already filled in — that you review and
+submit in your own GitHub session, so no token ever sits in this shell
+(handy on an experimental OS). If you do trust it with a token, paste
+one once (https://github.com/settings/tokens, `repo`/`public_repo`
+scope) and later reports post directly via the API. Either way the
+report is also saved to `/tmp/bug-report.md` and copied to the
+clipboard.
 
 The CLI form is non-interactive (snippet = the last 20 lines of
 terminal output):
@@ -160,6 +166,7 @@ terminal output):
 $ node src/jtsh.js
 jtsh:/home$ bug --expect "it should print 55" "fib printed nothing"
 jtsh:/home$ bug --dry-run "preview the report without posting"
+jtsh:/home$ bug --webform "print the prefilled GitHub form URL"
 ```
 
 The token comes from `$JTSH_GITHUB_TOKEN` or `~/.jtsh-gh-token`

@@ -939,26 +939,32 @@ DESCRIPTION
      https://github.com/gmatht/j.cmd/issues (label: bug-report),
      carrying the terminal context plus what the user expected.
 
-     In the browser the command walks you through it: it grabs the
-     last 20 lines of the terminal, asks whether that is enough
-     (y = yes / m = more, 500 lines / w = whole terminal / d = whole
-     page DOM), asks what you expected to happen instead (or trusts
-     us to infer it from the snippet), previews the report and posts
-     it. The first time, it asks for a GitHub personal access token
-     (https://github.com/settings/tokens, scopes repo / public_repo)
-     and saves it in localStorage. Without a token the report is
-     saved to /tmp/bug-report.md and copied to the clipboard.
+     In the browser it opens a single form: the terminal scrollback
+     with three markers — ▲ top of the snippet, ● the line to use as
+     the title, ▼ bottom of the snippet. Left/right arrows choose the
+     marker, up/down move it, Enter files the report, Esc cancels.
+     One prompt then asks what you expected to happen (or you trust
+     us to infer it from the snippet).
 
-     In the CLI the same command is non-interactive: the snippet is
-     the last 20 lines of terminal output (ring buffer), the summary
-     is the argument list, and the expected behaviour is --expect.
+     Posting: with a saved GitHub token (bug --token <PAT>, or the
+     first-run prompt) the report posts directly via the API. Without
+     a token the shell opens a PREFILLED GitHub web form — title and
+     body already filled in — that you review and submit in your own
+     GitHub session, so no token ever sits in this shell. Either way
+     the report is also saved to /tmp/bug-report.md and copied to
+     the clipboard.
+
+     In the CLI the command is non-interactive: the snippet is the
+     last 20 lines of terminal output (ring buffer), the summary is
+     the argument list, and the expected behaviour is --expect.
      The token comes from $JTSH_GITHUB_TOKEN or ~/.jtsh-gh-token
-     (bug --token saves one).
+     (bug --token saves one); without one the report is written to
+     ./jtsh-bug-report.md.
 
 EXAMPLES
      bug "cc a.wasm says 'undefined data symbol'"
      bug --expect "it should print the sum" "sum didn't print"
-     bug --dry-run "what will the report look like?"
+     bug --webform   # force the web form even with a token saved
 
 SEE ALSO
      help, about, man
