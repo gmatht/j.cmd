@@ -4284,7 +4284,9 @@ async function runSegment(segmentText, stdin, isLast, target = null) {
           try {
             const bytes = qbe2wasm(ir, {});
             await fs.writeBlob(ccOutput, new Blob([bytes], { type: "application/wasm" }));
-            stdout.write(`${ccOutput}: ${bytes.length} bytes\n`);
+            const ccMsg = `${ccOutput}: ${bytes.length} bytes\n`;
+            if (outputRedirect) await writeOut(outputRedirect, ccMsg, appendRedirect);
+            else stdout.write(ccMsg);
             return { ok: true, code: 0, output: "" };
           } catch (e) {
             stderr.write(`cc: qbe2wasm: ${e.message}\n`);
@@ -4344,6 +4346,60 @@ async function runSegment(segmentText, stdin, isLast, target = null) {
             stdout.write(ir);
           }
           return { ok: true, code: 0, output: ir };
+        }
+
+        // tcc — TinyCC (wasm32-wasi, tcc.wasm): compiles C directly to a
+        // wasm binary (its own wasm32 backend; libtcc1's libc calls resolve
+        // to the env runtime). Same preprocessing as cc/cproc (strip
+        // #lines, inject the libc decls), so `tcc t.c` / `tcc -c t.c -o
+        // t.wasm` work without stdio.h in the sandbox. Default a.wasm.
+        if (cmd === "tcc" && args.length > 0 && !cmd.includes("/")) {
+          const resolveSrc = (p) => (p && p.startsWith("/") ? p : fs._resolve(p));
+          let srcFile = null, tccOut = null;
+          for (let i = 0; i < args.length; i++) {
+            const a = args[i];
+            if (a === "-o" && args[i + 1]) { tccOut = resolveSrc(args[++i]); continue; }
+            if (a.startsWith("-")) continue;
+            srcFile = resolveSrc(a);
+          }
+          if (!srcFile) {
+            stderr.write("tcc: missing source file\n");
+            return { ok: false, code: 1, output: "" };
+          }
+          let original;
+          try {
+            original = await fs.read(srcFile);
+          } catch (e) {
+            stderr.write(`tcc: cannot read ${srcFile}: ${e.message}\n`);
+            return { ok: false, code: 1, output: "" };
+          }
+          const prepped = preprocessCproc(original);
+          const tmpSrc = "/tmp/cc-src-" + (ccCounter++) + ".c";
+          await fs.write(tmpSrc, prepped);
+
+          // Load tcc.wasm (RAM, re-downloaded per boot).
+          const tccPath = "/usr/bin/tcc.wasm";
+          if (!(await fs.stat(tccPath).catch(() => null))) {
+            try {
+              const resp = await fetch("wasm-bin/tcc.wasm");
+              await fs.writeBlob(tccPath, await resp.blob());
+            } catch (e) {
+              stderr.write(`tcc: tcc.wasm not available (${e.message})\n`);
+              return { ok: false, code: 1, output: "" };
+            }
+          }
+          const outFile = tccOut || resolveSrc("a.wasm");
+          await wasmRunner.run(tccPath, [cmd, "-c", tmpSrc, "-o", outFile]);
+          const tccErr = wasmRunner.getStderr();
+          if (wasmRunner.getExitCode() !== 0) {
+            stderr.write(tccErr || `tcc: failed (exit ${wasmRunner.getExitCode()})\n`);
+            return { ok: false, code: wasmRunner.getExitCode(), output: "" };
+          }
+          const outBlob = await fs.readBlob(outFile);
+          const tccMsg = `${outFile}: ${outBlob.size} bytes\n`;
+          if (outputRedirect) await writeOut(outputRedirect, tccMsg, appendRedirect);
+          else stdout.write(tccMsg);
+          return { ok: true, code: 0, output: "" };
         }
 
 

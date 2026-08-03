@@ -115,6 +115,20 @@ export class WasmRunner {
     // once it exists (the closures only run after instantiation).
     const memRef = { memory: null };
     const custom = this._buildCustomImports(module, memRef);
+    // wasmer-wasi's instantiate traps with "unreachable" when a custom
+    // import module (env/std/…) has more functions than the wasm
+    // actually imports — so trim each custom module to exactly the
+    // names this binary imports (tcc's output imports env.$printf, but
+    // the env runtime exposes 21 libc functions).
+    const imports = WebAssembly.Module.imports(module);
+    const want = new Set(imports.map((i) => i.module + "\u0000" + i.name));
+    for (const [modName, obj] of Object.entries(custom)) {
+      const filtered = {};
+      for (const fnName of Object.keys(obj)) {
+        if (want.has(modName + "\u0000" + fnName)) filtered[fnName] = obj[fnName];
+      }
+      custom[modName] = filtered;
+    }
 
     // The c-compiler's output (and other bare modules) import only custom
     // modules like 'std', with no WASI imports — @wasmer/wasi can't

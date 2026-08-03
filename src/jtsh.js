@@ -1860,7 +1860,9 @@ async function runSegment(segmentText, stdin, isLast) {
       const { qbe2wasm } = await import("./qbe2wasm.js");
       const bytes = qbe2wasm(ir, {});
       await fs.writeBlob(ccOutput, new Blob([bytes], { type: "application/wasm" }));
-      process.stdout.write(`${ccOutput}: ${bytes.length} bytes\n`);
+      const ccMsg = `${ccOutput}: ${bytes.length} bytes\n`;
+      if (outputRedirect) await writeOut(outputRedirect, ccMsg, appendRedirect);
+      else process.stdout.write(ccMsg);
       return { ok: true, code: 0, output: "" };
     } catch (e) {
       process.stderr.write(`cc: qbe2wasm: ${e.message}\n`);
@@ -1901,6 +1903,72 @@ async function runSegment(segmentText, stdin, isLast) {
     else if (cprocOut) { await fs.write(cprocOut, ir); process.stdout.write(`${cprocOut}: ${ir.length} bytes\n`); }
     else process.stdout.write(ir);
     return { ok: true, code: 0, output: ir };
+  }
+
+  // tcc — TinyCC (wasm32-wasi, tcc.wasm): compiles C directly to a wasm
+  // binary (its own wasm32 backend; libtcc1 provides the libc inside the
+  // module, calling wasi for I/O). Same preprocessing as cc/cproc (strip
+  // #lines, inject the libc decls), so `tcc t.c` / `tcc -c t.c -o t.wasm`
+  // work without stdio.h in the sandbox. Default output a.wasm (like cc).
+  if (cmd === "tcc" && args.length > 0 && !cmd.includes("/")) {
+    const resolve = (p) => (p && p.startsWith("/") ? p : fs._resolve(p));
+    let srcFile = null, tccOut = null;
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (a === "-o" && args[i + 1]) { tccOut = resolve(args[++i]); continue; }
+      if (a.startsWith("-")) continue;
+      srcFile = resolve(a);
+    }
+    if (!srcFile) { process.stderr.write("tcc: missing source file\n"); return { ok: false, code: 1, output: "" }; }
+    let original;
+    try { original = await fs.read(srcFile); }
+    catch (e) { process.stderr.write(`tcc: cannot read ${srcFile}: ${e.message}\n`); return { ok: false, code: 1, output: "" }; }
+    const body = original.split("\n").filter((l) => !l.trim().startsWith("#")).join("\n");
+    const prepped = body.includes("int printf(") ? body : CPROC_DECLS + body;
+    const tmpSrc = "/tmp/cc-src-" + (ccCounter++) + ".c";
+    await fs.write(tmpSrc, prepped);
+    const tccPath = "/usr/bin/tcc.wasm";
+    if (!(await fs.stat(tccPath).catch(() => null))) {
+      const { readFileSync } = await import("node:fs");
+      await fs.writeBlob(tccPath, new Blob([readFileSync("www/wasm-bin/tcc.wasm")]));
+    }
+    const outFile = tccOut || resolve("a.wasm");
+    await wasmRunner.run(tccPath, [cmd, "-c", tmpSrc, "-o", outFile]);
+    const tccErr = wasmRunner.getStderr();
+    if (wasmRunner.getExitCode() !== 0) {
+      process.stderr.write(tccErr || `tcc: failed (exit ${wasmRunner.getExitCode()})\n`);
+      return { ok: false, code: wasmRunner.getExitCode(), output: "" };
+    }
+    const outBlob = await fs.readBlob(outFile);
+    const tccMsg = `${outFile}: ${outBlob.size} bytes\n`;
+    if (outputRedirect) await writeOut(outputRedirect, tccMsg, appendRedirect);
+    else process.stdout.write(tccMsg);
+    return { ok: true, code: 0, output: "" };
+  }
+
+  // tcc — the REAL Tiny C Compiler (wasm32-wasi, wasm32 code target).
+  // Compiles C to a wasm module: tcc -c prog.c -o prog.wasm. The binary
+  // and the libc headers (staged into /tmp/tcc/include) come from
+  // wasm-bin/ via the shared src/tcc.js helper. Intercepted before
+  // resolveCommand (the CLI has no server, so no fetch-based auto-load).
+  if (cmd === "tcc" && !cmd.includes("/")) {
+    const { runTcc } = await import("./tcc.js");
+    const { readFile } = await import("node:fs/promises");
+    const fetchBundle = async (rel) => {
+      const buf = await readFile(new URL(`../www/${rel}`, import.meta.url));
+      return new Uint8Array(buf);
+    };
+    try {
+      const r = await runTcc({ vfs: fs, runner: wasmRunner, args, fetchBundle });
+      const out = wasmRunner.getStdout(), err = wasmRunner.getStderr();
+      if (out) process.stdout.write(out);
+      if (err) process.stderr.write(err);
+      const code = wasmRunner.getExitCode();
+      return { ok: code === 0, code, output: out };
+    } catch (e) {
+      process.stderr.write(`tcc: ${e.message}\n`);
+      return { ok: false, code: 1, output: "" };
+    }
   }
 
   // python — MicroPython engine (reactor, src/py.js): REPL, -c, script
