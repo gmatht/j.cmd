@@ -146,18 +146,19 @@ jtsh:/home$ bug "cc says 'undefined data symbol'"
 In the browser it opens a single selection form: the terminal scrollback
 with three markers — **▲** top of the snippet, **●** the line to use as
 the title, **▼** bottom of the snippet. Left/right arrows pick the
-marker, up/down move it, Enter files the report, Esc cancels. One
-prompt then asks what you expected to happen (or you trust us to infer
-it from the snippet).
+marker, up/down move it, Enter files the report, Esc cancels. There are
+no follow-up prompts — the report goes out as-is, and the GitHub form
+lets you add more detail later (probably not required: if it's broken
+it's probably obviously and completely broken — and don't worry about
+duplicates).
 
-Posting is token-free by default: the shell opens a **prefilled GitHub
-web form** — title and body already filled in — that you review and
-submit in your own GitHub session, so no token ever sits in this shell
-(handy on an experimental OS). If you do trust it with a token, paste
-one once (https://github.com/settings/tokens, `repo`/`public_repo`
-scope) and later reports post directly via the API. Either way the
-report is also saved to `/tmp/bug-report.md` and copied to the
-clipboard.
+Posting is token-free by default: unless you've saved a token
+(`bug --token <PAT>`, https://github.com/settings/tokens,
+`repo`/`public_repo` scope), the shell opens a **prefilled GitHub web
+form** — title and body already filled in — that you review and submit
+in your own GitHub session, so no token ever sits in this shell (handy
+on an experimental OS). Either way the report is also saved to
+`/tmp/bug-report.md` and copied to the clipboard.
 
 The CLI form is non-interactive (snippet = the last 20 lines of
 terminal output):

@@ -484,6 +484,7 @@
     flex: 0 0 auto;
   }
   #bug-form-hint b { color: #c9d1d9; font-weight: 600; }
+  #bug-form-hint .bf-note { margin-top: 4px; color: #6e7681; font-style: italic; }
   #editor-header {
     background: #161b22;
     padding: 8px 16px;
@@ -621,8 +622,12 @@
   <div id="bug-form-header"></div>
   <div id="bug-form-text"></div>
   <div id="bug-form-hint">
-    <b>←/→</b> select marker (▲ top · ● title · ▼ bottom) &nbsp;<b>↑/↓</b> move it
-    &nbsp;<b>Enter</b> file the report &nbsp;<b>Esc</b> cancel
+    <div>
+      <b>←/→</b> select marker (▲ top · ● title · ▼ bottom) &nbsp;<b>↑/↓</b> move it
+      &nbsp;<b>Enter</b> file the report &nbsp;<b>Esc</b> cancel
+    </div>
+    <div class="bf-note">You can add more detail on GitHub later — it probably won't be required (if it's broken,
+      it's probably obviously and completely broken). Don't worry about duplicates either.</div>
   </div>
 </div>
 
@@ -3402,15 +3407,15 @@ Loops, conditionals, variables, arithmetic and pipes work:
     // bug-report). A single form opens with the terminal scrollback and
     // three markers — ▲ top of snippet · ● title line · ▼ bottom of
     // snippet. ←/→ pick the marker, ↑/↓ move it, Enter files the report,
-    // Esc cancels. One prompt then asks what the user expected (Enter =
-    // trust us to infer it). Posting: with a saved GitHub token the
-    // report posts via the API; without one the shell prefills a GitHub
-    // web form (issues/new?title=…&body=…) the user submits in their own
-    // browser — no token in this shell. Either way the report is saved
-    // to /tmp/bug-report.md + copied to the clipboard. Triage:
-    // ./bug-triage.sh (list / show / pick).
+    // Esc cancels. No follow-up prompts: the report goes out as-is and
+    // the GitHub form lets the user add more detail later (usually not
+    // required). Posting: only if the user went out of their way to save
+    // a token (bug --token <PAT>) does it post via the API; otherwise it
+    // prefills a GitHub web form (issues/new?title=…&body=…) the user
+    // submits in their own browser — no token in this shell. Either way
+    // the report is saved to /tmp/bug-report.md + copied to the
+    // clipboard. Triage: ./bug-triage.sh (list / show / pick).
     const { buildReport, postIssue, getBugToken, setBugToken, clearBugToken, BUG_REPO } = await import("../src/bugreport.js");
-    const inFrame = window.top !== window; // embedded iframes can't show prompt()
 
     // flags: bug --token <PAT> · bug --clear-token · bug --webform
     let webform = false, rest = [];
@@ -3554,13 +3559,6 @@ Loops, conditionals, variables, arithmetic and pipes work:
     const titleLine = (state.lines[sel.title] || "").replace(/^[^$]*\$ /, "").trim();
     const title = "bug: " + ((titleLine || summary0 || "").trim().slice(0, 100) || "terminal snippet report");
 
-    // What did they expect? (one prompt; empty = trust us)
-    let expected = "";
-    if (!inFrame) {
-      expected = prompt("What did you expect to happen instead?\n(Leave empty to trust us to figure it out from the snippet)", "");
-      if (expected === null) { stdout.write("bug: cancelled\n"); return 0; }
-    }
-
     // System info: /dev/info, sha256 of the core files actually served
     // (pins the exact code the user ran), and the recent commands.
     const system = await (async () => {
@@ -3591,20 +3589,19 @@ Loops, conditionals, variables, arithmetic and pipes work:
       return parts.join("\n");
     })();
 
-    const body = buildReport({ summary: summary0 || "", expected, snippet, scope: "form", system });
+    // No follow-up prompts — the report goes out as-is (the GitHub form
+    // lets the user add more detail later; it's probably not required).
+    const body = buildReport({ summary: summary0 || "", expected: "", snippet, scope: "form", system });
 
     // Save + clipboard regardless (cheap — the web form needs the copy anyway).
     try { await fs.write("/tmp/bug-report.md", body); } catch {}
     let copied = false;
     try { await navigator.clipboard.writeText(body); copied = true; } catch {}
 
-    // Post via the saved token, or prefill a GitHub web form (no token
-    // in this shell — the user submits in their own GitHub session).
+    // Post via the API ONLY when the user went out of their way to save
+    // a token (bug --token). Otherwise assume they want the prefilled
+    // GitHub web form — no token leaves this shell, no prompts.
     let token = webform ? null : await getBugToken(localStorage);
-    if (!token && !inFrame) {
-      const t = prompt("Paste a GitHub token to post directly (saved for next time) —\nor press Enter to open the prefilled GitHub form instead.\n\nToken link: https://github.com/settings/tokens (scopes: repo / public_repo)", "");
-      if (t !== null && t.trim()) { token = t.trim(); await setBugToken(localStorage, token); }
-    }
     if (token) {
       try {
         const url = await postIssue({ token, title, body });
