@@ -198,14 +198,58 @@
      the square is near the right side of the screen). */
   #term-toolbar .tb-fs-menu { left: 0; right: auto; min-width: 170px; z-index: 9; }
   #term-toolbar .tb-fs-menu button.danger { color: #ff9090; }
-  /* CMD popup: every command, alphabetical, in a multi-column list. */
+  /* CMD popup: every command as a square grid (like the Files grid) with
+     a filter box on top. Categories: builtin · wasm (auto-loads from
+     wasm-bin/) · js (command files). */
   #term-toolbar .tb-cmd-pop {
-    column-width: 150px;
-    column-gap: 6px;
-    width: min(92vw, 520px);
+    width: min(94vw, 560px);
     max-height: 60vh;
+    padding: 6px;
   }
-  #term-toolbar .tb-cmd-pop button { break-inside: avoid; }
+  #term-toolbar .tb-cmd-filter {
+    width: 100%;
+    box-sizing: border-box;
+    margin-bottom: 6px;
+    padding: 7px 10px;
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    color: #c9d1d9;
+    font-size: 12px;
+    flex: 0 0 auto;
+  }
+  #term-toolbar .tb-cmd-filter:focus { outline: none; border-color: #7ec8e3; }
+  #term-toolbar .tb-cmd-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(74px, 1fr));
+    gap: 6px;
+    overflow: auto;
+    max-height: calc(60vh - 48px);
+  }
+  #term-toolbar .tb-cmd-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    min-height: 58px;
+    padding: 6px 4px;
+    border-radius: 8px;
+    border: 1px solid #30363d;
+    background: transparent;
+    color: #c9d1d9;
+    font-size: 11px;
+    cursor: pointer;
+    word-break: break-all;
+    overflow: hidden;
+  }
+  #term-toolbar .tb-cmd-btn:hover { background: rgba(126, 200, 227, 0.15); border-color: #7ec8e3; }
+  #term-toolbar .tb-cmd-btn .tb-cmd-icon { font-size: 15px; line-height: 1; }
+  #term-toolbar .tb-cmd-btn .tb-cmd-name { line-height: 1.25; }
+  #term-toolbar .tb-cmd-btn .tb-cmd-badge { font-size: 8px; color: #8b949e; }
+  #term-toolbar .tb-cmd-btn.tb-cmd-builtin { border-color: rgba(126, 200, 227, 0.35); }
+  #term-toolbar .tb-cmd-btn.tb-cmd-wasm { border-color: rgba(126, 227, 154, 0.35); }
+  #term-toolbar .tb-cmd-btn.tb-cmd-js { border-color: rgba(210, 153, 34, 0.4); }
   .tb-pop {
     position: absolute;
     top: 100%;
@@ -6179,7 +6223,7 @@ document.addEventListener("mouseup", (e) => {
   if (sel && !sel.isCollapsed) justSelected = true;
 });
 document.addEventListener("click", (e) => {
-  if (e.target.closest("#editor-container") || e.target.closest(".xterm-window") || e.target.closest(".screen-root")) return;
+  if (e.target.closest("#editor-container") || e.target.closest(".xterm-window") || e.target.closest(".screen-root") || e.target.closest("#tb-cmd-pop")) return;
   if (justSelected) return;  // user selected text — keep it
   input.focus();
 });
@@ -6239,7 +6283,7 @@ document.addEventListener("keydown", (e) => {
   if (e.isComposing) return;
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.key.length !== 1) return;  // printable characters only
-  if (e.target && e.target.closest && (e.target.closest("#editor-container") || e.target.closest(".xterm-window") || e.target.closest(".screen-root"))) return;
+  if (e.target && e.target.closest && (e.target.closest("#editor-container") || e.target.closest(".xterm-window") || e.target.closest(".screen-root") || e.target.closest("#tb-cmd-pop"))) return;
   if (document.activeElement === input) return;  // normal typing path
   e.preventDefault();
   const sel = window.getSelection();
@@ -6653,18 +6697,29 @@ tbHistBtn.addEventListener("click", (e) => {
 const tbCmdBtn = document.getElementById("tb-cmd");
 const tbCmdPop = document.getElementById("tb-cmd-pop");
 
-// Everything the shell can run: builtins + PATH command files (.js/.wasm).
+// Everything the shell can run: builtins + auto-loadable wasm-bin
+// binaries (listed even before they've been run once — tcc, cproc,
+// grep, …) + PATH command files (.js/.wasm). Returns [name, category].
+// Keep WASM_BIN in step with the actual www/wasm-bin/*.wasm files.
+const WASM_BIN = ["cproc", "debashcl", "echo", "echoc", "go", "grep", "link", "make", "markdown", "python", "tcc", "wasm-diff", "zig", "zstd"];
+
 async function listAllCommands() {
-  const cmds = new Set(Object.keys(builtins));
+  const cmds = new Map(); // name → category (first category wins)
+  const add = (name, cat) => {
+    if (!name || name.includes("/") || name.startsWith(".")) return;
+    if (!cmds.has(name)) cmds.set(name, cat);
+  };
+  for (const k of Object.keys(builtins)) add(k, "builtin");
+  for (const w of WASM_BIN) add(w, "wasm");
   for (const dir of (env.PATH || "/bin:/usr/bin").split(":").filter(Boolean)) {
     try {
       for (const e of await fs.list(dir)) {
         const name = e.replace(/\/+$/, "").replace(/\.(js|wasm)$/i, "");
-        if (name) cmds.add(name);
+        add(name, e.endsWith(".wasm") ? "wasm" : "js");
       }
     } catch {}
   }
-  return [...cmds].sort();
+  return [...cmds.entries()].sort((a, b) => a[0].localeCompare(b[0]));
 }
 
 function renderCmdPop() {
@@ -6676,27 +6731,50 @@ function renderCmdPop() {
   listAllCommands().then((cmds) => {
     if (tbCmdPop.classList.contains("hidden")) return;  // closed while listing
     tbCmdPop.textContent = "";
-    if (cmds.length === 0) {
-      const empty = document.createElement("div");
-      empty.style.cssText = "padding:4px 8px;color:#8b949e;";
-      empty.textContent = "(no commands)";
-      tbCmdPop.appendChild(empty);
-      return;
-    }
-    for (const c of cmds) {
-      const item = document.createElement("button");
-      item.type = "button";
-      item.textContent = c;
-      item.title = "insert into the line";
-      item.addEventListener("click", () => {
-        currentLine = c;
-        cursorPos = c.length;
-        renderInput();
+    const filter = document.createElement("input");
+    filter.type = "text";
+    filter.className = "tb-cmd-filter";
+    filter.placeholder = `filter ${cmds.length} commands…`;
+    filter.autocomplete = "off";
+    filter.spellcheck = false;
+    tbCmdPop.appendChild(filter);
+    const grid = document.createElement("div");
+    grid.className = "tb-cmd-grid";
+    tbCmdPop.appendChild(grid);
+    const iconFor = { builtin: "▸", wasm: "⬢", js: "·" };
+    for (const [c, cat] of cmds) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "tb-cmd-btn tb-cmd-" + cat;
+      btn.dataset.name = c;
+      const icon = document.createElement("span");
+      icon.className = "tb-cmd-icon";
+      icon.textContent = iconFor[cat] || "·";
+      const name = document.createElement("span");
+      name.className = "tb-cmd-name";
+      name.textContent = c;
+      const badge = document.createElement("span");
+      badge.className = "tb-cmd-badge";
+      badge.textContent = cat;
+      btn.append(icon, name, badge);
+      btn.title = `${c} (${cat}) — run it`;
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
         tbCmdPop.classList.add("hidden");
-        input.focus();
+        tbRunCommand(c);
       });
-      tbCmdPop.appendChild(item);
+      grid.appendChild(btn);
     }
+    filter.addEventListener("input", () => {
+      const q = filter.value.trim().toLowerCase();
+      for (const b of grid.querySelectorAll(".tb-cmd-btn")) {
+        b.style.display = b.dataset.name.includes(q) ? "" : "none";
+      }
+    });
+    filter.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { tbCmdPop.classList.add("hidden"); input.focus(); e.stopPropagation(); }
+    });
+    requestAnimationFrame(() => { try { filter.focus(); } catch {} });
   });
 }
 
