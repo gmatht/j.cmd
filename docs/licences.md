@@ -30,6 +30,7 @@ traceable, and the build scripts in this repo clone from those forks.
 | [gmatht/zstd](https://github.com/gmatht/zstd) | [facebook/zstd](https://github.com/facebook/zstd) | **BSD-3-Clause** (also licensed GPL-2.0) | `www/wasm-bin/zstd.wasm` | build flags only (`build-wasm-zstd.sh`) |
 | [gmatht/NetHack](https://github.com/gmatht/NetHack) | [apowers313/NetHack](https://github.com/apowers313/NetHack) (branch `wasm-3.6.7`) | **NetHack licence** (custom copyleft, see `docs/licenses/NETHACK-LICENSE.txt`) | `www/vendor/nethack.{js,wasm}` via the prebuilt npm package | none (prebuilt from the fork's build) |
 | [gmatht/cproc](https://github.com/gmatht/cproc) | [michaelforney/cproc](https://github.com/michaelforney/cproc) | **ISC** | `www/wasm-bin/cproc.wasm` (the `cc` C compiler) | wasm32-wasi build: configure target, driver spawn stubs, wasm64 target (`build-wasm-cproc.sh`) |
+| [gmatht/tinycc-wasm](https://github.com/gmatht/tinycc-wasm) (build tree `tinycc-wasm/`) | [TinyCC/tinycc](https://github.com/TinyCC/tinycc) | **LGPL-2.1** (`docs/licenses/TCC-LICENSE.txt`) | `www/wasm-bin/tcc.wasm` (the `tcc` C compiler) | wasm32-wasi build with the wasm32 backend (in-tree since TinyCC 0.9.28rc): `./configure --target=wasm32-wasi`-style, `make` → `tcc` (see `build-wasm-tcc.sh` for the recipe) |
 | [gmatht/neth4ck-monorepo](https://github.com/gmatht/neth4ck-monorepo) | [apowers313/neth4ck-monorepo](https://github.com/apowers313/neth4ck-monorepo) | NetHack licence / package MIT | source of `@neth4ck/wasm-367` → nethack.wasm | none |
 
 ## Prebuilt / unmodified components
@@ -51,6 +52,7 @@ nothing), but the licences are recorded and the notices preserved.
 | wabt | npm dependency | [WebAssembly/wabt](https://github.com/WebAssembly/wabt) | **Apache-2.0** |
 | wasm-diff | `www/wasm-bin/wasm-diff.wasm` | [jlricon/wasm-diff](https://github.com/jlricon/wasm-diff) | **MIT OR Apache-2.0** |
 | cproc (the `cc` compiler) | `www/wasm-bin/cproc.wasm` | [michaelforney/cproc](https://github.com/michaelforney/cproc) (fork: gmatht/cproc) | **ISC** (`docs/licenses/CPROC-LICENSE.txt`) |
+| tcc (the `tcc` compiler) | `www/wasm-bin/tcc.wasm` | [TinyCC/tinycc](https://github.com/TinyCC/tinycc) (build tree: gmatht/tinycc-wasm) | **LGPL-2.1** (`docs/licenses/TCC-LICENSE.txt`) |
 | sh2perl / debashcl | `www/wasm-bin/sh2perl.wasm`, `debashcl.wasm` | [gmatht/sh2perl](https://github.com/gmatht/sh2perl) | **GPL-3.0** (own project) |
 | Demo binaries | `www/wasm-bin/echo.wasm`, `echoc.wasm` | this repo | GPL-3.0 (project's own) |
 | make | `www/wasm-bin/make.wasm` | 39-byte placeholder stub | GPL-3.0 (project's own) |
@@ -97,6 +99,7 @@ docs/licenses/
   ZSTD-LICENSE.txt            (BSD-3-Clause — Zstandard)
   MARKDOWN-WASM-LICENSE.txt   (MIT — markdown-wasm)
   CPROC-LICENSE.txt           (ISC — cproc, the cc compiler)
+  TCC-LICENSE.txt             (LGPL-2.1 — TinyCC, the tcc compiler)
   PAKO-LICENSE.txt            (MIT — pako)
   SH2PERL-LICENSE.txt         (GPL-3.0 — sh2perl; also the project's own)
   NPM-@wasmer_wasi-LICENSE.txt    (MIT)
