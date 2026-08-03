@@ -3575,6 +3575,7 @@ Loops, conditionals, variables, arithmetic and pipes work:
     const bugFormHeader = document.getElementById("bug-form-header");
     let resolveForm = null;
     const formDone = new Promise((res) => { resolveForm = res; });
+    let fittedHalf = 12; // last window size that fit — reused during drags
     // Display a window around the ACTIVE marker instead of a scrollbar —
     // the hidden parts become ellipsis lines, so ↑/↓ always shows the
     // marker moving. The window half-size is chosen per-render so
@@ -3585,8 +3586,12 @@ Loops, conditionals, variables, arithmetic and pipes work:
       const pos = { top: state.top, title: state.title, bottom: state.bottom };
       document.getElementById("bug-form-status").textContent =
         `title: ${t.slice(0, 60)} · ▲${state.top} ●${state.title} ▼${state.bottom} · ${state.active} active · snippet: ${state.bottom - state.top + 1} lines`;
-      bugFormText.textContent = "";
-      const center = pos[state.active];
+      // While a marker is being dragged, keep the window where it was
+      // when the grab started — re-centring on the moving marker would
+      // stream the whole text and look like the view is jerking. The
+      // marker moves within the visible rows and the view re-centres on
+      // release.
+      const center = dragState ? dragState.fixedCenter : pos[state.active];
       const mkEllipsis = (label) => {
         const div = document.createElement("div");
         div.className = "bf-ellipsis";
@@ -3644,7 +3649,10 @@ Loops, conditionals, variables, arithmetic and pipes work:
       // (overflow is hidden — no scrollbar). While a marker is being
       // dragged, skip the final scrollIntoView so the view never jumps
       // under the finger; it re-centres when the drag ends.
-      let half = 12;
+      // During a drag the window is fixed (no fit loop needed) — render
+      // once at the last size that fit; otherwise shrink until everything
+      // fits (overflow is hidden — no scrollbar).
+      let half = dragState ? fittedHalf : 12;
       for (;;) {
         const start = Math.max(0, center - half);
         const end = Math.min(n - 1, center + half);
@@ -3672,9 +3680,10 @@ Loops, conditionals, variables, arithmetic and pipes work:
           for (let i = a; i <= b; i++) renderRow(i);
           if (r === merged.length - 1 && b < n - 1) mkEllipsis(`${n - 1 - b} line${n - 1 - b === 1 ? "" : "s"} below`);
         }
-        if (bugFormText.scrollHeight <= bugFormText.clientHeight + 4 || half <= 2) break;
+        if (dragState || bugFormText.scrollHeight <= bugFormText.clientHeight + 4 || half <= 2) break;
         half -= 2;
       }
+      if (!dragState) fittedHalf = half;
       if (activeCell && !dragState) activeCell.scrollIntoView({ block: "nearest" });
     };
 
@@ -3743,7 +3752,8 @@ Loops, conditionals, variables, arithmetic and pipes work:
     const onTextDown = (e) => {
       const h = e.target.closest(".bf-handle");
       if (h) {
-        dragState = { marker: h.dataset.marker, x: e.clientX, y: e.clientY, moved: false };
+        const centers = { top: state.top, title: state.title, bottom: state.bottom };
+        dragState = { marker: h.dataset.marker, x: e.clientX, y: e.clientY, moved: false, fixedCenter: centers[state.active] };
         state.active = h.dataset.marker;
         // Highlight the pressed handle WITHOUT rebuilding the DOM
         // mid-press (removing the pressed element can fire a
