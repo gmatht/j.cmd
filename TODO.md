@@ -72,12 +72,12 @@ and device files. It runs in any browser with no build step.
       libc calls resolve to the shell's env runtime (src/c-runtime.js:
       printf/puts/malloc/string/memory funcs + a bump heap). cc hello.c
       && ./a.wasm works end to end.
-- [x] C-to-WASM compiler: compile steinerkelvin/c-to-wasm-compiler-project
-      to wasm32-wasi. It's a C compiler written in C++ that targets WASM
-      (uses flex/bison, outputs .wasm). Currently has build errors with
-      clang 18 (missing includes, std::transform, type issues). Needs:
-      1. Fix native build (add <cstdint>, <algorithm>, type hierarchy)
-      2. Cross-compile with wasi-sdk
+- [x] C-to-WASM compiler: originally steinerkelvin/c-to-wasm-compiler-project
+      (a C++ student project with NO licence file — "all rights reserved",
+      so it was REMOVED: compiler.wasm, build-wasm-compiler.sh,
+      wasm-compiler.patch and the wasmer entries are gone). The cc/compiler
+      commands now run cproc (ISC) → QBE IR → qbe2wasm; tcc (LGPL-2.1)
+      is also available (see docs/licences.md finding 1).
       Alternative: use tcc-wasm or wasm2c path.
 - [x] Go in the browser: the REAL Go toolchain (cmd/compile + cmd/link)
       cross-compiled with GOOS=js GOARCH=wasm and run through Go's

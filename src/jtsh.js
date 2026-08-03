@@ -344,7 +344,13 @@ const builtins = {
     let hadError = false;
     for (const file of args) {
       try {
-        await fs.stat(file); // fail on nonexistent paths, like real rm
+        // stat follows symlinks, so a dangling link (target missing)
+        // looks nonexistent — but rm should still unlink the link
+        // itself, like real rm. readlink confirms it's a link.
+        const st = await fs.stat(file).catch(() => null);
+        if (!st && !(await fs.readlink(file).catch(() => null))) {
+          throw new Error("ENOENT: no such file");
+        }
         await fs.remove(file);
       } catch (e) {
         hadError = true;
@@ -380,8 +386,15 @@ const builtins = {
     const src = args[0];
     const dest = args[1];
     try {
-      const content = await fs.read(src);
-      await fs.write(dest, content);
+      // Binary-aware copy (readBlob/writeBlob); falls back to text for
+      // backends without blob support.
+      try {
+        const blob = await fs.readBlob(src);
+        await fs.writeBlob(dest, blob);
+      } catch {
+        const content = await fs.read(src);
+        await fs.write(dest, content);
+      }
       return 0;
     } catch (e) {
       process.stderr.write(`cp: ${src}: ${e.message}\n`);
@@ -397,14 +410,122 @@ const builtins = {
     const src = args[0];
     const dest = args[1];
     try {
-      const content = await fs.read(src);
-      await fs.write(dest, content);
+      // Moving a symlink relinks it — the target is never copied or
+      // moved (mv follows the link's path, not its destination).
+      const target = await fs.readlink(src).catch(() => null);
+      if (target !== null) {
+        await fs.link(target, dest);
+        await fs.remove(src);
+        return 0;
+      }
+      // Binary-aware move, like cp (zips and other binary files must
+      // round-trip their bytes).
+      try {
+        const blob = await fs.readBlob(src);
+        await fs.writeBlob(dest, blob);
+      } catch {
+        const content = await fs.read(src);
+        await fs.write(dest, content);
+      }
       await fs.remove(src);
       return 0;
     } catch (e) {
       process.stderr.write(`mv: ${src}: ${e.message}\n`);
       return 1;
     }
+  },
+
+  async ln(args) {
+    // ln [-s] [-f] TARGET LINK — create a link. Only symbolic links
+    // are supported: the VFS has no inodes, so hard links can't exist.
+    // `ln -s target dir/` places a link named after the target in dir.
+    let symbolic = false;
+    let force = false;
+    const operands = [];
+    for (const a of args) {
+      if (a === "-s" || a === "--symbolic") symbolic = true;
+      else if (a === "-f" || a === "--force") force = true;
+      else if (a.startsWith("-") && a.length > 1 && !a.startsWith("--")) {
+        // Combined short flags: -sf, -fs
+        let ok = true;
+        for (const c of a.slice(1)) {
+          if (c === "s") symbolic = true;
+          else if (c === "f") force = true;
+          else ok = false;
+        }
+        if (!ok) {
+          process.stderr.write(`ln: invalid option -- '${a}'\n`);
+          return 2;
+        }
+      } else if (a.startsWith("-")) {
+        process.stderr.write(`ln: invalid option -- '${a}'\n`);
+        return 2;
+      } else operands.push(a);
+    }
+    if (operands.length < 2) {
+      process.stderr.write("ln: missing operand\n");
+      process.stderr.write("usage: ln [-s] [-f] TARGET LINK\n");
+      return 2;
+    }
+    if (!symbolic) {
+      process.stderr.write("ln: hard links are not supported (the VFS has no inodes) — use: ln -s TARGET LINK\n");
+      return 1;
+    }
+    const target = operands[0];
+    let link = operands[1];
+    const wantsDir = link.endsWith("/");
+    if (wantsDir) {
+      // GNU ln: a trailing slash demands an existing directory, and the
+      // link is placed inside it, named after the target.
+      try {
+        const st = await fs.stat(link);
+        if (!st || st.type !== "dir") throw new Error("not a directory");
+      } catch (e) {
+        process.stderr.write(`ln: failed to access '${link}': ${e.message}\n`);
+        return 1;
+      }
+      const base = target.split("/").filter(Boolean).pop() || target;
+      link = link.replace(/\/+$/, "") + "/" + base;
+    } else {
+      // `ln -s target dir` (existing dir, no slash) → dir/basename(target)
+      try {
+        const st = await fs.stat(link);
+        if (st && st.type === "dir") {
+          const base = target.split("/").filter(Boolean).pop() || target;
+          link = link.replace(/\/+$/, "") + "/" + base;
+        }
+      } catch {
+        // Not a dir — treat the operand as the link path itself.
+      }
+    }
+    if (force) {
+      try { await fs.remove(link); } catch {}
+    }
+    try {
+      await fs.link(target, link);
+      return 0;
+    } catch (e) {
+      process.stderr.write(`ln: ${link}: ${e.message}\n`);
+      return 1;
+    }
+  },
+
+  async readlink(args) {
+    // readlink [file...] — print the targets of symbolic links
+    if (args.length === 0) {
+      process.stderr.write("readlink: missing operand\n");
+      return 2;
+    }
+    let hadError = false;
+    for (const f of args) {
+      try {
+        process.stdout.write((await fs.readlink(f)) + "\n");
+      } catch (e) {
+        hadError = true;
+        process.stderr.write(`readlink: ${f}: ${e.message}\n`);
+      }
+    }
+    return hadError ? 1 : 0;
   },
 
   async head(args) {
@@ -966,7 +1087,7 @@ wasmer install <name>          — copy package to /usr/bin/
 wasmer help                    — this help
 
 Packages are pre-compiled wasm32-wasi binaries served from
-www/wasm-bin/ (see build-wasm-compiler.sh, build-wasm-grep.sh).
+www/wasm-bin/ (see build-wasm-grep.sh, build-wasm-cproc.sh).
 Once installed they run as native commands:
   wasmer install grep
   echo "hello" | grep hello
@@ -1079,7 +1200,7 @@ Once installed they run as native commands:
     // bash2js < script.sh   — transpile from a pipe
     //
     // The whole pipeline runs in the browser:
-    //   bash → Perl (sh2perl.wasm, the debashc compiler) → JS (perl2js)
+    //   bash → ESTree (debashcl.wasm, the debashc reactor) → JS (sh2.* runtime)
     if (args[0] === "-h" || args[0] === "--help") {
       process.stdout.write(`bash2js — transpile bash to JavaScript (runs entirely in the browser)
 
@@ -1088,9 +1209,8 @@ Usage:
   bash2js -f script.sh         transpile a file from the virtual FS
   cat script.sh | bash2js      transpile from a pipe
 
-Pipeline:  bash → ESTree (debashl.wasm) → JS (sh2.* runtime);
-         falls back to sh2perl → perl2js if debashl is unavailable
-The generated JS targets the rt runtime + env; save it to a .js file
+Pipeline:  bash → ESTree (debashcl.wasm) → JS (sh2.* runtime)
+The generated JS targets the sh2.* runtime + env; save it to a .js file
 and run it as a command.
 `);
       return 0;
@@ -1126,7 +1246,7 @@ and run it as a command.
       source = args.join(" ");
     }
     try {
-      const { js } = await bashToJS(fs, source, { wasmRunner });
+      const { js } = await bashToJS(fs, source);
       process.stdout.write(js);
       return 0;
     } catch (e) {
@@ -1142,8 +1262,7 @@ and run it as a command.
     // cat script.sh | bash    — execute from a pipe
     //
     // Type bash, get generated JS executed:
-    //   bash → ESTree (debashl.wasm) → JS (sh2.* runtime) — with a
-//   fallback to the Perl path (sh2perl.wasm → perl2js) → run in the shell
+    //   bash → ESTree (debashcl.wasm) → JS (sh2.* runtime) → run in the shell
     if (args[0] === "-h" || args[0] === "--help") {
       process.stdout.write(`bash — run bash commands by transpiling them to JS
 
@@ -1155,8 +1274,7 @@ Usage:
   bash -                   execute from a pipe (explicit)
     bash                     interactive REPL (state persists per line)
 
-Pipeline:  bash → ESTree (debashl.wasm) → JS (sh2.* runtime);
-         falls back to sh2perl → perl2js if debashl is unavailable → executed
+Pipeline:  bash → ESTree (debashcl.wasm) → JS (sh2.* runtime) → executed
 Loops, conditionals, variables, arithmetic and pipes work:
   bash 'for i in 1 2 3; do echo $i; done'
   bash 'x=1; while [ $x -lt 3 ]; do echo $x; x=$((x+1)); done'
@@ -1317,6 +1435,8 @@ Built-in commands:
   mkdir <dir>...  Create directories
   cp <src> <dst>  Copy files
   mv <src> <dst>  Move files
+  ln [-s] [-f] TARGET LINK  Create a symbolic link (ln -s target dir/ links inside dir)
+  readlink <file>...  Print symlink targets
   head [-n N] [file...]  Print first N lines (default 10; stdin if no file)
   tail [-n N] [file...]  Print last N lines (default 10; stdin if no file)
   grep [opts] <pattern> [file...]  Search files/stdin for pattern
@@ -1333,7 +1453,7 @@ Built-in commands:
                   (browser: full-screen TTY · CLI: nethack --demo autoplays · man nethack)
   jobs            List background jobs (&) · wait [id] · kill <id>
                   (cmd & runs in the background; browser: right-hand panel)
-  bash2js         Transpile bash to JavaScript (sh2perl → perl2js)
+  bash2js         Transpile bash to JavaScript (debashcl ESTree)
   bash            Run bash commands: transpile to JS and execute
                   (bash 'echo hi' · bash script.sh · cat s.sh | bash)
   true            Always succeeds (exit 0)
@@ -1917,47 +2037,6 @@ async function runSegment(segmentText, stdin, isLast) {
     return { ok: true, code: 0, output: ir };
   }
 
-  // tcc — TinyCC (wasm32-wasi, tcc.wasm): compiles C directly to a wasm
-  // binary (its own wasm32 backend; libtcc1 provides the libc inside the
-  // module, calling wasi for I/O). Same preprocessing as cc/cproc (strip
-  // #lines, inject the libc decls), so `tcc t.c` / `tcc -c t.c -o t.wasm`
-  // work without stdio.h in the sandbox. Default output a.wasm (like cc).
-  if (cmd === "tcc" && args.length > 0 && !cmd.includes("/")) {
-    const resolve = (p) => (p && p.startsWith("/") ? p : fs._resolve(p));
-    let srcFile = null, tccOut = null;
-    for (let i = 0; i < args.length; i++) {
-      const a = args[i];
-      if (a === "-o" && args[i + 1]) { tccOut = resolve(args[++i]); continue; }
-      if (a.startsWith("-")) continue;
-      srcFile = resolve(a);
-    }
-    if (!srcFile) { process.stderr.write("tcc: missing source file\n"); return { ok: false, code: 1, output: "" }; }
-    let original;
-    try { original = await fs.read(srcFile); }
-    catch (e) { process.stderr.write(`tcc: cannot read ${srcFile}: ${e.message}\n`); return { ok: false, code: 1, output: "" }; }
-    const prepped = TCC_VOID_MAIN_FIX(preprocessC(original));
-    const tmpSrc = "/tmp/cc-src-" + (ccCounter++) + ".c";
-    await fs.write(tmpSrc, prepped);
-    const tccPath = "/usr/bin/tcc.wasm";
-    if (!(await fs.stat(tccPath).catch(() => null))) {
-      const { readFileSync } = await import("node:fs");
-      await fs.writeBlob(tccPath, new Blob([readFileSync("www/wasm-bin/tcc.wasm")]));
-    }
-    const outFile = tccOut || resolve("a.wasm");
-    await wasmRunner.run(tccPath, [cmd, "-c", tmpSrc, "-o", outFile]);
-    const tccErr = wasmRunner.getStderr();
-    if (wasmRunner.getExitCode() !== 0) {
-      process.stderr.write(tccErr || `tcc: failed (exit ${wasmRunner.getExitCode()})\n`);
-      return { ok: false, code: wasmRunner.getExitCode(), output: "" };
-    }
-    const outBlob = await fs.readBlob(outFile);
-    wasmRunner.invalidate(outFile); // recompiled in place — drop the stale module
-    const tccMsg = `${outFile}: ${outBlob.size} bytes\n`;
-    if (outputRedirect) await writeOut(outputRedirect, tccMsg, appendRedirect);
-    else process.stdout.write(tccMsg);
-    return { ok: true, code: 0, output: "" };
-  }
-
   // tcc — the REAL Tiny C Compiler (wasm32-wasi, wasm32 code target).
   // Compiles C to a wasm module: tcc -c prog.c -o prog.wasm. The binary
   // and the libc headers (staged into /tmp/tcc/include) come from
@@ -1970,12 +2049,19 @@ async function runSegment(segmentText, stdin, isLast) {
       const buf = await readFile(new URL(`../www/${rel}`, import.meta.url));
       return new Uint8Array(buf);
     };
+    // Default output a.wasm (like cc); tcc's own default is <src>.o.
+    const tccArgs = args.some((a) => a === "-o") ? args : [...args, "-o", "a.wasm"];
     try {
-      const r = await runTcc({ vfs: fs, runner: wasmRunner, args, fetchBundle });
+      const r = await runTcc({ vfs: fs, runner: wasmRunner, args: tccArgs, fetchBundle });
       const out = wasmRunner.getStdout(), err = wasmRunner.getStderr();
+      const code = wasmRunner.getExitCode();
+      if (code === 0 && !args.some((a) => a === "-o")) {
+        const outFile = fs._resolve("a.wasm");
+        const st = await fs.stat(outFile).catch(() => null);
+        process.stdout.write(`${outFile}: ${st ? st.size : 0} bytes\n`);
+      }
       if (out) process.stdout.write(out);
       if (err) process.stderr.write(err);
-      const code = wasmRunner.getExitCode();
       return { ok: code === 0, code, output: out };
     } catch (e) {
       process.stderr.write(`tcc: ${e.message}\n`);

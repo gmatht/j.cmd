@@ -24,7 +24,6 @@ traceable, and the build scripts in this repo clone from those forks.
 
 | Our fork | Upstream | Licence | What we ship | Our changes |
 |---|---|---|---|---|
-| [gmatht/c-to-wasm-compiler-project](https://github.com/gmatht/c-to-wasm-compiler-project) (branch `j-cmd-build`) | [steinerkelvin/c-to-wasm-compiler-project](https://github.com/steinerkelvin/c-to-wasm-compiler-project) | ⚠️ **upstream has NO licence file** (see audit finding 1) | `www/wasm-bin/compiler.wasm` | `wasm-compiler.patch` (clang-18 includes + optional file arg), cross-compiled to wasm32-wasi |
 | [gmatht/busybox](https://github.com/gmatht/busybox) | busybox (canonical: git.busybox.net/busybox; GitHub mirror: mirror/busybox) | **GPL-2.0** | `www/wasm-bin/grep.wasm` | minimal grep build: stubs + Kbuild edits in `build-wasm-grep.sh` |
 | [gmatht/markdown-wasm](https://github.com/gmatht/markdown-wasm) | [rsms/markdown-wasm](https://github.com/rsms/markdown-wasm) | **MIT** | `www/wasm-bin/markdown.wasm` | build flags only (`build-wasm-markdown.sh`) |
 | [gmatht/zstd](https://github.com/gmatht/zstd) | [facebook/zstd](https://github.com/facebook/zstd) | **BSD-3-Clause** (also licensed GPL-2.0) | `www/wasm-bin/zstd.wasm` | build flags only (`build-wasm-zstd.sh`) |
@@ -53,18 +52,20 @@ nothing), but the licences are recorded and the notices preserved.
 | wasm-diff | `www/wasm-bin/wasm-diff.wasm` | [jlricon/wasm-diff](https://github.com/jlricon/wasm-diff) | **MIT OR Apache-2.0** |
 | cproc (the `cc` compiler) | `www/wasm-bin/cproc.wasm` | [michaelforney/cproc](https://github.com/michaelforney/cproc) (fork: gmatht/cproc) | **ISC** (`docs/licenses/CPROC-LICENSE.txt`) |
 | tcc (the `tcc` compiler) | `www/wasm-bin/tcc.wasm` | [TinyCC/tinycc](https://github.com/TinyCC/tinycc) (build tree: gmatht/tinycc-wasm) | **LGPL-2.1** (`docs/licenses/TCC-LICENSE.txt`) |
-| sh2perl / debashcl | `www/wasm-bin/sh2perl.wasm`, `debashcl.wasm` | [gmatht/sh2perl](https://github.com/gmatht/sh2perl) | **GPL-3.0** (own project) |
+| debashcl (the `bash` toolchain) | `www/wasm-bin/debashcl.wasm` | [gmatht/sh2perl](https://github.com/gmatht/sh2perl) (vendored reactor build, see `vendor/sh2/`) | **GPL-3.0** (own project) |
 | Demo binaries | `www/wasm-bin/echo.wasm`, `echoc.wasm` | this repo | GPL-3.0 (project's own) |
 | make | `www/wasm-bin/make.wasm` | 39-byte placeholder stub | GPL-3.0 (project's own) |
 
 ## Audit findings
 
-1. ⚠️ **`steinerkelvin/c-to-wasm-compiler-project` has no licence file.**
-   `compiler.wasm` is built from it. With no licence, the upstream is
-   "all rights reserved" — redistributing the build requires the author's
-   permission. **Action:** contact the author to confirm a licence, or
-   replace `compiler.wasm` with an alternatively-licensed C→WASM compiler.
-   The fork exists so the request/change can be tracked upstream.
+1. ✅ **RESOLVED — `steinerkelvin/c-to-wasm-compiler-project` (no licence
+   file) removed.** `compiler.wasm` was built from that upstream, which had
+   no licence ("all rights reserved"). It is no longer shipped, installed
+   or referenced: `www/wasm-bin/compiler.wasm`, `build-wasm-compiler.sh`,
+   `wasm-compiler.patch` and the wasmer `compiler`/`cc` registry entries
+   are gone, and the `cc` / `compiler` commands now run **cproc (ISC)** →
+   QBE IR → qbe2wasm, with **tcc (LGPL-2.1)** also available. No
+   permission from the upstream author is needed for anything we ship.
 
 2. ✅ **GPL obligations are met where they arise.** `grep.wasm` (busybox,
    GPL-2.0): the full source (busybox with our build configuration) is

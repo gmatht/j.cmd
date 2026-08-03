@@ -35,7 +35,7 @@ export async function loadWabt() {
 
 /**
  * Convert old-style WAT opcodes to modern syntax that wabt accepts.
- * The c-to-wasm-compiler emits legacy opcodes:
+ * Some older C→WASM compilers emitted legacy opcode spellings:
  *   get_global → global.get, set_global → global.set
  *   (also handles get_local/set_local just in case)
  */

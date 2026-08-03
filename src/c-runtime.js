@@ -51,6 +51,7 @@ export function createCRuntime({ getMem, memory, out, err }) {
     return heapTop;
   }
   function growHeap(need) {
+    heapBase();  // lazily fix the heap base on the first allocation
     const cur = memory().buffer.byteLength;
     const want = heapTop + need;
     if (want > cur) {

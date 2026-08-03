@@ -80,6 +80,108 @@
   #term-toolbar button:hover { opacity: 1; color: #fff; border-color: #7ec8e3; }
   #term-toolbar .tb-arrows { display: flex; gap: 6px; }
   #term-toolbar .tb-arrows button { padding: 7px 14px; }  /* 2x */
+
+  /* Files/folders grid — a "Files" toggle shows the current directory's
+     entries as square press & long-press buttons (name text wraps inside
+     each square). The bar goes fully opaque while the grid is open and
+     the toggle lights up, so the buttons read clearly. */
+  #term-toolbar:has(.tb-files:not(.hidden)) { opacity: 1; }
+  #term-toolbar:has(.tb-files:not(.hidden)) #tb-files {
+    opacity: 1;
+    color: #fff;
+    border-color: #7ec8e3;
+    background: rgba(126, 200, 227, 0.15);
+  }
+  #term-toolbar .tb-files {
+    flex-basis: 100%;   /* own full-width row under the key buttons */
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 4px 0 2px;
+  }
+  #term-toolbar .tb-files.hidden { display: none; }
+  #term-toolbar .tb-file-btn {
+    position: relative;      /* context menu anchors to the square */
+    width: 74px;
+    height: 74px;
+    flex: 0 0 74px;
+    padding: 5px 4px;
+    font-size: 11px;
+    line-height: 1.3;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 3px;
+    border-radius: 8px;
+    /* No overflow:hidden here — it clips the long-press context menu,
+       which drops down below the square. The name is clamped by its own
+       line-clamp + overflow, and background images are clipped to the
+       border-radius by the browser. */
+    white-space: normal;
+    word-break: break-all;   /* long names wrap inside the square */
+    touch-action: none;      /* the long-press gesture is ours — no pan hijack */
+    -webkit-touch-callout: none;   /* long-press = our menu, not iOS callout */
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  #term-toolbar:has(.tb-files:not(.hidden)) .tb-file-btn { opacity: 1; }
+  #term-toolbar .tb-file-btn .tb-fs-icon { font-size: 15px; line-height: 1; flex: 0 0 auto; }
+  #term-toolbar .tb-file-btn .tb-fs-name {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    overflow: hidden;
+    max-width: 100%;
+  }
+  /* Filetype badge under the name — shown only when the name is short
+     enough to leave room (measured at render time). */
+  #term-toolbar .tb-file-btn .tb-fs-type {
+    flex: 0 0 auto;
+    font-size: 8px;
+    line-height: 1;
+    letter-spacing: 0.5px;
+    padding: 1px 3px;
+    border-radius: 3px;
+    border: 1px solid rgba(126, 200, 227, 0.3);
+    color: #8b949e;
+    background: rgba(13, 13, 22, 0.55);
+    max-width: 100%;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  #term-toolbar .tb-file-btn .tb-fs-type.js,
+  #term-toolbar .tb-file-btn .tb-fs-type.code { color: #7ee39a; border-color: rgba(126, 227, 154, 0.4); }
+  #term-toolbar .tb-file-btn .tb-fs-type.wasm { color: #c7a8ff; border-color: rgba(199, 168, 255, 0.45); }
+  #term-toolbar .tb-file-btn .tb-fs-type.doc  { color: #7ec8e3; border-color: rgba(126, 200, 227, 0.45); }
+  #term-toolbar .tb-file-btn .tb-fs-type.data { color: #ffd166; border-color: rgba(255, 209, 102, 0.4); }
+  #term-toolbar .tb-file-btn .tb-fs-type.web  { color: #ff9a9a; border-color: rgba(255, 154, 154, 0.4); }
+  #term-toolbar .tb-file-btn .tb-fs-type.arc  { color: #ffa64d; border-color: rgba(255, 166, 77, 0.45); }
+  #term-toolbar .tb-file-btn .tb-fs-type.audio,
+  #term-toolbar .tb-file-btn .tb-fs-type.video { color: #ff8fb8; border-color: rgba(255, 143, 184, 0.4); }
+  #term-toolbar .tb-file-btn.tb-fs-dir  { color: #7ec8e3; border-color: rgba(126, 200, 227, 0.45); }
+  #term-toolbar .tb-file-btn.tb-fs-exe  { color: #7ee39a; border-color: rgba(126, 227, 154, 0.4); }
+  /* Image files show the picture itself as a dimmed (~50%) background;
+     the name gets a dark chip at the bottom of the thumb. */
+  #term-toolbar .tb-file-btn.tb-fs-img {
+    border-color: rgba(126, 200, 227, 0.35);
+    justify-content: flex-end;
+  }
+  #term-toolbar .tb-file-btn.tb-fs-img .tb-fs-icon { display: none; }
+  #term-toolbar .tb-file-btn.tb-fs-img .tb-fs-name {
+    background: rgba(13, 13, 22, 0.55);
+    border-radius: 4px;
+    padding: 1px 3px;
+    align-self: stretch;
+  }
+  #term-toolbar .tb-file-btn:active { background: rgba(126, 200, 227, 0.18); }
+  #term-toolbar .tb-fs-note { color: #8b949e; font-size: 12px; padding: 6px 10px; align-self: center; }
+  /* Long-press context menu anchored under its square (right edge if
+     the square is near the right side of the screen). */
+  #term-toolbar .tb-fs-menu { left: 0; right: auto; min-width: 170px; z-index: 9; }
+  #term-toolbar .tb-fs-menu button.danger { color: #ff9090; }
   .tb-pop {
     position: absolute;
     top: 100%;
@@ -421,6 +523,8 @@
     <div id="tb-history-pop" class="tb-pop hidden"></div>
     <button id="tb-home" title="Go to $HOME">~</button>
     <button id="tb-cdup" title="Parent directory (cd ..)">..</button>
+    <button id="tb-files" title="Current folder's files &amp; folders as buttons">Files</button>
+    <div id="tb-files-grid" class="tb-files hidden"></div>
   </div>
   <div id="prompt-line"><span id="prompt" class="prompt"></span><span id="input-span"></span></div>
 </div>
@@ -828,6 +932,20 @@ function writeShellPrompt() {
   recordOutput(sgrWrap(getPromptStr(), "prompt"));
   renderInput();
   updateStatusBar();
+}
+
+// Keep the shell's cwd in the URL (?cwd=/home/...) so a refresh lands
+// back in the same directory. cd updates it, boot restores from it.
+// replaceState never reloads the page and doesn't clutter history;
+// unrelated query parameters are preserved. Uses window.history
+// explicitly — `history` here is the shell's command-history array.
+function syncCwdUrl() {
+  const cwd = fs.view ? fs.view(fs.cwd) : fs.cwd;
+  const params = new URLSearchParams(location.search);
+  params.set("cwd", cwd);
+  try {
+    window.history.replaceState(null, "", "?" + params.toString());
+  } catch {}  // file:// / sandboxed frames may forbid URL changes — cwd still works
 }
 
 // ─── Busy spinner ──────────────────────────────────────────────
@@ -1796,48 +1914,8 @@ function registerViExCommands() {
 // Call after CodeMirror + vim keymap load
 registerViExCommands();
 
-// ─── C pre-processing for the subset compiler ───────────────────
-// The c-to-wasm-compiler supports a C subset: no preprocessor, no
-// stdio printf. It exposes custom runtime functions that must be
-// declared: print/println/print_int/println_real/etc. (its own test
-// files do exactly this). preprocessC() lets users write standard-ish
-// C — #include <stdio.h> + printf — by stripping #lines, injecting
-// the runtime declarations, and rewriting printf calls.
+// ─── C pre-processing for the compilers (cproc / tcc) ──────────
 let ccCounter = 0;
-
-const C_RUNTIME_DECLS =
-  `void _ln();\n` +
-  `void print(const char*);\n` +
-  `void println(const char*);\n` +
-  `void print_int(int);\n` +
-  `void print_real(float);\n` +
-  `void println_int(int);\n` +
-  `void println_real(float);\n`;
-
-function rewritePrintf(code) {
-  // printf("text\n") → println("text")  ;  printf("text") → print("text")
-  code = code.replace(/printf\s*\(\s*("(?:[^"\\]|\\.)*")\s*\)\s*;/g,
-    (m, lit) => lit.endsWith('\\n"')
-      ? "println(" + lit.slice(0, -3) + '");'
-      : "print(" + lit + ");");
-  // printf("%d\n", x) → println_int(x)  ;  printf("%d", x) → print_int(x)
-  code = code.replace(/printf\s*\(\s*("(?:[^"\\]|\\.)*")\s*,\s*([^;]+?)\s*\)\s*;/g,
-    (m, fmt, arg) => {
-      const nl = fmt.endsWith('\\n"');
-      if (/%d|%i/.test(fmt)) return (nl ? "println_int(" : "print_int(") + arg + ");";
-      if (/%f|%lf/.test(fmt)) return (nl ? "println_real(" : "print_real(") + arg + ");";
-      if (/%s/.test(fmt)) return (nl ? "println(" : "print(") + arg + ");";
-      return m; // unsupported format — compiler will report it
-    });
-  return code;
-}
-
-function preprocessC(src) {
-  // Strip preprocessor lines (#include, #define, ...) — no # support
-  const body = src.split("\n").filter(l => !l.trim().startsWith("#")).join("\n");
-  // Inject runtime declarations unless the user already declared them
-  return body.includes("println_int(") ? rewritePrintf(body) : rewritePrintf(C_RUNTIME_DECLS + body);
-}
 
 // Declarations for the REAL compiler (cproc → QBE IR → qbe2wasm). The
 // preprocessor strips #include/#define lines, so the shell provides the
@@ -1970,8 +2048,9 @@ const builtins = {
       const ext = file.split(".").pop().toLowerCase();
       const isImage = ["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "ico"].includes(ext);
       const isAudio = ["mp3", "wav", "ogg", "m4a", "flac", "wma"].includes(ext);
+      const isVideo = ["mp4", "m4v", "webm", "ogv", "mov", "avi", "mkv"].includes(ext);
 
-      if (isImage || isAudio) {
+      if (isImage || isAudio || isVideo) {
         try {
           const blob = await fs.readBlob(file);
           // Set a proper MIME type so the browser renders correctly
@@ -1981,18 +2060,70 @@ const builtins = {
             bmp: "image/bmp", ico: "image/x-icon",
             mp3: "audio/mpeg", wav: "audio/wav", ogg: "audio/ogg",
             m4a: "audio/mp4", flac: "audio/flac", wma: "audio/x-ms-wma",
+            mp4: "video/mp4", m4v: "video/x-m4v", webm: "video/webm",
+            ogv: "video/ogg", mov: "video/quicktime", avi: "video/x-msvideo",
+            mkv: "video/x-matroska",
           }[ext];
-          const typedBlob = blob.type
+          // Some archives serve a generic type (Wikimedia sends
+          // application/ogg for video) — force the extension's MIME so
+          // the media element picks the right codec path.
+          const kindOk = blob.type && (
+            (isImage && blob.type.startsWith("image/")) ||
+            (isAudio && blob.type.startsWith("audio/")) ||
+            (isVideo && blob.type.startsWith("video/"))
+          );
+          const typedBlob = kindOk
             ? blob
-            : new Blob([blob], { type: extMime || "application/octet-stream" });
+            : new Blob([blob], { type: extMime[ext] || "application/octet-stream" });
           const url = URL.createObjectURL(typedBlob);
           const el = isImage
             ? `<img src="${url}" style="max-width: 80vw; max-height: 60vh; border-radius: 4px; margin: 4px 0;" />`
-            : `<audio controls src="${url}" style="width: 100%; max-width: 400px; margin: 4px 0;"></audio>`;
+            : isVideo
+              ? `<video controls autoplay playsinline src="${url}" style="width: 100%; max-width: 480px; border-radius: 4px; margin: 4px 0;"></video>`
+              : `<audio controls autoplay playsinline src="${url}" style="width: 100%; max-width: 400px; margin: 4px 0;"></audio>`;
           const span = document.createElement("span");
           span.innerHTML = el;
           term.insertBefore(span, promptLine);
           term.scrollTop = term.scrollHeight;
+          // Autoplay media: the attribute plus an explicit play() (some
+          // browsers only start on the call). If the autoplay policy
+          // blocks it, leave the controls visible and say so.
+          if (!isImage) {
+            const player = span.querySelector("video, audio");
+            if (player) player.play().catch(() => {
+              statusHint.textContent = "autoplay blocked — press ▶ on the player";
+            });
+          }
+          // Unsupported/undecodable video (e.g. Ogg Theora in Chromium
+          // browsers — Chrome/Brave/Edge dropped it): say what happened
+          // and how to get the file instead of a silent black player.
+          if (isVideo) {
+            const video = span.querySelector("video");
+            if (video) {
+              let noted = false;
+              const noteOnce = (why) => {
+                if (noted) return;
+                noted = true;
+                write(`\n[player] ${why} — this browser can't show video for ${file}. ` +
+                  `Try cat sample.mp4 or sample.webm, or cp ${file} /pc to download.\n`, "info");
+              };
+              video.addEventListener("error", () => {
+                const code = video.error && video.error.code;
+                noteOnce(code === 4 ? "unsupported codec"
+                  : code === 2 ? "network error"
+                  : code === 3 ? "decode error"
+                  : code ? "error " + code : "error");
+              });
+              // Chromium often fires NO error for an undecodable video
+              // track (Theora in Ogg): the element loads and audio plays,
+              // but videoWidth stays 0. Spot-check once metadata is in.
+              setTimeout(() => {
+                if (!noted && !video.error && video.videoWidth === 0 && video.readyState >= 1) {
+                  noteOnce("video track undecodable in this browser");
+                }
+              }, 2500);
+            }
+          }
           // Revoke blob URL after a delay to free memory
           setTimeout(() => URL.revokeObjectURL(url), 60000);
         } catch (e) {
@@ -2051,6 +2182,7 @@ const builtins = {
       await fs.list(dir);
       fs.cwd = fs._resolve(dir);
       env.PWD = fs.cwd;
+      syncCwdUrl();  // ?cwd= in the URL — a refresh stays in this dir
       // cd into a remote mount may have just fetched (and cached) the
       // listing — surface the API usage from that fetch, like ls does.
       // (ls right after will show "cached just now" instead.)
@@ -2868,7 +3000,7 @@ const builtins = {
     // bash2js < script.sh   — transpile from a pipe
     //
     // The whole pipeline runs in the browser:
-    //   bash → Perl (sh2perl.wasm, the debashc compiler) → JS (perl2js)
+    //   bash → ESTree (debashcl.wasm, the debashc reactor) → JS (sh2.* runtime)
     if (args[0] === "-h" || args[0] === "--help") {
       stdout.write(`bash2js — transpile bash to JavaScript (runs entirely in the browser)
 
@@ -2877,9 +3009,8 @@ Usage:
   bash2js -f script.sh         transpile a file from the virtual FS
   cat script.sh | bash2js      transpile from a pipe
 
-Pipeline:  bash → ESTree (debashl.wasm) → JS (sh2.* runtime);
-         falls back to sh2perl → perl2js if debashl is unavailable
-The generated JS targets the rt runtime + env; save it to a .js file
+Pipeline:  bash → ESTree (debashcl.wasm) → JS (sh2.* runtime)
+The generated JS targets the sh2.* runtime + env; save it to a .js file
 and run it as a command.
 `);
       return 0;
@@ -2912,7 +3043,7 @@ and run it as a command.
       source = args.join(" ");
     }
     try {
-      const { js } = await bashToJS(fs, source, { wasmRunner });
+      const { js } = await bashToJS(fs, source);
       stdout.write(js);
       return 0;
     } catch (e) {
@@ -2929,7 +3060,7 @@ and run it as a command.
     //
     // Type bash, get generated JS executed:
     //   bash → ESTree (debashl.wasm) → JS (sh2.* runtime) — with a
-//   fallback to the Perl path (sh2perl.wasm → perl2js) → run in the shell
+//   bash → ESTree (debashcl.wasm) → JS (sh2.* runtime) → run in the shell
     if (args[0] === "-h" || args[0] === "--help") {
       stdout.write(`bash — run bash commands by transpiling them to JS
 
@@ -2941,8 +3072,7 @@ Usage:
   bash -                   execute from a pipe (explicit)
   bash                     interactive REPL (state persists per line)
 
-Pipeline:  bash → ESTree (debashl.wasm) → JS (sh2.* runtime);
-         falls back to sh2perl → perl2js if debashl is unavailable → executed
+Pipeline:  bash → ESTree (debashcl.wasm) → JS (sh2.* runtime) → executed
 Loops, conditionals, variables, arithmetic and pipes work:
   bash 'for i in 1 2 3; do echo $i; done'
   bash 'x=1; while [ $x -lt 3 ]; do echo $x; x=$((x+1)); done'
@@ -3093,7 +3223,7 @@ Loops, conditionals, variables, arithmetic and pipes work:
            (-name PAT · -iname PAT · -type f|d · -maxdepth N · -mindepth N)
     true            Always succeeds (exit 0)
     false           Always fails (exit 1)
-    bash2js         Transpile bash to JavaScript (sh2perl → perl2js)
+    bash2js         Transpile bash to JavaScript (debashcl ESTree)
     bash            Run bash commands: transpile to JS and execute
                     (bash 'echo hi' · bash script.sh · cat s.sh | bash)
     man [cmd]       Manual page for a command (man alone: index;
@@ -3562,6 +3692,8 @@ Loops, conditionals, variables, arithmetic and pipes work:
     }
     fs.mounts = fs.mounts.filter((m) => m !== record);
     fs.binds.delete(r);
+    // A detached zip must not auto-remount on the next access.
+    if (record.zip && fs.zipUnmounted) fs.zipUnmounted(r);
     stdout.write(`unmounted ${r}\n`);
     return 0;
   },
@@ -3728,13 +3860,14 @@ async function resolveCommandExact(name) {
   }
 
   // Auto-load WASM binary from local server on first use.
-  // cc is an alias for the compiler binary.
-  // (Explicit paths like ./a.wasm are never auto-loaded.)
+  // cc / compiler run the ISC-licensed cproc (the runSegment intercept
+  // compiles cproc → QBE IR → qbe2wasm). (Explicit paths like ./a.wasm
+  // are never auto-loaded.)
   if (name.includes("/")) return null;
   // Unprivileged users never auto-load (and couldn't write to /usr/bin anyway).
   if (!isPrivilegedUser()) return null;
   let wasmName = name;
-  if (name === "cc") wasmName = "compiler";
+  if (name === "cc" || name === "compiler") wasmName = "cproc";
   try {
     const resp = await fetch("wasm-bin/" + wasmName + ".wasm");
     if (resp.ok) {
@@ -3760,6 +3893,7 @@ async function resolveCommandExact(name) {
 // Throws an Error with a shell-style message if a quote is left open.
 function tokenize(segment) {
   const tokens = [];
+  const quotedFlags = [];   // parallel: was this token quoted? (globs stay literal)
   let cur = "";
   let started = false;  // have we begun a word?
   let quoted = false;   // did this word contain an explicit quote? (so '' → "")
@@ -3767,7 +3901,7 @@ function tokenize(segment) {
   let inDouble = false;
 
   const push = () => {
-    if (started || quoted) tokens.push(cur);
+    if (started || quoted) { tokens.push(cur); quotedFlags.push(quoted); }
     cur = "";
     started = false;
     quoted = false;
@@ -3820,8 +3954,8 @@ function tokenize(segment) {
       // log instead of echoing "1>log". Split it out of the word, and
       // treat ">>" as its own append-redirect token.
       push();
-      if (segment[i + 1] === ">") { tokens.push(">>"); i++; }
-      else tokens.push(">");
+      if (segment[i + 1] === ">") { tokens.push(">>"); quotedFlags.push(false); i++; }
+      else { tokens.push(">"); quotedFlags.push(false); }
       continue;
     }
     if (/\s/.test(ch)) { push(); continue; }
@@ -3831,6 +3965,7 @@ function tokenize(segment) {
   if (inSingle) throw new Error(`unexpected EOF while looking for matching "'"`);
   if (inDouble) throw new Error(`unexpected EOF while looking for matching '"'`);
   push();
+  tokens._quoted = quotedFlags;   // callers use this for glob expansion
   return tokens;
 }
 
@@ -4088,6 +4223,97 @@ window.shellPaneRun = async (line, opts = {}) => {
   return { code, cwd: newCwd };
 };
 
+// ─── Glob expansion (ls *.png, cat file*.txt, rm -r build/* …) ──
+// Pathname expansion like a real shell: unquoted tokens containing
+// * ? [ are matched against the virtual filesystem (walking multi-
+// component patterns like src/*/*.js). A pattern that matches nothing
+// is passed through literally (bash's default, nullglob off), so
+// `grep foo '*.txt'` still sees the literal string when quoted.
+
+function globToRegex(pat) {
+  let re = "";
+  for (let i = 0; i < pat.length; i++) {
+    const c = pat[i];
+    if (c === "*") re += "[^/]*";            // * never crosses a /
+    else if (c === "?") re += "[^/]";
+    else if (c === "[") {
+      const end = pat.indexOf("]", i + 1);
+      if (end === -1) { re += "\\["; }
+      else {
+        let cls = pat.slice(i + 1, end);
+        if (cls.startsWith("!")) cls = "^" + cls.slice(1);  // [!a-z] = negation
+        cls = cls.replace(/\\/g, "\\\\").replace(/\]/g, "\\]");
+        re += "[" + cls + "]";
+        i = end;
+      }
+    } else {
+      re += c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+  }
+  return new RegExp("^" + re + "$");
+}
+
+// Expand one pattern against the fs → sorted matching absolute paths.
+// [] when nothing matches (caller keeps the literal token).
+async function globExpand(pattern) {
+  const abs = pattern.startsWith("/");
+  const parts = pattern.replace(/^\/+/, "").split("/").filter(Boolean);
+  if (parts.length === 0) return [];
+  const results = [];
+  const walk = async (dirPath, i) => {
+    const comp = parts[i];
+    const last = i === parts.length - 1;
+    const hasGlob = /[*?[]/.test(comp);
+    // "." and ".." are navigation, not names to match
+    if (comp === ".") return walk(dirPath, i + 1);
+    if (comp === "..") {
+      const up = dirPath.replace(/\/+$/, "").replace(/\/[^\/]*$/, "") || "/";
+      return walk(up, i + 1);
+    }
+    let entries;
+    try { entries = await fs.list(dirPath); } catch { return; }
+    const re = hasGlob ? globToRegex(comp) : null;
+    for (const e of entries) {
+      const name = e.replace(/\/+$/, "");
+      // Like bash: a leading dot must be matched explicitly
+      if (hasGlob && name.startsWith(".") && !comp.startsWith(".")) continue;
+      const match = hasGlob ? re.test(name) : name === comp;
+      if (!match) continue;
+      const nextPath = dirPath === "/" ? "/" + name : dirPath + "/" + name;
+      if (last) {
+        results.push(nextPath);
+      } else {
+        // Descend into directories AND mounted zips (a .zip file that
+        // resolves to a mount — fs.list triggers the lazy zip mount).
+        try {
+          await fs.list(nextPath);
+          await walk(nextPath, i + 1);
+        } catch { /* plain file — not a directory */ }
+      }
+    }
+  };
+  if (abs) await walk("/", 0);
+  else await walk(fs.cwd === "/" ? "/" : fs.cwd, 0);
+  return results.sort();
+}
+
+// Expand every unquoted glob token in a token list (tokenize attaches
+// the parallel `_quoted` flags).
+async function globExpandTokens(tokens) {
+  const quotedFlags = tokens._quoted || [];
+  const out = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (!quotedFlags[i] && /[*?[]/.test(t)) {
+      const matches = await globExpand(t);
+      out.push(...(matches.length > 0 ? matches : [t]));
+    } else {
+      out.push(t);
+    }
+  }
+  return out;
+}
+
 // Execute one pipeline segment. `stdin` carries the previous segment's
 // stdout. Returns { ok, code, output } — `code` is the command's exit
 // status (0 success), `output` is the captured stdout that should be
@@ -4096,6 +4322,7 @@ async function runSegment(segmentText, stdin, isLast, target = null) {
   let tokens;
   try {
     tokens = tokenize(segmentText);
+    tokens = await globExpandTokens(tokens);   // ls *.png → matched paths
   } catch (e) {
     stderr.write(`jtsh: ${e.message}\n`);
     return { ok: false, code: 2, output: "" };
@@ -4207,14 +4434,6 @@ async function runSegment(segmentText, stdin, isLast, target = null) {
   try {
     if (resolved.type === "wasm") {
       try {
-        // cc: compile C → WAT, then to a .wasm binary.
-        //   cc prog.c            → writes a.wasm (like gcc's a.out)
-        //   cc -o out.wasm prog.c → writes out.wasm
-        //   cc -S prog.c          → emits WAT to stdout (assembly)
-        //
-        // The compiler (compiler.wasm) sees the WASI filesystem rooted at
-        // '/', so relative paths like 't.c' must be resolved to absolute
-        // VFS paths (/home/t.c) or it looks for /t.c and fails.
         // cc — the REAL C compiler: cproc (wasm32-wasi) → QBE IR →
         // qbe2wasm → wasm binary. cproc reads the source from the WASI
         // sandbox and writes the QBE IR to stdout, so no file harvest
@@ -4349,59 +4568,36 @@ async function runSegment(segmentText, stdin, isLast, target = null) {
           return { ok: true, code: 0, output: ir };
         }
 
-        // tcc — TinyCC (wasm32-wasi, tcc.wasm): compiles C directly to a
-        // wasm binary (its own wasm32 backend; libtcc1's libc calls resolve
-        // to the env runtime). Same preprocessing as cc/cproc (strip
-        // #lines, inject the libc decls), so `tcc t.c` / `tcc -c t.c -o
-        // t.wasm` work without stdio.h in the sandbox. Default a.wasm.
+        // tcc — the REAL Tiny C Compiler (wasm32-wasi, wasm32 code
+        // target): compiles C directly to a wasm binary. The compiler
+        // (wasm-bin/tcc.wasm) and the libc headers (staged into
+        // /tmp/tcc/include from wasm-bin/tcc-include.dat by src/tcc.js)
+        // make `tcc -c hello.c -o hello.wasm` a real C compile, then
+        // ./hello.wasm runs with libc from the env runtime. No cproc
+        // preprocessing — the headers are real.
         if (cmd === "tcc" && args.length > 0 && !cmd.includes("/")) {
-          const resolveSrc = (p) => (p && p.startsWith("/") ? p : fs._resolve(p));
-          let srcFile = null, tccOut = null;
-          for (let i = 0; i < args.length; i++) {
-            const a = args[i];
-            if (a === "-o" && args[i + 1]) { tccOut = resolveSrc(args[++i]); continue; }
-            if (a.startsWith("-")) continue;
-            srcFile = resolveSrc(a);
-          }
-          if (!srcFile) {
-            stderr.write("tcc: missing source file\n");
-            return { ok: false, code: 1, output: "" };
-          }
-          let original;
+          const { runTcc } = await import("../src/tcc.js");
+          const fetchBundle = async (rel) => {
+            const resp = await fetch(rel);
+            if (!resp.ok) throw new Error(`fetch ${rel}: ${resp.status}`);
+            return new Uint8Array(await resp.arrayBuffer());
+          };
           try {
-            original = await fs.read(srcFile);
+            await runTcc({ vfs: fs, runner: wasmRunner, args, fetchBundle });
           } catch (e) {
-            stderr.write(`tcc: cannot read ${srcFile}: ${e.message}\n`);
+            stderr.write(`tcc: ${e.message}\n`);
             return { ok: false, code: 1, output: "" };
           }
-          const prepped = preprocessCproc(original).replace(/\bvoid\s+main\s*\(/g, "int main(");
-          const tmpSrc = "/tmp/cc-src-" + (ccCounter++) + ".c";
-          await fs.write(tmpSrc, prepped);
-
-          // Load tcc.wasm (RAM, re-downloaded per boot).
-          const tccPath = "/usr/bin/tcc.wasm";
-          if (!(await fs.stat(tccPath).catch(() => null))) {
-            try {
-              const resp = await fetch("wasm-bin/tcc.wasm");
-              await fs.writeBlob(tccPath, await resp.blob());
-            } catch (e) {
-              stderr.write(`tcc: tcc.wasm not available (${e.message})\n`);
-              return { ok: false, code: 1, output: "" };
-            }
-          }
-          const outFile = tccOut || resolveSrc("a.wasm");
-          await wasmRunner.run(tccPath, [cmd, "-c", tmpSrc, "-o", outFile]);
           const tccErr = wasmRunner.getStderr();
-          if (wasmRunner.getExitCode() !== 0) {
-            stderr.write(tccErr || `tcc: failed (exit ${wasmRunner.getExitCode()})\n`);
-            return { ok: false, code: wasmRunner.getExitCode(), output: "" };
+          const code = wasmRunner.getExitCode();
+          if (code !== 0) {
+            stderr.write(tccErr || `tcc: failed (exit ${code})\n`);
+            return { ok: false, code, output: "" };
           }
-          const outBlob = await fs.readBlob(outFile);
-          wasmRunner.invalidate(outFile); // recompiled in place — drop the stale module
-          const tccMsg = `${outFile}: ${outBlob.size} bytes\n`;
-          if (outputRedirect) await writeOut(outputRedirect, tccMsg, appendRedirect);
-          else stdout.write(tccMsg);
-          return { ok: true, code: 0, output: "" };
+          const outText = wasmRunner.getStdout();
+          if (outputRedirect) await writeOut(outputRedirect, outText, appendRedirect);
+          else if (outText) stdout.write(outText);
+          return { ok: true, code: 0, output: outText };
         }
 
 
@@ -4424,24 +4620,9 @@ async function runSegment(segmentText, stdin, isLast, target = null) {
         let wasmArgs = [cmd, ...args];
         await wasmRunner.run(resolved.path, wasmArgs, stdin);
         const exitCode = wasmRunner.getExitCode();
-        let wasmOut = wasmRunner.getStdout();        // text (WAT for cc, or program output)
+        let wasmOut = wasmRunner.getStdout();        // text (program output)
         let wasmBytes = wasmRunner.getStdoutBytes(); // raw bytes — what the pipe carries
         const wasmErr = wasmRunner.getStderr();
-
-        // Convert WAT → WASM binary (skip for -S which wants the WAT)
-        if (!ccWatOnly && ccOutput && exitCode === 0) {
-          try {
-            const bytes = await watToWasm(wasmOut, "cc-output.wat");
-            await fs.writeBlob(ccOutput, new Blob([bytes], { type: "application/wasm" }));
-            wasmRunner.invalidate(ccOutput); // recompiled in place — drop the stale module
-            stdout.write(`${ccOutput}: ${bytes.length} bytes\n`);
-            wasmOut = "";       // binary written to file, not stdout
-            wasmBytes = new Uint8Array(0);
-          } catch (e) {
-            stderr.write(`cc: ${e.message}\n`);
-            return { ok: false, code: 1, output: "" };
-          }
-        }
 
         if (outputRedirect) {
           await writeOut(outputRedirect, wasmBytes.length ? wasmBytes : "", appendRedirect);
@@ -5146,6 +5327,7 @@ async function handlePagerInput(line) {
 // ─── Status bar ─────────────────────────────────────────────────
 
 function updateStatusBar() {
+  refreshFileGrid();   // re-list the toolbar grid after a cd (if open)
   const cwd = fs.view ? fs.view(fs.cwd) : fs.cwd;
   statusContext.textContent = env.USER && env.USER !== "jtsh" ? `${env.USER}:${cwd}` : cwd;
 
@@ -5765,6 +5947,7 @@ tbCtrlBtn.addEventListener("click", (e) => {
   e.stopPropagation();
   tbCtrlPop.classList.toggle("hidden");
   tbHistPop.classList.add("hidden");
+  closeFileMenu();
 });
 tbCtrlPop.querySelectorAll("button[data-ctrl]").forEach((b) => {
   b.addEventListener("click", () => {
@@ -5802,6 +5985,7 @@ tbHistBtn.addEventListener("click", (e) => {
   renderHistoryPop();
   tbHistPop.classList.toggle("hidden");
   tbCtrlPop.classList.add("hidden");
+  closeFileMenu();
 });
 
 // Home / cd .. — run through the normal command path (recorded, like
@@ -5818,6 +6002,424 @@ async function tbRunCommand(cmd) {
 document.getElementById("tb-home").addEventListener("click", () => tbRunCommand("cd"));
 document.getElementById("tb-cdup").addEventListener("click", () => tbRunCommand("cd .."));
 
+// ─── Files/folders grid in the toolbar ──────────────────────────
+// The "Files" toggle shows the current directory's entries as square
+// press & long-press buttons — each name wraps inside its square.
+// Press: cd into a folder / open a file (run executables). Long-press
+// (or right-click): a context menu (edit, copy path, delete…). The
+// grid re-lists when the shell cd's somewhere else while it's open.
+const tbFilesBtn = document.getElementById("tb-files");
+const tbFilesGrid = document.getElementById("tb-files-grid");
+const FS_MAX_BUTTONS = 120;   // cap: huge dirs keep the bar usable
+let lastGridCwd = null;
+let gridRenderToken = 0;
+let gridLpTriggered = false;  // a long-press must not also fire the click
+
+// Real (resolved) path of an entry in the current directory.
+function fsEntryPath(name) {
+  const clean = name.replace(/\/+$/, "");
+  const base = fs.cwd === "/" ? "" : fs.cwd.replace(/\/+$/, "");
+  return base + "/" + clean;
+}
+
+// Single-quote a name for the command line (names may contain spaces).
+function shellQuote(s) {
+  return "'" + String(s).replace(/'/g, "'\\''") + "'";
+}
+
+function closeFileMenu() {
+  tbFilesGrid.querySelectorAll(".tb-fs-menu").forEach((m) => m.remove());
+}
+
+// Blob URLs of image-thumb backgrounds — revoked when the grid is
+// rebuilt so thumbnails never leak memory.
+const gridObjectUrls = new Set();
+
+function clearGrid() {
+  tbFilesGrid.textContent = "";
+  for (const u of gridObjectUrls) URL.revokeObjectURL(u);
+  gridObjectUrls.clear();
+}
+
+// Load an entry's image (png/jpg/…) as the square's dimmed background.
+async function loadImageBackground(btn, path) {
+  try {
+    const blob = await fs.readBlob(path);
+    const ext = path.split(".").pop().toLowerCase();
+    const extMime = {
+      png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
+      gif: "image/gif", svg: "image/svg+xml", webp: "image/webp",
+      bmp: "image/bmp", ico: "image/x-icon",
+    };
+    const typed = blob.type && blob.type.startsWith("image/")
+      ? blob
+      : new Blob([blob], { type: extMime[ext] || "image/png" });
+    const url = URL.createObjectURL(typed);
+    gridObjectUrls.add(url);
+    // Dim to ~50% with a dark overlay so the name stays readable on top.
+    btn.style.backgroundImage =
+      `linear-gradient(rgba(13, 13, 22, 0.5), rgba(13, 13, 22, 0.5)), url("${url}")`;
+    btn.style.backgroundSize = "cover";
+    btn.style.backgroundPosition = "center";
+  } catch { /* unreadable image — fall back to the plain button */ }
+}
+
+// Small filetype badge (the extension, uppercased) shown under the name
+// when the name is short enough to leave room. Known types get their own
+// accent color (js/wasm/code/doc/data/web/archive/audio/video); files with
+// no extension get no badge.
+function fileTypeBadge(clean) {
+  const ext = clean.includes(".") ? clean.slice(clean.lastIndexOf(".") + 1).toLowerCase() : "";
+  if (!ext) return null;
+  const cat =
+    /^(js|mjs|cjs)$/.test(ext) ? "js" :
+    /^(sh|bash|py|go|rs|c|h|zig|pl|rb|lua|java|asm|wat)$/.test(ext) ? "code" :
+    ext === "wasm" ? "wasm" :
+    /^(md|txt|rst|adoc|nfo)$/.test(ext) ? "doc" :
+    /^(json|yaml|yml|toml|xml|csv|conf|ini|env|db|sql)$/.test(ext) ? "data" :
+    /^(html|css|htm)$/.test(ext) ? "web" :
+    /^(zip|tgz|tar|gz|bz2|xz|zst|7z|rar)$/.test(ext) ? "arc" :
+    /^(mp3|wav|ogg|flac|m4a|aac|mid)$/.test(ext) ? "audio" :
+    /^(mp4|webm|mov|avi|mkv|ogv)$/.test(ext) ? "video" : "";
+  const b = document.createElement("span");
+  b.className = "tb-fs-type" + (cat ? " " + cat : "");
+  b.textContent = ext.slice(0, 6).toUpperCase();
+  return b;
+}
+
+function makeFileButton(name) {
+  const isDir = name.endsWith("/");
+  const clean = isDir ? name.slice(0, -1) : name;
+  const exe = !isDir && /\.(js|mjs|wasm)$/i.test(clean);
+  // Image files get the picture itself as a dimmed background.
+  const isImg = !isDir && /\.(png|jpe?g|gif|svg|webp|bmp|ico)$/i.test(clean);
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "tb-file-btn" + (isDir ? " tb-fs-dir" : exe ? " tb-fs-exe" : "") +
+                  (isImg ? " tb-fs-img" : "");
+  const action = isDir ? "cd into" : exe ? "run" : "cat";
+  btn.title = (isDir ? "folder: " : "file: ") + fsEntryPath(name) +
+              "\npress: " + action + " · long-press: more";
+
+  const icon = document.createElement("span");
+  icon.className = "tb-fs-icon";
+  icon.textContent = isDir ? "\u25B8" : isImg ? "" : "\u00B7";  // images: no dot
+  const label = document.createElement("span");
+  label.className = "tb-fs-name";
+  label.textContent = isDir ? clean + "/" : clean;
+  btn.append(icon, label);
+  if (!isDir && !isImg) {
+    const badge = fileTypeBadge(clean);
+    if (badge) btn.append(badge);
+  }
+  if (isImg) loadImageBackground(btn, fsEntryPath(name));
+
+  // Press → run the entry through the normal command path (recorded in
+  // history/casts exactly like typing the line).
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    closeFileMenu();
+    if (gridLpTriggered) { gridLpTriggered = false; return; }
+    const q = shellQuote(clean);
+    if (isDir) tbRunCommand("cd " + q);
+    else if (exe) tbRunCommand("./" + q);
+    else tbRunCommand("cat " + q);
+  });
+
+  // Long-press (450ms hold) → context menu; right-click too.
+  let lpTimer = null;
+  btn.addEventListener("pointerdown", (e) => {
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    gridLpTriggered = false;
+    clearTimeout(lpTimer);
+    lpTimer = setTimeout(() => { gridLpTriggered = true; showFileMenu(btn, name); }, 450);
+  });
+  ["pointerup", "pointerleave", "pointercancel"].forEach((ev) =>
+    btn.addEventListener(ev, () => clearTimeout(lpTimer))
+  );
+  btn.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    gridLpTriggered = true;
+    showFileMenu(btn, name);
+  });
+
+  return btn;
+}
+
+// ─── Clipboard for the long-press menu (Cut / Copy / Paste) ─────
+// { mode: "copy" | "cut", path: resolved path }. Copy duplicates on
+// Paste; Cut moves (and is consumed by its first successful paste).
+let fsClipboard = null;
+
+// Recursive, binary-aware copy src → dest (a ".directory" marker
+// creates folders, like mkdir does). Throws on failure.
+async function copyFsEntry(srcPath, destPath) {
+  const st = await fs.stat(srcPath).catch(() => null);
+  if (st && st.type === "dir") {
+    await fs.write(destPath + "/.directory", "");
+    const entries = await fs.list(srcPath);
+    for (const e of entries) {
+      if (e === "." || e === "..") continue;
+      const child = e.replace(/\/+$/, "");
+      await copyFsEntry(srcPath + "/" + child, destPath + "/" + child);
+    }
+  } else {
+    try {
+      const blob = await fs.readBlob(srcPath);
+      await fs.writeBlob(destPath, blob);
+    } catch {
+      const content = await fs.read(srcPath);
+      await fs.write(destPath, content);
+    }
+  }
+}
+
+async function moveFsEntry(srcPath, destPath) {
+  await copyFsEntry(srcPath, destPath);
+  await fs.remove(srcPath);
+}
+
+function parentOf(p) {
+  const i = p.replace(/\/+$/, "").lastIndexOf("/");
+  return i <= 0 ? "/" : p.slice(0, i);
+}
+
+// Re-list after an action that changed the directory contents (cwd
+// didn't change, so the normal cd-driven refresh won't fire).
+function refreshGridSoon() {
+  lastGridCwd = null;
+  setTimeout(() => renderFileGrid(), 60);
+}
+
+function showFileMenu(btn, name) {
+  closeFileMenu();
+  const isDir = name.endsWith("/");
+  const clean = name.replace(/\/+$/, "");
+  const path = fsEntryPath(name);
+  const base = path.split("/").filter(Boolean).pop() || path;
+  const exe = !isDir && /\.(js|mjs|wasm)$/i.test(clean);
+  const menu = document.createElement("div");
+  menu.className = "tb-pop tb-fs-menu";
+  // Anchor to the button's right edge if the menu would overflow the
+  // right side of the screen.
+  const r = btn.getBoundingClientRect();
+  if (r.left + 180 > window.innerWidth) {
+    menu.style.left = "auto";
+    menu.style.right = "0";
+  }
+
+  const add = (label, fn, danger) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = label;
+    if (danger) b.classList.add("danger");
+    b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      closeFileMenu();
+      fn();
+    });
+    menu.appendChild(b);
+  };
+
+  // Move/rename with sanity checks; a consumed cut clears the clipboard.
+  const doMove = async (srcPath, destPath, verb) => {
+    if (destPath === srcPath || destPath.startsWith(srcPath + "/")) {
+      stderr.write(`${verb}: cannot move a folder into itself\n`);
+      return;
+    }
+    try {
+      await moveFsEntry(srcPath, destPath);
+      write(`${verb} ${srcPath} → ${destPath}\n`, "info");
+      if (fsClipboard && fsClipboard.mode === "cut" && fsClipboard.path === srcPath) {
+        fsClipboard = null;
+      }
+      refreshGridSoon();
+    } catch (e) {
+      stderr.write(`${verb}: ${e.message || e}\n`);
+    }
+  };
+
+  if (isDir) {
+    add("cd into", () => tbRunCommand("cd " + shellQuote(clean)));
+  } else {
+    add("view (cat)", () => tbRunCommand("cat " + shellQuote(clean)));
+  }
+  add("Cut", () => {
+    fsClipboard = { mode: "cut", path };
+    write(`cut ${path} — long-press Paste to move it\n`, "info");
+  });
+  add("Copy", () => {
+    fsClipboard = { mode: "copy", path };
+    write(`copied ${path} — long-press Paste to duplicate it\n`, "info");
+  });
+  // Paste lands in the long-pressed folder, else the current directory.
+  if (fsClipboard) {
+    const clipBase = fsClipboard.path.split("/").filter(Boolean).pop();
+    const destDir = isDir ? path : fs.cwd;
+    const destPath = (destDir === "/" ? "" : destDir.replace(/\/+$/, "")) + "/" + clipBase;
+    add(isDir ? "Paste into folder" : "Paste here", () => {
+      if (destPath === fsClipboard.path) { stderr.write("paste: already here\n"); return; }
+      if (destPath.startsWith(fsClipboard.path + "/")) {
+        stderr.write("paste: cannot copy a folder into itself\n");
+        return;
+      }
+      if (fsClipboard.mode === "cut") doMove(fsClipboard.path, destPath, "moved");
+      else {
+        (async () => {
+          try {
+            await copyFsEntry(fsClipboard.path, destPath);
+            write(`copied ${fsClipboard.path} → ${destPath}\n`, "info");
+            refreshGridSoon();
+          } catch (e) { stderr.write(`paste: ${e.message || e}\n`); }
+        })();
+      }
+    });
+  }
+  add("Rename", () => {
+    const newName = prompt(`Rename ${path} to:`, clean);
+    if (newName === null) return;
+    const trimmed = newName.trim();
+    if (trimmed === "" || trimmed === clean) return;
+    const parent = parentOf(path);
+    const destPath = (parent === "/" ? "" : parent) + "/" + trimmed;
+    doMove(path, destPath, "renamed");
+  });
+  add("Move", () => {
+    const dest = prompt(`Move ${path} to directory:`, parentOf(path));
+    if (dest === null) return;
+    const trimmed = dest.trim();
+    if (trimmed === "") return;
+    (async () => {
+      try {
+        let destPath = trimmed;
+        const st = await fs.stat(trimmed).catch(() => null);
+        if (st && st.type === "dir") {
+          destPath = (trimmed === "/" ? "" : trimmed.replace(/\/+$/, "")) + "/" + base;
+        }
+        doMove(path, destPath, "moved");
+      } catch (e) { stderr.write(`move: ${e.message || e}\n`); }
+    })();
+  });
+  if (!isDir) {
+    add("Edit", () => tbRunCommand("edit " + shellQuote(clean)));
+    if (exe) add("Run", () => tbRunCommand("./" + shellQuote(clean)));
+    add("Download", () => {
+      (async () => {
+        try {
+          await copyFsEntry(path, "/pc/" + base);
+          write(`Downloading: ${base}\n`, "info");
+        } catch (e) { stderr.write(`download: ${e.message || e}\n`); }
+      })();
+    });
+  }
+  add("copy path", () => copyTextToClipboard(path));
+  add("Delete (rm)", () => {
+    if (!confirm(`Delete ${path}?`)) return;
+    tbRunCommand("rm " + shellQuote(clean));
+    refreshGridSoon();
+  }, true);
+
+  btn.appendChild(menu);
+}
+
+// Hide the filetype badge on squares whose name already fills the square
+// (measured a frame later, once layout is done). The badge only shows when
+// there is real room under the name. 74px square − 10px padding − 6px of
+// gap = 58px of usable content height.
+function fitTypeBadges() {
+  requestAnimationFrame(() => {
+    if (tbFilesGrid.classList.contains("hidden")) return;
+    for (const btn of tbFilesGrid.querySelectorAll(".tb-file-btn")) {
+      const badge = btn.querySelector(".tb-fs-type");
+      if (!badge || badge.style.display === "none") continue;
+      const icon = btn.querySelector(".tb-fs-icon");
+      const name = btn.querySelector(".tb-fs-name");
+      const used = (icon ? icon.offsetHeight : 0) + name.offsetHeight + badge.offsetHeight;
+      if (used > btn.clientHeight - 16) badge.style.display = "none";
+    }
+  });
+}
+
+async function renderFileGrid() {
+  const token = ++gridRenderToken;
+  clearGrid();   // wipe squares + revoke image-thumb blob URLs
+  closeFileMenu();
+  const cwd = fs.cwd;
+  // Remote mounts (github/http…) can take a second — say so while
+  // waiting instead of showing a blank bar.
+  const loading = document.createElement("div");
+  loading.className = "tb-fs-note";
+  loading.textContent = "listing…";
+  tbFilesGrid.appendChild(loading);
+  let entries;
+  try {
+    entries = await fs.list(cwd);
+  } catch (e) {
+    if (token !== gridRenderToken) return;
+    clearGrid();
+    const note = document.createElement("div");
+    note.className = "tb-fs-note";
+    note.textContent = "cannot list: " + (e.message || e);
+    tbFilesGrid.appendChild(note);
+    updateTermSize();
+    return;
+  }
+  if (token !== gridRenderToken) return;  // a newer render superseded us
+  lastGridCwd = cwd;
+  clearGrid();   // drop the "listing…" note (and any stale thumbs)
+  const dirs = [];
+  const files = [];
+  for (const e of entries) {
+    if (e === "." || e === "..") continue;
+    (e.endsWith("/") ? dirs : files).push(e);
+  }
+  const total = dirs.length + files.length;
+  const shown = [...dirs, ...files].slice(0, FS_MAX_BUTTONS);
+  for (const name of shown) tbFilesGrid.appendChild(makeFileButton(name));
+  fitTypeBadges();   // drop filetype badges that don't fit under the name
+  if (total === 0) {
+    const note = document.createElement("div");
+    note.className = "tb-fs-note";
+    note.textContent = "(empty directory)";
+    tbFilesGrid.appendChild(note);
+  } else if (total > shown.length) {
+    const note = document.createElement("div");
+    note.className = "tb-fs-note";
+    note.textContent = `+${total - shown.length} more — use ls`;
+    tbFilesGrid.appendChild(note);
+  }
+  const viewCwd = fs.view ? fs.view(cwd) : cwd;
+  tbFilesBtn.title = `Files of ${viewCwd} (${total})`;
+  updateTermSize();   // toolbar height changed — re-pad the terminal
+}
+
+// Re-list when the shell cd's while the grid is open (debounced; the
+// toolbar height only matters once, after the listing lands).
+let gridRefreshTimer = null;
+function refreshFileGrid() {
+  if (!tbFilesGrid || tbFilesGrid.classList.contains("hidden")) return;
+  if (fs.cwd === lastGridCwd) return;
+  clearTimeout(gridRefreshTimer);
+  gridRefreshTimer = setTimeout(() => renderFileGrid(), 150);
+}
+
+tbFilesBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  closeFileMenu();
+  const nowHidden = tbFilesGrid.classList.toggle("hidden");
+  if (nowHidden) {
+    tbFilesBtn.title = "Current folder's files & folders as buttons";
+  } else {
+    lastGridCwd = null;   // force a fresh listing of the current dir
+    renderFileGrid();
+  }
+  updateTermSize();
+});
+
+// Delegated: keep the hidden input focused when a square is pressed
+// (dynamically-added buttons miss the static querySelectorAll loop).
+tbFilesGrid.addEventListener("mousedown", (e) => e.preventDefault());
+
 // Clicking outside the toolbar closes the popups; buttons keep the
 // hidden input focused (no blur on mousedown).
 tbToolbar.querySelectorAll("button").forEach((b) => {
@@ -5827,6 +6429,7 @@ document.addEventListener("click", (e) => {
   if (!e.target.closest("#term-toolbar")) {
     tbCtrlPop.classList.add("hidden");
     tbHistPop.classList.add("hidden");
+    closeFileMenu();
   }
 });
 
@@ -5853,11 +6456,12 @@ document.addEventListener("click", (e) => {
   write("╚══════════════════════════════════════╝\n", "info");
   write("Type 'help' for available commands.\n\n", "info");
   write("Features: Tab completion · Ctrl+L clear · Ctrl+C copy/interrupt · Up/Down history\n", "info");
+  write("          cd into .zip files — archives browse like directories (ls/cat/cp inside)\n", "info");
   write("          edit <file> — built-in text editor\n", "info");
   write("          vi <file> — vim-style editor (hjkl, :wq)\n", "info");
   write("          nano/emacs → edit · less/more → cat · cls → clear\n", "info");
   write("          ls /dev/ · cat /dev/info · cat /dev/cpu\n", "info");
-  write("          cat image.png · play music.mp3\n", "info");
+  write("          cat image.png · play music.mp3 · cat video.mp4 — inline players\n", "info");
   write("          su — switch user (su → nobody · su jtsh/root → back) · whoami\n", "info");
   write("          chmod 600 file · chmod 755 dir — permissions (owner only)\n", "info");
   write("          browse /github/user/repo — open in tab\n", "info");
@@ -5933,6 +6537,22 @@ document.addEventListener("click", (e) => {
   // Read ~/.jtshrc (persistent config in /home/) before the shell
   // is usable — exports, banner, aliases etc. take effect immediately.
   await loadConfig();
+
+  // Restore the working directory from ?cwd= (set by cd) so a refresh
+  // lands back where you were. The URL wins over any `cd` a config
+  // file did; invalid or missing paths fall back to the default. The
+  // URL is normalized to the canonical resolved path afterwards.
+  const cwdParam = new URLSearchParams(location.search).get("cwd");
+  if (cwdParam) {
+    try {
+      const target = fs._resolve(cwdParam);
+      await fs.list(target);   // throws if the path doesn't exist
+      fs.cwd = target;
+      env.PWD = target;
+    } catch {}
+  }
+  syncCwdUrl();
+
   await getJobScheduler().restore();  // re-arm persisted cron jobs
   writeShellPrompt();  // initial prompt line in the scrollback
   input.focus();

@@ -17,8 +17,11 @@ JavaScript source  ──run with the sh2.* runtime (src/sh2runtime.js)──▶
 terminal
 ```
 
-The old path (`sh2perl.wasm → Perl → perl2js`) is kept as a fallback when
-debashcl.wasm isn't available.
+The old path (`sh2perl.wasm → Perl → perl2js`) and the redundant
+sh2perl.wasm command binary were removed — debashcl.wasm is the one
+compiler, wrapped by the `/bin/sh2js.js`, `/bin/sh2perl.js` and
+`/bin/debashc.js` commands (all driving the same reactor via
+`src/sh2lib.js`).
 
 ## Verified working (CLI + browser, Playwright-tested)
 

@@ -58,7 +58,7 @@ const SHORT = {
   wat2wasm: "compile a .wat WebAssembly text file to .wasm",
   qbe2wasm: "compile QBE IR (cproc output) to a wasm binary",
   cc: "compile C with the real cproc compiler (cproc → QBE IR → qbe2wasm)",
-  bash2js: "transpile bash to JavaScript (sh2perl → perl2js)",
+  bash2js: "transpile bash to JavaScript (debashcl ESTree)",
   bash: "run bash commands: transpile to JS and execute",
   which: "show the path (or builtin) the shell would run",
   help: "shell help and overview",
@@ -768,9 +768,9 @@ SYNOPSIS
 
 DESCRIPTION
      bash2js compiles bash source to JavaScript entirely in the
-     browser. The pipeline is bash → Perl (sh2perl.wasm, a real bash
-     compiler) → JS (perl2js). The generated JS targets the shell's
-     runtime (rt + env); save it to a .js command file to run it
+     browser. The pipeline is bash → ESTree (debashcl.wasm, a real
+     bash compiler) → JS (sh2.* runtime). The generated JS targets
+     the sh2.* runtime; save it to a .js command file to run it
      again without the compiler.
 
 OPTIONS
@@ -796,9 +796,9 @@ SYNOPSIS
 
 DESCRIPTION
      bash transpiles bash source to JavaScript and executes it
-     immediately. The compiler runs in the browser: bash → Perl
-     (sh2perl.wasm) → JS (perl2js) → executed in the shell. Loops,
-     conditionals, variables, arithmetic, pipes and command
+     immediately. The compiler runs in the browser: bash → ESTree
+     (debashcl.wasm) → JS (sh2.* runtime) → executed in the shell.
+     Loops, conditionals, variables, arithmetic, pipes and command
      substitution work; pipelines run through the shell's own
      pipeline machinery.
 

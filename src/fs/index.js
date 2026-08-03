@@ -11,7 +11,7 @@
 //   /bin/         → LocalStorageFS(.js commands — the shell's binaries)
 //   /commands/    → (alias of /bin — legacy name)
 //   /usr/bin/     → RamFS         (WASM binaries: wasmer install, auto-load)
-//   /http/        → HttpFS        (CORS fetch access)
+//   /http/        → HttpFS        (CORS fetch access; ls shows featured samples)
 //   /proc/        → ProcFS        (process info + browser stats)
 //   /dev/         → DevFS         (browser devices)
 //   /pc/          → DownloadFS    (downloads)
@@ -31,6 +31,7 @@ import { GitLabFS } from "./gitlabfs.js";
 import { GitFS } from "./gitfs.js";
 import { DevFS } from "./devfs.js";
 import { DownloadFS } from "./downloadfs.js";
+import { ZipFS } from "./zipfs.js";
 import { procfs } from "./procfs.js";
 
 // ─── RootFS: A virtual directory that shows mount points ───────
@@ -328,6 +329,8 @@ class BindFS {
 class VirtualFS {
   constructor() {
     this.mounts = [];
+    this.zipCache = new Map();      // zip path → parsed ZipFS promise (or null)
+    this.autoUnmounted = new Set(); // zips the user explicitly unmounted this session
     this.cwd = "/home";
     // Ownership + mode bits, enforced at this layer: every command
     // reaches the filesystem only through VirtualFS, so `su nobody`
@@ -336,6 +339,12 @@ class VirtualFS {
     // exactly what happens on a real boot.
     this.attrs = new Map();  // resolved path → { owner, mode }
     this.binds = new Map();  // bind-mount dst → original real path
+    // Symlinks live at the VFS layer (not in any backend), keyed by the
+    // view-space path of the link itself → target (absolute or relative,
+    // as given to ln). Reads/writes/stats follow them through _resolve;
+    // listings merge them in; rm unlinks them without touching targets.
+    // In-memory only, like attrs — a reload re-creates the world.
+    this.links = new Map();
     this.root = "/";         // chroot root (view-space "/" maps here)
     this.chrootSavedCwd = null;
 
@@ -6344,6 +6353,9 @@ return 1;
       `  ls /git/github.com/torvalds/linux/  -- real git protocol, any repo\n` +
       `  cat /home/examples/hello.sh      -- a sample script\n` +
       `  edit /home/examples/note.txt     -- edit a file\n` +
+      `  ls /home/examples/               -- includes symlinked sample files\n` +
+      `  cat /home/examples/sample.txt    -- a sample text file (via symlink)\n` +
+      `  ls -l /home/examples/sample.mp3  -- a symlink into /http/\n` +
       `  ls /dev/                         -- browser devices\n` +
       `  cat /dev/info                    -- system info\n` +
       `  ls /proc/                        -- processes + browser stats\n` +
@@ -6358,6 +6370,28 @@ return 1;
     syncWrite(this._getBackend("/home/examples/note.txt"), "/examples/note.txt",
       `Notes\n=====\n\nEdit this file with:  edit /home/examples/note.txt\n` +
       `Ctrl+S to save, Esc to cancel.\n`);
+
+    // Sample files, one per common file type — symlinks into /http/'s
+    // featured CORS-enabled archives. Symlinks live in the VFS layer,
+    // so this is cheap, crosses mounts, and never copies bytes; they're
+    // re-created at every boot like /usr/bin's wasm binaries. Removing
+    // one (`rm /home/examples/sample.mp3`) unlinks it without touching
+    // the remote file. cat/play/cp work straight through the link.
+    //
+    // Sources chosen for CORS stability: archive.org's big-video nodes
+    // (dn*.ca.archive.org) don't send CORS, so videos come from
+    // Wikimedia Commons and GitHub Pages instead.
+    this._linkSync("/http/raw.githubusercontent.com/mdn/webaudio-examples/main/audio-analyser/viper.mp3", "/home/examples/sample.mp3");
+    this._linkSync("/http/upload.wikimedia.org/wikipedia/commons/d/db/Alligatorbellowedit.ogg", "/home/examples/sample.ogg");
+    // ogv is Theora: plays in Firefox, NOT in Chromium browsers
+    // (Chrome/Brave/Edge dropped Theora). Kept as a format sample;
+    // sample.webm (VP9) and sample.mp4 (H.264) play everywhere.
+    this._linkSync("/http/upload.wikimedia.org/wikipedia/commons/3/3b/Big_Buck_Bunny_extract.ogv", "/home/examples/sample.ogv");
+    this._linkSync("/http/upload.wikimedia.org/wikipedia/commons/c/c1/Diehl_Wecker_%28ca._1955%29.webm", "/home/examples/sample.webm");
+    this._linkSync("/http/upload.wikimedia.org/wikipedia/commons/6/6a/JavaScript-logo.png", "/home/examples/sample.png");
+    this._linkSync("/http/picsum.photos/id/237/200/300", "/home/examples/sample.jpg");
+    this._linkSync("/http/mdn.github.io/learning-area/html/multimedia-and-embedding/video-and-audio-content/rabbit320.mp4", "/home/examples/sample.mp4");
+    this._linkSync("/http/raw.githubusercontent.com/git/git/master/README.md", "/home/examples/sample.txt");
   }
 
   _getBackend(resolvedPath) {
@@ -6412,7 +6446,91 @@ return 1;
     const norm = prefix.replace(/\/+$/, "") || "/";
     const idx = this.mounts.findIndex((m) => m.prefix === norm && m.user);
     if (idx === -1) throw new Error("not a user mount");
-    return this.mounts.splice(idx, 1)[0];
+    const record = this.mounts.splice(idx, 1)[0];
+    // A detached zip must not auto-remount on the next access.
+    if (record.zip) this.zipUnmounted(norm);
+    return record;
+  }
+
+  // ─── zip mounts: cd into .zip files ──────────────────────────
+  // Any path component ending in .zip that resolves to a real ZIP file
+  // becomes a mount at that path (an OverlayFS over a read-only ZipFS,
+  // so writes inside the mounted dir land in the overlay — never the
+  // archive). Mounts are created lazily on first access; nested zips
+  // (a.zip/b.zip) mount recursively. The archive file itself stays
+  // readable: read/readBlob at exactly the mount point return the RAW
+  // bytes from the underlying backend (see _findBackendRaw).
+
+  _hasMount(prefix) {
+    return this.mounts.some((m) => m.prefix === prefix);
+  }
+
+  // Parse-cached ZipFS for a resolved path, or null when it isn't a
+  // readable zip (missing, a dir, or junk bytes). The cache means a zip
+  // is read and parsed at most once per session; _dropZipMount clears
+  // it when the archive is replaced.
+  async _zipForFile(resolvedPath) {
+    if (!this.zipCache.has(resolvedPath)) {
+      this.zipCache.set(resolvedPath, this._zipForFileSlow(resolvedPath));
+    }
+    return this.zipCache.get(resolvedPath);
+  }
+
+  async _zipForFileSlow(resolvedPath) {
+    const m = this._findBackendRaw(resolvedPath);
+    if (!m) return null;
+    let st;
+    try { st = await m.backend.stat(m.relative); } catch { return null; }
+    if (!st || st.type !== "file") return null;
+    let bytes;
+    try {
+      if (m.backend.readBlob) {
+        const blob = await m.backend.readBlob(m.relative);
+        bytes = new Uint8Array(await blob.arrayBuffer());
+      } else {
+        bytes = new TextEncoder().encode(await m.backend.read(m.relative));
+      }
+    } catch { return null; }
+    try {
+      const zipfs = new ZipFS(bytes);
+      zipfs._parse();   // throws if the bytes aren't a zip
+      return zipfs;
+    } catch { return null; }
+  }
+
+  // Mount every .zip component of a resolved path that isn't mounted
+  // yet (so /a.zip/sub/b.zip works for nested archives). Cheap once
+  // mounted: the walk stops at existing mounts.
+  async _ensureZipMounts(resolvedPath) {
+    const parts = resolvedPath.split("/").filter(Boolean);
+    let prefix = "";
+    for (let i = 0; i < parts.length; i++) {
+      prefix = prefix ? prefix + "/" + parts[i] : "/" + parts[i];
+      if (!/\.zip$/i.test(parts[i])) continue;
+      if (this.autoUnmounted.has(prefix)) continue;
+      if (this._hasMount(prefix)) continue;
+      const zipfs = await this._zipForFile(prefix);
+      if (!zipfs) continue;
+      this.mount("zip:" + prefix, prefix,
+        new OverlayFS(zipfs, "zip", `fs:ovl:zip:${prefix}:`),
+        { user: true, zip: true });
+    }
+  }
+
+  // The archive itself was replaced or removed — detach its mount and
+  // drop the parse cache so the next access re-reads the file.
+  _dropZipMount(resolvedPath) {
+    const idx = this.mounts.findIndex((m) => m.prefix === resolvedPath && m.zip);
+    if (idx !== -1) this.mounts.splice(idx, 1);
+    this.zipCache.delete(resolvedPath);
+  }
+
+  // The shell's `unmount` builtin calls this for zip mounts so a
+  // detached archive stays detached (it would otherwise auto-remount
+  // on the next access).
+  zipUnmounted(resolvedPath) {
+    this.autoUnmounted.add(resolvedPath);
+    this.zipCache.delete(resolvedPath);
   }
 
   // Human-readable mount table, for `mount` / /proc/mounts
@@ -6470,16 +6588,53 @@ return 1;
     }
   }
 
-  _resolve(path) {
+  // Resolve a path: cwd-join, . / .. normalization, chroot mapping —
+  // and symbolic links. Links are followed as components are walked;
+  // absolute targets restart the walk from root, relative targets
+  // resolve against the link's own directory. A guard counter stops
+  // link loops at the POSIX limit of 40 hops (ELOOP).
+  //
+  // opts.followFinal=false leaves the LAST component unresolved when it
+  // is a link, so callers can address the link itself (readlink, rm,
+  // ln, ls -l). Intermediate links are still followed.
+  _resolve(path, opts = {}) {
+    const followFinal = opts.followFinal !== false;
     let resolved = path;
     if (!path.startsWith("/")) {
       resolved = (this.cwd === "/" ? "/" : this.cwd + "/") + path;
     }
-    const parts = resolved.split("/").filter(Boolean);
+    let parts = resolved.split("/").filter(Boolean);
     const out = [];
-    for (const p of parts) {
-      if (p === "..") out.pop();
-      else if (p !== ".") out.push(p);
+    let guard = 0;
+    while (parts.length > 0) {
+      const p = parts.shift();
+      if (p === "..") { out.pop(); continue; }
+      if (p === ".") continue;
+      const cur = "/" + out.concat(p).join("/");
+      if (this.links.has(cur)) {
+        const isFinal = parts.length === 0;
+        if (isFinal && !followFinal) {
+          // Stop at the link itself (readlink/rm/ls -l want the link).
+          out.push(p);
+          continue;
+        }
+        if (++guard > 40) {
+          throw new Error("ELOOP: too many levels of symbolic links");
+        }
+        const target = this.links.get(cur);
+        const tparts = target.split("/").filter(Boolean);
+        if (target.startsWith("/")) {
+          // Absolute target: restart the walk from the target's root.
+          out.length = 0;
+          parts = tparts.concat(parts);
+        } else {
+          // Relative target: resolves against the link's directory,
+          // which is exactly what `out` holds at this point.
+          parts = tparts.concat(parts);
+        }
+        continue;
+      }
+      out.push(p);
     }
     let norm = "/" + out.join("/");
     // chroot: view-space absolute paths map into the confined root.
@@ -6526,27 +6681,133 @@ return 1;
         // prefix is "/" (root), the slice strips it and we lose the leading
         // slash unless we re-add it.
         if (!relative.startsWith("/")) relative = "/" + relative;
+        return { backend: m.backend, relative, name: m.name, zip: m.zip, prefix: m.prefix };
+      }
+    }
+    return null;
+  }
+
+  // Backend for a path, skipping zip mounts — used to read the RAW
+  // archive bytes of a .zip that is itself a mount point (the mount
+  // makes it a directory for browsing; copying the archive still works).
+  _findBackendRaw(resolvedPath) {
+    for (const m of this.mounts) {
+      if (m.zip) continue;
+      if (resolvedPath.startsWith(m.prefix)) {
+        let relative = resolvedPath.slice(m.prefix.length) || "/";
+        if (!relative.startsWith("/")) relative = "/" + relative;
         return { backend: m.backend, relative, name: m.name };
       }
     }
     return null;
   }
 
+  // ─── symlinks ────────────────────────────────────────────────
+  // Links are VFS-level state (this.links), keyed by view-space path.
+  // They can point anywhere — /home files, /http/ URLs, /github repos,
+  // relative or absolute — and never copy bytes. Reads/writes/stat
+  // follow them via _resolve; listings merge them; remove unlinks them.
+
+  // Is this path itself a symlink (without following)? Sync + cheap —
+  // the listing code calls it per entry without ever touching targets.
+  _isLink(path) {
+    try {
+      const r = this._resolve(path, { followFinal: false });
+      return this.links.has(this.view(r));
+    } catch {
+      return false;
+    }
+  }
+
+  // Target of the link at this path, or null if it's not a symlink.
+  _readlinkTarget(path) {
+    try {
+      const r = this._resolve(path, { followFinal: false });
+      const t = this.links.get(this.view(r));
+      return t === undefined ? null : t;
+    } catch {
+      return null;
+    }
+  }
+
+  // Create a symlink (synchronous core — used at boot to prepopulate
+  // the sample-file links before any await can run).
+  _linkSync(target, linkpath) {
+    const r = this._resolve(linkpath, { followFinal: false });
+    const parent = this._parent(r);
+    this._check(parent, "w");
+    this._check(parent, "x");
+    if (!this._findBackend(r)) {
+      throw new Error(`ENOENT: ${linkpath} (no mount for ${r})`);
+    }
+    const key = this.view(r);
+    this.links.set(key, target);
+    // Links get an attribute too so ls -l shows a real owner; mode 777
+    // like Linux (the mode is decorative — access goes through the
+    // target's own attrs once followed).
+    if (!this.attrs.has(key)) this.attrs.set(key, { owner: this._user(), mode: 0o777 });
+    return { link: true, target };
+  }
+
+  // Public API: create a symlink at linkpath pointing at target.
+  // The parent directory must exist (like real ln) and the destination
+  // must not already exist (use rm first, or `ln -f` in the shell).
+  async link(target, linkpath) {
+    const r = this._resolve(linkpath, { followFinal: false });
+    const parent = this._parent(r);
+    try {
+      await this.list(parent);
+    } catch {
+      throw new Error(`ENOENT: ${linkpath} (no such directory)`);
+    }
+    try {
+      await this.stat(linkpath);
+      throw new Error(`EEXIST: ${linkpath}`);
+    } catch (e) {
+      if (!e.message.startsWith("ENOENT")) throw e;
+    }
+    return this._linkSync(target, linkpath);
+  }
+
+  // Target of the symlink at path, or throw EINVAL if it isn't one.
+  async readlink(path) {
+    const t = this._readlinkTarget(path);
+    if (t === null) throw new Error("EINVAL: not a symbolic link");
+    return t;
+  }
+
   async read(path) {
     const r = this._resolve(path);
+    await this._ensureZipMounts(r);
     this._check(this._parent(r), "x");
     this._check(r, "r");
     const m = this._findBackend(r);
     if (!m) throw new Error(`ENOENT: ${path} (no mount for ${r})`);
+    // A .zip that is itself a mount point: the mount makes it a
+    // directory for browsing, but reading the archive returns the raw
+    // bytes (cp /pc, zip -l/-x, downloads still work).
+    if (m.zip && r === m.prefix) {
+      const raw = this._findBackendRaw(r);
+      if (raw) return raw.backend.read(raw.relative);
+    }
     return m.backend.read(m.relative);
   }
 
   async readBlob(path) {
     const r = this._resolve(path);
+    await this._ensureZipMounts(r);
     this._check(this._parent(r), "x");
     this._check(r, "r");
     const m = this._findBackend(r);
     if (!m) throw new Error(`ENOENT: ${path} (no mount for ${r})`);
+    if (m.zip && r === m.prefix) {
+      const raw = this._findBackendRaw(r);
+      if (raw) {
+        if (raw.backend.readBlob) return raw.backend.readBlob(raw.relative);
+        const text = await raw.backend.read(raw.relative);
+        return new Blob([text], { type: "application/octet-stream" });
+      }
+    }
     if (m.backend.readBlob) {
       return m.backend.readBlob(m.relative);
     }
@@ -6554,8 +6815,25 @@ return 1;
     return new Blob([text], { type: "text/plain" });
   }
 
+  // For a write/remove on a resolved path: if the target IS the
+  // archive itself (a .zip not inside another zip mount), detach its
+  // mount so the operation reaches the real file (regenerating or
+  // deleting a zip re-mounts on next access); otherwise ensure zip
+  // mounts exist (writes inside an archive go to its overlay).
+  async _ensureZipTarget(resolvedPath) {
+    const name = resolvedPath.split("/").filter(Boolean).pop() || "";
+    const insideZip = this.mounts.some((m) =>
+      m.zip && m.prefix !== resolvedPath && resolvedPath.startsWith(m.prefix + "/"));
+    if (/\.zip$/i.test(name) && !insideZip) {
+      this._dropZipMount(resolvedPath);
+      return;
+    }
+    await this._ensureZipMounts(resolvedPath);
+  }
+
   async writeBlob(path, blob) {
     const r = this._resolve(path);
+    await this._ensureZipTarget(r);
     this._check(this._parent(r), "x");
     if (this.attrs.has(r)) this._check(r, "w");
     else this._check(this._parent(r), "w");
@@ -6576,6 +6854,7 @@ return 1;
 
   async write(path, content) {
     const r = this._resolve(path);
+    await this._ensureZipTarget(r);
     this._check(this._parent(r), "x");
     if (this.attrs.has(r)) this._check(r, "w");
     else this._check(this._parent(r), "w");
@@ -6610,11 +6889,31 @@ return 1;
 
   async list(path) {
     const r = this._resolve(path);
+    await this._ensureZipMounts(r);
     this._check(this._parent(r), "x");
     this._check(r, "r");
     const m = this._findBackend(r);
     if (!m) throw new Error(`ENOENT: ${path} (no mount for ${r})`);
-    return m.backend.list(m.relative);
+    const entries = await m.backend.list(m.relative);
+    // Symlinks live above the backends, so a directory listing must add
+    // the links whose parent is this directory.
+    const v = this.view(r);
+    const prefix = v === "/" ? "/" : v + "/";
+    const extra = [];
+    for (const key of this.links.keys()) {
+      if (key.startsWith(prefix) && !key.slice(prefix.length).includes("/")) {
+        extra.push(key.slice(prefix.length));
+      }
+    }
+    if (extra.length === 0) return entries;
+    // Merge and sort; keep "..." (truncation marker) pinned last like
+    // the backends' own convention.
+    const merged = [...new Set([...entries, ...extra])];
+    return merged.sort((a, b) => {
+      const ea = a === "..." ? 1 : 0;
+      const eb = b === "..." ? 1 : 0;
+      return (ea - eb) || (a < b ? -1 : a > b ? 1 : 0);
+    });
   }
 
   // Cache metadata ({ age, stale }) for a path's listing, or null if the
@@ -6648,12 +6947,33 @@ return 1;
   }
 
   async remove(path) {
+    // If the path names a symlink, unlink the link itself — never the
+    // target (real rm semantics; rm /home/link must not delete the
+    // file it points at).
+    const linkRes = this._resolve(path, { followFinal: false });
+    const linkKey = this.view(linkRes);
+    if (this.links.has(linkKey)) {
+      this._check(this._parent(linkRes), "w");
+      this._check(this._parent(linkRes), "x");
+      this.links.delete(linkKey);
+      this.attrs.delete(linkKey);
+      return { link: true };
+    }
     const r = this._resolve(path);
+    await this._ensureZipTarget(r);
     this._check(this._parent(r), "w");
     this._check(this._parent(r), "x");
     const m = this._findBackend(r);
     if (!m) throw new Error(`ENOENT: ${path} (no mount for ${r})`);
     const result = await m.backend.remove(m.relative);
+    // If a directory was removed, backends know nothing of the links
+    // that lived inside it — drop them here.
+    const v = this.view(r);
+    if (v !== "/") {
+      for (const key of [...this.links.keys()]) {
+        if (key.startsWith(v + "/")) this.links.delete(key);
+      }
+    }
     if (result && result.overlay) this._emitOverlayWarning(r, m.name);
     return result;
   }
@@ -6680,6 +7000,7 @@ return 1;
 
   async stat(path) {
     const r = this._resolve(path);
+    await this._ensureZipMounts(r);
     // stat is metadata: needs traverse (x) on the parent, not read on
     // the file — `ls -l` shows real modes even when the content is
     // private, exactly like Unix.
@@ -6742,6 +7063,11 @@ return 1;
       let kind = "file";
       if (e.endsWith("/")) {
         kind = "dir";
+      } else if (this._isLink(path + "/" + e)) {
+        // Classify symlinks without a stat: a stat would follow the
+        // link, and for /http/ or /github targets that means fetching
+        // the target just to colorize a name.
+        kind = "link";
       } else {
         try {
           const st = await this.stat(path + "/" + e);
@@ -6783,9 +7109,24 @@ return 1;
     for (const entry of entries) {
       const isDir = entry.endsWith("/");
       const name = isDir ? entry.slice(0, -1) : entry;
+      const full = path + "/" + entry;
+      // Symlinks render as lrwxrwxrwx with a "-> target" suffix — no
+      // stat of the target (that could mean fetching a 60 MB video).
+      const linkTarget = isDir ? null : this._readlinkTarget(full);
+      if (linkTarget !== null) {
+        const a = this._attrFor(full);
+        rows.push({
+          mode: "lrwxrwxrwx",
+          owner: a.owner,
+          size: linkTarget.length,
+          date: "-",
+          name: colorize(name, "link") + " -> " + linkTarget,
+        });
+        continue;
+      }
       let st = null;
       try {
-        st = await this.stat(path + "/" + entry);
+        st = await this.stat(full);
       } catch {
         st = null;  // remote/virtual backends without metadata
       }
@@ -6814,6 +7155,13 @@ return 1;
   // path is ENOTDIR. Rendered with the same columns as formatLongList.
   async formatLongFile(path) {
     const name = path.split("/").filter(Boolean).pop() || "/";
+    // A symlink path renders as the link itself (lrwxrwxrwx -> target),
+    // like GNU ls -l without a trailing slash.
+    const linkTarget = this._readlinkTarget(path);
+    if (linkTarget !== null) {
+      const a = this._attrFor(path);
+      return `lrwxrwxrwx 1 ${a.owner} ${a.owner} ${String(linkTarget.length)} - ${colorize(name, "link")} -> ${linkTarget}\n`;
+    }
     const st = await this.stat(path);
     const type = st && st.type === "dir" ? "dir" : "file";
     const size = st && st.size !== undefined ? st.size : "-";
@@ -6830,6 +7178,7 @@ return 1;
 const ANSI = {
   blue: "\x1b[34m",
   green: "\x1b[32m",
+  magenta: "\x1b[35m",
   white: "\x1b[37m",
   reset: "\x1b[0m",
 };
@@ -6844,7 +7193,10 @@ function isExecutableName(name) {
 // Wrap a name in its color code. Callers pad using the raw (visible)
 // length so the invisible escapes never shift the columns.
 function colorize(name, kind) {
-  const code = kind === "dir" ? ANSI.blue : kind === "exe" ? ANSI.green : ANSI.white;
+  const code = kind === "dir" ? ANSI.blue
+    : kind === "exe" ? ANSI.green
+    : kind === "link" ? ANSI.magenta
+    : ANSI.white;
   return `${code}${name}${ANSI.reset}`;
 }
 

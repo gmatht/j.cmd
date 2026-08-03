@@ -44,7 +44,7 @@ youtube  reddit  slashdot  lwn  hn  github  wikipedia  arxiv
 ## 5. wasm32-wasi binaries — www/wasm-bin/ (9)
 
 ```
-compiler (cc)  debashcl  echo  echoc  grep  make*  python  sh2perl  wasm-diff†
+cproc  tcc  debashcl  echo  echoc  grep  make*  python  wasm-diff†
 ```
 
 `*` 39-byte stub, not built · `†` wasm-bindgen library, driven by /bin/diff.js

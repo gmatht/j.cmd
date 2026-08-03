@@ -131,7 +131,7 @@ export class WasmRunner {
     const memRef = { memory: null };
     const custom = this._buildCustomImports(module, memRef);
     // wasmer-wasi's instantiate traps with "unreachable" when a custom
-    // import module (env/std/…) has more functions than the wasm
+    // import module (env/…) has more functions than the wasm
     // actually imports — so trim each custom module to exactly the
     // names this binary imports (tcc's output imports env.$printf, but
     // the env runtime exposes 21 libc functions).
@@ -145,8 +145,8 @@ export class WasmRunner {
       custom[modName] = filtered;
     }
 
-    // The c-compiler's output (and other bare modules) import only custom
-    // modules like 'std', with no WASI imports — @wasmer/wasi can't
+    // Bare modules (tcc/cproc output) import only custom modules like
+    // 'env', with no WASI imports — @wasmer/wasi can't
     // determine a WASI version for them. Instantiate directly instead.
     const hasWasi = WebAssembly.Module.imports(module)
       .some((i) => i.module === "wasi_snapshot_preview1");
@@ -154,8 +154,8 @@ export class WasmRunner {
       const instance = await WebAssembly.instantiate(module, custom);
       if (instance.exports.memory) memRef.memory = instance.exports.memory;
       try {
-        // qbe2wasm compiles export the QBE symbol verbatim ($main); the
-        // old c-to-wasm compiler exports main.
+        // qbe2wasm compiles export the QBE symbol verbatim ($main);
+        // some compilers export main.
         const entry = instance.exports.$main || instance.exports.main;
         if (entry) { entry(); this._exitCode = 0; }
         else { this._exitCode = 0; }
@@ -178,9 +178,11 @@ export class WasmRunner {
     // C programs) go through plain V8 instantiation with a minimal WASI
     // shim instead: their WASI surface is just proc_exit (fd_write is
     // imported but never called — all libc comes from the env runtime).
+    
     const customMods = WebAssembly.Module.imports(module)
       .filter((i) => i.module !== "wasi_snapshot_preview1");
     if (hasWasi && customMods.length > 0) {
+
       const instance = await WebAssembly.instantiate(module, {
         ...custom,
         wasi_snapshot_preview1: this._wasiShim(),
@@ -270,7 +272,8 @@ export class WasmRunner {
     this._stdoutBytes = wasi.getStdoutBuffer();
     this._stdout = new TextDecoder().decode(this._stdoutBytes);
     this._stderr = wasi.getStderrString();
-    // Merge output written via the custom 'std' module (c-compiler runtime)
+    // Merge output written via the custom import modules (c-runtime
+    // env module)
     if (this._stdCustomOut) {
       const custom = new TextEncoder().encode(this._stdCustomOut);
       const merged = new Uint8Array(custom.length + this._stdoutBytes.length);
@@ -413,7 +416,13 @@ export class WasmRunner {
     };
     removeAll("/");
 
+    // Visit each directory once: wasmer-wasi's MemFS can return duplicate
+    // entries for a dir after a run, and walking a duplicated subdir from a
+    // duplicated parent recurses without bound.
+    const visited = new Set();
     const walk = (dir) => {
+      if (visited.has(dir)) return;
+      visited.add(dir);
       let entries;
       try {
         entries = wasiFs.readDir(dir);
@@ -422,7 +431,7 @@ export class WasmRunner {
       }
       for (const e of entries) {
         const path = e.path;
-        if (isSkipped(path)) continue;
+        if (!path || isSkipped(path)) continue;
         const ft = e.metadata && e.metadata.filetype;
         if (ft && ft.dir) {
           wasmfs.fs.mkdirSync(path, { recursive: true });
@@ -557,59 +566,6 @@ export class WasmRunner {
           mem.set(encd, rp);
           return encd.length;
         }
-      },
-
-      // Runtime for the c-to-wasm-compiler-project: the WASM it generates
-      // imports a custom 'std' module (sleep, readln, print, ...). This
-      // bridge implements those against the browser shell.
-      "std": {
-        sleep: (ms) => {
-          // Busy-wait in small steps so the UI thread stays responsive-ish
-          const end = Date.now() + ms;
-          while (Date.now() < end) {}
-          return 0;
-        },
-        readln: (po, bufLen) => {
-          const mem = new Uint8Array(memRef.memory.buffer);
-          // stdin was set on the runner during run() — may be raw bytes
-          const raw = runner._stdin || "";
-          const line = typeof raw === "string" ? raw : new TextDecoder().decode(raw);
-          runner._stdin = "";
-          const bytes = enc.encode(line);
-          const max = Math.min(bytes.length, Math.max(0, bufLen - 1));
-          for (let i = 0; i < max; i++) mem[po + i] = bytes[i];
-          mem[po + max] = 0;
-          return bytes.length;
-        },
-        _ln: () => { runner._stdCustomOut += "\n"; return 0; },
-        _print: (po, len) => {
-          const mem = new Uint8Array(memRef.memory.buffer);
-          runner._stdCustomOut += dec.decode(mem.slice(po, po + len));
-          return 0;
-        },
-        _println: (po, len) => {
-          runner._print(po, len);
-          runner._stdCustomOut += "\n";
-          return 0;
-        },
-        print_int: (i) => { runner._stdCustomOut += String(i); return 0; },
-        print_real: (r) => { runner._stdCustomOut += String(r); return 0; },
-        println_int: (i) => { runner._stdCustomOut += String(i) + "\n"; return 0; },
-        println_real: (r) => { runner._stdCustomOut += String(r) + "\n"; return 0; },
-        print_int_pad: (i, fullLen) => {
-          let left = false;
-          if (fullLen < 0) { fullLen = -fullLen; left = true; }
-          const txt = String(i);
-          runner._stdCustomOut += left ? txt.padStart(fullLen) : txt.padEnd(fullLen);
-          return 0;
-        },
-        print_real_pad: (r, fullLen) => {
-          let left = false;
-          if (fullLen < 0) { fullLen = -fullLen; left = true; }
-          const txt = String(r);
-          runner._stdCustomOut += left ? txt.padStart(fullLen) : txt.padEnd(fullLen);
-          return 0;
-        },
       },
     };
 

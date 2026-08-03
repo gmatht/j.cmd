@@ -145,6 +145,14 @@ machine and the commands that touch it.
 
 - The `/http/` mount is CORS-enabled `fetch`: it can reach any endpoint that
   sends `Access-Control-Allow-Origin`; other origins' data is unreadable.
+  `ls /http/` shows a curated set of sample files (mp3/ogg/ogv/webm/png/jpg/mp4/txt)
+  from CORS-verified archives (archive.org for audio, Wikimedia Commons,
+  GitHub raw, GitHub Pages, picsum) — the `/home/examples/sample.*` symlinks
+  point at them, one per file type.
+- Symlinks are VFS-level state (in-memory, like permissions): `ln -s` creates
+  them, `readlink` shows targets, `rm` unlinks without touching the target.
+  They are re-created at every boot, so the prepopulated example links always
+  exist; user-created links reset on reload.
 - The `llm` command works from the browser because most LLM APIs are
   CORS-enabled. Verified: OpenAI, Groq, Mistral, OpenRouter, Gemini and
   DeepSeek all send `Access-Control-Allow-Origin`; **Anthropic does not**.

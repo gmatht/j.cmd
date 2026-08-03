@@ -8,9 +8,9 @@
 //   2. Copy the .wasm file to www/wasm-bin/<name>.wasm
 //   3. Add an entry in REGISTRY below
 //
-// Repo build scripts: build-wasm-compiler.sh (C→WASM compiler),
-// build-wasm-grep.sh (real busybox grep as wasm32-wasi),
-// build-wasm-sh2perl.sh (gmatht/sh2perl shell→Perl transpiler).
+// Repo build scripts: build-wasm-grep.sh (real busybox grep as wasm32-wasi),
+// build-wasm-cproc.sh / build-wasm-tcc.sh (the cc/tcc C compilers).
+// debashcl.wasm (bash toolchain) is vendored — see vendor/sh2/.
 //
 // Usage in jtsh:
 //   wasmer list              → list available packages
@@ -66,21 +66,13 @@ const REGISTRY = {
     url: "wasm-bin/make.wasm",
     desc: "Build tool (Makefile runner)",
   },
-  "sh2perl": {
-    url: "wasm-bin/sh2perl.wasm",
-    desc: "Shell→Perl transpiler (gmatht/sh2perl debashc CLI, wasm32-wasip1 — see build-wasm-sh2perl.sh). Usage: sh2perl parse --perl 'echo hi'",
-  },
   "cproc": {
     url: "wasm-bin/cproc.wasm",
     desc: "C compiler emitting QBE IR (michaelforney/cproc, wasm32-wasi). The cc command runs cproc → qbe2wasm: cc prog.c && ./a.wasm",
   },
-  "compiler": {
-    url: "wasm-bin/compiler.wasm",
-    desc: "C compiler targeting WebAssembly (c-to-wasm-compiler-project, wasi-sdk build). Usage: compiler prog.c > prog.wat",
-  },
-  "cc": {
-    url: "wasm-bin/compiler.wasm",
-    desc: "C compiler (alias for compiler). Usage: cc prog.c",
+  "tcc": {
+    url: "wasm-bin/tcc.wasm",
+    desc: "Tiny C Compiler (TinyCC 0.9.28rc with a wasm32 backend, wasm32-wasi — see build-wasm-tcc.sh). Compiles C to wasm: tcc -c hello.c -o hello.wasm && ./hello.wasm",
   },
 };
 
