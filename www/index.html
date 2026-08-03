@@ -453,29 +453,78 @@
     font-size: 12px;
     border-bottom: 1px solid #30363d;
     flex: 0 0 auto;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
+  #bug-form-header .bf-instruction { font-weight: 700; color: #e6edf3; margin-bottom: 3px; }
+  #bug-form-header #bug-form-status { color: #8b949e; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #bug-form-text {
     margin: 0;
-    padding: 8px 0;
     overflow: auto;
     flex: 1 1 auto;
     font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    /* rows: [left gutter (▲▼ handles)] [line text] [right gutter (● handle)] */
+    display: grid;
+    grid-template-columns: 46px minmax(0, 1fr) 46px;
   }
-  #bug-form-text .bf-line {
-    display: block;
-    padding: 0 14px;
+  #bug-form-text .bf-row {
+    display: contents;   /* cells participate in the grid */
+  }
+  #bug-form-text .bf-row .bf-text {
+    padding: 0 6px;
     white-space: pre-wrap;
     word-break: break-word;
     color: #c9d1d9;
+    min-width: 0;
   }
-  #bug-form-text .bf-line .bf-mark { font-weight: 700; }
-  #bug-form-text .bf-line.bf-active { background: rgba(126, 200, 227, 0.13); }
-  #bug-form-text .bf-line.bf-title { font-weight: 700; }
-  #bug-form-text .bf-line.bf-out { color: #6e7681; } /* outside the ▲…▼ snippet range */
-  #bug-form-text .bf-line.bf-ellipsis { color: #6e7681; font-style: italic; }
+  #bug-form-text .bf-row .bf-gutter {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+  }
+  /* a faint rail down the gutters so the handles read as a track */
+  #bug-form-text .bf-row .bf-gutter::after {
+    content: "";
+    position: absolute;
+    top: 0; bottom: 0;
+    width: 1px;
+    background: rgba(126, 200, 227, 0.15);
+  }
+  #bug-form-text .bf-row .bf-gutter-l::after { right: 0; }
+  #bug-form-text .bf-row .bf-gutter-r::after { left: 0; }
+  /* the drag handles (▲▼ left, ● right) */
+  #bug-form-text .bf-handle {
+    background: #21262d;
+    border: 1px solid #30363d;
+    color: #8b949e;
+    width: 26px; height: 22px;
+    border-radius: 5px;
+    font-size: 11px;
+    line-height: 1;
+    cursor: grab;
+    touch-action: none;      /* drag, don't scroll */
+    z-index: 1;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  #bug-form-text .bf-handle:active { cursor: grabbing; }
+  #bug-form-text .bf-handle.bf-handle-active {
+    color: #e6edf3;
+    border-color: #7ec8e3;
+    background: rgba(126, 200, 227, 0.18);
+  }
+  /* the snippet boundaries: a full-width rule at the ▲ and ▼ rows */
+  #bug-form-text .bf-row.bf-boundary-top .bf-text,
+  #bug-form-text .bf-row.bf-boundary-top .bf-gutter { box-shadow: inset 0 1px 0 rgba(126, 200, 227, 0.55); }
+  #bug-form-text .bf-row.bf-boundary-bottom .bf-text,
+  #bug-form-text .bf-row.bf-boundary-bottom .bf-gutter { box-shadow: inset 0 -1px 0 rgba(126, 200, 227, 0.55); }
+  /* row states */
+  #bug-form-text .bf-row.bf-row-active .bf-text { background: rgba(126, 200, 227, 0.13); }
+  #bug-form-text .bf-row.bf-title .bf-text { font-weight: 700; }
+  #bug-form-text .bf-row.bf-out .bf-text { color: #6e7681; } /* outside the ▲…▼ snippet range */
+  #bug-form-text .bf-row.bf-ellipsis { display: block; color: #6e7681; font-style: italic; padding: 0 14px; }
+  #bug-form-text .bf-ellipsis { grid-column: 1 / -1; color: #6e7681; font-style: italic; padding: 0 14px; }
   #bug-form-hint {
     padding: 7px 14px;
     color: #8b949e;
@@ -646,13 +695,12 @@
   </div>
 </div>
 <div id="bug-form" class="hidden">
-  <div id="bug-form-header"></div>
+  <div id="bug-form-header">
+    <div class="bf-instruction">Please select the text to include in the bug report and the line to use as the title.</div>
+    <div id="bug-form-status"></div>
+  </div>
   <div id="bug-form-text"></div>
   <div id="bug-form-keys">
-    <button data-marker="top" title="Select the ▲ top-of-snippet marker">▲</button>
-    <button data-marker="title" title="Select the ● title-line marker">●</button>
-    <button data-marker="bottom" title="Select the ▼ bottom-of-snippet marker">▼</button>
-    <span class="bf-keys-sep"></span>
     <button data-move="-1" title="Move the active marker up (↑)">↑</button>
     <button data-move="1" title="Move the active marker down (↓)">↓</button>
     <span class="bf-keys-sep"></span>
@@ -661,10 +709,10 @@
   </div>
   <div id="bug-form-hint">
     <div>
-      <b>←/→</b> select marker (▲ top · ● title · ▼ bottom) &nbsp;<b>↑/↓</b> move it
-      &nbsp;<b>Enter</b> file the report &nbsp;<b>Esc</b> cancel
+      Drag the <b>▲ ● ▼</b> markers · tap a line to place the active marker · <b>←/→</b> select marker
+      (▲ top · ● title · ▼ bottom) · <b>↑/↓</b> move · <b>Enter</b> file · <b>Esc</b> cancel
     </div>
-    <div>On a phone: tap <b>▲ ● ▼</b> to pick a marker, tap any line to place it, <b>✓ file</b> / <b>✕ cancel</b>.</div>
+    <div>On a phone: drag the markers, tap a line to place, <b>✓ file</b> / <b>✕ cancel</b>.</div>
     <div class="bf-note">You can add more detail on GitHub later — it probably won't be required (if it's broken,
       it's probably obviously and completely broken). Don't worry about duplicates either.</div>
   </div>
@@ -3466,6 +3514,7 @@ Loops, conditionals, variables, arithmetic and pipes work:
       else if (!a.startsWith("-")) rest.push(a);
     }
     const summary0 = rest.join(" ") || null;
+    let pendingWin = null; // tab opened inside the Enter/✓ gesture, URL set after the report is built
 
     // Snapshot the terminal BEFORE writing anything. The last line is
     // the current prompt with "bug" typed — the bottom marker defaults
@@ -3497,68 +3546,86 @@ Loops, conditionals, variables, arithmetic and pipes work:
     const render = () => {
       const t = (state.lines[state.title] || "").replace(/^[^$]*\$ /, "").trim() || "(empty line)";
       const pos = { top: state.top, title: state.title, bottom: state.bottom };
-      bugFormHeader.textContent = `bug report · title: ${t.slice(0, 60)} · ▲${state.top} ●${state.title} ▼${state.bottom} · ${state.active} active · snippet: ${state.bottom - state.top + 1} lines`;
+      document.getElementById("bug-form-status").textContent =
+        `title: ${t.slice(0, 60)} · ▲${state.top} ●${state.title} ▼${state.bottom} · ${state.active} active · snippet: ${state.bottom - state.top + 1} lines`;
       bugFormText.textContent = "";
       const center = pos[state.active];
       const start = Math.max(0, center - WIN);
       const end = Math.min(n - 1, center + WIN);
       const mkEllipsis = (label) => {
         const div = document.createElement("div");
-        div.className = "bf-line bf-ellipsis";
-        const mark = document.createElement("span");
-        mark.className = "bf-mark";
-        mark.textContent = "⋯  "; // same 4-char cell as the markers
-        div.append(mark, document.createTextNode(label));
+        div.className = "bf-ellipsis";
+        div.textContent = `⋯ ${label}`;
         bugFormText.appendChild(div);
       };
+      const mkHandle = (sym, marker) => {
+        const b = document.createElement("button");
+        b.className = "bf-handle" + (state.active === marker ? " bf-handle-active" : "");
+        b.dataset.marker = marker;
+        b.textContent = sym;
+        b.title = `Drag or tap the ${sym} marker (${marker})`;
+        return b;
+      };
       if (start > 0) mkEllipsis(`${start} line${start === 1 ? "" : "s"} above`);
-      let activeEl = null;
+      let activeCell = null;
       for (let i = start; i <= end; i++) {
         const isActive = (i === state.top && state.active === "top") || (i === state.title && state.active === "title") || (i === state.bottom && state.active === "bottom");
         const inSnippet = i >= state.top && i <= state.bottom;
-        const div = document.createElement("div");
-        div.className = "bf-line"
-          + (isActive ? " bf-active" : "")
-          + (i === state.title ? " bf-title" : "")
-          + (inSnippet ? "" : " bf-out");
-        div.dataset.i = i; // tap-to-place target
-        const mark = document.createElement("span");
-        mark.className = "bf-mark";
-        const syms = [];
-        if (i === state.top) syms.push(state.active === "top" ? "▲" : "△");
-        if (i === state.title) syms.push(state.active === "title" ? "●" : "○");
-        if (i === state.bottom) syms.push(state.active === "bottom" ? "▼" : "▽");
-        // Constant 4-char marker cell: with markers or without, every
-        // line's text starts at the same column (no sideways shift).
-        mark.textContent = (syms.join("") + "   ").slice(0, 3) + " ";
-        mark.style.color = syms.length ? "#7ec8e3" : "";
-        div.append(mark, document.createTextNode(state.lines[i]));
-        if (isActive) activeEl = div;
-        bugFormText.appendChild(div);
+        const row = document.createElement("div");
+        row.className = "bf-row";
+        if (isActive) row.classList.add("bf-row-active");
+        if (i === state.title) row.classList.add("bf-title");
+        if (!inSnippet) row.classList.add("bf-out");
+        if (i === state.top) row.classList.add("bf-boundary-top");
+        if (i === state.bottom) row.classList.add("bf-boundary-bottom");
+        // left gutter: ▲ at the top marker, ▼ at the bottom marker
+        const g = document.createElement("div");
+        g.className = "bf-gutter bf-gutter-l";
+        if (i === state.top) g.appendChild(mkHandle("▲", "top"));
+        else if (i === state.bottom) g.appendChild(mkHandle("▼", "bottom"));
+        // the line text (tap-to-place target)
+        const tcell = document.createElement("div");
+        tcell.className = "bf-text";
+        tcell.dataset.i = i;
+        tcell.textContent = state.lines[i];
+        if (isActive) activeCell = tcell;
+        // right gutter: ● at the title marker (kept clear of ▲▼)
+        const gr = document.createElement("div");
+        gr.className = "bf-gutter bf-gutter-r";
+        if (i === state.title) gr.appendChild(mkHandle("●", "title"));
+        row.append(g, tcell, gr);
+        bugFormText.appendChild(row);
       }
       if (end < n - 1) mkEllipsis(`${n - 1 - end} line${n - 1 - end === 1 ? "" : "s"} below`);
-      if (activeEl) activeEl.scrollIntoView({ block: "nearest" });
+      if (activeCell) activeCell.scrollIntoView({ block: "nearest" });
     };
 
-    const move = (marker, d) => {
-      if (marker === "top") state.top = Math.max(0, Math.min(state.bottom, state.top + d));
-      else if (marker === "bottom") state.bottom = Math.min(n - 1, Math.max(state.top, state.bottom + d));
-      else state.title = Math.max(0, Math.min(n - 1, state.title + d));
-      render();
+    const placeMarker = (marker, i) => {
+      if (marker === "top") state.top = Math.max(0, Math.min(state.bottom, i));
+      else if (marker === "bottom") state.bottom = Math.min(n - 1, Math.max(state.top, i));
+      else state.title = Math.max(0, Math.min(n - 1, i));
     };
+    const move = (marker, d) => { placeMarker(marker, (marker === "top" ? state.top : marker === "bottom" ? state.bottom : state.title) + d); render(); };
 
     // Keys go through a document-level CAPTURE listener so arrows/Enter/
     // Esc work no matter where focus is (the form div, the page, …).
     // stopPropagation keeps the shell's line editor from also reacting
     // (no history navigation, no typing). Note: addEventListener passes
     // the event as the ONLY argument — read e.key inside.
+    // ←/→ cycle the active marker in reading order: ▲ top · ● title · ▼ bottom.
     const onKey = (e) => {
       const key = e.key;
-      if (key === "ArrowLeft") { state.active = state.active === "top" ? "title" : state.active === "title" ? "bottom" : "top"; render(); e.preventDefault(); e.stopPropagation(); return; }
-      if (key === "ArrowRight") { state.active = state.active === "top" ? "bottom" : state.active === "bottom" ? "title" : "top"; render(); e.preventDefault(); e.stopPropagation(); return; }
+      if (key === "ArrowRight") { state.active = state.active === "top" ? "title" : state.active === "title" ? "bottom" : "top"; render(); e.preventDefault(); e.stopPropagation(); return; }
+      if (key === "ArrowLeft") { state.active = state.active === "top" ? "bottom" : state.active === "bottom" ? "title" : "top"; render(); e.preventDefault(); e.stopPropagation(); return; }
       if (key === "ArrowUp") { move(state.active, -1); e.preventDefault(); e.stopPropagation(); return; }
       if (key === "ArrowDown") { move(state.active, 1); e.preventDefault(); e.stopPropagation(); return; }
-      if (key === "Enter") { resolveForm({ ...state }); e.preventDefault(); e.stopPropagation(); return; }
+      if (key === "Enter") {
+        // Open the destination tab NOW, inside the user gesture, so the
+        // popup blocker can't eat it; the URL is set once the report is
+        // built (pendingWin below).
+        pendingWin = window.open("about:blank", "_blank");
+        resolveForm({ ...state }); e.preventDefault(); e.stopPropagation(); return;
+      }
       if (key === "Escape") { resolveForm(null); e.preventDefault(); e.stopPropagation(); return; }
       if (key === "c" && (e.ctrlKey || e.metaKey)) {
         // With a text selection, Ctrl/Cmd+C copies it — the page's own
@@ -3578,36 +3645,66 @@ Loops, conditionals, variables, arithmetic and pipes work:
     interruptCallbacks.push(onIntr);
     document.addEventListener("keydown", onKey, true);
 
-    // Touch controls: the ▲/●/▼ and ↑/↓/✓/✕ button bar, plus tap-a-line
-    // to place the ACTIVE marker there (a drag still selects text for
-    // copying — taps move < 6px).
+    // Pointer controls: drag the ▲/●/▼ handles in the gutters (capture
+    // on the container so it survives re-renders), tap a handle to make
+    // it the active marker, tap a line to place the active marker there.
+    // A drag on the TEXT still selects it for copying (tap = < 6px move).
     const bugFormKeys = document.getElementById("bug-form-keys");
     const onBarClick = (e) => {
       const b = e.target.closest("button");
       if (!b) return;
-      if (b.dataset.marker) { state.active = b.dataset.marker; render(); }
-      else if (b.dataset.move) { move(state.active, parseInt(b.dataset.move, 10)); }
-      else if (b.dataset.act === "file") resolveForm({ ...state });
+      if (b.dataset.move) { move(state.active, parseInt(b.dataset.move, 10)); }
+      else if (b.dataset.act === "file") {
+        pendingWin = window.open("about:blank", "_blank"); // capture the gesture
+        resolveForm({ ...state });
+      }
       else if (b.dataset.act === "cancel") resolveForm(null);
     };
+    let dragState = null; // { marker, x, y, moved }
     let tapX = null, tapY = null;
-    const onTextDown = (e) => { tapX = e.clientX; tapY = e.clientY; };
+    const onTextDown = (e) => {
+      const h = e.target.closest(".bf-handle");
+      if (h) {
+        dragState = { marker: h.dataset.marker, x: e.clientX, y: e.clientY, moved: false };
+        state.active = h.dataset.marker; // tapping a handle selects it
+        render();
+        try { bugFormText.setPointerCapture(e.pointerId); } catch {}
+        e.preventDefault();
+        return;
+      }
+      tapX = e.clientX; tapY = e.clientY;
+    };
+    const onTextMove = (e) => {
+      if (!dragState) return;
+      if (Math.abs(e.clientX - dragState.x) + Math.abs(e.clientY - dragState.y) > 3) dragState.moved = true;
+      if (!dragState.moved) return;
+      // the marker follows the row under the pointer (hit-test works
+      // through the re-renders and the ellipsis rows)
+      for (const el of document.elementsFromPoint(e.clientX, e.clientY)) {
+        if (el.dataset && el.dataset.i !== undefined) {
+          const i = parseInt(el.dataset.i, 10);
+          if (!isNaN(i)) placeMarker(dragState.marker, i);
+          break;
+        }
+      }
+      render();
+    };
     const onTextUp = (e) => {
+      if (dragState) { dragState = null; return; } // a handle drag/tap
       if (tapX === null) return;
       const dx = e.clientX - tapX, dy = e.clientY - tapY;
       tapX = tapY = null;
-      if (dx * dx + dy * dy > 36) return; // it was a drag (selection)
-      const line = e.target.closest(".bf-line");
-      if (!line) return;
-      const i = parseInt(line.dataset.i, 10);
+      if (dx * dx + dy * dy > 36) return; // it was a drag (text selection)
+      const cell = e.target.closest(".bf-text");
+      if (!cell) return;
+      const i = parseInt(cell.dataset.i, 10);
       if (isNaN(i)) return;
-      if (state.active === "top") state.top = Math.max(0, Math.min(state.bottom, i));
-      else if (state.active === "bottom") state.bottom = Math.min(n - 1, Math.max(state.top, i));
-      else state.title = Math.max(0, Math.min(n - 1, i));
+      placeMarker(state.active, i);
       render();
     };
     bugFormKeys.addEventListener("click", onBarClick);
     bugFormText.addEventListener("pointerdown", onTextDown);
+    bugFormText.addEventListener("pointermove", onTextMove);
     bugFormText.addEventListener("pointerup", onTextUp);
 
     bugFormEl.classList.add("active");
@@ -3623,6 +3720,7 @@ Loops, conditionals, variables, arithmetic and pipes work:
       bugFormKeys.removeEventListener("click", onBarClick);
       bugFormText.removeEventListener("pointerdown", onTextDown);
       bugFormText.removeEventListener("pointerup", onTextUp);
+      bugFormText.removeEventListener("pointermove", onTextMove);
       interruptCallbacks = interruptCallbacks.filter((f) => f !== onIntr);
       bugFormEl.classList.remove("active");
       promptLine.style.display = "";
@@ -3692,6 +3790,7 @@ Loops, conditionals, variables, arithmetic and pipes work:
     if (token) {
       try {
         const url = await postIssue({ token, title, body });
+        if (pendingWin) { try { pendingWin.close(); } catch {} } // unused placeholder tab
         stdout.write(`bug: filed → ${url}\n`);
         return 0;
       } catch (e) {
@@ -3699,9 +3798,15 @@ Loops, conditionals, variables, arithmetic and pipes work:
       }
     }
     const url = `https://github.com/${BUG_REPO}/issues/new?title=${encodeURIComponent(title)}&body=${encodeURIComponent(body)}`;
-    let opened = false;
-    try { opened = !!window.open(url, "_blank"); } catch {}
-    if (opened) {
+    if (pendingWin) {
+      // The tab was opened in the user gesture — now send it to the
+      // prefilled form.
+      try { pendingWin.location.href = url; } catch { pendingWin = null; }
+    }
+    if (!pendingWin) {
+      try { pendingWin = window.open(url, "_blank"); } catch {}
+    }
+    if (pendingWin) {
       stdout.write(`bug: opened the prefilled GitHub form — review & submit there (${BUG_REPO})\n`);
     } else {
       // Popup blocked — render a clickable link in the terminal instead.
