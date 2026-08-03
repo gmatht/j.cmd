@@ -14,10 +14,10 @@
 export const BUG_REPO = "gmatht/j.cmd";
 export const BUG_LABEL = "bug-report";
 export const BUG_SITE = "https://gmatht.github.io/j.cmd/www/";
-// "0.1.0+": the deployed shell is beyond the 0.1.0 tag (no 0.1.1 has
-// been cut yet). The exact deployed commit comes from www/version.txt
-// (browser) or git (CLI) and lands in the report's Version line.
-export const SHELL_VERSION = "0.1.0+"; // keep in step with package.json
+// The deployed shell is at least this tagged version; the exact deployed
+// commit comes from www/version.txt (browser) or git (CLI) and lands in
+// the report's Version line.
+export const SHELL_VERSION = "0.1.1"; // keep in step with package.json
 
 /**
  * Assemble the markdown report body.

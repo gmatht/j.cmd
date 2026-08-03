@@ -268,7 +268,7 @@ class ProcFS {
       ? this._nav().platform
       : (typeof process !== "undefined" ? process.platform : "unknown");
     const line =
-      `jtsh 0.1.0 (browser kernel) #1 SMP PREEMPT_DYNAMIC ` +
+      `jtsh 0.1.1 (browser kernel) #1 SMP PREEMPT_DYNAMIC ` +
       `${this._browserLabel()} on ${plat}`;
     return `${line}\n${ua}\n`;
   }
