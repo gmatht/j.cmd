@@ -35,13 +35,10 @@ jobs:
           cp -r src site/src
           # /j.cmd/ → /j.cmd/www/ (the shell imports ../src, so it
           # can't live at the repo-root path; redirect the bare root)
-          cat > site/index.html << 'EOF'
-          <!DOCTYPE html>
-          <meta charset="utf-8">
-          <meta http-equiv="refresh" content="0; url=./www/">
-          <title>j.cmd — redirect</title>
-          <a href="./www/">j.cmd — the JavaScript command line OS lives at /j.cmd/www/</a>
-          EOF
+          # /j.cmd/ → /j.cmd/www/ with tagged-version fallbacks (the
+          # shell imports ../src, so it can't live at the repo-root
+          # path). See www-landing.html for the redirect + fallback.
+          cp www-landing.html site/index.html
           touch site/.nojekyll
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
