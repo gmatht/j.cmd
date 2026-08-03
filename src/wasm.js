@@ -323,6 +323,13 @@ export class WasmRunner {
         await this._vfsToWasmFs(path, wasmfs);
       } else {
         if (name.endsWith(".wasm")) continue; // don't ship binaries into the sandbox
+        // Network-backed symlinks (sample.mp4 → /http/…): following one
+        // means a network read per file, stalling the seeding for
+        // seconds (the wasm sandbox mirrors local files only — the
+        // network mounts themselves are never seeded, so don't mirror
+        // links into them either).
+        const target = this.vfs._readlinkTarget ? this.vfs._readlinkTarget(path) : null;
+        if (target && SKIP_MOUNTS.has(target.replace(/^\//, "").split("/")[0])) continue;
         try {
           const blob = await this.vfs.readBlob(path);
           wasmfs.fs.mkdirSync(this._dirname(path), { recursive: true });
