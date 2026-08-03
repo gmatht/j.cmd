@@ -34,10 +34,8 @@ export function buildReport({ summary = "", expected = "", snippet = "", scope =
     : scope === "dom" ? "Page DOM (first 200KB)" // the DOM dump is capped in the shell
     : scope === "form" ? "Terminal (range selected with the bug form)"
     : "Terminal (last 20 lines)";
-  const expectedText = expected.trim()
-    ? expected.trim()
-    : "— (user trusts us to infer the expected behavior from the snippet)";
-  const summaryText = summary.trim() || "— (see snippet)";
+  const expectedText = expected.trim() ? expected.trim() : "— (optional)";
+  const summaryText = summary.trim() || "— (optional)";
   const sys = system.trim() ? `\n## System\n${system.trim()}\n` : "";
   const versionLine = `**Version:** jtsh ${SHELL_VERSION}${commit ? ` · commit ${commit}` : ""}`;
   return `<!-- jtsh bug report · filed by the shell's \`bug\` command · ${BUG_LABEL} -->
@@ -50,11 +48,12 @@ ${summaryText}
 
 ## Expected
 ${expectedText}
-${sys}
+
 ## ${scopeLabel}
 \`\`\`text
 ${String(snippet).replace(/\s+$/, "")}
 \`\`\`
+${sys}
 `;
 }
 
