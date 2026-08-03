@@ -107,7 +107,13 @@
     align-items: flex-start;
     gap: 8px;
     padding: 4px 0 2px;
+    max-height: 55vh;   /* scroll instead of growing the toolbar forever */
+    overflow-y: auto;
+    touch-action: pan-y;      /* touch drag scrolls natively */
+    cursor: grab;
+    scrollbar-width: thin;
   }
+  #term-toolbar .tb-files.dragging { cursor: grabbing; user-select: none; }
   #term-toolbar .tb-files.hidden { display: none; }
   #term-toolbar .tb-file-btn {
     position: relative;      /* context menu anchors to the square */
@@ -192,6 +198,14 @@
      the square is near the right side of the screen). */
   #term-toolbar .tb-fs-menu { left: 0; right: auto; min-width: 170px; z-index: 9; }
   #term-toolbar .tb-fs-menu button.danger { color: #ff9090; }
+  /* CMD popup: every command, alphabetical, in a multi-column list. */
+  #term-toolbar .tb-cmd-pop {
+    column-width: 150px;
+    column-gap: 6px;
+    width: min(92vw, 520px);
+    max-height: 60vh;
+  }
+  #term-toolbar .tb-cmd-pop button { break-inside: avoid; }
   .tb-pop {
     position: absolute;
     top: 100%;
@@ -689,6 +703,8 @@
     <button id="tb-cdup" title="Parent directory (cd ..)">..</button>
     <button id="tb-files" title="Current folder's files &amp; folders as buttons">Files</button>
     <div id="tb-files-grid" class="tb-files hidden"></div>
+    <button id="tb-cmd" title="All available commands (alphabetical)">CMD</button>
+    <div id="tb-cmd-pop" class="tb-pop hidden"></div>
     <span class="tb-arrows">
       <button id="tb-bug" title="Report a bug — opens a selection form, prefills a GitHub issue">🐞 bug</button>
     </span>
@@ -3600,9 +3616,8 @@ Loops, conditionals, variables, arithmetic and pipes work:
         w.append(b, l);
         return w;
       };
-      if (start > 0) mkEllipsis(`${start} line${start === 1 ? "" : "s"} above`);
       let activeCell = null;
-      for (let i = start; i <= end; i++) {
+      const renderRow = (i) => {
         const isActive = (i === state.top && state.active === "top") || (i === state.title && state.active === "title") || (i === state.bottom && state.active === "bottom");
         const inSnippet = i >= state.top && i <= state.bottom;
         const row = document.createElement("div");
@@ -3629,8 +3644,33 @@ Loops, conditionals, variables, arithmetic and pipes work:
         if (i === state.title) gr.appendChild(mkMarker("●", "title", "Title"));
         row.append(g, tcell, gr);
         bugFormText.appendChild(row);
+      };
+      // Always render the ▲/●/▼ markers (with a little context), even
+      // when they fall outside the active-marker window — the ellipsis
+      // rows bridge the gaps so every handle stays visible & draggable
+      // (the ▼ button appears after its ellipsis, with context rows).
+      const ranges = [
+        [Math.max(0, state.top - 2), state.top],                                // ▲ context
+        [Math.max(0, state.title - 1), Math.min(n - 1, state.title + 1)],      // ● context
+        [start, end],                                                           // active window
+        [state.bottom, Math.min(n - 1, state.bottom + 2)],                      // ▼ context
+      ].sort((a, b) => a[0] - b[0]);
+      const merged = [];
+      for (const [a, b] of ranges) {
+        const last = merged[merged.length - 1];
+        if (last && a <= last[1] + 1) { if (b > last[1]) last[1] = b; }
+        else merged.push([a, b]);
       }
-      if (end < n - 1) mkEllipsis(`${n - 1 - end} line${n - 1 - end === 1 ? "" : "s"} below`);
+      for (let r = 0; r < merged.length; r++) {
+        const [a, b] = merged[r];
+        if (r === 0 && a > 0) mkEllipsis(`${a} line${a === 1 ? "" : "s"} above`);
+        else if (r > 0 && a > merged[r - 1][1] + 1) {
+          const gap = a - merged[r - 1][1] - 1;
+          mkEllipsis(`${gap} line${gap === 1 ? "" : "s"} between`);
+        }
+        for (let i = a; i <= b; i++) renderRow(i);
+        if (r === merged.length - 1 && b < n - 1) mkEllipsis(`${n - 1 - b} line${n - 1 - b === 1 ? "" : "s"} below`);
+      }
       if (activeCell) activeCell.scrollIntoView({ block: "nearest" });
     };
 
@@ -6547,6 +6587,7 @@ tbCtrlBtn.addEventListener("click", (e) => {
   e.stopPropagation();
   tbCtrlPop.classList.toggle("hidden");
   tbHistPop.classList.add("hidden");
+  tbCmdPop.classList.add("hidden");
   closeFileMenu();
 });
 tbCtrlPop.querySelectorAll("button[data-ctrl]").forEach((b) => {
@@ -6585,6 +6626,68 @@ tbHistBtn.addEventListener("click", (e) => {
   renderHistoryPop();
   tbHistPop.classList.toggle("hidden");
   tbCtrlPop.classList.add("hidden");
+  tbCmdPop.classList.add("hidden");
+  closeFileMenu();
+});
+
+// CMD popup — every available command, alphabetical. Clicking one
+// brings it to the line (like Hist), so you can add args or Enter.
+const tbCmdBtn = document.getElementById("tb-cmd");
+const tbCmdPop = document.getElementById("tb-cmd-pop");
+
+// Everything the shell can run: builtins + PATH command files (.js/.wasm).
+async function listAllCommands() {
+  const cmds = new Set(Object.keys(builtins));
+  for (const dir of (env.PATH || "/bin:/usr/bin").split(":").filter(Boolean)) {
+    try {
+      for (const e of await fs.list(dir)) {
+        const name = e.replace(/\/+$/, "").replace(/\.(js|wasm)$/i, "");
+        if (name) cmds.add(name);
+      }
+    } catch {}
+  }
+  return [...cmds].sort();
+}
+
+function renderCmdPop() {
+  tbCmdPop.textContent = "";
+  const note = document.createElement("div");
+  note.style.cssText = "padding:4px 8px;color:#8b949e;";
+  note.textContent = "listing…";
+  tbCmdPop.appendChild(note);
+  listAllCommands().then((cmds) => {
+    if (tbCmdPop.classList.contains("hidden")) return;  // closed while listing
+    tbCmdPop.textContent = "";
+    if (cmds.length === 0) {
+      const empty = document.createElement("div");
+      empty.style.cssText = "padding:4px 8px;color:#8b949e;";
+      empty.textContent = "(no commands)";
+      tbCmdPop.appendChild(empty);
+      return;
+    }
+    for (const c of cmds) {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.textContent = c;
+      item.title = "insert into the line";
+      item.addEventListener("click", () => {
+        currentLine = c;
+        cursorPos = c.length;
+        renderInput();
+        tbCmdPop.classList.add("hidden");
+        input.focus();
+      });
+      tbCmdPop.appendChild(item);
+    }
+  });
+}
+
+tbCmdBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  renderCmdPop();
+  tbCmdPop.classList.toggle("hidden");
+  tbCtrlPop.classList.add("hidden");
+  tbHistPop.classList.add("hidden");
   closeFileMenu();
 });
 
@@ -6593,6 +6696,7 @@ tbHistBtn.addEventListener("click", (e) => {
 async function tbRunCommand(cmd) {
   tbCtrlPop.classList.add("hidden");
   tbHistPop.classList.add("hidden");
+  tbCmdPop.classList.add("hidden");
   currentLine = cmd;
   cursorPos = cmd.length;
   renderInput();
@@ -7049,6 +7153,35 @@ tbFilesBtn.addEventListener("click", (e) => {
 // (dynamically-added buttons miss the static querySelectorAll loop).
 tbFilesGrid.addEventListener("mousedown", (e) => e.preventDefault());
 
+// Drag the Files grid to scroll it (mouse). Touch drags scroll natively
+// via touch-action: pan-y. A drag ends with a click on a square — that
+// click is suppressed so you don't cd/cat by accident while scrolling.
+let fsDragState = null;
+let fsDragMoved = false;
+tbFilesGrid.addEventListener("mousedown", (e) => {
+  if (e.button !== 0) return;
+  fsDragState = { y: e.clientY, top: tbFilesGrid.scrollTop };
+  fsDragMoved = false;
+  tbFilesGrid.classList.add("dragging");
+});
+document.addEventListener("mousemove", (e) => {
+  if (!fsDragState) return;
+  const dy = e.clientY - fsDragState.y;
+  if (Math.abs(dy) > 4) fsDragMoved = true;
+  tbFilesGrid.scrollTop = fsDragState.top - dy;
+});
+document.addEventListener("mouseup", () => {
+  fsDragState = null;
+  tbFilesGrid.classList.remove("dragging");
+});
+tbFilesGrid.addEventListener("click", (e) => {
+  if (fsDragMoved) {
+    e.stopPropagation();
+    e.preventDefault();
+    fsDragMoved = false;
+  }
+}, true);
+
 // Clicking outside the toolbar closes the popups; buttons keep the
 // hidden input focused (no blur on mousedown).
 tbToolbar.querySelectorAll("button").forEach((b) => {
@@ -7058,6 +7191,7 @@ document.addEventListener("click", (e) => {
   if (!e.target.closest("#term-toolbar")) {
     tbCtrlPop.classList.add("hidden");
     tbHistPop.classList.add("hidden");
+    tbCmdPop.classList.add("hidden");
     closeFileMenu();
   }
 });
