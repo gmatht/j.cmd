@@ -460,10 +460,10 @@
     margin: 0;
     overflow: auto;
     flex: 1 1 auto;
-    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     /* rows: [left gutter (▲▼ handles)] [line text] [right gutter (● handle)] */
     display: grid;
-    grid-template-columns: 46px minmax(0, 1fr) 46px;
+    grid-template-columns: 54px minmax(0, 1fr) 54px;
   }
   #bug-form-text .bf-row {
     display: contents;   /* cells participate in the grid */
@@ -491,14 +491,25 @@
   }
   #bug-form-text .bf-row .bf-gutter-l::after { right: 0; }
   #bug-form-text .bf-row .bf-gutter-r::after { left: 0; }
-  /* the drag handles (▲▼ left, ● right) */
+  /* the drag handles (▲▼ left, ● right) — compact so handles on
+     adjacent lines never overlap; the tiny label sits UNDER the handle
+     and the marker's solid background keeps it readable when it
+     overflows into the row below */
+  #bug-form-text .bf-marker {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background: #0d1117;
+    border-radius: 4px;
+    z-index: 2;
+  }
   #bug-form-text .bf-handle {
     background: #21262d;
     border: 1px solid #30363d;
     color: #8b949e;
-    width: 26px; height: 22px;
-    border-radius: 5px;
-    font-size: 11px;
+    width: 24px; height: 16px;
+    border-radius: 4px;
+    font-size: 10px;
     line-height: 1;
     cursor: grab;
     touch-action: none;      /* drag, don't scroll */
@@ -514,6 +525,7 @@
     border-color: #7ec8e3;
     background: rgba(126, 200, 227, 0.18);
   }
+  #bug-form-text .bf-label { font-size: 8px; line-height: 1; color: #8b949e; padding: 1px 2px; }
   /* the snippet boundaries: a full-width rule at the ▲ and ▼ rows */
   #bug-form-text .bf-row.bf-boundary-top .bf-text,
   #bug-form-text .bf-row.bf-boundary-top .bf-gutter { box-shadow: inset 0 1px 0 rgba(126, 200, 227, 0.55); }
@@ -524,7 +536,9 @@
   #bug-form-text .bf-row.bf-title .bf-text { font-weight: 700; }
   #bug-form-text .bf-row.bf-out .bf-text { color: #6e7681; } /* outside the ▲…▼ snippet range */
   #bug-form-text .bf-row.bf-ellipsis { display: block; color: #6e7681; font-style: italic; padding: 0 14px; }
-  #bug-form-text .bf-ellipsis { grid-column: 1 / -1; color: #6e7681; font-style: italic; padding: 0 14px; }
+  /* the ellipsis only occupies the text column, so the marker labels
+     hanging below a handle in the gutters are never covered by it */
+  #bug-form-text .bf-ellipsis { grid-column: 2; color: #6e7681; font-style: italic; padding: 0 14px; }
   #bug-form-hint {
     padding: 7px 14px;
     color: #8b949e;
@@ -3558,13 +3572,19 @@ Loops, conditionals, variables, arithmetic and pipes work:
         div.textContent = `⋯ ${label}`;
         bugFormText.appendChild(div);
       };
-      const mkHandle = (sym, marker) => {
+      const mkMarker = (sym, marker, label) => {
+        const w = document.createElement("div");
+        w.className = "bf-marker";
         const b = document.createElement("button");
         b.className = "bf-handle" + (state.active === marker ? " bf-handle-active" : "");
         b.dataset.marker = marker;
         b.textContent = sym;
         b.title = `Drag or tap the ${sym} marker (${marker})`;
-        return b;
+        const l = document.createElement("span");
+        l.className = "bf-label";
+        l.textContent = label;
+        w.append(b, l);
+        return w;
       };
       if (start > 0) mkEllipsis(`${start} line${start === 1 ? "" : "s"} above`);
       let activeCell = null;
@@ -3581,8 +3601,8 @@ Loops, conditionals, variables, arithmetic and pipes work:
         // left gutter: ▲ at the top marker, ▼ at the bottom marker
         const g = document.createElement("div");
         g.className = "bf-gutter bf-gutter-l";
-        if (i === state.top) g.appendChild(mkHandle("▲", "top"));
-        else if (i === state.bottom) g.appendChild(mkHandle("▼", "bottom"));
+        if (i === state.top) g.appendChild(mkMarker("▲", "top", "Top"));
+        else if (i === state.bottom) g.appendChild(mkMarker("▼", "bottom", "Bottom"));
         // the line text (tap-to-place target)
         const tcell = document.createElement("div");
         tcell.className = "bf-text";
@@ -3592,7 +3612,7 @@ Loops, conditionals, variables, arithmetic and pipes work:
         // right gutter: ● at the title marker (kept clear of ▲▼)
         const gr = document.createElement("div");
         gr.className = "bf-gutter bf-gutter-r";
-        if (i === state.title) gr.appendChild(mkHandle("●", "title"));
+        if (i === state.title) gr.appendChild(mkMarker("●", "title", "Title"));
         row.append(g, tcell, gr);
         bugFormText.appendChild(row);
       }
@@ -3666,8 +3686,13 @@ Loops, conditionals, variables, arithmetic and pipes work:
       const h = e.target.closest(".bf-handle");
       if (h) {
         dragState = { marker: h.dataset.marker, x: e.clientX, y: e.clientY, moved: false };
-        state.active = h.dataset.marker; // tapping a handle selects it
-        render();
+        state.active = h.dataset.marker;
+        // Highlight the pressed handle WITHOUT rebuilding the DOM
+        // mid-press (removing the pressed element can fire a
+        // pointercancel in some browsers and kill the drag).
+        for (const bh of bugFormText.querySelectorAll(".bf-handle")) {
+          bh.classList.toggle("bf-handle-active", bh.dataset.marker === state.active);
+        }
         try { bugFormText.setPointerCapture(e.pointerId); } catch {}
         e.preventDefault();
         return;
@@ -3678,15 +3703,16 @@ Loops, conditionals, variables, arithmetic and pipes work:
       if (!dragState) return;
       if (Math.abs(e.clientX - dragState.x) + Math.abs(e.clientY - dragState.y) > 3) dragState.moved = true;
       if (!dragState.moved) return;
-      // the marker follows the row under the pointer (hit-test works
-      // through the re-renders and the ellipsis rows)
-      for (const el of document.elementsFromPoint(e.clientX, e.clientY)) {
-        if (el.dataset && el.dataset.i !== undefined) {
-          const i = parseInt(el.dataset.i, 10);
-          if (!isNaN(i)) placeMarker(dragState.marker, i);
-          break;
-        }
+      // The marker follows the nearest rendered row to the pointer — by
+      // Y, not by hit-test: dragging in the gutter (where no text cell
+      // sits under the cursor) must work too.
+      let best = -1, bestDist = Infinity;
+      for (const cell of bugFormText.querySelectorAll(".bf-text")) {
+        const r = cell.getBoundingClientRect();
+        const d = Math.abs(e.clientY - (r.top + r.height / 2));
+        if (d < bestDist) { bestDist = d; best = parseInt(cell.dataset.i, 10); }
       }
+      if (best >= 0) placeMarker(dragState.marker, best);
       render();
     };
     const onTextUp = (e) => {
