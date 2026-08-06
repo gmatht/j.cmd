@@ -13,6 +13,7 @@
 //   cp /home/backup.zip/notes.txt /home/   (extract one file)
 //   cp /home/backup.zip /pc/               (the raw archive still copies)
 // -----------------------------------------------------------------
+import { ensurePako } from "../pako.js";
 
 const LOCAL_SIG = 0x04034b50;
 const CENTRAL_SIG = 0x02014b50;
@@ -170,12 +171,15 @@ export class ZipFS {
   // pako in the browser, node:zlib in the CLI (same engine /bin/zip.js uses).
   async _inflater() {
     if (this._inflate) return this._inflate;
-    if (typeof window !== "undefined" && window.pako && window.pako.inflateRaw) {
-      this._inflate = (u8) => new Uint8Array(window.pako.inflateRaw(u8));
-    } else {
-      const nz = await import("node:zlib");
-      this._inflate = (u8) => new Uint8Array(nz.inflateRawSync(u8));
+    if (typeof window !== "undefined") {
+      await ensurePako();  // lazy-load vendor/pako.min.js on first zip browse
+      if (window.pako && window.pako.inflateRaw) {
+        this._inflate = (u8) => new Uint8Array(window.pako.inflateRaw(u8));
+        return this._inflate;
+      }
     }
+    const nz = await import("node:zlib");
+    this._inflate = (u8) => new Uint8Array(nz.inflateRawSync(u8));
     return this._inflate;
   }
 

@@ -1,3 +1,5 @@
+import { ensurePako } from "../pako.js";
+
 // ─── GitFS: mount a git repo as a filesystem (read tree, read blobs) ──
 //
 // Real git, no API dependency. This backend speaks the git wire protocol
@@ -90,6 +92,7 @@ async function inflate(buf) {
     if (!_zlib.mod) _zlib.mod = await import("node:zlib");
     return new Uint8Array(_zlib.mod.inflateSync(Buffer.from(buf)));
   }
+  await ensurePako();  // lazy-load vendor/pako.min.js in the browser
   if (globalThis.pako) return new Uint8Array(globalThis.pako.inflate(buf));
   throw new Error("GitFS: pako is not loaded — add the pako script tag before the shell module");
 }

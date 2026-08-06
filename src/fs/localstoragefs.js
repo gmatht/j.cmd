@@ -4,14 +4,15 @@
 // Size limit: ~5-10MB (per origin). Great for /home/, config files.
 //
 // localStorage keys are prefixed with "fs:" to avoid collisions with
-// other data the application might store.
+// other data the application might store. Each instance also carries
+// a per-mount namespace (e.g. "home", "bin") so two mounts backed by
+// this class (/home and /bin) DON'T share one flat keyspace — before
+// namespacing, every /bin command also listed in /home and vice versa.
 // -----------------------------------------------------------------
 
 const KEY_PREFIX = "fs:";
 // Marker prefix for base64-encoded binary content stored in localStorage
 const B64_MARKER = "\u0001b64:";
-// Metadata key (mtime per path) for ls -l support
-const META_KEY = KEY_PREFIX + "meta";
 
 // Encode bytes to base64 (browser-safe, no atob/btoa chunk issues)
 function bytesToBase64(bytes) {
@@ -31,24 +32,28 @@ function base64ToBytes(b64) {
 }
 
 export class LocalStorageFS {
-  constructor() {
+  constructor(namespace = "") {
+    // Keys become fs:{ns}:file:/path, fs:{ns}:.dirs, fs:{ns}:meta
+    this.ns = namespace ? namespace + ":" : "";
     // We maintain a directory index in localStorage for fast listing.
     // The index is a JSON array of directory paths.
     this._initIndex();
   }
 
+  _key(rel) { return KEY_PREFIX + this.ns + rel; }
+
   _initIndex() {
-    if (localStorage.getItem(KEY_PREFIX + ".dirs") === null) {
-      localStorage.setItem(KEY_PREFIX + ".dirs", JSON.stringify(["/"]));
+    if (localStorage.getItem(this._key(".dirs")) === null) {
+      localStorage.setItem(this._key(".dirs"), JSON.stringify(["/"]));
     }
   }
 
   _dirs() {
-    return JSON.parse(localStorage.getItem(KEY_PREFIX + ".dirs") || "[]");
+    return JSON.parse(localStorage.getItem(this._key(".dirs")) || "[]");
   }
 
   _saveDirs(dirs) {
-    localStorage.setItem(KEY_PREFIX + ".dirs", JSON.stringify([...new Set(dirs)].sort()));
+    localStorage.setItem(this._key(".dirs"), JSON.stringify([...new Set(dirs)].sort()));
   }
 
   _addDir(dir) {
@@ -63,14 +68,14 @@ export class LocalStorageFS {
 
   _meta() {
     try {
-      return JSON.parse(localStorage.getItem(META_KEY) || "{}");
+      return JSON.parse(localStorage.getItem(this._key("meta")) || "{}");
     } catch {
       return {};
     }
   }
 
   _saveMeta(meta) {
-    localStorage.setItem(META_KEY, JSON.stringify(meta));
+    localStorage.setItem(this._key("meta"), JSON.stringify(meta));
   }
 
   _touch(path, mtime = Date.now()) {
@@ -117,7 +122,7 @@ export class LocalStorageFS {
     const dirs = this._dirs();
     if (dirs.includes(norm)) throw new Error("EISDIR: Is a directory");
 
-    const key = KEY_PREFIX + "file:" + norm;
+    const key = this._key("file:" + norm);
     const data = localStorage.getItem(key);
     if (data === null) throw new Error("ENOENT");
     // Decode binary content back to original form
@@ -132,7 +137,7 @@ export class LocalStorageFS {
     const dirs = this._dirs();
     if (dirs.includes(norm)) throw new Error("EISDIR");
 
-    const key = KEY_PREFIX + "file:" + norm;
+    const key = this._key("file:" + norm);
     const data = localStorage.getItem(key);
     if (data === null) throw new Error("ENOENT");
     if (data.startsWith(B64_MARKER)) {
@@ -144,7 +149,7 @@ export class LocalStorageFS {
   async write(path, content) {
     const norm = path.replace(/\/$/, "") || "/";
     this._ensureParent(norm);
-    localStorage.setItem(KEY_PREFIX + "file:" + norm, content);
+    localStorage.setItem(this._key("file:" + norm), content);
     this._touch(norm);
   }
 
@@ -154,7 +159,7 @@ export class LocalStorageFS {
     // Store binary as base64 with a marker so readBlob can recover bytes
     const buffer = await blob.arrayBuffer();
     localStorage.setItem(
-      KEY_PREFIX + "file:" + norm,
+      this._key("file:" + norm),
       B64_MARKER + bytesToBase64(new Uint8Array(buffer))
     );
     this._touch(norm);
@@ -168,7 +173,7 @@ export class LocalStorageFS {
       return { type: "dir", size: 0, mtime: meta && meta.mtime };
     }
 
-    const key = KEY_PREFIX + "file:" + norm;
+    const key = this._key("file:" + norm);
     const data = localStorage.getItem(key);
     if (data === null) throw new Error("ENOENT");
     const size = data.startsWith(B64_MARKER)
@@ -186,7 +191,7 @@ export class LocalStorageFS {
       const meta = this._meta()[norm];
       return { type: "dir", size: 0, mtime: meta && meta.mtime };
     }
-    const key = KEY_PREFIX + "file:" + norm;
+    const key = this._key("file:" + norm);
     const data = localStorage.getItem(key);
     if (data === null) throw new Error("ENOENT");
     const size = data.startsWith(B64_MARKER)
@@ -205,10 +210,11 @@ export class LocalStorageFS {
     const entries = new Set();
 
     // List files in localStorage
+    const filePrefix = this._key("file:");
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
-      if (key && key.startsWith(KEY_PREFIX + "file:")) {
-        const filePath = key.slice((KEY_PREFIX + "file:").length);
+      if (key && key.startsWith(filePrefix)) {
+        const filePath = key.slice(filePrefix.length);
         if (filePath.startsWith(prefix) && filePath !== prefix) {
           const rest = filePath.slice(prefix.length);
           const name = rest.split("/")[0];
@@ -235,16 +241,17 @@ export class LocalStorageFS {
 
     if (dirs.includes(norm)) {
       // Remove all children
+      const childPrefix = this._key("file:" + norm + "/");
       for (let i = localStorage.length - 1; i >= 0; i--) {
         const key = localStorage.key(i);
-        if (key && key.startsWith(KEY_PREFIX + "file:" + norm + "/")) {
+        if (key && key.startsWith(childPrefix)) {
           localStorage.removeItem(key);
         }
       }
       // Remove subdirectory entries
       this._saveDirs(dirs.filter(d => !d.startsWith(norm + "/") && d !== norm));
     } else {
-      localStorage.removeItem(KEY_PREFIX + "file:" + norm);
+      localStorage.removeItem(this._key("file:" + norm));
     }
     this._dropMeta(norm);
   }

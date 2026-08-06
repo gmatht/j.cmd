@@ -1,3 +1,5 @@
+import { ensurePako } from "./pako.js";
+
 // ─── Go (GOOS=js GOARCH=wasm) toolchain runner for jtsh ────────
 //
 // The REAL Go compiler and linker (cmd/compile, cmd/link) cross-compiled
@@ -140,7 +142,9 @@ export class GoRunner {
         } else if (globalThis.pako) {
           bytes = pako.inflate(bytes);
         } else {
-          throw new Error("Go: no inflate available (pako.min.js not loaded)");
+          await ensurePako();  // lazy-load vendor/pako.min.js in the browser
+          if (!globalThis.pako) throw new Error("Go: no inflate available (pako.min.js not loaded)");
+          bytes = globalThis.pako.inflate(bytes);
         }
         // [GOR1][headerLen LE][header JSON][data]
         const magic = new TextDecoder().decode(bytes.slice(0, 4));

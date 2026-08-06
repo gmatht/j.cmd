@@ -22,24 +22,30 @@
 # own env import (wasm allows same-name imports with different types).
 #
 # Pipeline:
-#   1. Clone TinyCC and apply the wasm32 backend (wasm32-gen.c /
-#      wasm32-link.c — in-tree here; the fork lives at
-#      /root/src/tinycc-wasm, a wasm32-target branch).
+#   1. Clone TinyCC from our fork gmatht/tinycc (branch mob carries the
+#      wasm32 backend — wasm32-gen.c / wasm32-link.c).
 #   2. Configure a cross build: the compiler itself is built with the
 #      wasi-sdk clang (so tcc runs on wasm), targeting wasm32 (so its
 #      OUTPUT is wasm).
 #   3. Patch the wasi-libc headers for tcc (size_t/alloca guards) and
 #      bundle them into tcc-include.dat.
 #
+# Host-tool note: tcc's Makefile turns include/tccdefs.h into tccdefs_.h
+# via a small c2str.exe built with $(CC) — which is the WASI compiler
+# here, so that c2str.exe would be a wasm binary the host can't execute.
+# This script builds c2str.exe with the host cc and pre-generates
+# tccdefs_.h so the Makefile's %_.h rule never fires.
+#
 # Usage:
 #   ./build-wasm-tcc.sh
-#   TINYCC_DIR=/path/to/tinycc-wasm ./build-wasm-tcc.sh   # reuse a clone
+#   TINYCC_DIR=/path/to/tinycc-clone ./build-wasm-tcc.sh   # reuse a clone (skips the fetch)
 # -----------------------------------------------------------------
 
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
-TINYCC="${TINYCC_DIR:-$REPO/../tinycc-wasm}"
+UPSTREAM="https://github.com/gmatht/tinycc.git"   # our fork of TinyCC/tinycc — wasm32 backend
+TINYCC="${TINYCC_DIR:-$REPO/build/tcc-wasm}"
 WASI_SDK="${WASI_SDK:-/opt/wasi-sdk-25.0-x86_64-linux}"
 WORK="$(mktemp -d /tmp/tcc-wasm-build.XXXXXX)"
 INC="$WORK/inc"          # header staging dir
@@ -49,9 +55,17 @@ if [ ! -x "$WASI_SDK/bin/wasm32-wasi-clang" ]; then
   echo "wasi-sdk not found at $WASI_SDK — set WASI_SDK=/path/to/wasi-sdk" >&2
   exit 1
 fi
-if [ ! -d "$TINYCC/.git" ]; then
-  echo "tinycc fork not found at $TINYCC — set TINYCC_DIR (see wasm32 backend)" >&2
-  exit 1
+if [ -n "${TINYCC_DIR:-}" ]; then
+  # Reuse an existing clone (iterative work on the backend).
+  if [ ! -d "$TINYCC/.git" ]; then
+    echo "tinycc fork not found at $TINYCC — set TINYCC_DIR (see wasm32 backend)" >&2
+    exit 1
+  fi
+else
+  rm -rf "$TINYCC"
+  mkdir -p "$(dirname "$TINYCC")"
+  echo "==> cloning tinycc fork (wasm32 backend) from $UPSTREAM (branch mob)"
+  git clone --depth 1 --branch mob "$UPSTREAM" "$TINYCC"
 fi
 
 echo "==> configuring tcc (host: wasi clang, target: wasm32)"
@@ -90,6 +104,12 @@ typedef jmp_buf sigjmp_buf;
 #endif
 EOF
 
+echo "==> building host tool c2str.exe (the wasm CC can't run on the host)"
+HOST_CC="${HOST_CC:-cc}"
+$HOST_CC -DC2STR "$TINYCC/conftest.c" -o "$WORK/c2str.exe"
+(cd "$WORK" && ./c2str.exe "$TINYCC/include/tccdefs.h" tccdefs_.h)
+
+# libtcc1.a fails on purpose — it would run the wasm tcc
 echo "==> building (libtcc1.a fails on purpose — it would run the wasm tcc)"
 (cd "$WORK" && make -j"$(nproc)" tcc) || true
 WASM="$WORK/tcc"

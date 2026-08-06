@@ -227,6 +227,9 @@ export class GitHubFS {
 
   async readBlob(path) {
     const p = this._parse(path);
+    if (p.file === "README.md" || p.file === ".readme") {
+      return new Blob([await this._readme()], { type: "text/plain" });
+    }
     if (!p.owner || !p.repo) throw new Error("ENOENT");
 
     this.visited.add(`/${p.owner}/${p.repo}/${p.filePath}`);

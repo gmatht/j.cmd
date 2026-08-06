@@ -24,10 +24,24 @@
 // reads/writes hit the shell's own filesystem.
 // -----------------------------------------------------------------
 
-import { init, WASI, MemFS } from "@wasmer/wasi";
-import { WasmFs } from "@wasmer/wasmfs";
 import { env } from "./env.js";
 import { createCRuntime, CExit } from "./c-runtime.js";
+
+// @wasmer/wasi (~485 KB) + @wasmer/wasmfs (~133 KB) are imported
+// LAZILY, on the first wasm run — static imports would fetch and parse
+// them on every page load even when no wasm binary is ever executed.
+// The import map (browser) / node_modules (CLI) resolve the bare
+// specifiers when the dynamic import runs.
+let wasiMod = null;      // @wasmer/wasi → { init, WASI, MemFS }
+let wasmfsMod = null;    // @wasmer/wasmfs → { WasmFs }
+function getWasi() {
+  wasiMod ??= import("@wasmer/wasi");
+  return wasiMod;
+}
+function getWasmFs() {
+  wasmfsMod ??= import("@wasmer/wasmfs");
+  return wasmfsMod;
+}
 
 // @wasmer/wasi embeds its WASI runtime wasm as a base64 data URI and
 // decodes it with Buffer.from(). Browsers have no Buffer, so provide a
@@ -95,7 +109,10 @@ export class WasmRunner {
   }
 
   async _ensureInit() {
-    if (!this._initPromise) this._initPromise = init();
+    if (!this._initPromise) {
+      const { init } = await getWasi();
+      this._initPromise = init();
+    }
     await this._initPromise;
   }
 
@@ -211,6 +228,7 @@ export class WasmRunner {
 
     // Wire @wasmer/wasmfs to our VirtualFS: seed a WasmFs mirror from
     // the shell's files, then copy it into the WASI filesystem.
+    const { WasmFs } = await getWasmFs();
     const wasmfs = new WasmFs();
     await this._seedWasmFs(wasmfs);
     // Snapshot the mirror's file list so _flushWasmFs can detect files
@@ -218,6 +236,7 @@ export class WasmRunner {
     // remove inputs) and propagate those removals back to VirtualFS.
     const beforeFiles = this._wasmFsFiles(wasmfs);
 
+    const { WASI, MemFS } = await getWasi();
     // Build the WASI filesystem (a MemFS) and populate it BEFORE the
     // WASI instance exists — the WASI constructor preopens dirs and
     // needs them to already exist (map_dirs stats each preopen path).
@@ -260,7 +279,20 @@ export class WasmRunner {
 
     // Instantiate (merging custom imports such as micropython_wasm) and
     // run _start. wasmer's WASI handles proc_exit by returning the code.
-    const instance = wasi.instantiate(module, custom);
+    //
+    // Async instantiation: the synchronous `new WebAssembly.Instance` is
+    // capped at 8MB of declared memory on the browser main thread
+    // (Chrome disallows sync compilation of bigger buffers), and zig.wasm
+    // declares ~50MB (16MB stack + heap) — it failed to load until this
+    // switched to WebAssembly.instantiate, which is async and
+    // memory-agnostic (V8 resolves it to the Instance directly). The
+    // instance is then handed back to the wasi runtime (it accepts a
+    // pre-made instance and links its memory).
+    const instance = await WebAssembly.instantiate(module, {
+      ...wasi.getImports(module),
+      ...custom,
+    });
+    wasi.instantiate(instance);
     if (instance.exports.memory) {
       memRef.memory = instance.exports.memory;
     }
@@ -303,6 +335,10 @@ export class WasmRunner {
 
   async _seedWasmFs(wasmfs) {
     for (const dir of SEED_DIRS) {
+      // The dir must EXIST in the sandbox even when the shell's copy is
+      // empty (e.g. /bin with lazy command materialization) — the WASI
+      // constructor stats every preopen path and dies on a missing one.
+      wasmfs.fs.mkdirSync(dir, { recursive: true });
       await this._vfsToWasmFs(dir, wasmfs);
     }
   }

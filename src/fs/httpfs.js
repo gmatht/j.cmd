@@ -3,9 +3,17 @@
 //   api.github.com, registry.npmjs.org, pypi.org, raw.githubusercontent.com
 //   pokeapi.co, api.chess.com, api.weather.gov, cdn.jsdelivr.net
 //
-// `ls /http/` lists a curated set of sample files (audio, images,
-// video, text) from CORS-enabled archives — each verified to send
-// `Access-Control-Allow-Origin: *`:
+// The known sample files form a directory TREE, so the mount browses
+// like a filesystem: hosts are folders (ls /http/, cd upload.wikimedia.org/),
+// and the curated files sit at the leaves. cat/stat on a known folder
+// says EISDIR instead of fetching (or failing on) the host's homepage:
+//   ls /http/                            README.md, archive.org/, mdn.github.io/, …
+//   ls /http/upload.wikimedia.org/       wikipedia/
+//   cat /http/upload.wikimedia.org/wikipedia/commons/6/6a/JavaScript-logo.png
+// Any OTHER path is the open URL space — the path IS the URL, fetched
+// straight (no listing, no tree): cat /http/example.com/data.json
+//
+// Each featured file is verified to send Access-Control-Allow-Origin: *:
 //   archive.org (mp3 only — small files land on the CORS-enabled
 //     ia*.us.archive.org nodes; large video streams go to the
 //     dn*.ca.archive.org nodes, which DON'T send CORS),
@@ -30,17 +38,24 @@ const FEATURED = [
     desc: "png — Wikimedia Commons image" },
   { path: "picsum.photos/id/237/200/300",
     desc: "jpg — picsum.photos placeholder" },
-  { path: "upload.wikimedia.org/wikipedia/commons/3/3b/Big_Buck_Bunny_extract.ogv",
-    desc: "ogv — Big Buck Bunny extract (Theora: plays in Firefox, not Chromium)" },
   { path: "upload.wikimedia.org/wikipedia/commons/c/c1/Diehl_Wecker_%28ca._1955%29.webm",
     desc: "webm — 1955 clock film, VP9 1080p (Wikimedia Commons, 12 MB)" },
   { path: "mdn.github.io/learning-area/html/multimedia-and-embedding/video-and-audio-content/rabbit320.mp4",
     desc: "mp4 — MDN learning area (GitHub Pages)" },
   { path: "raw.githubusercontent.com/git/git/master/README.md",
     desc: "txt — git repo README (GitHub raw)" },
+  { path: "raw.githubusercontent.com/Stuk/jszip/main/test/ref/all.zip",
+    desc: "zip — small test archive (jszip); cd into it to browse" },
 ];
 
 const README_PATH = "README.md";
+
+// A featured path is a known file; every prefix of one is a directory
+// in the /http tree. cat/stat on a known dir → EISDIR.
+function isKnownDir(rel) {
+  if (rel === "") return true; // the mount root is a directory
+  return FEATURED.some(f => f.path.startsWith(rel + "/"));
+}
 
 export class HttpFS {
   constructor() {
@@ -55,9 +70,40 @@ export class HttpFS {
     return url;
   }
 
+  // Children of `path` in the known-file tree: directories end with "/".
+  // The root lists the hosts; unknown paths list nothing (the URL space
+  // can't be enumerated — cat/curl still reach them).
+  async list(path) {
+    const rel = (path || "/").replace(/^\/+/, "").replace(/\/+$/, "");
+    const children = new Set();
+    if (rel === "") children.add(README_PATH);
+    for (const f of FEATURED) {
+      if (rel === "") {
+        children.add(f.path.split("/")[0] + "/");
+      } else if (f.path.startsWith(rel + "/")) {
+        const rest = f.path.slice(rel.length + 1);
+        children.add(rest.includes("/") ? rest.split("/")[0] + "/" : rest);
+      }
+    }
+    return [...children].sort();
+  }
+
+  // Known dirs and known files are typed; anything else is unknown
+  // without fetching (keeps `ls` from downloading samples to size them).
+  async stat(path) {
+    const rel = path.replace(/^\/+/, "").replace(/\/+$/, "");
+    if (rel === README_PATH) return { type: "file", size: 0, mtime: undefined };
+    if (isKnownDir(rel)) return { type: "dir", size: 0, mtime: undefined };
+    for (const f of FEATURED) {
+      if (f.path === rel) return { type: "file", size: 0, mtime: undefined };
+    }
+    return null;
+  }
+
   async read(path) {
     const rel = path.replace(/^\/+/, "");
     if (rel === README_PATH) return this._readme();
+    if (isKnownDir(rel)) throw new Error("EISDIR: Is a directory");
 
     try {
       return await this.cache.read(path);
@@ -72,6 +118,10 @@ export class HttpFS {
   }
 
   async readBlob(path) {
+    const rel = path.replace(/^\/+/, "");
+    if (rel === README_PATH) return new Blob([this._readme()], { type: "text/plain" });
+    if (isKnownDir(rel)) throw new Error("EISDIR: Is a directory");
+
     const url = this._url(path);
     const resp = await fetch(url);
     if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${url}`);
@@ -82,28 +132,6 @@ export class HttpFS {
       await this.cache.write(path, text);
     } catch {}
     return blob;
-  }
-
-  async list(path) {
-    // HTTP endpoints don't have directory listings — but we know some
-    // well-known path patterns: the root shows a curated set of sample
-    // files from CORS-enabled archives. Any deeper path is the open
-    // URL space and lists nothing (cat/curl still reach it).
-    const rel = (path || "/").replace(/^\/+/, "");
-    if (rel !== "") return [];
-    return [...FEATURED.map(f => f.path), README_PATH];
-  }
-
-  // Curated entries are known files; everything else is unknown without
-  // fetching. Returning null keeps `ls` from ever downloading a sample
-  // file just to size it (some are 60 MB+).
-  async stat(path) {
-    const rel = path.replace(/^\/+/, "");
-    if (rel === README_PATH) return { type: "file", size: 0, mtime: undefined };
-    for (const f of FEATURED) {
-      if (f.path === rel) return { type: "file", size: 0, mtime: undefined };
-    }
-    return null;
   }
 
   async write(path, content) {
@@ -119,23 +147,23 @@ export class HttpFS {
     let text = `HTTP Filesystem
 ===============
 
-Mount point for fetching any CORS-enabled URL as a file — the path IS
-the URL:
+Mount point for fetching any CORS-enabled URL as a file. The known
+sample files form a folder tree — hosts are directories:
 
-  cat /http/example.com/data.json
-  curl /http/raw.githubusercontent.com/git/git/master/README.md
-
-The browser enforces CORS, so only origins that send
-Access-Control-Allow-Origin respond. This mount is read-only; writes
-land in a local overlay instead.
+  ls /http/
+  cd upload.wikimedia.org/
+  cat upload.wikimedia.org/wikipedia/commons/6/6a/JavaScript-logo.png
 
 Featured sample files (CORS verified — one per file type):
 `;
     for (const f of FEATURED) {
       text += `  ${f.path}\n      ${f.desc}\n`;
     }
-    text += `\nAny other CORS-enabled URL is fair game: ls lists only the
-curated set, but cat/curl reach the whole web.\n`;
+    text += `\nAny other CORS-enabled URL is fair game: the path IS the URL,
+so cat/curl reach the whole web (ls lists only the known tree).
+The browser enforces CORS — only origins that send
+Access-Control-Allow-Origin respond. This mount is read-only; writes
+land in a local overlay instead.\n`;
     return text;
   }
 }

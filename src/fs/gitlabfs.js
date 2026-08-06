@@ -8,23 +8,32 @@
 //   /mount/gitlab/README.md                 — usage guide
 //
 // Lists via: GET gitlab.com/api/v4
-// Reads via: GET gitlab.com/{owner}/{repo}/-/raw/{branch}/{path}
+// Reads via: GET gitlab.com/api/v4/projects/{ns}%2F{proj}/repository/files/{path}/raw?ref={branch}
+//   (NOT the /-/raw/ web endpoint — it redirects to a lowercase namespace,
+//   404s for mirror repos (GNOME/gtk's README is 404 even on master), and
+//   sends no CORS headers, so browser reads fail as "Failed to fetch".
+//   The API endpoint is CORS-enabled and resolves any branch, falling
+//   back main → master → default branch.)
 // Listings are cached persistently (LsCache, 24h TTL) like GitHubFS.
 // -----------------------------------------------------------------
 
 import { LsCache, LS_TTL } from "./lscache.js";
 
+// The top-10 most-starred repos on gitlab.com (queried via the API's
+// order_by=star_count; snapshot of the current standings). Listed at
+// the /gitlab root in rank order, and used as the rate-limit fallback
+// for org listings.
 const FEATURED = [
-  { owner: "gitlab-org", repo: "gitlab", desc: "GitLab itself" },
-  { owner: "gitlab-org", repo: "gitlab-foss", desc: "GitLab Community Edition" },
-  { owner: "GNOME", repo: "gtk", desc: "GTK toolkit" },
-  { owner: "GNOME", repo: "glib", desc: "GLib library" },
-  { owner: "GNOME", repo: "nautilus", desc: "Nautilus file manager" },
-  { owner: "GNOME", repo: "gimp", desc: "GIMP image editor" },
-  { owner: "GNOME", repo: "libreoffice", desc: "LibreOffice (core)" },
-  { owner: "GNOME", repo: "mutter", desc: "Mutter window manager" },
-  { owner: "GNOME", repo: "gnome-shell", desc: "GNOME Shell" },
-  { owner: "GNOME", repo: "babl", desc: "Pixel format library" },
+  { owner: "gitlab-org", repo: "gitlab-foss", desc: "★7.2k — GitLab Community Edition mirror" },
+  { owner: "gitlab-org", repo: "gitlab", desc: "★6.1k — GitLab DevSecOps platform" },
+  { owner: "inkscape", repo: "inkscape", desc: "★4.0k — Inkscape vector graphics editor" },
+  { owner: "CalcProgrammer1", repo: "OpenRGB", desc: "★3.4k — open-source RGB lighting control" },
+  { owner: "fdroid", repo: "fdroidclient", desc: "★2.6k — F-Droid Android client" },
+  { owner: "gitlab-org", repo: "gitlab-runner", desc: "★2.6k — GitLab CI/CD runner" },
+  { owner: "veloren", repo: "veloren", desc: "★2.4k — multiplayer voxel RPG (Rust)" },
+  { owner: "baserow", repo: "baserow", desc: "★2.3k — open-source no-code database" },
+  { owner: "AuroraOSS", repo: "AuroraStore", desc: "★2.2k — FOSS Google Play client" },
+  { owner: "wireshark", repo: "wireshark", desc: "★1.6k — network protocol analyzer" },
 ];
 
 export class GitLabFS {
@@ -86,8 +95,12 @@ export class GitLabFS {
     const p = this._parse(path);
 
     if (p.root || p.file) {
+      // Feature the top-10 most-starred repos (rank order), then the
+      // orgs they belong to (for browsing everything an org hosts),
+      // then the README and the "..." truncation marker.
+      const featured = FEATURED.map(f => `${f.owner}/${f.repo}/`);
       const owners = [...new Set(FEATURED.map(f => f.owner))].sort();
-      return [...owners.map(o => o + "/"), "README.md", "..."];
+      return [...featured, ...owners.map(o => o + "/"), "README.md", "..."];
     }
 
     if (!p.repo) {
@@ -175,6 +188,27 @@ export class GitLabFS {
     return { age, stale: age > LS_TTL };
   }
 
+  // Fetch a file's content via the API raw endpoint (CORS-enabled),
+  // trying this.branch, then master (legacy default), then no ref at
+  // all (the repo's actual default branch — what listings show).
+  async _fetchFile(p, asBlob) {
+    if (!p.filePath) throw new Error("ENOENT"); // directory, not a file
+    const filePath = p.filePath.split("/").map(encodeURIComponent).join("%2F");
+    const base = `https://gitlab.com/api/v4/projects/${encodeURIComponent(p.owner)}%2F${encodeURIComponent(p.repo)}/repository/files/${filePath}/raw`;
+    const refs = [this.branch, "master", null]; // null → default branch
+    for (const ref of refs) {
+      const url = base + (ref ? `?ref=${ref}` : "");
+      let resp;
+      try {
+        resp = await fetch(url);
+      } catch (e) {
+        throw new Error(`GitLab: fetch failed for ${p.owner}/${p.repo}/${p.filePath} (${e.message})`);
+      }
+      if (resp.ok) return asBlob ? resp.blob() : resp.text();
+    }
+    throw new Error("ENOENT");
+  }
+
   async read(path) {
     const p = this._parse(path);
 
@@ -185,32 +219,18 @@ export class GitLabFS {
     if (!p.owner || !p.repo) throw new Error("ENOENT");
 
     this.visited.add(`/${p.owner}/${p.repo}/${p.filePath}`);
-
-    const rawUrl = `https://gitlab.com/${p.owner}/${p.repo}/-/raw/${this.branch}/${p.filePath.split("/").map(encodeURIComponent).join("/")}`;
-    let resp = await fetch(rawUrl);
-    if (!resp.ok && this.branch === "main") {
-      // Old projects still use master as the default branch (GNOME/gtk,
-      // ...). Retry once — same fallback as GitHubFS.read().
-      resp = await fetch(rawUrl.replace("/raw/main/", "/raw/master/"));
-    }
-    if (!resp.ok) throw new Error("ENOENT");
-    return resp.text();
+    return this._fetchFile(p, false);
   }
 
   async readBlob(path) {
     const p = this._parse(path);
+    if (p.file === "README.md" || p.file === ".readme") {
+      return new Blob([await this._readme()], { type: "text/plain" });
+    }
     if (!p.owner || !p.repo) throw new Error("ENOENT");
 
     this.visited.add(`/${p.owner}/${p.repo}/${p.filePath}`);
-
-    const rawUrl = `https://gitlab.com/${p.owner}/${p.repo}/-/raw/${this.branch}/${p.filePath.split("/").map(encodeURIComponent).join("/")}`;
-    let resp = await fetch(rawUrl);
-    if (!resp.ok && this.branch === "main") {
-      // Same master-branch fallback as read() (GNOME/gtk, ...)
-      resp = await fetch(rawUrl.replace("/raw/main/", "/raw/master/"));
-    }
-    if (!resp.ok) throw new Error("ENOENT");
-    return resp.blob();
+    return this._fetchFile(p, true);
   }
 
   async _readme() {
@@ -223,12 +243,12 @@ Usage:
   ls /mount/gitlab/owner/project
   cat /mount/gitlab/owner/project/README.md
 
-Featured projects:\n`;
+Top-10 most-starred repos (featured at the root, in rank order):\n`;
     for (const f of FEATURED) {
-      text += `  ${f.owner}/${f.repo}  — ${f.desc}\n`;
+      text += `  ${f.owner}/${f.repo}/  — ${f.desc}\n`;
     }
     text += `\nBrowse any public project: ls /mount/gitlab/{owner}/{project}/\n`;
-    text += `List projects for a user:  ls /mount/gitlab/{owner}/\n`;
+    text += `List projects for a user/org:  ls /mount/gitlab/{owner}/\n`;
     return text;
   }
 

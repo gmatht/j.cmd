@@ -5,9 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
 <title>j.cmd — A JavaScript Command Line OS</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%92%BB%3C/text%3E%3C/svg%3E">
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/codemirror.min.css">
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/theme/monokai.min.css">
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/addon/dialog/dialog.min.css">
+<link rel="stylesheet" href="style.css">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
@@ -34,6 +32,7 @@
     flex: 1 1 auto;      /* takes the space the panel doesn't */
     min-width: 0;
     min-height: 0;  /* allow shrink so flex layout works */
+    position: relative;  /* anchor for the cursor pin */
     padding: 16px;
     padding-top: 52px;   /* starting value; syncToolbarPad() overrides with the toolbar's real (wrapping) height */
     overflow-y: auto;
@@ -471,6 +470,68 @@
   @keyframes cursor-blink {
     50% { opacity: 0; }
   }
+
+  /* Cursor pin: a faint, draggable handle hovering above the block
+     cursor. Grab it and drag to move the cursor anywhere in the typed
+     line (finger-friendly — iOS/Android have no mouse). The transform
+     centers it horizontally on the cursor and parks it just above it;
+     JS sets left/top to the cursor's position each render. */
+  #cursor-pin {
+    position: absolute;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: rgba(126, 200, 227, 0.30);
+    border: 2px solid rgba(126, 200, 227, 0.55);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+    opacity: 0.45;
+    pointer-events: auto;
+    touch-action: none;
+    cursor: grab;
+    z-index: 5;
+    transform: translate(-50%, -100%) translateY(-8px);
+    transition: opacity 0.15s ease, background 0.15s ease;
+  }
+  #cursor-pin:hover { opacity: 0.9; background: rgba(126, 200, 227, 0.6); }
+  #cursor-pin.dragging { opacity: 1; background: rgba(126, 200, 227, 0.75); cursor: grabbing; }
+  /* Idle (input unfocused): fade the pin with the cursor */
+  #terminal:not(.focused) #cursor-pin { opacity: 0.18; }
+
+  /* Pin-drag selection: the range between the drag start and the
+     cursor gets a faint highlight; after the drag a faint cut/copy/
+     paste row floats above it. Both vanish on any UI interaction. */
+  #input-span .sel {
+    background: rgba(126, 200, 227, 0.20);
+    border-radius: 2px;
+  }
+  #sel-actions {
+    position: absolute;
+    display: flex;
+    gap: 2px;
+    padding: 3px;
+    background: rgba(13, 13, 22, 0.92);
+    border: 1px solid rgba(126, 200, 227, 0.4);
+    border-radius: 6px;
+    opacity: 0.55;
+    z-index: 6;
+    transform: translate(-50%, -100%) translateY(-8px);
+    transition: opacity 0.15s ease;
+  }
+  #sel-actions:hover { opacity: 1; }
+  #sel-actions.hidden { display: none; }
+  #sel-actions.below {
+    transform: translate(-50%, 0) translateY(8px);  /* flipped below the cursor near the terminal top */
+  }
+  #sel-actions button {
+    background: none;
+    border: none;
+    color: #7ec8e3;
+    font-size: 12px;
+    padding: 2px 7px;
+    cursor: pointer;
+    border-radius: 4px;
+  }
+  #sel-actions button:hover { background: rgba(126, 200, 227, 0.2); color: #fff; }
   #hidden-input {
     position: fixed;
     bottom: 0;
@@ -755,6 +816,12 @@
     </span>
   </div>
   <div id="prompt-line"><span id="prompt" class="prompt"></span><span id="input-span"></span></div>
+  <div id="cursor-pin" title="Drag to move the cursor"></div>
+  <div id="sel-actions" class="hidden">
+    <button data-act="cut" title="Cut the selection">cut</button>
+    <button data-act="copy" title="Copy the selection">copy</button>
+    <button data-act="paste" title="Paste at the cursor">paste</button>
+  </div>
 </div>
 
 <div id="bg-divider" title="Drag to resize the background panel"></div>
@@ -808,11 +875,6 @@
 
 <input id="hidden-input" type="text" autofocus spellcheck="false" autocomplete="off" aria-hidden="true" />
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/codemirror.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/addon/dialog/dialog.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/keymap/vim.min.js"></script>
-<!-- pako (zlib): git object inflation for GitFS (vendored in www/vendor/) -->
-<script src="vendor/pako.min.js"></script>
 <!-- Bare-specifier resolution for the WASM runtime packages (vendored in www/vendor/) -->
 <script type="importmap">
 {
@@ -825,6 +887,7 @@
 </script>
 <script type="module">
 import { fs } from "../src/fs/index.js";
+import { materializeBinCommand } from "../src/binsync.js";
 import { formatAge } from "../src/fs/lscache.js";
 import { WasmRunner } from "../src/wasm.js";
 import { WasmerRegistry } from "../src/wasmer.js";
@@ -1065,6 +1128,7 @@ const input = document.getElementById("hidden-input");
 const promptLine = document.getElementById("prompt-line");
 const promptEl = document.getElementById("prompt");
 const inputSpan = document.getElementById("input-span");
+const cursorPin = document.getElementById("cursor-pin");
 const statusContext = document.getElementById("status-context");
 const statusHint = document.getElementById("status-hint");
 
@@ -1163,14 +1227,232 @@ function renderInput() {
     busySuffixEl = null;
   }
   inputSpan.textContent = "";
-  const before = document.createTextNode(currentLine.slice(0, cursorPos));
+  // Pin-drag selection: highlight [selStart, selEnd] (inclusive bounds)
+  // with a faint span; the block cursor stays at cursorPos.
+  const selA = selStart === null ? -1 : Math.min(selStart, selEnd);
+  const selB = selStart === null ? -1 : Math.max(selStart, selEnd);
   const cursor = document.createElement("span");
   cursor.className = "cursor";
   cursor.textContent = currentLine[cursorPos] || " ";
-  const after = document.createTextNode(currentLine.slice(cursorPos + 1));
-  inputSpan.append(before, cursor, after);
+  const bounds = [...new Set([0, cursorPos, selA, selB, currentLine.length].filter(b => b >= 0))].sort((x, y) => x - y);
+  for (let k = 0; k < bounds.length - 1; k++) {
+    const s = bounds[k], e = bounds[k + 1];
+    if (s === cursorPos) inputSpan.appendChild(cursor);
+    const piece = currentLine.slice(s, e);
+    if (!piece) continue;
+    if (selA >= 0 && s >= selA && e <= selB) {
+      const hl = document.createElement("span");
+      hl.className = "sel";
+      hl.textContent = piece;
+      inputSpan.appendChild(hl);
+    } else {
+      inputSpan.appendChild(document.createTextNode(piece));
+    }
+  }
+  if (!cursor.parentNode) inputSpan.appendChild(cursor);  // cursor at line end
   term.scrollTop = term.scrollHeight;
+  positionCursorPin();
 }
+
+// Park the faint pin just above the block cursor so it can be grabbed
+// and dragged to reposition the cursor. The cursor is rebuilt on every
+// render, so re-query it each time; getBoundingClientRect gives its
+// viewport position (scroll included), and we convert to terminal-local
+// coords for the absolutely-positioned pin.
+function positionCursorPin() {
+  if (!cursorPin || !inputSpan) return;
+  const cur = inputSpan.querySelector(".cursor");
+  if (!cur) return;
+  const r = cur.getBoundingClientRect();
+  const termR = term.getBoundingClientRect();
+  // The pin is absolutely positioned inside the SCROLLABLE terminal, so
+  // its top is content-relative: viewport offset + the scroll amount
+  // (without scrollTop, a scrolled terminal parks the pin off-screen).
+  cursorPin.style.left = (r.left - termR.left + r.width / 2) + "px";
+  cursorPin.style.top = (r.top - termR.top + term.scrollTop) + "px";
+}
+
+// Map a (node, offset) inside #input-span to a character index in the
+// typed line. The span holds [text-before][span.cursor][text-after],
+// so walk backwards summing text lengths up to the input span.
+function textLength(node) {
+  if (node.nodeType === Node.TEXT_NODE) return node.data.length;
+  let n = 0;
+  for (const child of node.childNodes) n += textLength(child);
+  return n;
+}
+function caretIndexAtPoint(x, y) {
+  const range = document.caretRangeFromPoint
+    ? document.caretRangeFromPoint(x, y)
+    : document.caretPositionFromPoint
+      ? (() => { const p = document.caretPositionFromPoint(x, y); return p ? { startContainer: p.offsetNode, startOffset: p.offset } : null; })()
+      : null;
+  if (!range || !inputSpan.contains(range.startContainer)) return null;
+  let idx = range.startOffset;
+  let cur = range.startContainer;
+  while (cur && cur !== inputSpan) {
+    const prev = cur.previousSibling;
+    if (prev) { cur = prev; idx += textLength(prev); }
+    else cur = cur.parentNode;
+  }
+  return Math.max(0, Math.min(idx, currentLine.length));
+}
+
+// Pin-drag selection: selStart/selEnd are line indexes (the cursor
+// travels between them during the drag). After the drag the selected
+// text stays highlighted and a faint cut/copy/paste row appears above
+// it; any UI interaction clears both.
+let selStart = null;
+let selEnd = null;
+let pinClipboard = "";  // shell-side text buffer (works without clipboard permission)
+const selActions = document.getElementById("sel-actions");
+
+function selectionRange() {
+  if (selStart === null || selEnd === null) return null;
+  const a = Math.min(selStart, selEnd);
+  const b = Math.max(selStart, selEnd);
+  return a < b ? { a, b } : null;
+}
+
+function clearPinSelection() {
+  if (selStart === null && selEnd === null) return;
+  selStart = null;
+  selEnd = null;
+  selActions.classList.add("hidden");
+  renderInput();
+}
+
+function showSelActions() {
+  selActions.classList.remove("hidden");
+  selActions.classList.remove("below");
+  renderInput();  // keeps the highlight; the pin stays visible
+  const cur = inputSpan.querySelector(".cursor");
+  if (!cur) return;
+  const r = cur.getBoundingClientRect();
+  const termR = term.getBoundingClientRect();
+  const x = (r.left - termR.left + r.width / 2) + "px";
+  const cursorTop = r.top - termR.top + term.scrollTop;
+  // The pin floats above the cursor (pin height 26 + 8px gap = 34px).
+  // Park the cut/copy/paste row ABOVE the pin so both stay visible and
+  // never overlap; near the terminal's top it would clip, so flip it
+  // below the cursor there (CSS class swaps the upward float).
+  const popupH = selActions.offsetHeight || 26;
+  const above = cursorTop - 34 - popupH - 6;
+  if (above >= 0) {
+    selActions.style.left = x;
+    selActions.style.top = above + "px";
+  } else {
+    selActions.classList.add("below");
+    selActions.style.left = x;
+    selActions.style.top = (cursorTop + r.height + 8) + "px";
+  }
+}
+
+selActions.querySelectorAll("button").forEach((b) => {
+  b.addEventListener("click", async () => {
+    const sel = selectionRange();
+    if (b.dataset.act === "paste") {
+      let text = pinClipboard;
+      if (!text) {
+        try { text = await navigator.clipboard.readText(); } catch {}
+      }
+      if (!text) {
+        statusHint.textContent = "paste: clipboard is empty — drag to select & copy first";
+        clearPinSelection();
+        return;
+      }
+      currentLine = currentLine.slice(0, cursorPos) + text + currentLine.slice(cursorPos);
+      cursorPos += text.length;
+      recordLineRedraw();
+    } else if (sel) {
+      const text = currentLine.slice(sel.a, sel.b);
+      pinClipboard = text;
+      copyTextToClipboard(text);
+      statusHint.textContent = `copied "${text.length > 40 ? text.slice(0, 40) + "…" : text}" (${text.length} chars)`;
+      if (b.dataset.act === "cut") {
+        currentLine = currentLine.slice(0, sel.a) + currentLine.slice(sel.b);
+        cursorPos = sel.a;
+        recordLineRedraw();
+      }
+    }
+    clearPinSelection();
+    renderInput();
+  });
+});
+
+// Drag the pin: the cursor follows the pointer to the character under
+// it (clamped to the line). Pointer capture keeps the drag alive even
+// when the finger/mouse leaves the tiny pin.
+let pinDragging = false;
+cursorPin.addEventListener("pointerdown", (e) => {
+  e.preventDefault();  // no focus steal, no text selection
+  clearPinSelection();  // drop any previous selection/actions
+  pinDragging = true;
+  selStart = cursorPos;  // highlight grows from here
+  selEnd = cursorPos;
+  cursorPin.classList.add("dragging");
+  try { cursorPin.setPointerCapture(e.pointerId); } catch {}
+  moveCursorToPointer(e);
+});
+cursorPin.addEventListener("pointermove", (e) => {
+  if (pinDragging) moveCursorToPointer(e);
+});
+function moveCursorToPointer(e) {
+  // 1) Exact caret lookup at the pointer.
+  let idx = caretIndexAtPoint(e.clientX, e.clientY);
+  // 2) The pin floats ABOVE the cursor, so a sideways drag happens on
+  //    the row above the text — no caret there. Project the pointer's X
+  //    onto the cursor's own row so horizontal drags always track.
+  if (idx === null) {
+    const cur = inputSpan.querySelector(".cursor");
+    if (cur) {
+      const r = cur.getBoundingClientRect();
+      idx = caretIndexAtPoint(e.clientX, r.top + r.height / 2);
+    }
+  }
+  // 3) Still nothing (pointer beyond the line's ends) — map the X by
+  //    character width on the monospace line.
+  if (idx === null) {
+    const r = inputSpan.getBoundingClientRect();
+    if (r.width > 0) {
+      const cur = inputSpan.querySelector(".cursor");
+      const cw = (cur && cur.getBoundingClientRect().width) || r.width / Math.max(currentLine.length, 1);
+      idx = Math.round((e.clientX - r.left) / cw);
+    }
+  }
+  if (idx === null) return;
+  cursorPos = Math.max(0, Math.min(idx, currentLine.length));
+  selEnd = cursorPos;  // the highlight tracks the drag
+  renderInput();  // re-render → cursor (and pin) move to the pointer
+}
+function endPinDrag(e) {
+  if (!pinDragging) return;
+  pinDragging = false;
+  cursorPin.classList.remove("dragging");
+  try { cursorPin.releasePointerCapture(e.pointerId); } catch {}
+  input.focus();
+  // A real drag (selection non-empty) leaves the highlight + actions;
+  // a tap just repositions the cursor and forgets the selection.
+  if (selectionRange()) showSelActions();
+  else { selStart = null; selEnd = null; renderInput(); }
+}
+cursorPin.addEventListener("pointerup", endPinDrag);
+cursorPin.addEventListener("pointercancel", endPinDrag);
+// Keep the pin parked on the cursor if the user scrolls the terminal
+// or the window resizes without a re-render.
+term.addEventListener("scroll", positionCursorPin);
+window.addEventListener("resize", positionCursorPin);
+
+// Any UI interaction dismisses the drag selection + cut/copy/paste
+// row (capture phase, so it wins over the buttons' own click). Pressing
+// the pin again or the action buttons themselves is allowed through.
+document.addEventListener("pointerdown", (e) => {
+  if (e.target.closest && (e.target.closest("#sel-actions") || e.target.closest("#cursor-pin"))) return;
+  clearPinSelection();
+}, true);
+term.addEventListener("scroll", () => {
+  if (!selActions.classList.contains("hidden")) clearPinSelection();
+});
 
 // Print a fresh shell prompt line into the scrollback, so it's clear
 // the previous command finished and the shell is ready again.
@@ -1885,7 +2167,49 @@ let editorOnClose = null;
 let cm = null;
 let previewTimer = null;
 
-function openEditor(filepath, initialContent, onSave, onClose) {
+// ─── CodeMirror: loaded on demand (first edit/vi), not at boot ──
+// The editor's ~75 KB of scripts + CSS used to be render-blocking
+// <script>/<link> tags in the HTML. Now they're injected only when
+// the editor actually opens (CodeMirror + dialog addon + vim keymap).
+let cmReady = null;
+function loadScriptTag(src) {
+  return new Promise((resolve, reject) => {
+    if (document.querySelector('script[src="' + src + '"]')) return resolve();
+    const s = document.createElement("script");
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error("failed to load " + src));
+    document.head.appendChild(s);
+  });
+}
+function loadCssTag(href) {
+  if (document.querySelector('link[href="' + href + '"]')) return Promise.resolve();
+  return new Promise((resolve) => {
+    const l = document.createElement("link");
+    l.rel = "stylesheet";
+    l.href = href;
+    l.onload = resolve;
+    document.head.appendChild(l);
+  });
+}
+const CM_BASE = "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18";
+function ensureCodeMirror() {
+  cmReady ??= (async () => {
+    await Promise.all([
+      loadCssTag(CM_BASE + "/codemirror.min.css"),
+      loadCssTag(CM_BASE + "/theme/monokai.min.css"),
+      loadCssTag(CM_BASE + "/addon/dialog/dialog.min.css"),
+    ]);
+    await loadScriptTag(CM_BASE + "/codemirror.min.js");
+    await loadScriptTag(CM_BASE + "/addon/dialog/dialog.min.js");
+    await loadScriptTag(CM_BASE + "/keymap/vim.min.js");
+    registerViExCommands();  // :w :q :wq … need the vim keymap loaded
+  })();
+  return cmReady;
+}
+
+async function openEditor(filepath, initialContent, onSave, onClose) {
+  await ensureCodeMirror();
   spinnerStop();  // editor is a modal overlay — nothing to spin behind it
   editorFilepath = filepath;
   editorCallback = onSave;
@@ -2045,7 +2369,8 @@ function updateViModeDisplay() {
   }
 }
 
-function openViEditor(filepath, initialContent, onSave, onClose) {
+async function openViEditor(filepath, initialContent, onSave, onClose) {
+  await ensureCodeMirror();  // vim keymap addon loads with the rest
   spinnerStop();  // editor is a modal overlay — nothing to spin behind it
   viState.filepath = filepath;
   viState.callback = onSave;
@@ -2139,8 +2464,12 @@ function closeViEditor() {
 }
 
 // Register vim ex commands (:w, :q, :wq, :x, :q!)
+// Runs once, when CodeMirror + the vim keymap actually load (the
+// editor is lazy-loaded now, so CodeMirror is undefined at boot).
 function registerViExCommands() {
-  if (!CodeMirror.Vim) return;
+  if (registerViExCommands.done) return;
+  if (typeof CodeMirror === "undefined" || !CodeMirror.Vim) return;
+  registerViExCommands.done = true;
   const vim = CodeMirror.Vim;
 
   // defineEx(name, prefix, func) — name must start with prefix.
@@ -2161,8 +2490,9 @@ function registerViExCommands() {
   });
 }
 
-// Call after CodeMirror + vim keymap load
-registerViExCommands();
+// Called from ensureCodeMirror() once the vim keymap has loaded.
+// (Was a top-level call — CodeMirror is lazy now, so it can't run at
+// module eval time.)
 
 // ─── C pre-processing for the compilers (cproc / tcc) ──────────
 let ccCounter = 0;
@@ -4543,6 +4873,15 @@ async function resolveCommandExact(name) {
     }
   } catch {}
 
+  // Lazy command templates: /bin/<name>.js sources live outside the
+  // core bundle (www/bin/) and are fetched + written on first use.
+  const binPath = await materializeBinCommand(name);
+  if (binPath) {
+    const denied = customExecDenied(binPath);
+    if (denied) return denied;
+    return { type: "jsfile", path: binPath };
+  }
+
   return null;
 }
 
@@ -6123,6 +6462,7 @@ function updatePrompt() {
 }
 
 async function onCommand() {
+  clearPinSelection();  // Enter is a UI interaction — drop selection/actions
   const line = currentLine;
   const busy = running;  // a previous command is still executing
   if (line.trim()) {
@@ -6383,6 +6723,9 @@ input.addEventListener("blur", () => term.classList.remove("focused"));
 
 input.addEventListener("keydown", async (e) => {
   if (e.isComposing) return;  // let the input event handle IME text
+
+  // Any key dismisses the pin-drag selection + action buttons.
+  if (selStart !== null) clearPinSelection();
 
   // While an interactive command owns the keyboard (shell.onKey),
   // route every plain key to it instead of the line editor.

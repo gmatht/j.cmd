@@ -11,7 +11,7 @@ const eq = (a, b, name) => ok(a === b, `${name} (got ${JSON.stringify(a)}, want 
 // ── prepopulated Examples symlinks exist at boot ──
 console.log("## prepopulated ~/Examples links");
 const entries = await fs.list("/home/examples");
-for (const want of ["sample.mp3", "sample.ogg", "sample.ogv", "sample.webm", "sample.png", "sample.jpg", "sample.mp4", "sample.txt"]) {
+for (const want of ["sample.mp3", "sample.ogg", "sample.webm", "sample.png", "sample.jpg", "sample.mp4", "sample.txt"]) {
   ok(entries.includes(want), `ls /home/examples shows ${want}`);
 }
 eq(await fs.readlink("/home/examples/sample.txt"), "/http/raw.githubusercontent.com/git/git/master/README.md", "readlink sample.txt");
@@ -98,15 +98,24 @@ try { await fs.link("/tmp/hello.txt", "/tmp/hello.txt"); } catch (e) { threw = /
 ok(threw, "link over existing file fails EEXIST");
 
 // ── /http/ featured entries ──
+// The samples form a folder tree: hosts are dirs at the root, the
+// curated files sit at the leaves. Root lists hosts + README; deep
+// listings show the path fragments down to the files.
 console.log("## /http/ featured");
 const http = await fs.list("/http");
-for (const want of ["README.md", "archive.org/download/testmp3testfile/mpthreetest.mp3", "upload.wikimedia.org/wikipedia/commons/6/6a/JavaScript-logo.png", "mdn.github.io/learning-area/html/multimedia-and-embedding/video-and-audio-content/rabbit320.mp4"]) {
+for (const want of ["README.md", "archive.org/", "upload.wikimedia.org/", "mdn.github.io/", "picsum.photos/", "raw.githubusercontent.com/"]) {
   ok(http.includes(want), `ls /http shows ${want}`);
 }
+const deep = await fs.list("/http/archive.org/download/testmp3testfile");
+ok(deep.includes("mpthreetest.mp3"), "ls deep path shows the leaf file");
+const deep2 = await fs.list("/http/upload.wikimedia.org/wikipedia/commons/6/6a");
+ok(deep2.includes("JavaScript-logo.png"), "ls wikimedia tree shows the png");
 const readme = await fs.read("/http/README.md");
 ok(readme.includes("Featured sample files"), "/http/README.md renders");
 const st2 = await fs.stat("/http/raw.githubusercontent.com/mdn/webaudio-examples/main/audio-analyser/viper.mp3");
 ok(st2 && st2.type === "file", "stat of featured /http entry is a file");
+const st3 = await fs.stat("/http/upload.wikimedia.org");
+ok(st3 && st3.type === "dir", "stat of a host folder is a dir");
 
 // ── shell builtins (ln / readlink / mv / rm) through jtsh batch ──
 console.log("## shell builtins");

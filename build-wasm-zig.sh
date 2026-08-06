@@ -35,6 +35,21 @@
 # (verified: version, build-exe, and the compiled program runs). Fixing the
 # shell integration needs the fd_pwrite issue addressed in wasmer-wasi.
 #
+# Runtime quirks found while verifying this build (2026-08):
+#   * node:wasi (uvwasi) and @wasmer/wasi 1.2.2 BOTH reject path_open of an
+#     ABSOLUTE path with O_CREAT (NOTCAPABLE → zig reports "failed to open
+#     output binary: AccessDenied"). Relative paths work — musl's open()
+#     hides this by stripping the preopen prefix; zig passes paths verbatim.
+#     So `zig build-exe hello.zig -femit-bin=hello.wasm` from the cwd works,
+#     while any absolute -femit-bin/-femit paths fail. Use relative paths.
+#   * zig uses fd 3 (the FIRST preopen) as its cwd, but @wasmer/wasi always
+#     inserts its own "/" root preopen at fd 3 (path_open on it fails with
+#     NOTCAPABLE) and shifts user preopens to fd 4+, so in the browser shell
+#     zig's cwd is a dead preopen: build-exe can't open relative inputs.
+#     `zig version`/`zig help` (no file opens) do work in the shell.
+#   * @wasmer/wasi 1.2.2 fd_prestat_dir_name fails on a zero-length name
+#     (null buffer) — zig panics if a preopen reports an empty name.
+#
 # Source patches (applied by this script):
 #   Compilation.zig  Directories.init params: wasi_preopens/self_exe_path are
 #                    no longer target-switched (callers use native_os).

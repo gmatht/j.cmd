@@ -16,6 +16,7 @@ import { fs } from "./fs/index.js";
 import { formatAge } from "./fs/lscache.js";
 import { WasmRunner } from "./wasm.js";
 import { WasmerRegistry } from "./wasmer.js";
+import { materializeBinCommand } from "./binsync.js";
 import { env, expandRef } from "./env.js";
 import { procfs } from "./fs/procfs.js";
 import { bashToJS, runBash, buildSh2LibFacade } from "./bash2js.js";
@@ -1804,6 +1805,12 @@ async function findCommand(name) {
   if (found) return found;
   if (!name.includes("/") && /^[A-Z]/.test(name)) {
     return await findCommandExact(name[0].toLowerCase() + name.slice(1));
+  }
+  // Lazy /bin command templates (www/bin/) — materialize on first use
+  // (perl, lua, tar, zip, mail, …). Only bare names are auto-loaded.
+  if (!name.includes("/")) {
+    const p = await materializeBinCommand(name);
+    if (p) return await findCommandExact(name);
   }
   return null;
 }

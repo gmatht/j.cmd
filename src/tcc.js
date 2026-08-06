@@ -28,6 +28,7 @@ const HEADER_DIR = "/tmp/tcc/include";
 const BUNDLE_URL = "wasm-bin/tcc-include.dat";
 
 import { env } from "./env.js";
+import { ensurePako } from "./pako.js";
 
 async function inflate(bytes) {
   if (typeof globalThis.process !== "undefined" && process.versions?.node) {
@@ -35,6 +36,8 @@ async function inflate(bytes) {
     return new Uint8Array(zlib.gunzipSync(bytes));
   }
   if (globalThis.pako) return pako.inflate(bytes);
+  await ensurePako();  // lazy-load vendor/pako.min.js in the browser
+  if (globalThis.pako) return globalThis.pako.inflate(bytes);
   throw new Error("tcc: no inflate available (pako.min.js not loaded)");
 }
 

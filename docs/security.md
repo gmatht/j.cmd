@@ -145,7 +145,7 @@ machine and the commands that touch it.
 
 - The `/http/` mount is CORS-enabled `fetch`: it can reach any endpoint that
   sends `Access-Control-Allow-Origin`; other origins' data is unreadable.
-  `ls /http/` shows a curated set of sample files (mp3/ogg/ogv/webm/png/jpg/mp4/txt)
+  `ls /http/` shows a curated set of sample files (mp3/ogg/webm/png/jpg/mp4/txt)
   from CORS-verified archives (archive.org for audio, Wikimedia Commons,
   GitHub raw, GitHub Pages, picsum) — the `/home/examples/sample.*` symlinks
   point at them, one per file type.
