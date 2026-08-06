@@ -775,6 +775,10 @@
   .out { color: #a0d6a0; }
   .err { color: #d6a0a0; }
   .info { color: #7ec8e3; }
+  /* The motd title's j.cmd links to the GitHub repo — underline it, and
+     brighten on hover like a normal link. */
+  .banner-link { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+  .banner-link:hover { color: #ffffff; }
   .prompt { color: #7ec8e3; }
   .busy-suffix { color: #ff5050; font-weight: bold; }
   .dir { color: #7ec8e3; }
@@ -7660,7 +7664,22 @@ document.addEventListener("click", (e) => {
   welcomeRow.append(welcomeText, welcomeXkcd);
   term.insertBefore(welcomeRow, promptLine);
   write("╔══════════════════════════════════════╗\n", "info");
-  write("║ j.cmd — A JavaScript Command Line OS ║\n", "info");
+  // Title line: the "j.cmd" links to the GitHub repo. write() renders
+  // text only, so build this line with a real <a> element.
+  {
+    const line = document.createElement("span");
+    line.className = "info";
+    line.append("║ ");
+    const repo = document.createElement("a");
+    repo.href = "https://github.com/gmatht/j.cmd";
+    repo.target = "_blank";
+    repo.rel = "noopener";
+    repo.className = "banner-link";
+    repo.textContent = "j.cmd";
+    line.append(repo, " — A JavaScript Command Line OS ║\n");
+    if (welcomeText) welcomeText.appendChild(line);
+    else term.insertBefore(line, promptLine);
+  }
   write("║     JavaScript is the binary format  ║\n", "info");
   write("╚══════════════════════════════════════╝\n", "info");
   write("Type 'help' for available commands.\n\n", "info");
