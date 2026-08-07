@@ -2045,6 +2045,94 @@ function splitPipe(line) {
 // Execute one pipeline segment. `stdin` carries the previous segment's
 // stdout. Returns { ok, output } — `output` is the captured stdout that
 // should be fed to the next segment (empty for the last segment).
+// ─── otranspilerl fallback: bash concepts jtsh's parser doesn't know ──
+// Lines carrying bash-only syntax — statement separators (`;`), the
+// for/while/if/case keywords, `$(…)` command substitution, `[[ ]]` —
+// route through the unified otranspilerl library (the real debashl core
+// + estree backend): sh → A1 shIR → ESTree → JS, executed with the sh2.*
+// runtime. `x=5; echo $x`, `for i in …; do …; done`, `if …; then …; fi`
+// and friends just work; constructs needing the sync bridge
+// (command substitution, pipelines, redirection) refuse loudly with a
+// pointer to `bash`.
+
+// Does the line carry bash syntax jtsh's tokenizer doesn't handle?
+// (Quoted text is ignored — `echo 'a;b'` is one argument, not bash.)
+function looksLikeBash(text) {
+  const unquoted = String(text).replace(/'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"/g, "");
+  if (/\b(for|while|until|if|case|select|function)\b/.test(unquoted)) return true;
+  if (/[;{}]/.test(unquoted)) return true;                 // `;` separator, `{ … }` group
+  if (/\$\(|\[\[/.test(unquoted)) return true;          // $(…) / [[ ]]
+  if (/\[[^\]]*\]/.test(unquoted)) return true;           // [ … ] test
+  return /\$\{/.test(unquoted);
+}
+
+// Transpile a bash line with otranspilerl and execute the generated JS.
+// Returns the exit code; throws when the library refuses or the shape
+// needs the sync bridge (caller falls back to the normal error path).
+async function runViaTranspiler(segmentText, stdin) {
+  const { getOtranspilerl } = await import("./otranspilerl.js");
+  const lib = await getOtranspilerl();
+  const program = JSON.parse(lib.transpile(segmentText, "sh", "js"));
+  const { estreeToJs } = await import("./estree.js");
+  // The estree convention: each statement's value is the command's
+  // success flag (true/false). Make the LAST statement's value the exit
+  // code — declarations don't carry one (a bare `x=5` exits 0).
+  const body = program.body || [];
+  const last = body[body.length - 1];
+  // ExpressionStatement → its value is the success flag; control-flow
+  // statements (for/while/if/…) carry the exit code in sh2.lastExit.
+  const lastIsExpr = last && last.type === "ExpressionStatement";
+  const bodyJs = (lastIsExpr && body.length > 1
+    ? estreeToJs({ type: "Program", body: body.slice(0, -1) })
+    : estreeToJs({ type: "Program", body })) + "\n";
+  const lastJs = lastIsExpr
+    ? "return (" + estreeToJs({ type: "Program", body: [last] }).replace(/;\s*$/, "") + ");\n"
+    : "return sh2.lastExit;\n";
+  const js = bodyJs + lastJs;
+  const { createSh2Runtime } = await import("./sh2runtime.js");
+  const out = { write: (s) => { if (s) process.stdout.write(s); } };
+  const err = { write: (s) => { if (s) process.stderr.write(s); } };
+  // The native estree backend writes through process.stdout.write and
+  // reads process.env/argv — provide a shim (in the browser there is no
+  // node process at all).
+  const proc = {
+    stdout: out,
+    stderr: err,
+    pid: 1,
+    argv: ["jtsh"],
+    env: env || {},
+    cwd: () => (fs.cwd !== undefined ? fs.cwd : "/"),
+    // `exit N` in the generated JS — must NOT kill the shell.
+    exit(code) {
+      const e = new Error("__otranspiler_exit__" + code);
+      e.exitCode = Number(code) || 0;
+      throw e;
+    },
+    // `cd DIR` / `pwd` — the native estree drives cwd through process
+    chdir(p) {
+      if (fs && fs.cwd !== undefined) fs.cwd = String(p).replace(/\/+$/, "") || "/";
+    },
+    cwd() { return (fs.cwd !== undefined ? fs.cwd : "/") || "/"; },
+  };
+  const rt = createSh2Runtime({
+    fs, env, shellExec: runNestedCommand,
+    stdout: out, stderr: err, args: [], argv0: "sh",
+  });
+  const fn = new Function("fs", "env", "process", "sh2", `
+    return (async () => { ${js} })();
+  `);
+  let v;
+  try {
+    v = await fn(fs, env, proc, rt.sh2);
+  } catch (e) {
+    if (e && e.exitCode !== undefined) return e.exitCode;  // `exit N`
+    throw e;
+  }
+  // The estree convention: each statement's value is the command's
+  // success flag (true/false) — assignments carry their value but exit 0.
+  return v === false ? 1 : 0;
+}
+
 async function runSegment(segmentText, stdin, isLast) {
   let tokens;
   try {
@@ -2215,6 +2303,17 @@ async function runSegment(segmentText, stdin, isLast) {
     return { ok: false, code: 126, output: "" };
   }
   if (!resolved) {
+    // Last resort: a bash keyword / construct the tokenizer let through —
+    // try the otranspilerl fallback before declaring "command not found"
+    // (e.g. a `for …`/`if …` segment that reached this point without a
+    // `;`, or a pipeline split that hid the bash syntax from the
+    // conditional-list check).
+    if (looksLikeBash(segmentText)) {
+      try {
+        const tcode = await runViaTranspiler(segmentText, stdin);
+        return { ok: tcode === 0, code: tcode, output: "" };
+      } catch { /* fall through to the normal not-found path */ }
+    }
     const hints = {
       "vi": "edit", "vim": "edit", "nano": "edit", "emacs": "edit",
       "more": "cat", "less": "cat",
@@ -2746,6 +2845,20 @@ async function runConditionalList(text, initialStdin) {
       if (parts[i].op === "&&" && exitCode !== 0) continue;
       if (parts[i].op === "||" && exitCode === 0) continue;
     }
+    // Bash-only syntax (statement separators, for/if keywords, $(…)…)
+    // routes through the otranspilerl fallback BEFORE the tokenizer —
+    // jtsh's own parser doesn't understand it natively.
+    if (looksLikeBash(parts[i].text)) {
+      try {
+        exitCode = await runViaTranspiler(parts[i].text, initialStdin);
+      } catch (e) {
+        // The library refused (outside its subset) or the shape needs the
+        // sync bridge — fall back to the normal pipeline, which reports
+        // the not-found / literal exactly as before.
+        exitCode = await runPipeline(parts[i].text, initialStdin);
+      }
+      continue;
+    }
     exitCode = await runPipeline(parts[i].text, initialStdin);
   }
   return exitCode;
@@ -2955,6 +3068,9 @@ async function runReplLine(line) {
       // never run — we report it and leave the session untouched.
       // Variables and functions persist because the whole session
       // re-declares them; only the output between the markers is shown.
+      // runBash rewrites the marker echos to direct stdout writes, so
+      // the PRE marker can't clobber $? for the new line (`false` then
+      // `echo $?` must print 1, like bash).
       replState.bashOut = "";
       const session = replState.bashSession;
       const pre = replState.bashMarker;
@@ -2966,6 +3082,7 @@ async function runReplLine(line) {
         runCmd: runNestedCommand,
         stdout: { write: (s) => { replState.bashOut += s; } },
         stderr: { write: (s) => { replState.bashOut += s; } },
+        markers: [pre, post],
       });
       const pi = replState.bashOut.indexOf(pre);
       const pj = replState.bashOut.lastIndexOf(post);

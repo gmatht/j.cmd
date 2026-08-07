@@ -40,6 +40,14 @@ function statement(n) {
       return `function ${n.id.name}(${(n.params || []).map((p) => p.name).join(", ")}) ${block(n.body)}`;
     case "WhileStatement":
       return `while (${expression(n.test)}) ${statement(n.body)}`;
+    case "ForOfStatement": {
+      // the otranspilerl estree backend's `for i in …` loop — the left is
+      // a VariableDeclaration; render it without the statement's `;`.
+      const left = n.left && n.left.type === "VariableDeclaration"
+        ? `${n.left.kind || "let"} ${n.left.declarations.map((d) => d.id.name).join(", ")}`
+        : statement(n.left);
+      return `for (${left} of ${expression(n.right)}) ${statement(n.body)}`;
+    }
     case "EmptyStatement":
       return "";
     default:
@@ -63,7 +71,14 @@ function expression(n) {
     case "Identifier":
       return n.name;
     case "Literal":
+      // The otranspilerl estree backend emits regex literals as
+      // { value: {}, regex: { pattern, flags } }.
+      if (n.regex) return `/${n.regex.pattern}/${n.regex.flags || ""}`;
       return JSON.stringify(n.value);  // arrays as literal values stringify fine
+    case "SequenceExpression":
+      return "(" + n.expressions.map(expression).join(", ") + ")";
+    case "ConditionalExpression":
+      return `${expression(n.test)} ? ${expression(n.consequent)} : ${expression(n.alternate)}`;
     case "TemplateLiteral":
       return template(n);
     case "MemberExpression":

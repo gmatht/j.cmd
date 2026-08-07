@@ -108,7 +108,13 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       const prevArgs = scriptArgs;
       scriptArgs = (argsArr || []).map(String);
       try {
-        await fns.get(name)();
+        const ret = await fns.get(name)();
+        // `return N` sets the function's exit status (the transpiler
+        // emits the literal as a string). A boolean/void result means
+        // the body's commands already recorded $? via exec — leave it.
+        if (typeof ret === "string" || typeof ret === "number") {
+          lastStatus = Number(ret);
+        }
       } finally {
         scriptArgs = prevArgs;
       }
@@ -591,6 +597,145 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       "break": breakLoop, "continue": continueLoop,
       idiv, imod, not, setLastExit,
       getVar, setVar,
+      // the otranspilerl estree backend reads/writes sh2.lastExit
+      get lastExit() { return lastStatus; },
+      set lastExit(v) { lastStatus = Number(v); },
+      // $1..$9 / $@ — the native estree reads sh2.positional
+      get positional() { return scriptArgs; },
+      set positional(v) { scriptArgs = Array.isArray(v) ? v.map(String) : []; },
+      // minimal sync bridges for the native estree backend's common shapes
+      _g: (name) => getVar(name),
+      // node-style fs bridge for the native estree backend (file tests,
+      // `> file` writes): sh2.fs.lstat/stat resolve to mode-bearing stat
+      // objects, writeFile/readFile/readdir map onto the VirtualFS.
+      fs: {
+        async lstat(p) {
+          const st = await fs.stat(p).catch(() => null);
+          if (!st) {
+            const e = new Error("ENOENT: no such file or directory, lstat '" + p + "'");
+            e.code = "ENOENT";
+            throw e;
+          }
+          const mode = st.type === "dir" ? 0o40000 : st.type === "file" ? 0o100000 : 0;
+          return {
+            mode, size: st.size || 0,
+            isDirectory: () => st.type === "dir",
+            isFile: () => st.type === "file",
+          };
+        },
+        stat: async (p) => {
+          const st = await fs.stat(p).catch(() => null);
+          if (!st) {
+            const e = new Error("ENOENT: no such file or directory, stat '" + p + "'");
+            e.code = "ENOENT";
+            throw e;
+          }
+          const mode = st.type === "dir" ? 0o40000 : st.type === "file" ? 0o100000 : 0;
+          return {
+            mode, size: st.size || 0,
+            isDirectory: () => st.type === "dir",
+            isFile: () => st.type === "file",
+          };
+        },
+        writeFile: async (p, data) => { await fs.write(p, String(data ?? "")); },
+        readFile: async (p) => { const b = await fs.read(p).catch(() => ""); return typeof b === "string" ? b : new TextDecoder().decode(b); },
+        readdir: async (p) => { try { return await fs.list(p); } catch { return []; } },
+        mkdir: async (p) => { await fs.write(p + "/.directory", ""); },
+      },
+      // the native estree reads sh2.cwd as a value (getter — always current)
+      get cwd() { return (fs.cwd !== undefined ? fs.cwd : "/") || "/"; },
+      cwdFn: () => (fs.cwd !== undefined ? fs.cwd : "/") || "/",
+      functions: fns,
+      // `grep P` idiom → filter text by pattern (substring/regex)
+      grepText(text, patterns, invert) {
+        const s = String(text);
+        const lines = s.split("\n");
+        const hit = (l) => (patterns || []).some((p) => {
+          try { return new RegExp(p).test(l); } catch { return l.includes(String(p)); }
+        });
+        const kept = lines.filter((l) => (invert ? !hit(l) : hit(l)));
+        return kept.join("\n") + (s.endsWith("\n") ? "\n" : "");
+      },
+      // a tiny SYNC builtin table for the native estree backend (echo /
+      // date / pwd / true / false) — everything else needs the async
+      // shellExec bridge and refuses loudly.
+      builtin(name, argsArr) {
+        const a = (argsArr || []).map(String);
+        switch (name) {
+          case "echo": return a.join(" ") + "\n";
+          case "printf": return a.join(" ") + "\n";
+          case "true": return "";
+          case "false": return "";
+          case "date": return new Date().toString() + "\n";
+          case "pwd": return ((fs.cwd !== undefined ? fs.cwd : "/") || "/") + "\n";
+          case "cd": {
+            const target = (a[0] || (env && env.HOME) || "/").replace(/\/+$/, "") || "/";
+            if (fs && fs.cwd !== undefined) fs.cwd = target;
+            lastStatus = 0;
+            return "";
+          }
+          case "test": {
+            // [ -f x ] / [ -d x ] / -n / -z / nonempty — sync via statSync
+            // (local mounts), exit code in lastStatus.
+            const op = a[0], operand = String(a[1] ?? "");
+            let r = false;
+            if (op === "-f" || op === "-d" || op === "-e") {
+              let st = null;
+              try { st = fs.statSync ? fs.statSync(operand) : null; } catch { st = null; }
+              if (op === "-e") r = !!st;
+              else if (op === "-f") r = !!(st && st.type === "file");
+              else r = !!(st && st.type === "dir");
+            } else if (op === "-n") r = operand.length > 0;
+            else if (op === "-z") r = operand.length === 0;
+            else r = operand !== "";
+            lastStatus = r ? 0 : 1;
+            return "";
+          }
+          default:
+            throw new Error("sh2.builtin('" + name + "'): the sync builtin bridge needs the async shell; try `bash` for this construct");
+        }
+      },
+      // the native estree backend's *Sync pipeline/capture/redirect forms
+      // need the async bridge — refuse loudly rather than mis-run.
+      captureWordsSync() {
+        throw new Error("command substitution needs the async capture bridge; try `bash '$(...)'`");
+      },
+      pipelineSync() {
+        throw new Error("pipelines need the async pipeline bridge; try `bash` for this construct");
+      },
+      redirectSync() {
+        throw new Error("redirection needs the async redirect bridge; try `bash` for this construct");
+      },
+      async fnCall(name, argsArr) {
+        const fn = fns.get(name);
+        if (typeof fn !== "function") throw new Error("sh2.fnCall: no function '" + name + "'");
+        const prev = scriptArgs;
+        scriptArgs = (argsArr || []).map(String);
+        let r;
+        try {
+          r = fn();
+          if (r && typeof r.then === "function") r = await r;
+        } finally {
+          scriptArgs = prev;
+        }
+        lastStatus = r === false ? 1 : 0;
+        return r;
+      },
+      async callDirect(name, fn, argsArr) {
+        // `f …` — invoke the registered function body with positional args.
+        if (typeof fn !== "function") throw new Error("sh2.callDirect: no function '" + name + "'");
+        const prev = scriptArgs;
+        scriptArgs = (argsArr || []).map(String);
+        let r;
+        try {
+          r = fn();
+          if (r && typeof r.then === "function") r = await r;
+        } finally {
+          scriptArgs = prev;
+        }
+        lastStatus = r === false ? 1 : 0;
+        return r;
+      },
     },
     get lastStatus() { return lastStatus; },
   };
