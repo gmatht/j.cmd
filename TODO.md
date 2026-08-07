@@ -8,6 +8,16 @@ and device files. It runs in any browser with no build step.
 
 ## Recently Done
 
+- [x] otranspiler: the unified transpiler command replaces debashc
+      (v0.1.2 = "last version before otranspiler"). Extension-driven
+      source→contract→target dispatch over the debashcl reactor (sh →
+      ESTree → js/pl/shir) and the vendored go frontends (go/py/c/pl/
+      zsh/fish → A1 shIR → c/sh/shir), all six frontend libs + the
+      shir-emit-go emitter + the busybox CLI merged into ONE stdlib-only
+      main.go, built on first use with the in-browser go toolchain and
+      cached in /tmp (one artifact, one build). debashc's parse/file
+      forms stay as drop-ins; www/bin/debashc.js is gone.
+
 - [x] asciinema casts match the v2 spec: cumulative timestamps (real
       players had been running every session instantly), SGR colours, and
       vi/edit buffers rendered as TUI regions

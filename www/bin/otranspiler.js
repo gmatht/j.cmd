@@ -393,7 +393,7 @@ function emit(text) {
 // ── CLI (top-level awaits — see the NOTE above) ────────────────
 function usage() {
   return `otranspiler <input> [<output>] [flags]
-  input  file.{sh,go,py,c,pl,zsh,fish,shir}   (no ext = sh; - = source from stdin)
+  input  file.{sh,go,py,c,pl,zsh,fish,shir}   (no ext = sh; - = stdin: A1, or source with --source-lang)
   output {-,file}.{js,pl,c,sh,shir}           (no ext = js; - = stdout)
   --shir            output the contract (ESTree JSON for sh; A1 shIR for go/py/c/pl/zsh/fish)
   --target L        force the target language (js|pl|c|sh|shir)
