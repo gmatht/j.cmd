@@ -8,6 +8,15 @@ and device files. It runs in any browser with no build step.
 
 ## Recently Done
 
+- [x] jtsh uses the otranspilerl library (the unified wasm: debashl core
+      + all nine renderers) to convert bash concepts it doesn't parse
+      into JS and run them: `;` separators, for/while loops, if/case,
+      `[ … ]` tests, functions with args, arithmetic, `$?` — routed
+      sh → A1 shIR → ESTree → JS against the sh2.* runtime (estree.js
+      gained ForOf/Sequence/Conditional/regex; the runtime gained
+      lastExit/positional, fnCall/callDirect, a node-style sh2.fs
+      bridge, grepText and a sync builtin table incl. test/cd).
+
 - [x] otranspiler: the unified transpiler command replaces debashc
       (v0.1.2 = "last version before otranspiler"). Extension-driven
       source→contract→target dispatch over the debashcl reactor (sh →

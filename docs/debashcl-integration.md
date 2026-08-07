@@ -25,6 +25,14 @@ the shell's ESTree path via `src/sh2lib.js`. The unified
 (including shell, via the vendored posix-sh-go frontend) goes through
 its own A1 shIR contract and renders to any target.
 
+The shell also uses the REAL unified library directly: jtsh's parser
+routes bash-only syntax it doesn't know (statement separators,
+for/while/if/case, `[ … ]` tests, functions, `$(…)`) through
+`src/otranspilerl.js` — the otranspilerl wasm (the debashl core + all
+nine backend renderers) — sh → A1 → ESTree → JS, executed with the
+sh2.* runtime. So `x=5; echo $x`, `for i in …; do …; done` and
+friends run without the `bash` prefix.
+
 ## Verified working (CLI + browser, Playwright-tested)
 
 - commands, args, quoting, `$VAR`/`${VAR}` expansion
