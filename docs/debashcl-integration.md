@@ -20,8 +20,9 @@ terminal
 The old path (`sh2perl.wasm → Perl → perl2js`) and the redundant
 sh2perl.wasm command binary were removed — debashcl.wasm is the one
 compiler, wrapped by the `/bin/sh2js.js`, `/bin/sh2perl.js` and
-`/bin/debashc.js` commands (all driving the same reactor via
-`src/sh2lib.js`).
+`/bin/otranspiler.js` commands (all driving the same reactor via
+`src/sh2lib.js`; otranspiler is the unified interface — debashc's
+successor).
 
 ## Verified working (CLI + browser, Playwright-tested)
 
@@ -36,7 +37,7 @@ compiler, wrapped by the `/bin/sh2js.js`, `/bin/sh2perl.js` and
 - functions (`f() { ... }`, args → `$1..$9`, `$@`, `$#`)
 - brace expansion `{1..3}` `{a..c}`, param expansion `${x:-d}` `${x:=d}`
   `${x#p}` `${x%%p}` `${#x}` `${x:1:3}`, positional params (`bash '...' a b`)
-- `bash2js` / `sh2js` / `sh2perl` / `debashc` commands (ESTree / JS / Perl)
+- `bash2js` / `sh2js` / `sh2perl` / `otranspiler` commands (ESTree / JS / Perl)
 
 ## Findings for the debashc side (fix upstream)
 

@@ -8,8 +8,10 @@
 // reactor — the ONE compiler binary (no separate debashc / debashl /
 // sh2perl binaries). It parses bash and emits ESTree JSON; src/estree.js
 // lowers that to JavaScript against the sh2.* runtime (src/sh2runtime.js)
-// and the shell's `env` object. The sh2perl / sh2js / debashc commands
-// are thin wrappers over the same reactor (src/sh2lib.js).
+// and the shell's `env` object. The sh2perl / sh2js / otranspiler
+// commands are the user-facing wrappers over the same reactor
+// (src/sh2lib.js); otranspiler is the unified interface (debashc's
+// successor).
 //
 // Usage in jtsh:
 //   bash2js 'echo hello world'     → prints the generated JS
@@ -44,7 +46,7 @@ export async function bashToJS(fs, bashSource) {
 }
 
 // ─── sh2lib facade: handed to .js commands as the `sh2lib` param ─
-// Lets /bin/sh2js.js, /bin/sh2perl.js, /bin/debashc.js (and any user
+// Lets /bin/sh2js.js, /bin/sh2perl.js, /bin/otranspiler.js (and any user
 // command) drive the debashc reactor directly, in both shells.
 export function buildSh2LibFacade(fs) {
   return {
@@ -65,8 +67,21 @@ export function buildSh2LibFacade(fs) {
 //
 // The generated JS runs with the `sh2.*` runtime (createSh2Runtime)
 // in scope. `scriptArgs` become $1..$9/$@/$#.
-export async function runBash(fs, source, { stdout, stderr, runCmd, args = [], argv0 = "bash" } = {}) {
-  const { js } = await bashToJS(fs, source);
+export async function runBash(fs, source, { stdout, stderr, runCmd, args = [], argv0 = "bash", markers = [] } = {}) {
+  let { js } = await bashToJS(fs, source);
+  // Marker echos (the REPL's `echo '<marker>'` line brackets) are
+  // rewritten to direct stdout writes. Running them through exec would
+  // set $? to 0 right before the user's line runs — breaking
+  // `false` followed by `echo $?` (real bash reports 1). A direct
+  // write bypasses exec entirely, so the exit status carries across
+  // the boundary exactly like in bash.
+  for (const m of markers) {
+    if (!m) continue;
+    const echoCall = `sh2.exec("echo", [${JSON.stringify(m)}])`;
+    if (js.includes(echoCall)) {
+      js = js.replace(echoCall, `stdout.write(${JSON.stringify(m + "\n")})`);
+    }
+  }
   const out = stdout || { write: () => {} };
   const err = stderr || { write: (s) => out.write(s) };
   const { createSh2Runtime } = await import("./sh2runtime.js");

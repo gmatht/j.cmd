@@ -87,6 +87,6 @@ export const BIN_TEMPLATES = new Set([
   "screen", "qbe2wasm", "perl", "lua", "time", "diff", "cowsay",
   "fortune", "figlet", "sl", "cmatrix", "at", "cron", "curl", "gzip",
   "gunzip", "plot", "magick", "ffmpeg", "typist", "md5sum", "sha256sum",
-  "tar", "tree", "uptime", "zip", "sh2js", "sh2perl", "debashc",
+  "tar", "tree", "uptime", "zip", "sh2js", "sh2perl", "otranspiler",
   "xclip", "xeyes", "xterm", "watch", "base64", "base32", "llm",
 ]);
