@@ -5,6 +5,7 @@ command builds on first use (one unified binary, see `/bin/otranspiler.js`):
 
 | dir          | frontend          | source lang → A1 shIR |
 |--------------|-------------------|------------------------|
+| `posix-sh-go/`| sh (package main) | shell → shIR (byte-identical to the core's `debashc --shir` on the v1 subset) |
 | `go-sh/`     | golib             | Go → shIR (self-hosting path) |
 | `py-sh-go/`  | pylib             | Python → shIR |
 | `c-sh-go/`   | clib              | C → shIR |
@@ -12,16 +13,17 @@ command builds on first use (one unified binary, see `/bin/otranspiler.js`):
 | `zsh-sh-go/` | zshlib            | Zsh → shIR |
 | `fish-sh-go/`| fishlib           | Fish → shIR |
 | `shir-emit-go/` | shiremit       | the shared A1 JSON emitter (the contract's single source of truth) |
-| `busybox/`   | —                 | the unified CLI: one binary over all six libs (`--lang <lang> --shir <file> [--raw]`) |
+| `busybox/`   | —                 | the unified CLI: one binary over all seven libs (`--lang <lang> --shir <file> [--raw]`) |
 
 The browser go toolchain builds a **single stdlib-only main.go**: the
-`otranspiler` command merges all six libs + `shir-emit-go` + the busybox
-CLI into one file (package/import lines stripped, imports unioned,
-cross-package references unqualified, per-part name prefixes so no
-identifiers collide — the merge mirrors the upstream layout), then
-`go build`s it once and caches the wasm in `/tmp/otranspiler-busybox/`.
-One artifact, one Go runtime, one build — the browser port of the
-sh2loop fleet's own unified-binary answer.
+`otranspiler` command merges all seven libs + `shir-emit-go` + the
+dispatcher CLI into one file (package/import lines stripped, imports
+unioned, per-part name prefixes so no identifiers collide — the merge
+mirrors the upstream layout; posix-sh-go is a package-main CLI, so its
+main() is renamed and the dispatcher calls its library entry
+shirForSource), then `go build`s it once and caches the wasm in
+`/tmp/otranspiler-busybox/`. One artifact, one Go runtime, one build —
+the browser port of the sh2loop fleet's own unified-binary answer.
 
 ## Sync
 

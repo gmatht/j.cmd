@@ -1,35 +1,34 @@
-// otranspiler v1 — the unified transpiler command (debashc's successor).
+// otranspiler v2 — the unified transpiler command (debashc's successor).
 //
 // One command over the frontend fleet, extension-driven — the browser
 // port of the native otranspiler (gmatht/sh2loop/otranspiler):
 //
 //   otranspiler <input> [<output>] [flags]
-//     input  file.{sh,go,py,c,pl,zsh,fish,shir}   (no ext = sh; - = stdin)
-//     output {-,file}.{js,pl,c,sh,shir}           (no ext = js; - = stdout)
+//     input  file.{sh,go,py,c,pl,zsh,fish,shir}   (no ext = sh; - = stdin: A1, or source with --source-lang)
+//     output {-,file}.{js,pl,c,go,py,java,rs,zig,sh,shir}  (no ext = js; - = stdout)
 //   flags:
-//     --shir            output the contract instead of rendering a target
-//     --target L        force the target language (js|pl|c|sh|shir)
+//     --shir            output the contract (A1 shIR JSON) instead of rendering
+//     --target L        force the target language (js|pl|c|go|py|java|rs|zig|sh|shir)
 //     --source-lang L   force the source language (sh|go|py|c|pl|zsh|fish|shir)
 //     --run             js target: also execute the generated JS
 //     -h|--help         usage
 //
-// Pipeline: source → contract → render, exactly like the native tool.
-//   sh → ESTree contract (debashcl.wasm) → js / pl / shir
-//   go/py/c/pl/zsh/fish → A1 shIR contract via the UNIFIED frontend
-//        (busybox) → js (estree) / pl / c / sh / shir — js/pl for A1
-//        are the estree backend's growth path; c/sh render the A1
-//        subset the frontends emit (refuse > guess).
-//        The unified frontend: ONE merged main.go combining all six
-//        frontend libraries (go-sh, py-sh-go, c-sh-go, perl-sh-go,
-//        zsh-sh-go, fish-sh-go) + the shared shir-emit-go emitter + the
-//        busybox CLI, built on FIRST USE from the vendored sources
-//        (www/bin/<frontend>/) with the in-browser go toolchain
-//        (go build → one wasm cached in /tmp, run via the js/wasm
-//        runner — one artifact, one Go runtime, one build; only
-//        rebuilt when the vendored sources change).
+// Pipeline: source → A1 shIR contract → render, exactly like the native
+// tool — ONE contract, every target:
+//   sh/go/py/c/pl/zsh/fish → A1 shIR via the UNIFIED frontend
+//        (busybox: all SEVEN frontend libraries — posix-sh-go (shell),
+//        go-sh, py-sh-go, c-sh-go, perl-sh-go, zsh-sh-go, fish-sh-go —
+//        + the shared shir-emit-go emitter + the dispatcher CLI, merged
+//        into ONE stdlib-only main.go), BUILT ON FIRST USE with the
+//        in-browser go toolchain and cached in /tmp (one artifact, one
+//        Go runtime, one build; only rebuilt when the vendored sources
+//        change)
+//   A1 → js (sh2.* runtime) / pl / c / go / py / java / rs / zig / sh / shir
+//        — the browser renders (refuse > guess: anything outside the
+//        frontend subset is a hard error, never a silent mis-render)
 //
 // The old debashc invocation forms still work (drop-in):
-//   otranspiler parse 'echo hi'           → contract (ESTree JSON)
+//   otranspiler parse 'echo hi'           → contract (A1 shIR JSON)
 //   otranspiler parse --perl 'echo hi'    → perl
 //   otranspiler file --estree x.sh        → contract
 //   otranspiler file --perl x.sh          → perl
@@ -42,30 +41,30 @@
 // -----------------------------------------------------------------
 
 // ── the vendored go source frontends (www/bin/<frontend>/) ───────
-// Every source frontend is a plain Go program: a <pkg>lib library (the
-// parser/emitter) + a thin cmd CLI. The browser go toolchain builds a
-// SINGLE stdlib-only file, so the command merges ALL SIX frontend
-// libraries + the shared A1 JSON emitter (shir-emit-go) + the busybox
-// CLI into ONE main.go (the sh2loop fleet's own unified-binary answer):
-// package/import lines stripped, imports unioned, cross-package
-// references unqualified (cli: <pkgref>. → <lang>_; libs: shiremit. →
-// shiremit_), and every top-level decl (func/type/var/const + const/var
-// block members) + its identifier references renamed with a per-part
-// prefix — skipping string/char/raw-string literals and // comments (Go
-// char literals like '"' break naive "string literal" regexes). The
-// merge mirrors the upstream layout; the vendored copies are the source
-// of truth (sync from gmatht/sh2loop/frontends/<frontend>/).
-var FRONTEND_DIRS = { c: "c-sh-go", fish: "fish-sh-go", go: "go-sh", pl: "perl-sh-go", py: "py-sh-go", zsh: "zsh-sh-go" };
+// Every source frontend is a plain Go program. The browser go toolchain
+// builds a SINGLE stdlib-only file, so the command merges all SEVEN
+// frontend libraries + the shared A1 JSON emitter (shir-emit-go) + the
+// dispatcher CLI into ONE main.go: package/import lines stripped,
+// imports unioned, per-part name prefixes so no identifiers collide
+// (every top-level decl — func/type/var/const + const/var block members
+// — and its references, skipping string/char/raw-string literals and
+// // comments: Go char literals like '"' break naive "string literal"
+// regexes). posix-sh-go is a package-main CLI, so its main() is renamed
+// (sh_main) and the dispatcher calls its library entry shirForSource.
+// The vendored copies are the source of truth (sync from
+// gmatht/sh2loop/frontends/<frontend>/).
+var FRONTEND_DIRS = { c: "c-sh-go", fish: "fish-sh-go", go: "go-sh", pl: "perl-sh-go", py: "py-sh-go", sh: "posix-sh-go", zsh: "zsh-sh-go" };
 var FRONTEND_FILES = {
   c:    ["main.go"],
   fish: ["fish-sh-go.go"],
   go:   ["go-sh.go"],
   pl:   ["main.go"],
   py:   ["main.go"],
+  sh:   ["main.go", "analysis.go", "lowering.go"],
   zsh:  ["main.go", "analysis.go", "lowering.go"],
 };
-var FRONTEND_PKGREF = { c: "clib", fish: "fishlib", go: "golib", pl: "pllib", py: "pylib", zsh: "zshlib" };
-var BUSYBOX_CLI = "busybox/main.go";
+var PREFIX_MAIN = { sh: true };                  // posix-sh-go's main() → sh_main (dispatcher owns main)
+var DISPATCH_CLI = "busybox/main.go";            // the merged CLI (browser dispatcher)
 var SHIR_EMIT = "shir-emit-go/emit.go";
 var SCRATCH = "/tmp/otranspiler-busybox";        // the one frontend build + wasm cache
 
@@ -86,13 +85,13 @@ function extractImports(s) {
 }
 // Rename every top-level decl (and its identifier references) with a
 // prefix, skipping string/char/raw-string literals and // comments.
-function prefixBody(s, pre) {
+function prefixBody(s, pre, prefixMain) {
   var names = new Set();
   var inBlock = false;
   for (var ln of s.split("\n")) {
     var t = ln.trim();
     var m = ln.match(/^(?:func|type|var|const)\s+([A-Za-z_]\w*)/);
-    if (m && m[1] !== "main") names.add(m[1]);
+    if (m && (m[1] !== "main" || prefixMain)) names.add(m[1]);
     if (/^(?:var|const)\s*\(\s*$/.test(t)) { inBlock = true; continue; }
     if (t === ")") { inBlock = false; continue; }
     if (inBlock) {
@@ -147,8 +146,8 @@ async function readVendoredFile(name) {
   return resp.text();
 }
 
-// Merge the six frontend libraries + the A1 emitter + the busybox CLI
-// into a single stdlib-only main.go (the unified frontend binary).
+// Merge the seven frontend libraries + the A1 emitter + the dispatcher
+// CLI into a single stdlib-only main.go (the unified frontend binary).
 async function mergedBusyboxSource() {
   var parts = [];
   var impSet = {};
@@ -161,26 +160,22 @@ async function mergedBusyboxSource() {
       allSrc.push(src);
       body += (body ? "\n" : "") + stripImports(stripPkg(src));
     }
-    parts.push(prefixBody(body.replace(/shiremit\./g, "shiremit_"), lang + "_"));
+    parts.push(prefixBody(body.replace(/shiremit\./g, "shiremit_"), lang + "_", PREFIX_MAIN[lang]));
   }
   var emit = await readVendoredFile(SHIR_EMIT);
   allSrc.push(emit);
   parts.push(prefixBody(stripImports(stripPkg(emit)), "shiremit_"));
-  var cli = await readVendoredFile(BUSYBOX_CLI);
+  var cli = await readVendoredFile(DISPATCH_CLI);
   allSrc.push(cli);
-  var cliBody = stripImports(stripPkg(cli));
-  for (var lang2 of Object.keys(FRONTEND_FILES)) {
-    cliBody = cliBody.replace(new RegExp("\\b" + FRONTEND_PKGREF[lang2] + "\\.", "g"), lang2 + "_");
-  }
-  parts.push(prefixBody(cliBody, "cli_"));
+  parts.push(prefixBody(stripImports(stripPkg(cli)), "cli_"));
   allSrc.forEach(function (f) {
     extractImports(f).forEach(function (i) { impSet[i] = true; });
   });
   var imports = Object.keys(impSet).sort();
   return (
     "// Generated unified frontend (busybox) for the browser go toolchain:\n" +
-    "// six frontend libs + shir-emit-go + the busybox CLI, merged from\n" +
-    "// www/bin/ (source of truth: gmatht/sh2loop/frontends).\n" +
+    "// seven frontend libs + shir-emit-go + the dispatcher CLI, merged\n" +
+    "// from www/bin/ (source of truth: gmatht/sh2loop/frontends).\n" +
     "package main\n\n" +
     "import (\n" + imports.map(function (i) { return '\t"' + i + '"'; }).join("\n") + "\n)\n\n" +
     parts.join("\n") + "\n"
@@ -240,23 +235,25 @@ function absPath(p) {
   try { return fs._resolve(p); } catch (e) { return p; }
 }
 
-// ── the contract (source → language-neutral JSON) ───────────────
+// ── the contract (source → A1 shIR JSON) ────────────────────────
+// EVERY source language (shell included) goes through the unified
+// frontend — the sh frontend is posix-sh-go, byte-identical to the
+// core's `debashc --shir` on its v1 subset. One contract, every target.
 async function contractFor(srcLang, source, srcName) {
-  if (srcLang === "sh") {
-    return await sh2lib.toEstree(source);          // ESTree contract (debashcl)
-  }
-  if (FRONTEND_FILES[srcLang]) {
-    // The frontend reads a FILE (os.Args[1]) — materialize the source
-    // into the VFS when it didn't come from one.
+  if (FRONTEND_FILES[srcLang] || srcLang === "shir") {
     var inputPath = srcName;
     var st = null;
     try { st = await fs.stat(absPath(srcName)); } catch (e) {}
     if (!st) {
-      inputPath = "/tmp/otranspiler-in." + srcLang;
+      inputPath = "/tmp/otranspiler-in." + (srcLang === "shir" ? "shir" : srcLang);
       await fs.write(inputPath, source);
     }
+    if (srcLang === "shir") {
+      var raw = await fs.read(inputPath);
+      return JSON.parse(raw);                      // the input IS the contract
+    }
     var wasmPath = await ensureBusybox();          // one unified frontend build
-    var lang = srcLang === "pl" ? "perl" : srcLang;  // busybox's own lang names
+    var lang = srcLang === "pl" ? "perl" : srcLang;  // dispatcher lang names
     var r = await shell.runLine(wasmPath + " --lang " + lang + " --shir " + absPath(inputPath) + " --raw");
     var out = String((r && r.out) || "").trim();
     var rerr = String((r && r.err) || "").trim();
@@ -270,29 +267,55 @@ async function contractFor(srcLang, source, srcName) {
     if (start < 0) throw new Error(srcLang + " frontend: no A1 contract in output: " + out.slice(0, 120));
     return JSON.parse(out.slice(start));
   }
-  if (srcLang === "shir") {
-    return JSON.parse(source);                     // the input IS the contract
-  }
   throw new Error("source language '" + srcLang + "' not wired (sh | go | py | c | pl | zsh | fish | shir)");
 }
 
-// ── rendering (contract → target) ───────────────────────────────
-// js/pl render the ESTree contract (sh sources, via sh2lib). The A1
-// contract (go/py/c/pl/zsh/fish sources) renders to sh / c with the
-// minimal subset renderers below — mirroring the native otranspiler's
-// --shir-in-sh / --shir-in-c backends (refuse > guess: anything outside
-// the frontend subset is a hard error, never a silent mis-render).
+// ── rendering (A1 contract → target) ────────────────────────────
+// The browser renders mirror the native --shir-in-<lang> backends
+// (js/pl/c/go/py/sh/java/rs/zig + shir): js targets the shell's own
+// sh2.* runtime; the rest emit runnable source in each language's
+// minimal idiom for the frontend subset (echo/assign/getVar).
+// Refuse > guess: anything outside the subset is a hard error, never
+// a silent mis-render. `split` (IFS word-splitting) unwraps to its
+// operand — the shell does the splitting natively, and each target
+// language's echo/print renders the value.
+
+function isEchoStmt(st) {
+  return st.type === "Expr" && st.expr.type === "Call" && st.expr.func === "exec" &&
+    st.expr.args && st.expr.args[0] && st.expr.args[0].value === "echo";
+}
+function echoWords(st) {
+  return ((st.expr.args && st.expr.args[1] && st.expr.args[1].elements) || []);
+}
+// Normalize an echo arg list to [{lit}|{var}] tokens (split unwrapped).
+function wordsOf(elements) {
+  var out = [];
+  function add(e) {
+    if (e.type === "Str") out.push({ lit: e.value });
+    else if (e.type === "Interpolate") {
+      e.parts.forEach(function (p) { out.push(p.kind === "lit" ? { lit: p.text } : { var: p.var }); });
+    } else if (e.type === "Call" && e.func === "getVar") out.push({ var: e.args[0].value });
+    else if (e.type === "Call" && e.func === "split") add(e.args[0]);
+    else throw new Error("A1→?: unrenderable echo word '" + e.type + "'");
+  }
+  elements.forEach(add);
+  return out;
+}
+function escStr(s) {
+  return String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
 
 // A1 value → shell source
 function shValue(e) {
   switch (e.type) {
     case "Str": return e.value;
     case "Interpolate":
-      return e.parts.map(function (p) { return p.kind === "lit" ? p.text : "${" + p.var + "}"; }).join("");
+      return e.parts.map(function (p) { return p.kind === "lit" ? p.text : "$" + p.var; }).join("");
     case "Array": return e.elements.map(shValue).join(" ");
     case "Call":
       if (e.func === "getVar") return "$" + (e.args[0] && e.args[0].value);
       if (e.func === "exec") return e.args.map(shValue).join(" ");
+      if (e.func === "split") return shValue(e.args[0]);
       throw new Error("A1→sh: unrenderable call '" + e.func + "'");
     default: throw new Error("A1→sh: unrenderable expr '" + e.type + "'");
   }
@@ -317,6 +340,7 @@ function cValue(e) {
       }).join("");
     case "Call":
       if (e.func === "getVar") return "(" + e.args[0].value + "? " + e.args[0].value + " : \"\")";
+      if (e.func === "split") return cValue(e.args[0]);
       throw new Error("A1→c: unrenderable call '" + e.func + "'");
     default: throw new Error("A1→c: unrenderable expr '" + e.type + "'");
   }
@@ -326,24 +350,13 @@ function a1ToC(contract) {
   contract.stmts.forEach(function (st) {
     if (st.type === "Assign") {
       st.targets.forEach(function (t) { decls.push("char *" + t.var + " = " + cValue(st.expr) + ";"); });
-    } else if (st.type === "Expr" && st.expr.type === "Call" && st.expr.func === "exec") {
-      var args = st.expr.args || [];
-      var cmd = args[0] && args[0].value;
-      var words = (args[1] && args[1].elements) || [];
-      if (cmd === "echo") {
-        var fmt = "", cargs = [];
-        words.forEach(function (w) {
-          if (w.type === "Call" && w.func === "getVar") {
-            fmt += "%s";
-            cargs.push("(" + w.args[0].value + "? " + w.args[0].value + " : \"\")");
-          } else {
-            fmt += String(cValue(w)).replace(/%/g, "%%").replace(/^"(.*)"$/, "$1");
-          }
-        });
-        body.push('printf("' + fmt + '\\n"' + (cargs.length ? ", " + cargs.join(", ") : "") + ");");
-      } else {
-        throw new Error("A1→c: exec of '" + cmd + "' not wired (echo only in the browser renderer)");
-      }
+    } else if (isEchoStmt(st)) {
+      var fmt = "", cargs = [];
+      wordsOf(echoWords(st)).forEach(function (w) {
+        if (w.var) { fmt += "%s"; cargs.push("(" + w.var + "? " + w.var + " : \"\")"); }
+        else fmt += escStr(w.lit).replace(/%/g, "%%");
+      });
+      body.push('printf("' + fmt + '\\n"' + (cargs.length ? ", " + cargs.join(", ") : "") + ");");
     } else {
       throw new Error("A1→c: unrenderable stmt '" + st.type + "'");
     }
@@ -359,27 +372,160 @@ function a1ToC(contract) {
   );
 }
 
+// A1 value → JS against the shell's sh2.* runtime
+function jsValue(e) {
+  switch (e.type) {
+    case "Str": return JSON.stringify(e.value);
+    case "Interpolate":
+      return e.parts.map(function (p) {
+        return p.kind === "lit" ? JSON.stringify(p.text) : "sh2.getVar(" + JSON.stringify(p.var) + ")";
+      }).join(" + ");
+    case "Array": return "[" + e.elements.map(jsValue).join(", ") + "]";
+    case "Call":
+      if (e.func === "getVar") return "sh2.getVar(" + JSON.stringify(e.args[0].value) + ")";
+      if (e.func === "exec") return "sh2.exec(" + e.args.map(jsValue).join(", ") + ")";
+      if (e.func === "split") return jsValue(e.args[0]);
+      throw new Error("A1→js: unrenderable call '" + e.func + "'");
+    default: throw new Error("A1→js: unrenderable expr '" + e.type + "'");
+  }
+}
+function a1ToJs(contract) {
+  return contract.stmts.map(function (st) {
+    if (st.type === "Expr" && st.expr.type === "Call" && st.expr.func === "exec") {
+      return "await " + jsValue(st.expr) + ";";
+    }
+    if (st.type === "Assign") {
+      var t = st.targets[0].var;
+      return "sh2.setVar(" + JSON.stringify(t) + ", " + jsValue(st.expr) + ");";
+    }
+    throw new Error("A1→js: unrenderable stmt '" + st.type + "'");
+  }).join("\n") + "\n";
+}
+
+// A1 value → Perl (echo/assign/getVar subset, print-based)
+function perlEchoString(words) {
+  var s = "\"";
+  words.forEach(function (w) {
+    s += w.var ? "$" + w.var : escStr(w.lit).replace(/\$/g, "\\$");
+  });
+  s += "\\n\"";
+  return s;
+}
+function a1ToPl(contract) {
+  var lines = [];
+  contract.stmts.forEach(function (st) {
+    if (st.type === "Assign") {
+      st.targets.forEach(function (t) { lines.push("my $" + t.var + " = " + JSON.stringify(String(st.expr.value || "")) + ";"); });
+    } else if (isEchoStmt(st)) {
+      lines.push("print " + perlEchoString(wordsOf(echoWords(st))) + ";");
+    } else {
+      throw new Error("A1→pl: unrenderable stmt '" + st.type + "'");
+    }
+  });
+  return (
+    "#!/usr/bin/env perl\nuse strict;\nuse warnings;\n\n" +
+    lines.join("\n") + "\n"
+  );
+}
+
+// A1 → Go / Python / Java / Rust / Zig (echo/assign/getVar subset,
+// minimal idiom mirroring the native backends' output style)
+function assignValue(st) {
+  var e = st.expr;
+  if (e.type === "Str" || e.type === "Interpolate") return escStr(e.value || (e.parts && e.parts.map(function (p) { return p.text || ""; }).join("")) || "");
+  throw new Error("A1→?: unrenderable assign value '" + e.type + "'");
+}
+function a1ToGo(contract) {
+  var lines = [];
+  contract.stmts.forEach(function (st) {
+    if (st.type === "Assign") st.targets.forEach(function (t) { lines.push(t.var + " := \"" + assignValue(st) + "\""); });
+    else if (isEchoStmt(st)) {
+      var args = wordsOf(echoWords(st)).map(function (w) { return w.var ? w.var : "\"" + assignValue({ expr: { type: "Str", value: w.lit } }) + "\""; });
+      lines.push("fmt.Println(" + args.join(", ") + ")");
+    } else throw new Error("A1→go: unrenderable stmt '" + st.type + "'");
+  });
+  return "package main\n\nimport \"fmt\"\n\nfunc main() {\n" + lines.map(function (l) { return "\t" + l; }).join("\n") + "\n}\n";
+}
+function a1ToPy(contract) {
+  var lines = [];
+  contract.stmts.forEach(function (st) {
+    if (st.type === "Assign") st.targets.forEach(function (t) { lines.push(t.var + " = \"" + assignValue(st) + "\""); });
+    else if (isEchoStmt(st)) {
+      var args = wordsOf(echoWords(st)).map(function (w) { return w.var ? w.var : "\"" + assignValue({ expr: { type: "Str", value: w.lit } }) + "\""; });
+      lines.push("print(" + args.join(", ") + ")");
+    } else throw new Error("A1→py: unrenderable stmt '" + st.type + "'");
+  });
+  return "#!/usr/bin/env python3\n" + lines.join("\n") + "\n";
+}
+function a1ToJava(contract) {
+  var lines = [];
+  contract.stmts.forEach(function (st) {
+    if (st.type === "Assign") st.targets.forEach(function (t) { lines.push("String " + t.var + " = \"" + assignValue(st) + "\";"); });
+    else if (isEchoStmt(st)) {
+      var parts = wordsOf(echoWords(st)).map(function (w) { return w.var ? w.var : "\"" + assignValue({ expr: { type: "Str", value: w.lit } }) + "\""; });
+      var expr = parts.length === 1 ? parts[0] : '("" + ' + parts.join(' + " " + ') + ")";
+      lines.push("System.out.println(" + expr + ");");
+    } else throw new Error("A1→java: unrenderable stmt '" + st.type + "'");
+  });
+  return (
+    "public class Sh2Program {\n" +
+    "    public static void main(String[] args) throws Exception {\n" +
+    lines.map(function (l) { return "        " + l; }).join("\n") + "\n" +
+    "    }\n" +
+    "}\n"
+  );
+}
+function a1ToRs(contract) {
+  var lines = [];
+  contract.stmts.forEach(function (st) {
+    if (st.type === "Assign") st.targets.forEach(function (t) { lines.push("let " + t.var + " = \"" + assignValue(st) + "\";"); });
+    else if (isEchoStmt(st)) {
+      var words = wordsOf(echoWords(st));
+      var fmt = "", args = [];
+      words.forEach(function (w) {
+        if (w.var) { fmt += "{}"; args.push(w.var); }
+        else fmt += escStr(w.lit);
+      });
+      lines.push('println!("' + fmt + '"' + (args.length ? ", " + args.join(", ") : "") + ");");
+    } else throw new Error("A1→rs: unrenderable stmt '" + st.type + "'");
+  });
+  return "fn main() {\n" + lines.map(function (l) { return "    " + l; }).join("\n") + "\n}\n";
+}
+function a1ToZig(contract) {
+  var lines = [];
+  contract.stmts.forEach(function (st) {
+    if (st.type === "Assign") st.targets.forEach(function (t) { lines.push("var " + t.var + " = \"" + assignValue(st) + "\";"); });
+    else if (isEchoStmt(st)) {
+      var words = wordsOf(echoWords(st));
+      var fmt = "", args = [];
+      words.forEach(function (w) {
+        if (w.var) { fmt += "{s} "; args.push(w.var); }
+        else fmt += escStr(w.lit) + " ";
+      });
+      fmt = fmt.replace(/ $/, "");
+      lines.push('std.debug.print("' + fmt + '\\n", .{' + (args.length ? args.join(", ") : "") + "});");
+    } else throw new Error("A1→zig: unrenderable stmt '" + st.type + "'");
+  });
+  return (
+    "const std = @import(\"std\");\n\n" +
+    "pub fn main() !void {\n" +
+    lines.map(function (l) { return "    " + l; }).join("\n") + "\n" +
+    "}\n"
+  );
+}
+
 async function render(target, contract, source, srcLang) {
-  if (target === "shir") {
-    return JSON.stringify(contract, null, 2);
-  }
-  if (target === "js") {
-    if (srcLang === "sh") return await sh2lib.bashToJs(source);  // ESTree contract → JS
-    throw new Error("A1 → js rendering is the estree backend's growth path; emit the contract with --shir");
-  }
-  if (target === "pl") {
-    if (srcLang === "sh") return await sh2lib.toPerl(source);
-    throw new Error("A1 → perl rendering not wired; emit the contract with --shir");
-  }
-  if (target === "sh") {
-    if (srcLang === "sh") return source;         // ESTree contract → sh = the source itself
-    return a1ToSh(contract);                      // A1 contract → shell
-  }
-  if (target === "c") {
-    if (srcLang === "sh") throw new Error("ESTree → c rendering not wired; feed a go/py/c/pl/zsh/fish source (A1 contract)");
-    return a1ToC(contract);                       // A1 contract → C
-  }
-  throw new Error("target '" + target + "' not wired (js | pl | c | sh | shir)");
+  if (target === "shir") return JSON.stringify(contract, null, 2);
+  if (target === "js") return a1ToJs(contract);
+  if (target === "pl") return a1ToPl(contract);
+  if (target === "sh") return a1ToSh(contract);
+  if (target === "c") return a1ToC(contract);
+  if (target === "go") return a1ToGo(contract);
+  if (target === "py") return a1ToPy(contract);
+  if (target === "java") return a1ToJava(contract);
+  if (target === "rs") return a1ToRs(contract);
+  if (target === "zig") return a1ToZig(contract);
+  throw new Error("target '" + target + "' not wired (js | pl | c | go | py | java | rs | zig | sh | shir)");
 }
 
 // Emit text to the shell (console.log is captured into the pipe/redirect
@@ -394,20 +540,20 @@ function emit(text) {
 function usage() {
   return `otranspiler <input> [<output>] [flags]
   input  file.{sh,go,py,c,pl,zsh,fish,shir}   (no ext = sh; - = stdin: A1, or source with --source-lang)
-  output {-,file}.{js,pl,c,sh,shir}           (no ext = js; - = stdout)
-  --shir            output the contract (ESTree JSON for sh; A1 shIR for go/py/c/pl/zsh/fish)
-  --target L        force the target language (js|pl|c|sh|shir)
+  output {-,file}.{js,pl,c,go,py,java,rs,zig,sh,shir}  (no ext = js; - = stdout)
+  --shir            output the contract (A1 shIR JSON) instead of rendering
+  --target L        force the target language (js|pl|c|go|py|java|rs|zig|sh|shir)
   --source-lang L   force the source language (sh|go|py|c|pl|zsh|fish|shir)
   --run             js target: also execute the generated JS
   -h, --help        this help
 
-Pipeline: source → contract → render (the unified otranspiler interface):
-  sh → ESTree contract (debashcl.wasm) → js / pl / shir
-  go/py/c/pl/zsh/fish → A1 contract via the UNIFIED frontend (busybox —
-       all six frontend libs in one merged binary), built on first use
+Pipeline: source → A1 shIR contract → render (the unified otranspiler
+interface — ONE contract, every target):
+  sh/go/py/c/pl/zsh/fish → A1 shIR via the UNIFIED frontend (busybox:
+       all seven frontend libs in one merged binary, built on first use
        from www/bin/<frontend>/ with the in-browser go toolchain and
-       cached in /tmp → c / sh / shir (js/pl = the estree backend's
-       growth path)
+       cached in /tmp)
+  A1 → js (sh2.* runtime) / pl / c / go / py / java / rs / zig / sh / shir
 
 drop-in debashc forms: parse 'src' | parse --perl 'src' | file --estree x.sh | file --perl x.sh`;
 }

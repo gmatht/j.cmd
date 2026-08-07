@@ -19,10 +19,11 @@ terminal
 
 The old path (`sh2perl.wasm → Perl → perl2js`) and the redundant
 sh2perl.wasm command binary were removed — debashcl.wasm is the one
-compiler, wrapped by the `/bin/sh2js.js`, `/bin/sh2perl.js` and
-`/bin/otranspiler.js` commands (all driving the same reactor via
-`src/sh2lib.js`; otranspiler is the unified interface — debashc's
-successor).
+compiler for the `bash`/`bash2js`/`sh2js`/`sh2perl` commands, driving
+the shell's ESTree path via `src/sh2lib.js`. The unified
+`/bin/otranspiler` command is debashc's successor: every source
+(including shell, via the vendored posix-sh-go frontend) goes through
+its own A1 shIR contract and renders to any target.
 
 ## Verified working (CLI + browser, Playwright-tested)
 

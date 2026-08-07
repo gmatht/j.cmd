@@ -1,34 +1,25 @@
-// busybox: every sh2loop source->shIR frontend in one binary.
+// browser dispatcher — the merged unified frontend CLI.
 //
-// This is the answer to "can we statically link all the Go frontends
-// together": not via -buildmode=c-archive into the Rust otranspilerl
-// (unsupported on wasip1/wasm), but as a single Go binary that imports
-// the six frontend LIBRARIES (the frontends/ dirs are `package <x>lib`
-// + a thin cmd/<name>/ CLI wrapper, so there is exactly one copy of each
-// parser — no fork). One wasm artifact carries one Go runtime instead of
-// six, shrinking the on-disk total ~3x (≈20.8 MB -> ≈6 MB).
+// This is the browser port of the sh2loop fleet's busybox (one binary
+// over the whole frontend fleet): after the otranspiler command merges
+// the six <lang>-sh-go libraries + posix-sh-go (the shell frontend) +
+// shir-emit-go into one main.go, THIS main dispatches by --lang. The
+// lib entry points are the merge's prefixed names (c_Shir, go_Shir,
+// ..., sh_shirForSource — shirForSource is posix-sh-go's library
+// entry; upstream posix-sh-go is a package-main CLI, so the merge
+// renames its main() to sh_main and the dispatcher uses shirForSource).
 //
-// Dispatch contract (used by the otranspilerl WASM host seam):
+//   <merged> --lang <c|fish|go|perl|py|sh|zsh> --shir <file> [--raw]
+//   <merged> --shir <file> [--raw]                    (lang from extension)
 //
-//	busybox --shir <file> [--raw]             (lang inferred from extension)
-//	busybox --lang <lang> --shir <file> [--raw]
-//
-// lang: c | fish | go | perl | py | zsh (aliases: c-sh-go, fish-sh-go,
-// go-sh, perl-sh-go, py-sh-go, python, zsh-sh-go). The arg after --shir
-// is read as a file when it exists, else treated as literal source.
+// Source of truth for the lib sources: www/bin/<frontend>/ (vendored
+// from gmatht/sh2loop/frontends/<frontend>/).
 package main
 
 import (
 	"fmt"
 	"os"
 	"path/filepath"
-
-	clib "github.com/gmatht/sh2loop/frontends/c-sh-go"
-	fishlib "github.com/gmatht/sh2loop/frontends/fish-sh-go"
-	golib "github.com/gmatht/sh2loop/frontends/go-sh"
-	pllib "github.com/gmatht/sh2loop/frontends/perl-sh-go"
-	pylib "github.com/gmatht/sh2loop/frontends/py-sh-go"
-	zshlib "github.com/gmatht/sh2loop/frontends/zsh-sh-go"
 )
 
 type frontend struct {
@@ -40,22 +31,24 @@ var langAliases = map[string]string{
 	"c": "c", "c-sh-go": "c",
 	"fish": "fish", "fish-sh-go": "fish",
 	"go": "go", "go-sh": "go",
-	"perl": "perl", "perl-sh-go": "perl",
+	"perl": "perl", "perl-sh-go": "perl", "pl": "perl",
 	"py": "py", "python": "py", "py-sh-go": "py",
+	"sh": "sh", "posix-sh-go": "sh", "bash": "sh",
 	"zsh": "zsh", "zsh-sh-go": "zsh",
 }
 
 var frontends = map[string]frontend{
-	"c":    {"c-sh-go", clib.Shir},
-	"fish": {"fish-sh-go", fishlib.Shir},
-	"go":   {"go-sh", golib.Shir},
-	"perl": {"perl-sh-go", pllib.Shir},
-	"py":   {"py-sh-go", pylib.Shir},
-	"zsh":  {"zsh-sh-go", zshlib.Shir},
+	"c":    {"c-sh-go", c_Shir},
+	"fish": {"fish-sh-go", fish_Shir},
+	"go":   {"go-sh", go_Shir},
+	"perl": {"perl-sh-go", pl_Shir},
+	"py":   {"py-sh-go", py_Shir},
+	"sh":   {"posix-sh-go", sh_shirForSource},
+	"zsh":  {"zsh-sh-go", zsh_Shir},
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: busybox [--lang <c|fish|go|perl|py|zsh>] --shir <file> [--raw]")
+	fmt.Fprintln(os.Stderr, "usage: frontend [--lang <c|fish|go|perl|py|sh|zsh>] --shir <file> [--raw]")
 	os.Exit(2)
 }
 
@@ -71,6 +64,8 @@ func inferLang(path string) string {
 		return "perl"
 	case ".py":
 		return "py"
+	case ".sh", "":
+		return "sh"
 	case ".zsh":
 		return "zsh"
 	}
@@ -102,7 +97,7 @@ func main() {
 	if lang == "" {
 		lang = inferLang(rest[1])
 		if lang == "" {
-			fmt.Fprintln(os.Stderr, "busybox: cannot infer language from "+rest[1]+" (pass --lang)")
+			fmt.Fprintln(os.Stderr, "frontend: cannot infer language from "+rest[1]+" (pass --lang)")
 			os.Exit(2)
 		}
 	}
@@ -111,7 +106,7 @@ func main() {
 	}
 	fe, ok := frontends[lang]
 	if !ok {
-		fmt.Fprintf(os.Stderr, "busybox: unknown language %q (c, fish, go, perl, py, zsh)\n", lang)
+		fmt.Fprintf(os.Stderr, "frontend: unknown language %q (c, fish, go, perl, py, sh, zsh)\n", lang)
 		os.Exit(2)
 	}
 	src := rest[1]
