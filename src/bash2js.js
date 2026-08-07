@@ -21,6 +21,7 @@
 
 import { env } from "./env.js";
 import { getSh2Lib } from "./sh2lib.js";
+import { getOtranspilerl } from "./otranspilerl.js";
 import { estreeToJs } from "./estree.js";
 
 function escapeJsComment(text) {
@@ -47,7 +48,9 @@ export async function bashToJS(fs, bashSource) {
 
 // ─── sh2lib facade: handed to .js commands as the `sh2lib` param ─
 // Lets /bin/sh2js.js, /bin/sh2perl.js, /bin/otranspiler.js (and any user
-// command) drive the debashc reactor directly, in both shells.
+// command) drive the debashc reactor directly, in both shells — and, via
+// the unified otranspilerl library (the real debashl core + all nine
+// backend renderers), the full sh → A1 → target pipeline.
 export function buildSh2LibFacade(fs) {
   return {
     toEstree: (src) => getSh2Lib().then((l) => l.toEstree(src)),
@@ -55,6 +58,15 @@ export function buildSh2LibFacade(fs) {
     lex: (src) => getSh2Lib().then((l) => l.lex(src)),
     version: () => getSh2Lib().then((l) => l.version()),
     bashToJs: async (src) => (await bashToJS(fs, src)).js,
+    // the unified otranspilerl library (src/otranspilerl.js):
+    //   shir(src) → A1 shIR JSON       (the debashl core, full bash)
+    //   transpile(src, s, t) → target  (sh/shir sources, in-process)
+    //   render(a1, t) → target         (A1 → any of the nine backends)
+    //   estreeToJs(estree) → JS source (the shell's own emitter)
+    shir: async (src) => (await getOtranspilerl()).shir(String(src)),
+    transpile: async (src, s, t) => (await getOtranspilerl()).transpile(String(src), s, t),
+    render: async (a1, t) => (await getOtranspilerl()).render(String(a1), t),
+    estreeToJs: async (estree) => estreeToJs(estree),
   };
 }
 

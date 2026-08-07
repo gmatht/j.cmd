@@ -23,9 +23,9 @@
 //        in-browser go toolchain and cached in /tmp (one artifact, one
 //        Go runtime, one build; only rebuilt when the vendored sources
 //        change)
-//   A1 → js (sh2.* runtime) / pl / c / go / py / java / rs / zig / sh / shir
-//        — the browser renders (refuse > guess: anything outside the
-//        frontend subset is a hard error, never a silent mis-render)
+//   A1 → js (estree → JS via src/estree.js) / pl / c / go / py / java /
+//        rs / zig / sh / shir — the REAL backend renderers (the
+//        otranspilerl library, the debashl core's --shir-in-<lang> family)
 //
 // The old debashc invocation forms still work (drop-in):
 //   otranspiler parse 'echo hi'           → contract (A1 shIR JSON)
@@ -236,10 +236,14 @@ function absPath(p) {
 }
 
 // ── the contract (source → A1 shIR JSON) ────────────────────────
-// EVERY source language (shell included) goes through the unified
-// frontend — the sh frontend is posix-sh-go, byte-identical to the
-// core's `debashc --shir` on its v1 subset. One contract, every target.
+// sh → A1 via the otranspilerl library's core (the real debashl parser,
+// full bash); go/py/c/pl/zsh/fish → A1 via the unified merged frontend
+// (busybox). ONE contract, every target.
 async function contractFor(srcLang, source, srcName) {
+  if (srcLang === "sh") {
+    var a1 = await sh2lib.shir(source);           // the debashl core (full bash)
+    return JSON.parse(a1);
+  }
   if (FRONTEND_FILES[srcLang] || srcLang === "shir") {
     var inputPath = srcName;
     var st = null;
@@ -271,261 +275,19 @@ async function contractFor(srcLang, source, srcName) {
 }
 
 // ── rendering (A1 contract → target) ────────────────────────────
-// The browser renders mirror the native --shir-in-<lang> backends
-// (js/pl/c/go/py/sh/java/rs/zig + shir): js targets the shell's own
-// sh2.* runtime; the rest emit runnable source in each language's
-// minimal idiom for the frontend subset (echo/assign/getVar).
-// Refuse > guess: anything outside the subset is a hard error, never
-// a silent mis-render. `split` (IFS word-splitting) unwraps to its
-// operand — the shell does the splitting natively, and each target
-// language's echo/print renders the value.
-
-function isEchoStmt(st) {
-  return st.type === "Expr" && st.expr.type === "Call" && st.expr.func === "exec" &&
-    st.expr.args && st.expr.args[0] && st.expr.args[0].value === "echo";
-}
-function echoWords(st) {
-  return ((st.expr.args && st.expr.args[1] && st.expr.args[1].elements) || []);
-}
-// Normalize an echo arg list to [{lit}|{var}] tokens (split unwrapped).
-function wordsOf(elements) {
-  var out = [];
-  function add(e) {
-    if (e.type === "Str") out.push({ lit: e.value });
-    else if (e.type === "Interpolate") {
-      e.parts.forEach(function (p) { out.push(p.kind === "lit" ? { lit: p.text } : { var: p.var }); });
-    } else if (e.type === "Call" && e.func === "getVar") out.push({ var: e.args[0].value });
-    else if (e.type === "Call" && e.func === "split") add(e.args[0]);
-    else throw new Error("A1→?: unrenderable echo word '" + e.type + "'");
-  }
-  elements.forEach(add);
-  return out;
-}
-function escStr(s) {
-  return String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-}
-
-// A1 value → shell source
-function shValue(e) {
-  switch (e.type) {
-    case "Str": return e.value;
-    case "Interpolate":
-      return e.parts.map(function (p) { return p.kind === "lit" ? p.text : "$" + p.var; }).join("");
-    case "Array": return e.elements.map(shValue).join(" ");
-    case "Call":
-      if (e.func === "getVar") return "$" + (e.args[0] && e.args[0].value);
-      if (e.func === "exec") return e.args.map(shValue).join(" ");
-      if (e.func === "split") return shValue(e.args[0]);
-      throw new Error("A1→sh: unrenderable call '" + e.func + "'");
-    default: throw new Error("A1→sh: unrenderable expr '" + e.type + "'");
-  }
-}
-function a1ToSh(contract) {
-  return contract.stmts.map(function (st) {
-    if (st.type === "Expr") return shValue(st.expr);
-    if (st.type === "Assign") {
-      return st.targets.map(function (t) { return t.var + "=" + shValue(st.expr); }).join(" ");
-    }
-    throw new Error("A1→sh: unrenderable stmt '" + st.type + "'");
-  }).join("\n") + "\n";
-}
-
-// A1 value → C expression (echo/assign/getVar subset)
-function cValue(e) {
-  switch (e.type) {
-    case "Str": return JSON.stringify(e.value);
-    case "Interpolate":
-      return e.parts.map(function (p) {
-        return p.kind === "lit" ? JSON.stringify(p.text) : "(" + p.var + "? " + p.var + " : \"\")";
-      }).join("");
-    case "Call":
-      if (e.func === "getVar") return "(" + e.args[0].value + "? " + e.args[0].value + " : \"\")";
-      if (e.func === "split") return cValue(e.args[0]);
-      throw new Error("A1→c: unrenderable call '" + e.func + "'");
-    default: throw new Error("A1→c: unrenderable expr '" + e.type + "'");
-  }
-}
-function a1ToC(contract) {
-  var decls = [], body = [];
-  contract.stmts.forEach(function (st) {
-    if (st.type === "Assign") {
-      st.targets.forEach(function (t) { decls.push("char *" + t.var + " = " + cValue(st.expr) + ";"); });
-    } else if (isEchoStmt(st)) {
-      var fmt = "", cargs = [];
-      wordsOf(echoWords(st)).forEach(function (w) {
-        if (w.var) { fmt += "%s"; cargs.push("(" + w.var + "? " + w.var + " : \"\")"); }
-        else fmt += escStr(w.lit).replace(/%/g, "%%");
-      });
-      body.push('printf("' + fmt + '\\n"' + (cargs.length ? ", " + cargs.join(", ") : "") + ");");
-    } else {
-      throw new Error("A1→c: unrenderable stmt '" + st.type + "'");
-    }
-  });
-  return (
-    "// Generated by otranspiler (A1 shIR → C, browser renderer)\n" +
-    "#include <stdio.h>\n" +
-    "int main(void) {\n" +
-    (decls.length ? decls.map(function (d) { return "  " + d; }).join("\n") + "\n" : "") +
-    body.map(function (l) { return "  " + l; }).join("\n") + "\n" +
-    "  return 0;\n" +
-    "}\n"
-  );
-}
-
-// A1 value → JS against the shell's sh2.* runtime
-function jsValue(e) {
-  switch (e.type) {
-    case "Str": return JSON.stringify(e.value);
-    case "Interpolate":
-      return e.parts.map(function (p) {
-        return p.kind === "lit" ? JSON.stringify(p.text) : "sh2.getVar(" + JSON.stringify(p.var) + ")";
-      }).join(" + ");
-    case "Array": return "[" + e.elements.map(jsValue).join(", ") + "]";
-    case "Call":
-      if (e.func === "getVar") return "sh2.getVar(" + JSON.stringify(e.args[0].value) + ")";
-      if (e.func === "exec") return "sh2.exec(" + e.args.map(jsValue).join(", ") + ")";
-      if (e.func === "split") return jsValue(e.args[0]);
-      throw new Error("A1→js: unrenderable call '" + e.func + "'");
-    default: throw new Error("A1→js: unrenderable expr '" + e.type + "'");
-  }
-}
-function a1ToJs(contract) {
-  return contract.stmts.map(function (st) {
-    if (st.type === "Expr" && st.expr.type === "Call" && st.expr.func === "exec") {
-      return "await " + jsValue(st.expr) + ";";
-    }
-    if (st.type === "Assign") {
-      var t = st.targets[0].var;
-      return "sh2.setVar(" + JSON.stringify(t) + ", " + jsValue(st.expr) + ");";
-    }
-    throw new Error("A1→js: unrenderable stmt '" + st.type + "'");
-  }).join("\n") + "\n";
-}
-
-// A1 value → Perl (echo/assign/getVar subset, print-based)
-function perlEchoString(words) {
-  var s = "\"";
-  words.forEach(function (w) {
-    s += w.var ? "$" + w.var : escStr(w.lit).replace(/\$/g, "\\$");
-  });
-  s += "\\n\"";
-  return s;
-}
-function a1ToPl(contract) {
-  var lines = [];
-  contract.stmts.forEach(function (st) {
-    if (st.type === "Assign") {
-      st.targets.forEach(function (t) { lines.push("my $" + t.var + " = " + JSON.stringify(String(st.expr.value || "")) + ";"); });
-    } else if (isEchoStmt(st)) {
-      lines.push("print " + perlEchoString(wordsOf(echoWords(st))) + ";");
-    } else {
-      throw new Error("A1→pl: unrenderable stmt '" + st.type + "'");
-    }
-  });
-  return (
-    "#!/usr/bin/env perl\nuse strict;\nuse warnings;\n\n" +
-    lines.join("\n") + "\n"
-  );
-}
-
-// A1 → Go / Python / Java / Rust / Zig (echo/assign/getVar subset,
-// minimal idiom mirroring the native backends' output style)
-function assignValue(st) {
-  var e = st.expr;
-  if (e.type === "Str" || e.type === "Interpolate") return escStr(e.value || (e.parts && e.parts.map(function (p) { return p.text || ""; }).join("")) || "");
-  throw new Error("A1→?: unrenderable assign value '" + e.type + "'");
-}
-function a1ToGo(contract) {
-  var lines = [];
-  contract.stmts.forEach(function (st) {
-    if (st.type === "Assign") st.targets.forEach(function (t) { lines.push(t.var + " := \"" + assignValue(st) + "\""); });
-    else if (isEchoStmt(st)) {
-      var args = wordsOf(echoWords(st)).map(function (w) { return w.var ? w.var : "\"" + assignValue({ expr: { type: "Str", value: w.lit } }) + "\""; });
-      lines.push("fmt.Println(" + args.join(", ") + ")");
-    } else throw new Error("A1→go: unrenderable stmt '" + st.type + "'");
-  });
-  return "package main\n\nimport \"fmt\"\n\nfunc main() {\n" + lines.map(function (l) { return "\t" + l; }).join("\n") + "\n}\n";
-}
-function a1ToPy(contract) {
-  var lines = [];
-  contract.stmts.forEach(function (st) {
-    if (st.type === "Assign") st.targets.forEach(function (t) { lines.push(t.var + " = \"" + assignValue(st) + "\""); });
-    else if (isEchoStmt(st)) {
-      var args = wordsOf(echoWords(st)).map(function (w) { return w.var ? w.var : "\"" + assignValue({ expr: { type: "Str", value: w.lit } }) + "\""; });
-      lines.push("print(" + args.join(", ") + ")");
-    } else throw new Error("A1→py: unrenderable stmt '" + st.type + "'");
-  });
-  return "#!/usr/bin/env python3\n" + lines.join("\n") + "\n";
-}
-function a1ToJava(contract) {
-  var lines = [];
-  contract.stmts.forEach(function (st) {
-    if (st.type === "Assign") st.targets.forEach(function (t) { lines.push("String " + t.var + " = \"" + assignValue(st) + "\";"); });
-    else if (isEchoStmt(st)) {
-      var parts = wordsOf(echoWords(st)).map(function (w) { return w.var ? w.var : "\"" + assignValue({ expr: { type: "Str", value: w.lit } }) + "\""; });
-      var expr = parts.length === 1 ? parts[0] : '("" + ' + parts.join(' + " " + ') + ")";
-      lines.push("System.out.println(" + expr + ");");
-    } else throw new Error("A1→java: unrenderable stmt '" + st.type + "'");
-  });
-  return (
-    "public class Sh2Program {\n" +
-    "    public static void main(String[] args) throws Exception {\n" +
-    lines.map(function (l) { return "        " + l; }).join("\n") + "\n" +
-    "    }\n" +
-    "}\n"
-  );
-}
-function a1ToRs(contract) {
-  var lines = [];
-  contract.stmts.forEach(function (st) {
-    if (st.type === "Assign") st.targets.forEach(function (t) { lines.push("let " + t.var + " = \"" + assignValue(st) + "\";"); });
-    else if (isEchoStmt(st)) {
-      var words = wordsOf(echoWords(st));
-      var fmt = "", args = [];
-      words.forEach(function (w) {
-        if (w.var) { fmt += "{}"; args.push(w.var); }
-        else fmt += escStr(w.lit);
-      });
-      lines.push('println!("' + fmt + '"' + (args.length ? ", " + args.join(", ") : "") + ");");
-    } else throw new Error("A1→rs: unrenderable stmt '" + st.type + "'");
-  });
-  return "fn main() {\n" + lines.map(function (l) { return "    " + l; }).join("\n") + "\n}\n";
-}
-function a1ToZig(contract) {
-  var lines = [];
-  contract.stmts.forEach(function (st) {
-    if (st.type === "Assign") st.targets.forEach(function (t) { lines.push("var " + t.var + " = \"" + assignValue(st) + "\";"); });
-    else if (isEchoStmt(st)) {
-      var words = wordsOf(echoWords(st));
-      var fmt = "", args = [];
-      words.forEach(function (w) {
-        if (w.var) { fmt += "{s} "; args.push(w.var); }
-        else fmt += escStr(w.lit) + " ";
-      });
-      fmt = fmt.replace(/ $/, "");
-      lines.push('std.debug.print("' + fmt + '\\n", .{' + (args.length ? args.join(", ") : "") + "});");
-    } else throw new Error("A1→zig: unrenderable stmt '" + st.type + "'");
-  });
-  return (
-    "const std = @import(\"std\");\n\n" +
-    "pub fn main() !void {\n" +
-    lines.map(function (l) { return "    " + l; }).join("\n") + "\n" +
-    "}\n"
-  );
-}
-
+// The REAL backend renderers — the otranspilerl library (the debashl
+// core's --shir-in-<lang> family: js/estree, pl, c, go, py, java, rs,
+// zig, sh + shir). js renders the estree AST through the shell's own
+// emitter (src/estree.js) so the result is runnable JS against the
+// sh2.* runtime.
 async function render(target, contract, source, srcLang) {
   if (target === "shir") return JSON.stringify(contract, null, 2);
-  if (target === "js") return a1ToJs(contract);
-  if (target === "pl") return a1ToPl(contract);
-  if (target === "sh") return a1ToSh(contract);
-  if (target === "c") return a1ToC(contract);
-  if (target === "go") return a1ToGo(contract);
-  if (target === "py") return a1ToPy(contract);
-  if (target === "java") return a1ToJava(contract);
-  if (target === "rs") return a1ToRs(contract);
-  if (target === "zig") return a1ToZig(contract);
-  throw new Error("target '" + target + "' not wired (js | pl | c | go | py | java | rs | zig | sh | shir)");
+  const a1 = JSON.stringify(contract);
+  if (target === "js") {
+    const estree = JSON.parse(await sh2lib.render(a1, "js"));
+    return await sh2lib.estreeToJs(estree);
+  }
+  return await sh2lib.render(a1, target);
 }
 
 // Emit text to the shell (console.log is captured into the pipe/redirect
@@ -549,11 +311,12 @@ function usage() {
 
 Pipeline: source → A1 shIR contract → render (the unified otranspiler
 interface — ONE contract, every target):
-  sh/go/py/c/pl/zsh/fish → A1 shIR via the UNIFIED frontend (busybox:
-       all seven frontend libs in one merged binary, built on first use
-       from www/bin/<frontend>/ with the in-browser go toolchain and
-       cached in /tmp)
-  A1 → js (sh2.* runtime) / pl / c / go / py / java / rs / zig / sh / shir
+  sh → A1 via the otranspilerl core (full bash); go/py/c/pl/zsh/fish →
+       A1 via the UNIFIED frontend (busybox: all seven frontend libs in
+       one merged binary, built on first use from www/bin/<frontend>/
+       with the in-browser go toolchain and cached in /tmp)
+  A1 → js (estree → JS via src/estree.js) / pl / c / go / py / java /
+       rs / zig / sh / shir — the REAL backend renderers (otranspilerl)
 
 drop-in debashc forms: parse 'src' | parse --perl 'src' | file --estree x.sh | file --perl x.sh`;
 }
@@ -597,6 +360,11 @@ for (var i = 0; i < args.length; i++) {
   else if (a === "--target") forceTgt = args[++i];
   else if (a.indexOf("--target=") === 0) forceTgt = a.slice("--target=".length);
   else if (a === "-") positional.push(a);            // stdin marker, not a flag
+  else if (/^-\.[A-Za-z0-9]{1,6}$/.test(a)) {
+    // `-.sh` shorthand: stdout with that target (`-` + extension)
+    positional.push("-");
+    forceTgt = a.slice(2);
+  }
   else if (a.indexOf("-") === 0) { console.log("otranspiler: unknown flag " + a); return 2; }
   else positional.push(a);
 }
@@ -608,6 +376,10 @@ var srcLang = forceSrc || langOf(input);
 var tgtLang = forceTgt;
 if (!tgtLang && output) tgtLang = langOf(output);
 if (!tgtLang) tgtLang = "js";                    // the default target
+if (!{ js: 1, pl: 1, c: 1, go: 1, py: 1, java: 1, rs: 1, zig: 1, sh: 1, shir: 1 }[tgtLang]) {
+  console.log("otranspiler: target '" + tgtLang + "' not wired (js | pl | c | go | py | java | rs | zig | sh | shir)");
+  return 2;
+}
 
 try {
   var source = await readSource(input);
@@ -619,8 +391,22 @@ try {
   var contract = await contractFor(srcLang, source, srcName);
   var text = await render(tgtLang, contract, source, srcLang);
   if (doRun && tgtLang === "js") {
-    var fn = new Function("sh2", "fs", "env", "args", "return (async () => { " + text + " })();");
-    var code = await fn(sh2, fs, env, args.slice(2));
+    // The estree output writes through process.stdout.write / reads
+    // process.env — shim them (the shell itself survives).
+    var pout = { write: (s) => { if (s) console.log(String(s).replace(/\n$/, "")); } };
+    var proc = {
+      stdout: pout, stderr: pout, pid: 1, argv: ["jtsh"], env: env || {},
+      cwd: () => (fs.cwd !== undefined ? fs.cwd : "/"),
+      chdir(p) { if (fs && fs.cwd !== undefined) fs.cwd = String(p).replace(/\/+$/, "") || "/"; },
+      exit(code) { const e = new Error("__exit__" + code); e.exitCode = Number(code) || 0; throw e; },
+    };
+    var fn = new Function("sh2", "fs", "env", "process", "args", "return (async () => { " + text + " })();");
+    try {
+      var code = await fn(sh2, fs, env, proc, args.slice(2));
+    } catch (e) {
+      if (e && e.exitCode !== undefined) return e.exitCode;
+      throw e;
+    }
     return typeof code === "number" ? code : 0;
   }
   if (output && output !== "-") {
