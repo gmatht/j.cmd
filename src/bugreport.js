@@ -17,7 +17,7 @@ export const BUG_SITE = "https://gmatht.github.io/j.cmd/www/";
 // The deployed shell is at least this tagged version; the exact deployed
 // commit comes from www/version.txt (browser) or git (CLI) and lands in
 // the report's Version line.
-export const SHELL_VERSION = "0.1.1"; // keep in step with package.json
+export const SHELL_VERSION = "0.1.2"; // keep in step with package.json
 
 /**
  * Assemble the markdown report body.

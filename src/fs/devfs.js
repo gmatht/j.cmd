@@ -60,7 +60,7 @@ export class DevFS {
       case "/info":
         return [
           `jtsh browser shell`,
-          `runtime: sh2runtime 0.1.1`,
+          `runtime: sh2runtime 0.1.2`,
           `platform: ${navigator.platform || "unknown"}`,
           `language: ${navigator.language || "unknown"}`,
           `cookies: ${navigator.cookieEnabled ? "enabled" : "disabled"}`,
