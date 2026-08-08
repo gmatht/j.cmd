@@ -30,7 +30,9 @@ async function bashFactory() {
 
 function wasmUrl(p) {
   if (typeof document !== "undefined") {
-    return new URL("wasm-bin/" + p, import.meta.url).href;
+    // the module lives at src/realbash.js; the wasm is vendored at
+    // www/wasm-bin/ (page-relative fetches use "wasm-bin/..." directly).
+    return new URL("../www/wasm-bin/" + p, import.meta.url).href;
   }
   return new URL("../www/wasm-bin/" + p, import.meta.url).pathname;
 }

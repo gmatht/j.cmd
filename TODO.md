@@ -78,6 +78,14 @@ and device files. It runs in any browser with no build step.
 - [x] Language hints: python/node/gcc/java/rustc → wasmer
       (WASM is the native binary format, compilers run via WASM)
 - [x] Vi-like editor: CodeMirror vim keymap + :w/:q/:wq/:x/:q! ex commands
+- [x] Real bash 5.3 in the shell (`/bin/bash`): bash.wasm can't fork, so
+      top-level external commands run in the host shell via an asyncify
+      EM_JS hook (bash_web_spawn) — synchronous output order, correct $?,
+      stdin redirects + here-strings, bash PWD passed to the host.
+      Pipelines/$( ) still need a real fork and fail; `web <cmd>` remains
+      as the fire-and-forget fallback. (execute_cmd.c patch at
+      patches/bash-web-spawn.patch, build at build-wasm-bash.sh,
+      docs/realbash.md)
       vi <file> opens editor; vim is an alias; mode indicator in header
 - [x] GitLabFS: browse gitlab.com projects as a filesystem
       (mount at /gitlab and /mount/gitlab)
