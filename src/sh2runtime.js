@@ -587,12 +587,78 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     }
   }
 
+  // ── sh2.mem — pointer emulation (the C frontend's mem.* seam) ────
+  // Pointers lower to (allocation_id, offset) handles encoded as tagged
+  // strings `\u0001mem:<id>:<offset>`. Slice 1: pointers to NAMED
+  // variables — the allocation is the variable itself (id = name,
+  // offset 0); load/store read/write the sh2 store. Slice 2 (malloc):
+  // numeric ids over a typed slot arena with real element offsets.
+  function memAddrOf(name) {
+    return "\u0001mem:" + String(name) + ":0";
+  }
+  function memLoad1(h) {
+    const m = /^\u0001mem:([^:]*):(-?\d+)$/.exec(String(h));
+    if (!m) return "";
+    return getVar(m[1]);
+  }
+  function memStore1(h, v) {
+    const m = /^\u0001mem:([^:]*):(-?\d+)$/.exec(String(h));
+    if (!m) return;
+    setVar(m[1], String(v ?? ""));
+  }
+  const memArena = {};
+  let memSeq = 0;
+  function memAlloc(size) {
+    const id = ++memSeq;
+    const n = Math.max(0, Math.floor(Number(size) || 0));
+    memArena[id] = new Array(n).fill(0);
+    return `\u0001mem:${id}:${n}`;
+  }
+  function memElemSize(type) {
+    if (typeof type === "number") return Math.max(1, Math.floor(type));
+    const t = String(type ?? "int");
+    const sizes = {
+      char: 1, "signed char": 1, "unsigned char": 1, short: 2, "short int": 2,
+      int: 4, "unsigned int": 4, long: 8, "long int": 8, "long long": 8,
+      float: 4, double: 8, "void*": 8, ptr: 8, pointer: 8,
+      int8: 1, int16: 2, int32: 4, int64: 8,
+    };
+    return sizes[t] ?? 1;
+  }
+  function memArenaOf(h) {
+    const m = /^\u0001mem:([^:]+):(-?\d+)$/.exec(String(h));
+    if (!m) return null;
+    const id = m[1];
+    if (!/^\d+$/.test(id)) return null;      // slice-1 named-var handle
+    const arr = memArena[Number(id)];
+    if (!arr) return null;                    // freed / never allocated
+    return { arr, size: Math.max(1, Number(m[2]) || 1) };
+  }
+  function memLoad(h, offset, type) {
+    const a = memArenaOf(h);
+    if (!a) return memLoad1(h);
+    const i = (Number(offset) || 0) * memElemSize(type);
+    return i >= 0 && i < a.arr.length ? String(a.arr[i]) : "";
+  }
+  function memStore(h, offset, type, v) {
+    const a = memArenaOf(h);
+    if (!a) return memStore1(h, v);
+    const i = (Number(offset) || 0) * memElemSize(type);
+    if (i >= 0 && i < a.arr.length) a.arr[i] = String(v ?? "");
+  }
+  function memFree(h) {
+    const m = /^\u0001mem:([^:]+):(-?\d+)$/.exec(String(h));
+    if (!m || !/^\d+$/.test(m[1])) return;
+    delete memArena[Number(m[1])];
+  }
+
   return {
     sh2: {
       exec, pipeline, capture, captureWords, redirect, test,
       forLoop, whileLoop, caseMatch, define, brace, param, arith,
       guard, and, or, arithEval,
       setArray, setArrayAppend, arrayIndex, arrayLen, join,
+      memAddrOf: memAddrOf, memLoad, memStore, memAlloc, memElemSize, memFree,
       assign,
       "break": breakLoop, "continue": continueLoop,
       idiv, imod, not, setLastExit,

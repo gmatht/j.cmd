@@ -1313,9 +1313,36 @@ func arithNode(e *expr) any {
 		return map[string]any{"type": "Num", "value": n}
 	case "bin":
 		return map[string]any{"type": "Bin", "lhs": arithNode(e.l), "op": e.op, "rhs": arithNode(e.r)}
+	case "index", "deref", "addr":
+		// an array element / pointer deref inside arithmetic — the A1
+		// Arith grammar has no Call node, so a runtime array read cannot
+		// be modeled. Refuse (refuse > guess — silently folding to 0
+		// would be a lie). Lower the read to a temp first (`int v = p[i]`).
+		refuse("array/pointer read in an arithmetic context (lower it to a temp: int v = p[i])")
 	}
 	return map[string]any{"type": "Num", "value": 0}
 }
+
+// derefFold — fold a nested deref (`**pp`) through the static alias
+// table: *pp where pp->p->x reads x's storage.
+func derefFold(e *expr) (string, bool) {
+	if e == nil {
+		return "", false
+	}
+	switch e.kind {
+	case "id":
+		t, ok := scalarAliases[e.name]
+		return t, ok
+	case "deref":
+		if t, ok := derefFold(e.l); ok {
+			if t2, ok2 := scalarAliases[t]; ok2 {
+				return t2, true
+			}
+		}
+	}
+	return "", false
+}
+
 func valueNode(e *expr) any {
 	switch e.kind {
 	case "num":
@@ -1342,7 +1369,8 @@ func valueNode(e *expr) any {
 		}
 		return call("addrOf", []any{valueNode(e.l)})
 	case "deref":
-		// *p on a statically-aliased scalar — the alias folding: direct read
+		// *p on a statically-aliased scalar — the alias folding: direct
+		// read, chasing the chain (`**pp` where pp->p->x reads x)
 		if e.l != nil && e.l.kind == "id" {
 			if t, ok := scalarAliases[e.l.name]; ok {
 				return call("getVar", []any{st(t)})
@@ -1355,6 +1383,28 @@ func valueNode(e *expr) any {
 				return call("memLoad", []any{call("getVar", []any{st(hp.root)}), st(strconv.Itoa(hp.off)), st(hp.elem)})
 			}
 		}
+		// **pp — deref of a deref through the alias chain: fold to the
+		// ultimate scalar's read
+		if e.l != nil && e.l.kind == "deref" {
+			if t, ok := derefFold(e.l); ok {
+				return call("getVar", []any{st(t)})
+			}
+		}
+		// *(q + n) on a pointer-into-array — fold to arrayIndex(arr,
+		// base+n) with a constant offset
+		if e.l != nil && e.l.kind == "bin" && e.l.l != nil && e.l.l.kind == "id" {
+			if t, ok := ptrTargets[e.l.l.name]; ok {
+				if k, ok := foldIndex(e.l.r); ok {
+					base := t.base
+					if e.l.op == "-" {
+						base -= k
+					} else {
+						base += k
+					}
+					return call("arrayIndex", []any{st(t.arr), st(strconv.Itoa(base))})
+				}
+			}
+		}
 		// *p — load through the handle
 		return call("memLoad", []any{valueNode(e.l)})
 	case "index":
@@ -1363,15 +1413,21 @@ func valueNode(e *expr) any {
 			return call("param", []any{st("slice"), st(e.l.name), offsetArg(e.r), st("1")})
 		}
 		// p[k] on a static pointer-into-array — the pointer-to-array
-		// reduction: fold to arrayIndex(arr, base+k)
+		// reduction: fold to arrayIndex(arr, base+k); a DYNAMIC index
+		// lowers to arrayIndex(arr, arith("base + $i")) — the runtime
+		// arith substitutes the variable and evaluates.
 		if e.l != nil && e.l.kind == "id" {
 			if t, ok := ptrTargets[e.l.name]; ok {
 				if k, ok := foldIndex(e.r); ok {
 					return call("arrayIndex", []any{st(t.arr), st(strconv.Itoa(t.base + k))})
 				}
+				return call("arrayIndex", []any{st(t.arr), indexArith(e.r, t.base)})
 			}
 			if arrayVars[e.l.name] {
-				return call("arrayIndex", []any{st(e.l.name), offsetArg(e.r)})
+				if k, ok := foldIndex(e.r); ok {
+					return call("arrayIndex", []any{st(e.l.name), st(strconv.Itoa(k))})
+				}
+				return call("arrayIndex", []any{st(e.l.name), indexArith(e.r, 0)})
 			}
 			// p[k] on a heap pointer — mem arena element read at off+k
 			if hp, ok := heapPtrs[e.l.name]; ok {
@@ -1456,13 +1512,27 @@ func exprToArithString(e *expr) string {
 	return ""
 }
 
-// offsetArg — a literal slice offset as its string form (dynamic offsets
-// via a variable index are a follow-up; the runner's sliceOff parses arith).
+// offsetArg — a literal slice offset as its string form (a bare id
+// becomes "$name" — the runner's sliceOff parses arith).
 func offsetArg(e *expr) any {
 	if e != nil && e.kind == "num" {
 		return st(e.num)
 	}
+	if e != nil && e.kind == "id" {
+		return st("$" + e.name)
+	}
 	return st("0")
+}
+
+// indexArith — a dynamic array index as the runtime arith call:
+// arrayIndex(arr, arith("base + $i")) — arith substitutes $i and
+// evaluates the integer expression (a literal index folds earlier).
+func indexArith(e *expr, base int) any {
+	s := exprToArithString(e)
+	if base != 0 {
+		s = strconv.Itoa(base) + " + " + s
+	}
+	return call("arith", []any{st(s)})
 }
 
 // testExpr — C comparison → the bash test-expression string ($x -gt 1).
@@ -1778,8 +1848,9 @@ func (p *parser) stmt() (any, error) {
 				}
 				return map[string]any{"type": "Expr", "expr": call("setArray", []any{st(name.text), map[string]any{"elements": elems, "type": "Array"}})}, nil
 			}
-			p.next() // bare `int a[3];`
-			return nil, nil
+			p.next() // bare `int a[3];` — create the array so later
+			// individual writes (`a[i] = v`) build it in the runtime store
+			return map[string]any{"type": "Expr", "expr": call("setArray", []any{st(name.text), map[string]any{"elements": []any{}, "type": "Array"}})}, nil
 		}
 		if p.isOp("=") {
 			p.next()

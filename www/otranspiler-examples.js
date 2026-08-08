@@ -97,6 +97,72 @@ export const EXAMPLES = {
     { name: "switch-case", desc: "switch statement", code: '#include <stdio.h>\n\nint main(void) {\n    int x = 2;\n    switch (x) {\n        case 1: printf("first\\n"); break;\n        case 2: printf("second\\n"); break;\n        default:  printf("other\\n");\n    }\n    return 0;\n}\n' },
     { name: "concat", desc: "string concatenation", code: '#include <stdio.h>\n#include <string.h>\n\nint main(void) {\n    char out[16];\n    strcpy(out, "foo");\n    strcat(out, "bar");\n    printf("%s\\n", out);\n    return 0;\n}\n' },
     { name: "multi-echo", desc: "several outputs", code: '#include <stdio.h>\n\nint main(void) {\n    printf("one\\n");\n    printf("two\\n");\n    printf("three\\n");\n    return 0;\n}\n' },
+    { name: "pointers", desc: "pointer idioms — deref, arrays, malloc, **, swap, struct", code: `#include <stdio.h>
+#include <stdlib.h>
+
+struct Point { int x; int y; };
+
+int main(void) {
+    /* 1 — basic deref: p = &x, *p read + write */
+    int x = 5;
+    int *p = &x;
+    printf("deref=%d\\n", *p);
+    *p = 7;
+    printf("after=%d\\n", x);
+
+    /* 2 — a pointer walks an array: q = a, q[i] + *(q+k) */
+    int a[4];
+    a[0] = 10; a[1] = 20; a[2] = 30; a[3] = 40;
+    int *q = a;
+    printf("walk=");
+    for (int i = 0; i < 4; i++)
+        printf("%d ", q[i]);
+    printf("\\n");
+    printf("off2=%d\\n", *(q + 2));
+
+    /* 3 — pointer with a base offset: r = &a[1] */
+    int *r = &a[1];
+    printf("base=%d,%d\\n", r[0], r[2]);
+
+    /* 4 — sum through the pointer (the read lowers to a temp) */
+    int sum = 0;
+    for (int i = 0; i < 4; i++) {
+        int v = q[i];
+        sum = sum + v;
+    }
+    printf("sum=%d\\n", sum);
+
+    /* 5 — heap pointer: malloc + index + deref write + free */
+    int *h = malloc(4 * sizeof(int));
+    h[0] = 1; h[1] = 2; h[2] = 3; h[3] = 4;
+    printf("heap=%d,%d\\n", h[0], h[3]);
+    *h = 99;
+    printf("heap-after=%d\\n", h[0]);
+    free(h);
+
+    /* 6 — double pointer: pp = &p, **pp through the alias chain */
+    int **pp = &p;
+    printf("pp=%d\\n", **pp);
+
+    /* 7 — swap through two pointers */
+    int s1 = 1;
+    int s2 = 2;
+    int *pa = &s1;
+    int *pb = &s2;
+    int tmp = *pa;
+    *pa = *pb;
+    *pb = tmp;
+    printf("swap=%d,%d\\n", s1, s2);
+
+    /* 8 — struct value + member access */
+    struct Point pt;
+    pt.x = 3;
+    pt.y = 4;
+    printf("point=%d,%d\\n", pt.x, pt.y);
+
+    return 0;
+}
+` },
   ],
 
   pl: [
