@@ -1,0 +1,3 @@
+labelargs="foo"
+
+echo "exit: $?"

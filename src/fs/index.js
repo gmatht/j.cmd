@@ -22,6 +22,7 @@
 
 import { env } from "../env.js";
 import { DocsFS } from "./docsfs.js";
+import { ExamplesFS } from "./examplesfs.js";
 import { RamFS } from "./ramfs.js";
 import { LocalStorageFS } from "./localstoragefs.js";
 import { IndexedDBFS } from "./indexeddbfs.js";
@@ -253,7 +254,7 @@ class OverlayFS {
       }
       return new Blob([c], { type: "text/plain" });
     }
-    return this.backend.readBlob ? this.backend.readBlob(path) : this.backend.read(path);
+    return this.backend.readBlob ? this.backend.readBlob(path) : new Blob([await this.backend.read(path)], { type: "text/plain" });
   }
 
   async write(path, content) {
@@ -438,6 +439,9 @@ class VirtualFS {
     this.mount("dev", "/dev", new DevFS());
     // The repo's own documentation, readable from inside the shell.
     this.mount("docs", "/docs", new OverlayFS(new DocsFS(), "docs", "fs:ovl:docs:"));
+    // The example corpus (sh2perl + sample files), readable like /bin —
+    // read-only; the otranspiler "try" references corpus files here.
+    this.mount("examples", "/examples", new OverlayFS(new ExamplesFS(), "examples", "fs:ovl:examples:"));
     this.mount("download", "/pc", new DownloadFS());
     // /proc/ — process info + browser stats. ProcFS keeps a registry of
     // every command jtsh runs (procfs.start/finish) and generates the

@@ -46,8 +46,14 @@
   .header { text-align: center; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 2px solid var(--accent); }
   .header h1 { color: var(--text); margin: 0 0 6px; font-size: 22px; }
   .header p { color: var(--muted); font-size: 12px; margin: 0; }
-  .header .try-btn { margin-top: 8px; font-size: 12px; padding: 6px 14px; background: #28a745; }
+  .header .try-btn { margin-top: 8px; font-size: 12px; padding: 6px 10px; background: #28a745; width: 100%; }
   .header .try-btn:hover { background: #1e7e34; }
+  .try-btn .try-main { display: block; }
+  .try-btn .try-cmd {
+    display: block; font-size: 9px; line-height: 1.3; margin-top: 3px;
+    font-family: 'Cascadia Code', 'Fira Code', 'Courier New', monospace;
+    opacity: 0.9; word-break: break-all; text-align: left;
+  }
   .lang-pills { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 8px; }
   .lang-pill {
     background: #6c757d; color: white; border: none;
@@ -187,7 +193,10 @@
     <div class="header">
       <h1>otranspiler</h1>
       <p>one contract, every language</p>
-      <button id="try-btn" type="button" class="try-btn" title="Open j.cmd and run the current example through the transpile → compile → run pipeline">▶ Try in j.cmd</button>
+      <button id="try-btn" type="button" class="try-btn" title="Open j.cmd with the command pre-filled — review it, then press Enter to run">
+        <span class="try-main">▶ Try in j.cmd</span>
+        <span class="try-cmd" id="try-cmd"></span>
+      </button>
     </div>
     <div class="lang-pills" id="lang-pills"></div>
     <div class="search-wrap">
@@ -623,6 +632,7 @@ function renderLangPills() {
       if (exs.length) loadExample(exs[0]);
       else $("input").value = "";
       syncUrl();
+      updateTryHint();
       if (autoUpdate) execute();
     });
     el.appendChild(b);
@@ -745,6 +755,7 @@ function loadExample(ex) {
   renderExamples();
   hideStatus();
   syncUrl();
+  updateTryHint();
   if (autoUpdate) execute();
 }
 
@@ -812,6 +823,7 @@ function renderTargets() {
       tgtLang = t;
       renderTargets();
       syncUrl();
+      updateTryHint();
       if (autoUpdate) execute();
     });
     el.appendChild(b);
@@ -822,7 +834,7 @@ function setupInput() {
   $("input").addEventListener("input", () => {
     if (!autoUpdate) return;
     clearTimeout(autoTimer);
-    autoTimer = setTimeout(() => { if (autoUpdate && $("input").value.trim()) { syncUrl(); execute(); } }, 250);
+    autoTimer = setTimeout(() => { if (autoUpdate && $("input").value.trim()) { syncUrl(); updateTryHint(); execute(); } }, 250);
   });
   $("run-btn").addEventListener("click", execute);
   $("example-search").addEventListener("input", (e) => setSearch(e.target.value));
@@ -836,13 +848,19 @@ function setupInput() {
 }
 
 // ─── try in j.cmd ───────────────────────────────────────────────
-// The extension-driven j.cmd pipeline for the current source + target
-// (the source lands in /home/examples/<name>.<ext>, the output file's
-// extension drives the target — no --target): transpile, then compile
-// and run where j.cmd has a runtime/compiler for that target.
+// The extension-driven j.cmd pipeline for the current source + target.
+// The source lands in /home/examples/<name>.<ext> (or, for a sh2perl
+// corpus example, it's already served read-only at /examples/sh2perl/
+// — the ExamplesFS mount), the output file's extension drives the
+// target (no --target): transpile, then compile and run where j.cmd
+// has a runtime/compiler for that target.
 function tryCommand() {
   const ext = { sh: "sh", zsh: "zsh", fish: "fish", go: "go", py: "py", c: "c", pl: "pl" }[srcLang] || "sh";
-  const src = "/home/examples/" + (currentExample || "try") + "." + ext;
+  const isCorpus = srcLang === "sh" && currentExample &&
+    !getExamples("sh").some((e) => e.name === currentExample);
+  const src = isCorpus
+    ? "/examples/sh2perl/" + currentExample
+    : "/home/examples/" + (currentExample || "try") + "." + ext;
   const outExt = { sh: "sh", js: "js", c: "c", go: "go", py: "py", pl: "pl", java: "java", rs: "rs", zig: "zig" }[tgtLang] || "sh";
   const out = "/tmp/out." + outExt;
   switch (tgtLang) {
@@ -856,16 +874,28 @@ function tryCommand() {
     default:    return "otranspiler " + src + " " + out;   // java/rs — transpile only (no runtime in j.cmd)
   }
 }
+function trySrcPath() {
+  const ext = { sh: "sh", zsh: "zsh", fish: "fish", go: "go", py: "py", c: "c", pl: "pl" }[srcLang] || "sh";
+  const isCorpus = srcLang === "sh" && currentExample &&
+    !getExamples("sh").some((e) => e.name === currentExample);
+  return isCorpus ? "" : "/home/examples/" + (currentExample || "try") + "." + ext;
+}
+function updateTryHint() {
+  const el = $("try-cmd");
+  if (!el) return;
+  el.textContent = $("input").value.trim() ? tryCommand() : "enter source first…";
+}
 function wireTryButton() {
   $("try-btn").addEventListener("click", () => {
     const src = $("input").value;
     if (!src.trim()) { showStatus("enter source first, then try it in j.cmd", "warn"); return; }
-    const payload = encodeURIComponent(JSON.stringify({
-      src, lang: srcLang, target: tgtLang, name: currentExample || "try",
-    }));
+    const cmd = tryCommand();
+    const payload = { cmd };
+    const srcPath = trySrcPath();
+    if (srcPath) payload.src = src, payload.srcPath = srcPath;
     const url = new URL("index.html", location.href);
-    url.hash = "try=" + payload;
-    showStatus("opening j.cmd → " + tryCommand(), "info");
+    url.hash = "prefill=" + encodeURIComponent(JSON.stringify(payload));
+    showStatus("opening j.cmd — command pre-filled (press Enter to run): " + cmd, "info");
     window.open(url.href, "_blank");
   });
 }
@@ -921,6 +951,7 @@ async function init() {
   setupInput();
   wireCopyButtons();
   wireTryButton();
+  updateTryHint();
   $("input-label").textContent = LANGS[srcLang].label + " source input";
   // nothing selected (or restored) — load the default language's first example
   if (!currentExample && !$("input").value) {

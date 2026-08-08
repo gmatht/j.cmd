@@ -7846,6 +7846,12 @@ document.addEventListener("click", (e) => {
   // then run the pipeline — transpile to <target> (output extension
   // drives the target, no --target), compile and run where j.cmd has a
   // runtime/compiler for that target.
+  //
+  // SECURITY: auto-running a URL-supplied pipeline is a drive-by
+  // execution vector (a link could embed rm -rf /, or exfiltrate the
+  // user's files) — even for a toy web OS. The GUI normally opens the
+  // #prefill variant below (review + Enter) instead; #try remains only
+  // for the explicit "run it" case.
   // Build the j.cmd pipeline for a "try" — transpile <src> to <target>
   // (the output file's extension drives the target), then compile + run
   // where this shell has a runtime/compiler for that target.
@@ -7879,6 +7885,31 @@ document.addEventListener("click", (e) => {
       history.replaceState(null, "", location.pathname + location.search);
     } catch (e) {
       process.stdout.write("try: " + (e && e.message ? e.message : e) + "\n");
+    }
+  }
+
+  // #prefill=… — the otranspiler GUI's "try" button: { cmd, src?,
+  // srcPath? }. The source (when given) is written so the command has
+  // something to read, then the COMMAND LINE IS PRE-FILLED — never
+  // auto-run. SECURITY: running a URL-supplied command would be a
+  // drive-by execution vector (rm -rf /, data exfiltration) even for a
+  // toy web OS; the user reviews the line and presses Enter.
+  const prefillParam = new URLSearchParams(location.hash.slice(1)).get("prefill");
+  if (prefillParam) {
+    try {
+      const p = JSON.parse(prefillParam);
+      if (p.src && p.srcPath) {
+        try { await fs.write(p.srcPath.slice(0, p.srcPath.lastIndexOf("/")) + "/.directory", ""); } catch {}
+        await fs.write(p.srcPath, String(p.src));
+      }
+      currentLine = String(p.cmd || "");
+      cursorPos = currentLine.length;
+      recordLineRedraw();
+      input.focus();
+      // don't re-fill on refresh
+      history.replaceState(null, "", location.pathname + location.search);
+    } catch (e) {
+      process.stdout.write("prefill: " + (e && e.message ? e.message : e) + "\n");
     }
   }
 })();

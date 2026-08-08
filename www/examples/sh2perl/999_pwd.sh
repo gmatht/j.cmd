@@ -1,0 +1,3 @@
+basename `pwd`
+
+echo "exit: $?"
