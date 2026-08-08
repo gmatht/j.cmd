@@ -619,6 +619,7 @@ function renderLangPills() {
       const exs = getExamples(lang);
       if (exs.length) loadExample(exs[0]);
       else $("input").value = "";
+      syncUrl();
       if (autoUpdate) execute();
     });
     el.appendChild(b);
@@ -740,7 +741,58 @@ function loadExample(ex) {
     '<span class="ex-name">' + ex.name + "</span> — " + ex.desc;
   renderExamples();
   hideStatus();
+  syncUrl();
   if (autoUpdate) execute();
+}
+
+// ─── shareable URL (#lang=…&target=…&example=…&code=…) ────────
+// Every selection (source language, target, example, edited source)
+// lands in the URL hash so the page can be shared / reloaded with the
+// same setup. The source is included only when it differs from the
+// example's own code — share URLs stay short for the curated examples
+// (and the corpus scripts, which reload by name).
+function currentUrlParams() {
+  const p = new URLSearchParams();
+  if (srcLang) p.set("lang", srcLang);
+  if (tgtLang) p.set("target", tgtLang);
+  if (currentExample) p.set("example", currentExample);
+  const ex = currentExample && getExamples(srcLang).find((e) => e.name === currentExample);
+  const code = $("input").value;
+  if (ex) {
+    if (code !== ex.code) p.set("code", code);
+  } else if (code) {
+    p.set("code", code);
+  }
+  return p.toString();
+}
+function syncUrl() {
+  try { history.replaceState(null, "", "#" + currentUrlParams()); } catch {}
+}
+async function applyUrlState() {
+  const h = location.hash.slice(1);
+  if (!h) return;
+  const p = new URLSearchParams(h);
+  if (p.has("lang") && LANGS[p.get("lang")]) srcLang = p.get("lang");
+  if (p.has("target") && TARGETS.includes(p.get("target"))) tgtLang = p.get("target");
+  if (p.has("code") && p.get("code")) {
+    $("input").value = p.get("code");     // a custom edited source wins
+    return;
+  }
+  const exName = p.get("example");
+  if (exName) {
+    const ex = getExamples(srcLang).find((e) => e.name === exName);
+    if (ex) {
+      loadExample(ex);
+      return;
+    }
+    // a corpus example (sh2perl, sh only) reloads by name
+    if (srcLang === "sh") {
+      try {
+        const resp = await fetch(new URL("examples/sh2perl/" + exName, import.meta.url));
+        if (resp.ok) loadExample({ name: exName, desc: "sh2perl corpus example", code: await resp.text() });
+      } catch {}
+    }
+  }
 }
 
 function renderTargets() {
@@ -756,6 +808,7 @@ function renderTargets() {
     b.addEventListener("click", () => {
       tgtLang = t;
       renderTargets();
+      syncUrl();
       if (autoUpdate) execute();
     });
     el.appendChild(b);
@@ -766,7 +819,7 @@ function setupInput() {
   $("input").addEventListener("input", () => {
     if (!autoUpdate) return;
     clearTimeout(autoTimer);
-    autoTimer = setTimeout(() => { if (autoUpdate && $("input").value.trim()) execute(); }, 250);
+    autoTimer = setTimeout(() => { if (autoUpdate && $("input").value.trim()) { syncUrl(); execute(); } }, 250);
   });
   $("run-btn").addEventListener("click", execute);
   $("example-search").addEventListener("input", (e) => setSearch(e.target.value));
@@ -824,14 +877,17 @@ function wireCopyButtons() {
 
 async function init() {
   initPanels();
+  await applyUrlState();       // restore a shared #lang=…&target=…&example=…&code=… URL
   renderLangPills();
   renderTargets();
   setupInput();
   wireCopyButtons();
   $("input-label").textContent = LANGS[srcLang].label + " source input";
-  // load the first example of the default language
-  const exs = getExamples(srcLang);
-  if (exs.length) loadExample(exs[0]);
+  // nothing selected (or restored) — load the default language's first example
+  if (!currentExample && !$("input").value) {
+    const exs = getExamples(srcLang);
+    if (exs.length) loadExample(exs[0]);
+  }
   showStatus("ready — otranspilerl " + (await libPromise).version(), "success");
 }
 
