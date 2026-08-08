@@ -73,6 +73,14 @@ All three EM_JS hooks (spawn / capture / async) have the same asyncify
 caveat: no complex C (free/dispose) after the call — the allocations are
 deliberately leaked.
 
+Known limits:
+- `( )` containing `$( )` (e.g. `(cd /tmp && echo "$(pwd)")`) shows the
+  substitution text literally — the host shell's own `$( )` expansion is
+  broken, and the subshell body is passed through as-is. Plain `( )`
+  (including pipelines inside) and plain `$( )` (including nested) work.
+- background `&` jobs run after the script (queued), not concurrently;
+  `$!` is not meaningful.
+
 ## The capture gotcha
 
 The first `$( )` hook returned `(null)` on the C side even though the JS
