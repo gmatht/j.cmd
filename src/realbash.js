@@ -193,11 +193,7 @@ export async function runRealBash(script, opts = {}) {
       if (hostRun && cmd) { setImmediate(() => { try { hostRun(cmd); } catch {} }); }
       return 0;
     };
-    // wrapper functions: external commands (unforkable in bash.wasm) go
-    // through `web` to the host. Functions shadow commands in bash, so
-    // `cat x` inside the script runs the shell's cat.
-    const WEB_WRAPPERS = ["cat", "ls", "grep", "sed", "tr", "cut", "seq", "wc", "head", "tail", "sort", "uniq", "tee", "date", "mkdir", "rm", "cp", "mv", "touch", "sleep", "printf", "find", "diff", "cmp", "base64", "md5sum", "sha256sum", "dirname", "basename", "readlink", "realpath", "uname", "env", "printenv", "whoami"];
-    const wrappers = WEB_WRAPPERS.map((c) => `${c}() { web ${c} "$@"; }`).join("\n");
+
     // bash can't start with its cwd ON a custom-FS mountpoint (it exits
     // silently) — subdirs inside the mount are fine. Start at / when the
     // shell's cwd is one of the mounted roots.
@@ -208,6 +204,12 @@ export async function runRealBash(script, opts = {}) {
     } else {
       try { m.FS.chdir(cwd); } catch { try { m.FS.chdir("/"); } catch {} }
     }
+    // wrapper functions: external commands (unforkable in bash.wasm) go
+    // through `web` to the host. Functions shadow commands in bash, so
+    // `cat x` inside the script runs the shell's cat (output arrives
+    // after the script; $? from a web command reads 0).
+    const WEB_WRAPPERS = ["cat", "ls", "grep", "sed", "tr", "cut", "seq", "wc", "head", "tail", "sort", "uniq", "tee", "date", "mkdir", "rm", "cp", "mv", "touch", "sleep", "find", "diff", "cmp", "base64", "md5sum", "sha256sum", "dirname", "basename", "readlink", "realpath", "uname", "env", "printenv", "whoami"];
+    const wrappers = WEB_WRAPPERS.map((c) => `${c}() { web ${c} "$@"; }`).join("\n");
     m.FS.writeFile("/script.sh", wrappers + "\n" + String(script));
     try {
       m.callMain(["/script.sh"]);

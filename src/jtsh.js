@@ -2363,6 +2363,7 @@ async function runSegment(segmentText, stdin, isLast) {
         const h = await runNestedCommand(cmdline);
         if (h && h.out) process.stdout.write(h.out);
         if (h && h.err) process.stderr.write(h.err);
+        return (h && typeof h.code === "number") ? h.code : 0;
       };
       let script = "";
       if (args[0] === "-c") script = args.slice(1).join(" ");
