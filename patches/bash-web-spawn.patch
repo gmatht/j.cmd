@@ -1,5 +1,5 @@
 diff --git a/bash-5.3/execute_cmd.c b/bash-5.3/execute_cmd.c
-index 070f511..215cb36 100644
+index 070f511..8895a2c 100644
 --- a/bash-5.3/execute_cmd.c
 +++ b/bash-5.3/execute_cmd.c
 @@ -67,6 +67,7 @@ extern int errno;
@@ -10,7 +10,7 @@ index 070f511..215cb36 100644
  #include <y.tab.h>	/* use <...> so we pick it up from the build directory */
  #include "parser.h"
  #include "flags.h"
-@@ -84,6 +85,73 @@ extern int errno;
+@@ -84,6 +85,74 @@ extern int errno;
  #  include "test.h"
  #endif
  
@@ -24,6 +24,7 @@ index 070f511..215cb36 100644
 +   fails with ENOSYS as before). */
 +#if defined (BASH_WEB_SPAWN)
 +#  include <emscripten.h>
++static char *web_find_ampamp (const char *);
 +EM_JS (int, bash_web_spawn, (char **argv, char *stdin_file, char *stdin_data, char *bash_cwd), {
 +  if (!globalThis.__bash_spawn) return -1;
 +  var args = [];
@@ -84,7 +85,7 @@ index 070f511..215cb36 100644
  #include "builtins/common.h"
  #include "builtins/builtext.h"	/* list of builtins */
  
-@@ -680,6 +748,36 @@ execute_command_internal (COMMAND *command, int asynchronous, int pipe_in, int p
+@@ -680,6 +749,111 @@ execute_command_internal (COMMAND *command, int asynchronous, int pipe_in, int p
      }
  #endif
  
@@ -98,21 +99,96 @@ index 070f511..215cb36 100644
 +    {
 +      /* run the subshell BODY — the host shell doesn't understand
 +         `( ... )` grouping, but the inner command string is plain
-+         shell text it can execute */
++         shell text it can execute. Split on top-level `&&` so a `cd x`
++         segment updates bash's PWD before a later segment's $( ) is
++         pre-expanded (a whole-body pre-expansion would resolve the
++         substitution against the OLD cwd). `;` segments stay together
++         so variable assignments reach later references. */
 +      char *tcmd = make_command_string (command->value.Subshell->command);
 +      if (tcmd)
 +        {
-+          char *pargv[2];
-+          pargv[0] = tcmd;
-+          pargv[1] = (char *)NULL;
-+          const char *bwd = get_string_value ("PWD");
-+          int s = bash_web_spawn (pargv, (char *)NULL, (char *)NULL, bwd ? (char *)bwd : (char *)"");
-+          if (s >= 0)
++          char *seg = tcmd;
++          int seg_status = 0;
++          int ran = 0;
++          while (seg)
 +            {
-+              last_command_exit_value = s;
-+              /* NB: no free(tcmd) here — complex C after the asyncify
-+                 rewind trips the instrumentation (see execute_disk_command). */
-+              return (s);
++              char *amp = web_find_ampamp (seg);
++              char *piece = seg;
++              if (amp)
++                {
++                  *amp = '\0';
++                  seg = amp + 2;
++                }
++              else
++                seg = (char *)NULL;
++
++              /* a leading `cd DIR` runs IN-BASH (chdir + PWD update) so
++                 later segments' $(pwd) resolves against the new cwd.
++                 The dir ends at `;` / `&&`, and the remainder becomes
++                 the next piece (e.g. `cd /tmp; echo "$(pwd)"`). */
++              if (strncmp (piece, "cd", 2) == 0 &&
++                  (piece[2] == ' ' || piece[2] == '\t' || piece[2] == '\0'))
++                {
++                  char *dir = piece + 2;
++                  while (*dir == ' ' || *dir == '\t')
++                    dir++;
++                  char *e = dir;
++                  while (*e && *e != ';' && *e != '&')
++                    e++;
++                  char *te = e;
++                  while (te > dir && (te[-1] == ' ' || te[-1] == '\t'))
++                    te--;
++                  if (dir < te)
++                    {
++                      char saved = *te;
++                      *te = '\0';
++                      if (chdir (dir) == 0)
++                        {
++                          set_working_directory (dir);
++                          bind_variable ("PWD", dir, 0);
++                        }
++                      *te = saved;
++                    }
++                  if (*e == ';' || (*e == '&' && e[1] == '&'))
++                    {
++                      seg = (*e == ';') ? e + 1 : e + 2;
++                      continue;
++                    }
++                  continue;	/* pure `cd DIR` */
++                }
++
++              /* pre-expand $() / `` bash-side (recursion → the capture
++                 hook) so the host never sees its own broken
++                 substitution; $VAR stays raw so the host resolves it. */
++              char *cmdstr = piece;
++              if (strstr (piece, "$(") || strstr (piece, "`"))
++                {
++                  char *exp = expand_string_to_string (piece, 0);
++                  if (exp)
++                    cmdstr = exp;
++                }
++
++              char *pargv[2];
++              pargv[0] = cmdstr;
++              pargv[1] = (char *)NULL;
++              const char *bwd = get_string_value ("PWD");
++              int s = bash_web_spawn (pargv, (char *)NULL, (char *)NULL, bwd ? (char *)bwd : (char *)"");
++              if (s >= 0)
++                {
++                  ran = 1;
++                  seg_status = s;
++                  if (s != 0)
++                    break;	/* `&&` short-circuit */
++                }
++              else
++                break;
++              /* NB: no free(tcmd/exp) here — complex C after the
++                 asyncify rewind trips the instrumentation. */
++            }
++          if (ran)
++            {
++              last_command_exit_value = seg_status;
++              return (seg_status);
 +            }
 +        }
 +    }
@@ -121,7 +197,7 @@ index 070f511..215cb36 100644
    if (command->type == cm_subshell ||
        (command->flags & (CMD_WANT_SUBSHELL|CMD_FORCE_SUBSHELL)) ||
        (shell_control_structure (command->type) &&
-@@ -2616,6 +2714,144 @@ uw_lastpipe_cleanup (void *s)
+@@ -2616,6 +2790,163 @@ uw_lastpipe_cleanup (void *s)
    set_jobs_list_frozen ((intptr_t) s);
  }
  
@@ -263,10 +339,29 @@ index 070f511..215cb36 100644
 +}
 +#endif /* BASH_WEB_SPAWN */
 +
++/* find the first top-level `&&` (outside quotes / $() depth) */
++static char *
++web_find_ampamp (const char *s)
++{
++  int in_s = 0, in_d = 0, depth = 0;
++  for (const char *p = s; *p; p++)
++    {
++      if (in_s) { if (*p == '\'') in_s = 0; continue; }
++      if (in_d) { if (*p == '"') in_d = 0; continue; }
++      if (*p == '\'') { in_s = 1; continue; }
++      if (*p == '"') { in_d = 1; continue; }
++      if (*p == '$' && p[1] == '(') { depth++; continue; }
++      if (*p == ')' && depth > 0) { depth--; continue; }
++      if (depth == 0 && *p == '&' && p[1] == '&')
++        return (char *)p;
++    }
++  return (char *)NULL;
++}
++
  static int
  execute_pipeline (COMMAND *command, int asynchronous, int pipe_in, int pipe_out, struct fd_bitmap *fds_to_close)
  {
-@@ -2625,6 +2861,33 @@ execute_pipeline (COMMAND *command, int asynchronous, int pipe_in, int pipe_out,
+@@ -2625,6 +2956,33 @@ execute_pipeline (COMMAND *command, int asynchronous, int pipe_in, int pipe_out,
    struct fd_bitmap *fd_bitmap;
    pid_t lastpid;
  
@@ -300,7 +395,7 @@ index 070f511..215cb36 100644
  #if defined (JOB_CONTROL)
    sigset_t set, oset;
    BLOCK_CHILD (set, oset);
-@@ -2825,6 +3088,36 @@ execute_connection (COMMAND *command, int asynchronous, int pipe_in, int pipe_ou
+@@ -2825,6 +3183,36 @@ execute_connection (COMMAND *command, int asynchronous, int pipe_in, int pipe_ou
        if (tc == 0)
  	return (EXECUTION_SUCCESS);
  
@@ -337,7 +432,7 @@ index 070f511..215cb36 100644
        if (ignore_return)
  	tc->flags |= CMD_IGNORE_RETURN;
        tc->flags |= CMD_AMPERSAND;
-@@ -5826,6 +6119,61 @@ execute_disk_command (WORD_LIST *words, REDIRECT *redirects, char *command_line,
+@@ -5826,6 +6214,61 @@ execute_disk_command (WORD_LIST *words, REDIRECT *redirects, char *command_line,
       of COMMAND, since we want the error messages to be redirected. */
    /* If we can get away without forking and there are no pipes to deal with,
       don't bother to fork, just directly exec the command. */

@@ -61,7 +61,10 @@ The fork sites are bridged too (same asyncify trick):
 - **`( )` subshells**: the subshell body (the inner command string via
   `make_command_string`) runs in the host shell — `( echo one; echo two )`,
   `(cd /home && pwd)` and even pipelines inside work. Subshell variable
-  isolation is real (`x=5; ( x=7 ); echo $x` → 5).
+  isolation is real (`x=5; ( x=7 ); echo $x` → 5). The body is split on
+  top-level `&&`/`;` so a leading `cd DIR` runs in-bash (chdir + PWD
+  update) before a later `$( )` is pre-expanded — `(cd /tmp && echo
+  "$(pwd)")` → `/tmp`.
 - **Background `&`**: `cmd &` runs fire-and-forget in the host via the
   `web` builtin hook — bash moves on immediately, the command is queued
   and flushed **sequentially after** the bash run (a setImmediate would
@@ -74,10 +77,6 @@ caveat: no complex C (free/dispose) after the call — the allocations are
 deliberately leaked.
 
 Known limits:
-- `( )` containing `$( )` (e.g. `(cd /tmp && echo "$(pwd)")`) shows the
-  substitution text literally — the host shell's own `$( )` expansion is
-  broken, and the subshell body is passed through as-is. Plain `( )`
-  (including pipelines inside) and plain `$( )` (including nested) work.
 - background `&` jobs run after the script (queued), not concurrently;
   `$!` is not meaningful.
 
