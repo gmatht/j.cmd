@@ -1,0 +1,797 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>otranspiler — multi-language source transpiler</title>
+<script type="importmap">
+{
+  "imports": {
+    "@wasmer/wasi": "./vendor/wasmer-wasi.mjs",
+    "@wasmer/wasmfs": "./vendor/wasmer-wasmfs.mjs"
+  }
+}
+</script>
+<style>
+  :root {
+    --accent: #007acc;
+    --bg: #f5f5f5;
+    --panel: #ffffff;
+    --border: #dee2e6;
+    --text: #333333;
+    --muted: #666666;
+    --add: #d4edda;
+    --del: #f8d7da;
+    --code-bg: #f8f9fa;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    margin: 0; padding: 0;
+    background-color: var(--bg);
+    display: flex;
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  /* ── sidebar ── */
+  .sidebar {
+    width: 320px; min-width: 240px;
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 16px;
+    box-shadow: 2px 0 4px rgba(0,0,0,0.1);
+  }
+  .header { text-align: center; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 2px solid var(--accent); }
+  .header h1 { color: var(--text); margin: 0 0 6px; font-size: 22px; }
+  .header p { color: var(--muted); font-size: 12px; margin: 0; }
+  .lang-pills { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 8px; }
+  .lang-pill {
+    background: #6c757d; color: white; border: none;
+    padding: 6px 12px; border-radius: 14px; cursor: pointer;
+    font-size: 13px; transition: all 0.15s ease; flex: 1 1 auto;
+  }
+  .lang-pill:hover { background: #545b62; }
+  .lang-pill.active { background: var(--accent); box-shadow: 0 2px 4px rgba(0,122,204,0.3); }
+  .category h3 {
+    color: #495057; font-size: 12px; text-transform: uppercase;
+    letter-spacing: 0.5px; border-bottom: 1px solid var(--border);
+    padding-bottom: 6px; margin: 14px 0 10px; font-weight: 600;
+  }
+  .search-wrap { margin: 4px 0 10px; }
+  .search-wrap input {
+    width: 100%; padding: 7px 10px; border: 1px solid #ddd; border-radius: 6px;
+    font-size: 13px; box-sizing: border-box;
+  }
+  .corpus-hint { font-size: 11px; color: var(--muted); margin: 4px 0 8px; line-height: 1.4; }
+  .corpus-name {
+    font-family: 'Cascadia Code', 'Fira Code', 'Courier New', monospace;
+    font-size: 11px;
+  }
+  .example-count { float: right; font-size: 11px; color: var(--muted); font-weight: 400; text-transform: none; letter-spacing: 0; }
+  .example-item { margin-bottom: 6px; }  .example-btn {
+    background: #6c757d; color: white; border: none; padding: 8px 12px;
+    border-radius: 6px; cursor: pointer; font-size: 13px; width: 100%;
+    text-align: left; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; transition: all 0.15s ease;
+  }
+  .example-btn:hover { background: #545b62; transform: translateX(2px); }
+  .example-btn.active { background: var(--accent); }
+  .runtime-note { font-size: 11px; color: var(--muted); margin-top: 12px; line-height: 1.5; }
+
+  /* ── main ── */
+  .main { flex: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; }
+  .card {
+    background: var(--panel); border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1); padding: 16px;
+  }
+  .card h2 { margin: 0 0 10px; color: var(--text); border-bottom: 2px solid var(--accent); padding-bottom: 10px; font-size: 18px; }
+  .example-description {
+    background: #f8f9fa; border: 1px solid var(--border); border-radius: 6px;
+    padding: 12px; font-size: 13px; color: #495057; border-left: 4px solid var(--accent);
+  }
+  .example-description .ex-name { font-weight: 600; color: var(--text); }
+  textarea {
+    width: 100%; min-height: 140px; border: 1px solid #ddd; border-radius: 6px;
+    padding: 12px; font-family: 'Cascadia Code', 'Fira Code', 'Courier New', monospace;
+    font-size: 13px; resize: vertical; border-color: var(--accent); background: #fcfcfc;
+  }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .controls .lbl { font-size: 12px; color: var(--muted); margin-right: 2px; }
+  button {
+    background: var(--accent); color: white; border: none; padding: 9px 14px;
+    border-radius: 6px; cursor: pointer; font-size: 13px; transition: all 0.15s ease;
+  }
+  button:hover { background: #005a9e; transform: translateY(-1px); }
+  button:disabled { background: #ccc; cursor: not-allowed; transform: none; }
+  .copy-btn {
+    background: #6c757d; color: white; border: none;
+    padding: 4px 12px; border-radius: 5px; cursor: pointer;
+    font-size: 12px; transition: all 0.15s ease; white-space: nowrap;
+  }
+  .copy-btn:hover { background: #545b62; }
+  .copy-btn.copied { background: #28a745; }
+  /* copy button on each textarea (top-right corner overlay) */
+  .ta-wrap { position: relative; }
+  .ta-wrap .ta-copy {
+    position: absolute; top: 8px; right: 8px; z-index: 2;
+    background: rgba(108,117,125,0.92); padding: 3px 10px; font-size: 12px;
+  }
+  .ta-wrap .ta-copy:hover { background: rgba(84,91,98,0.96); }
+  .out-ta { min-height: 140px; }
+  .target-btn { background: #dc3545; }
+  .target-btn:hover { background: #c82333; }
+  .target-btn.active { background: #a71d2a; box-shadow: 0 2px 4px rgba(220,53,69,0.4); }
+  .target-btn:disabled { background: #e9ecef; color: #adb5bd; }
+  .auto-update-toggle { background: #28a745 !important; margin-left: auto; }
+  .auto-update-toggle.off { background: #dc3545 !important; }
+
+  /* ── status ── */
+  .status { display: none; padding: 10px 12px; border-radius: 6px; font-size: 13px; font-weight: 500; }
+  .status.success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+  .status.error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+  .status.info { background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
+  .status.warn { background: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
+
+  /* ── output panels (hide/unhide) ── */
+  .panel { background: var(--panel); border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); overflow: hidden; }
+  .panel-head {
+    display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+    background: #f0f2f5; cursor: pointer; user-select: none; border-bottom: 1px solid var(--border);
+  }
+  .panel-head:hover { background: #e7eaee; }
+  .panel-head .arrow { display: inline-block; width: 14px; color: var(--muted); font-size: 12px; transition: transform 0.15s ease; }
+  .panel.collapsed .panel-head .arrow { transform: rotate(-90deg); }
+  .panel-title { font-size: 13px; font-weight: 600; color: var(--text); flex: 1; }
+  .panel-tag { font-size: 11px; color: var(--muted); background: #e9ecef; border-radius: 10px; padding: 2px 8px; }
+  .panel-body { padding: 12px; overflow-x: auto; }
+  .panel.collapsed .panel-body { display: none; }
+  .panel-body pre {
+    margin: 0; padding: 10px; background: var(--code-bg); border-radius: 6px;
+    font-family: 'Cascadia Code', 'Fira Code', 'Courier New', monospace;
+    font-size: 12px; line-height: 1.45; white-space: pre-wrap; word-break: break-word;
+    max-height: 320px; overflow-y: auto;
+  }
+  .panel-body .note { font-size: 12px; color: var(--muted); font-style: italic; }
+
+  /* ── diff ── */
+  .diff-summary { font-size: 12px; margin-bottom: 8px; color: var(--muted); }
+  .diff-line { font-family: 'Cascadia Code', 'Fira Code', 'Courier New', monospace; font-size: 12px; padding: 1px 8px; white-space: pre-wrap; }
+  .diff-line.same { color: #495057; }
+  .diff-line.del { background: var(--del); color: #721c24; }
+  .diff-line.add { background: var(--add); color: #155724; }
+  .diff-line .mark { display: inline-block; width: 14px; font-weight: 700; }
+
+  @media (max-width: 768px) {
+    body { flex-direction: column; overflow-y: auto; }
+    .sidebar { width: 100%; max-height: 40vh; }
+  }
+</style>
+</head>
+<body>
+  <div class="sidebar">
+    <div class="header">
+      <h1>otranspiler</h1>
+      <p>one contract, every language</p>
+    </div>
+    <div class="lang-pills" id="lang-pills"></div>
+    <div class="search-wrap">
+      <input type="search" id="example-search" placeholder="filter examples…" autocomplete="off">
+    </div>
+    <div id="examples-container"></div>
+    <div class="runtime-note" id="runtime-note"></div>
+  </div>
+
+  <div class="main">
+    <div class="card">
+      <h2 id="workspace-title">Transpiler</h2>
+      <div class="example-description" id="example-description">Select an example from the sidebar</div>
+      <div style="margin:10px 0 6px"><b id="input-label">Shell script input</b></div>
+      <div class="ta-wrap">
+        <textarea id="input" spellcheck="false" placeholder="Select an example from the sidebar or type source here…"></textarea>
+        <button type="button" class="copy-btn ta-copy" data-copy="input">Copy</button>
+      </div>
+
+      <div class="controls" style="margin-top:12px">
+        <span class="lbl">target:</span>
+        <span id="target-buttons"></span>
+        <button id="run-btn">Transpile</button>
+        <button id="auto-update-toggle" class="auto-update-toggle">Auto: ON</button>
+      </div>
+    </div>
+
+    <div class="status" id="status"></div>
+
+    <div id="sections">
+      <div class="panel" id="sec-code" data-persist="otp:sec-code">
+        <div class="panel-head"><span class="arrow">▾</span><span class="panel-title">Generated code</span><span class="panel-tag" id="tag-code"></span></div>
+        <div class="panel-body"><div class="ta-wrap"><textarea id="out-code" class="out-ta" readonly spellcheck="false" aria-label="Generated code">—</textarea><button type="button" class="copy-btn ta-copy" data-copy="code">Copy</button></div></div>
+      </div>
+      <div class="panel" id="sec-orig" data-persist="otp:sec-orig">
+        <div class="panel-head"><span class="arrow">▾</span><span class="panel-title">Original stdout</span><span class="panel-tag" id="tag-orig"></span></div>
+        <div class="panel-body"><div class="ta-wrap"><textarea id="out-orig" class="out-ta" readonly spellcheck="false" aria-label="Original stdout">—</textarea><button type="button" class="copy-btn ta-copy" data-copy="orig">Copy</button></div></div>
+      </div>
+      <div class="panel" id="sec-tgt" data-persist="otp:sec-tgt">
+        <div class="panel-head"><span class="arrow">▾</span><span class="panel-title">Target stdout</span><span class="panel-tag" id="tag-tgt"></span></div>
+        <div class="panel-body"><div class="ta-wrap"><textarea id="out-tgt" class="out-ta" readonly spellcheck="false" aria-label="Target stdout">—</textarea><button type="button" class="copy-btn ta-copy" data-copy="tgt">Copy</button></div></div>
+      </div>
+      <div class="panel" id="sec-diff" data-persist="otp:sec-diff">
+        <div class="panel-head"><span class="arrow">▾</span><span class="panel-title">stdout diff</span><span class="panel-tag" id="tag-diff"></span><button type="button" class="copy-btn" data-copy="diff">Copy</button></div>
+        <div class="panel-body"><div class="diff-summary" id="diff-summary"></div><div id="diff-lines"></div></div>
+      </div>
+    </div>
+  </div>
+
+<script type="module">
+import { fs } from "../src/fs/index.js";
+import { env } from "../src/env.js";
+import { getOtranspilerl } from "../src/otranspilerl.js";
+import { estreeToJs } from "../src/estree.js";
+import { GoRunner } from "../src/go.js";
+import { WasmRunner } from "../src/wasm.js";
+import { ensureBusyboxWasm, busyboxA1 } from "../src/busybox.js";
+import { pyExec } from "../src/py.js";
+import { LANGS, getExamples } from "./otranspiler-examples.js";
+
+// ─── state ──────────────────────────────────────────────────────
+let srcLang = "sh";
+let tgtLang = "js";
+let currentExample = null;
+let autoUpdate = true;
+let autoTimer = null;
+let busy = false;
+const libPromise = getOtranspilerl();
+
+const TARGETS = ["js", "pl", "c", "go", "py", "java", "rs", "zig", "sh", "shir"];
+// Which languages have a browser runtime we can execute for the stdout diff.
+// (java/rs/zig render code but have no browser runtime — the diff notes it.)
+const RUNNABLE = { sh: 1, zsh: 1, fish: 1, go: 1, py: 1, c: 1, pl: 1, js: 1 };
+const RUNTIME_LABEL = {
+  sh: "bash.wasm", zsh: "zsh.wasm", fish: "fish.wasm",
+  go: "go.wasm (toolchain)", py: "micropython.wasm", c: "tcc.wasm",
+  pl: "zeroperl.wasm (Perl 5.42)", js: "browser JS (sh2 runtime)",
+};
+const CAVEAT = {
+  py: "micropython is an older build — f-strings / some imports in generated code may fail (syntax error shows below)",
+  pl: "zeroperl is a subset — some core modules (IPC::Open3 …) may be missing from generated code",
+  go: "first run downloads the Go toolchain (~50 MB) and compiles — be patient",
+  c: "first run stages tcc.wasm + libc headers",
+};
+
+// ─── small DOM helpers ──────────────────────────────────────────
+const $ = (id) => document.getElementById(id);
+function showStatus(msg, type) {
+  const s = $("status");
+  s.textContent = msg;
+  s.className = "status " + (type || "info");
+  s.style.display = "block";
+}
+function hideStatus() { $("status").style.display = "none"; }
+function setOut(id, text) {
+  const el = $("out-" + id);
+  const v = text === undefined || text === null ? "—" : String(text);
+  if (el && el.tagName === "TEXTAREA") el.value = v; else if (el) el.textContent = v;
+}
+
+// ─── hide/unhide panels (persisted) ─────────────────────────────
+function initPanels() {
+  document.querySelectorAll(".panel").forEach((panel) => {
+    const key = panel.dataset.persist;
+    let collapsed = false;
+    try { collapsed = localStorage.getItem(key) === "1"; } catch {}
+    panel.classList.toggle("collapsed", collapsed);
+    panel.querySelector(".panel-head").addEventListener("click", (e) => {
+      if (e.target.closest("button")) return;
+      panel.classList.toggle("collapsed");
+      try { localStorage.setItem(key, panel.classList.contains("collapsed") ? "1" : "0"); } catch {}
+    });
+  });
+}
+function setTag(id, text) { $("tag-" + id).textContent = text || ""; }
+
+// ─── transpile: source → A1 (busybox for non-sh) → target ───────
+async function transpile(source, srcLang, tgt) {
+  const lib = await libPromise;
+  let text;
+  if (srcLang === "sh") {
+    // the debashl core — full bash, in-process (fast path)
+    text = lib.transpile(String(source), "sh", tgt);
+  } else {
+    // zsh/fish/go/py/c/pl → A1 via the merged frontend (prebuilt busybox)
+    const goRunner = new GoRunner(fs);
+    const fetchBytes = async () => new Uint8Array(
+      await (await fetch(new URL("wasm-bin/otranspiler-busybox.wasm", import.meta.url))).arrayBuffer());
+    const wasmPath = await ensureBusyboxWasm(fs, { fetchBytes, onLog: (m) => showStatus(m, "info") });
+    const a1 = await busyboxA1(String(source), srcLang, { fs, wasmPath, goRunner });
+    text = lib.render(JSON.stringify(a1), tgt);
+  }
+  if (tgt === "js") {
+    // the js backend emits an ESTree AST — render it through our emitter
+    return estreeToJs(JSON.parse(text));
+  }
+  return text;
+}
+
+// ─── runtimes (stdout capture) ──────────────────────────────────
+const shellCache = {};
+async function runShell(lang, script) {
+  const glue = { sh: "bash.js", zsh: "zsh.js", fish: "fish.js" }[lang];
+  if (!shellCache[lang]) {
+    shellCache[lang] = (await import(new URL("vendor/" + glue, import.meta.url).href)).default;
+  }
+  const factory = shellCache[lang];
+  let out = "", err = "";
+  const m = await factory({
+    noInitialRun: true,
+    locateFile: (p) => new URL("wasm-bin/" + p, import.meta.url).href,
+    print: (t) => (out += t + "\n"),
+    printErr: (t) => (err += t + "\n"),
+  });
+  const ext = { sh: ".sh", zsh: ".zsh", fish: ".fish" }[lang];
+  const path = "/script" + ext;
+  const src = String(script).endsWith("\n") ? String(script) : String(script) + "\n";
+  m.FS.writeFile(path, src);
+  const args = lang === "zsh" ? ["-f", path] : [path];
+  let code = 0;
+  try { m.callMain(args); } catch (e) { code = (e && e.exitStatus) || (e && e.status) || 1; }
+  return { out, err, code };
+}
+
+async function runJs(jsCode) {
+  let out = "", err = "";
+  const outS = { write: (s) => { if (s) out += String(s); } };
+  const { createSh2Runtime } = await import("../src/sh2runtime.js");
+  const rt = createSh2Runtime({ fs, env, shellExec: async () => 0, stdout: outS, stderr: outS, args: [], argv0: "sh" });
+  const proc = {
+    stdout: outS, stderr: outS, pid: 1, argv: ["otranspiler"], env: env || {},
+    cwd: () => (fs.cwd !== undefined ? fs.cwd : "/") || "/",
+    chdir(p) { try { if (fs.cwd !== undefined) fs.cwd = String(p).replace(/\/+$/, "") || "/"; } catch {} },
+    exit(code) { const e = new Error("__otranspiler_exit__" + code); e.exitCode = Number(code) || 0; throw e; },
+  };
+  const fn = new Function("fs", "env", "process", "sh2", `return (async () => { ${jsCode} })();`);
+  let code = 0;
+  try { await fn(fs, env, proc, rt.sh2); } catch (e) { if (e.exitCode !== undefined) code = e.exitCode; else throw e; }
+  return { out, err, code };
+}
+
+async function runPy(src) {
+  let out = "", err = "";
+  const code = await pyExec(String(src), {
+    stdout: { write: (s) => { out += s; } },
+    stderr: { write: (s) => { err += s; } },
+  });
+  return { out, err, code };
+}
+
+async function runPl(src) {
+  const { ZeroPerl } = await import(new URL("vendor/zeroperl.mjs", import.meta.url).href);
+  let out = "", err = "";
+  const dec = new TextDecoder();
+  const perl = await ZeroPerl.create({
+    fetch: () => fetch(new URL("vendor/zeroperl.wasm", import.meta.url).href),
+    stdout: (s) => { out += typeof s === "string" ? s : dec.decode(s); },
+    stderr: (s) => { err += typeof s === "string" ? s : dec.decode(s); },
+    args: ["zeroperl"],
+  });
+  const r = await perl.eval(String(src));
+  try { await perl.flush(); } catch {}
+  return { out, err, code: r.success ? (r.exitCode || 0) : 1, note: r.success ? "" : (r.error || "") };
+}
+
+async function runGo(src) {
+  const { createGoCommand } = await import("../src/go.js");
+  const goRunner = new GoRunner(fs);
+  let out = "", err = "";
+  const goCmd = createGoCommand(goRunner, (s) => { out += s; }, (s) => { err += s; });
+  try { await fs.write("/tmp/go-webgui/.directory", ""); } catch {}
+  await fs.write("/tmp/go-webgui/main.go", String(src));
+  const prevCwd = fs.cwd;
+  try { fs.cwd = "/tmp/go-webgui"; } catch {}
+  let code = 1;
+  try { code = await goCmd(["run", "main.go"]); } finally { fs.cwd = prevCwd; }
+  // strip the toolchain's progress lines, keep the program's output
+  out = out.split("\n").filter((l) => !/^go (run|build): /.test(l)).join("\n");
+  return { out, err, code };
+}
+
+async function runC(src) {
+  const { runTcc } = await import("../src/tcc.js");
+  const wasmRunner = new WasmRunner(fs);
+  const fetchBundle = async (rel) => new Uint8Array(
+    await (await fetch(new URL("../www/" + rel, import.meta.url))).arrayBuffer());
+  try { await fs.write("/tmp/c-webgui/.directory", ""); } catch {}
+  await fs.write("/tmp/c-webgui/main.c", String(src));
+  const outWasm = "/tmp/c-webgui/a.wasm";
+  const r = await runTcc({ vfs: fs, runner: wasmRunner, args: ["/tmp/c-webgui/main.c", "-o", outWasm], fetchBundle });
+  const ccode = wasmRunner.getExitCode();
+  const cerr = wasmRunner.getStderr();
+  if (ccode !== 0) return { out: wasmRunner.getStdout(), err: cerr, code: ccode };
+  wasmRunner.invalidate(outWasm);   // recompiled in place — drop the stale module
+  await wasmRunner.run(outWasm, []);
+  return { out: wasmRunner.getStdout(), err: wasmRunner.getStderr(), code: wasmRunner.getExitCode() };
+}
+
+async function runLanguage(lang, source) {
+  const label = RUNTIME_LABEL[lang] || lang;
+  showStatus("running " + lang + " (" + label + ")…", "info");
+  try {
+    switch (lang) {
+      case "sh": case "zsh": case "fish": return await runShell(lang, source);
+      case "js": return await runJs(source);
+      case "py": return await runPy(source);
+      case "pl": return await runPl(source);
+      case "go": return await runGo(source);
+      case "c": return await runC(source);
+      default: return null; // java/rs/zig: no runtime
+    }
+  } catch (e) {
+    return { out: "", err: String((e && e.message) || e), code: 1 };
+  }
+}
+
+// ─── line diff (LCS) ────────────────────────────────────────────
+function lineDiff(a, b) {
+  const A = String(a || "").split("\n");
+  const B = String(b || "").split("\n");
+  // drop one trailing "" from each (both stdouts end with \n)
+  if (A.length > 1 && A[A.length - 1] === "") A.pop();
+  if (B.length > 1 && B[B.length - 1] === "") B.pop();
+  const n = A.length, m = B.length;
+  const dp = Array.from({ length: n + 1 }, () => new Int32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--)
+    for (let j = m - 1; j >= 0; j--)
+      dp[i][j] = A[i] === B[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+  const ops = [];
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (A[i] === B[j]) { ops.push({ t: "same", s: A[i] }); i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) { ops.push({ t: "del", s: A[i] }); i++; }
+    else { ops.push({ t: "add", s: B[j] }); j++; }
+  }
+  while (i < n) { ops.push({ t: "del", s: A[i] }); i++; }
+  while (j < m) { ops.push({ t: "add", s: B[j] }); j++; }
+  return ops;
+}
+
+// ─── the main transpile + run + diff flow ───────────────────────
+async function execute() {
+  const source = $("input").value;
+  if (!source.trim()) { showStatus("Enter source first.", "error"); return; }
+  if (busy) return;
+  busy = true;
+  $("run-btn").disabled = true;
+  try {
+    showStatus("transpiling " + srcLang + " → " + tgtLang + "…", "info");
+    setOut("code", "…"); setOut("orig", "…"); setOut("tgt", "…");
+    $("diff-lines").innerHTML = ""; $("diff-summary").textContent = "";
+
+    // 1) generate the target code
+    let code;
+    try {
+      code = await transpile(source, srcLang, tgtLang);
+      setOut("code", code);
+      setTag("code", srcLang + " → " + tgtLang + " · " + code.split("\n").length + " lines");
+    } catch (e) {
+      setOut("code", "transpile error: " + e.message);
+      setTag("code", srcLang + " → " + tgtLang);
+      showStatus("transpile failed: " + e.message, "error");
+      return;
+    }
+
+    // 2) run the original (if the input language has a runtime)
+    let orig = null;
+    if (RUNNABLE[srcLang]) {
+      orig = await runLanguage(srcLang, source);
+      setOut("orig", (orig.out || "") + (orig.err ? "\n[stderr] " + orig.err : ""));
+      setTag("orig", srcLang + " · " + RUNTIME_LABEL[srcLang] + " · exit " + orig.code);
+      if (orig.note) setOut("orig", (orig.out || "") + "\n[note] " + orig.note);
+    } else {
+      setOut("orig", "no browser runtime for " + srcLang + " source");
+      setTag("orig", srcLang);
+    }
+
+    // 3) run the generated target (if the target has a runtime)
+    let tgt = null;
+    if (RUNNABLE[tgtLang]) {
+      tgt = await runLanguage(tgtLang, code);
+      setOut("tgt", (tgt.out || "") + (tgt.err ? "\n[stderr] " + tgt.err : ""));
+      setTag("tgt", tgtLang + " · " + RUNTIME_LABEL[tgtLang] + " · exit " + tgt.code);
+      if (tgt.note) setOut("tgt", (tgt.out || "") + "\n[note] " + tgt.note);
+    } else {
+      setOut("tgt", "no browser runtime for " + tgtLang + " target (compile-only)");
+      setTag("tgt", tgtLang + " · no runtime");
+    }
+    if (CAVEAT[tgtLang] && RUNNABLE[tgtLang]) {
+      $("out-tgt").value += "\n\n⚠ " + CAVEAT[tgtLang];
+    }
+
+    // 4) the diff
+    if (orig && tgt) {
+      const ops = lineDiff(orig.out, tgt.out);
+      const adds = ops.filter((o) => o.t === "add").length;
+      const dels = ops.filter((o) => o.t === "del").length;
+      const same = ops.filter((o) => o.t === "same").length;
+      $("diff-summary").textContent =
+        same + " identical lines" +
+        (dels ? " · " + dels + " only in " + srcLang : "") +
+        (adds ? " · " + adds + " only in " + tgtLang : "") +
+        (dels + adds === 0 ? " — outputs match exactly!" : "");
+      $("diff-lines").innerHTML = ops.map((o) => {
+        const mark = o.t === "same" ? " " : o.t === "del" ? "-" : "+";
+        const esc = String(o.s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+        return '<div class="diff-line ' + o.t + '"><span class="mark">' + mark + "</span>" + esc + "</div>";
+      }).join("");
+      setTag("diff", srcLang + " vs " + tgtLang + " stdout");
+    } else {
+      setTag("diff", "");
+      $("diff-summary").textContent = "both sides need runtimes to diff";
+    }
+
+    showStatus("done — " + srcLang + " → " + tgtLang + " (orig exit " + (orig ? orig.code : "n/a") + ", target exit " + (tgt ? tgt.code : "n/a") + ")", "success");
+  } catch (e) {
+    showStatus("error: " + e.message, "error");
+  } finally {
+    busy = false;
+    $("run-btn").disabled = false;
+  }
+}
+
+// ─── UI wiring ──────────────────────────────────────────────────
+let searchQuery = "";
+let corpus = null;      // sh2perl corpus manifest ({ name, size }[]), lazy
+let corpusLoading = null;
+
+function setSearch(q) {
+  searchQuery = (q || "").toLowerCase().trim();
+  renderExamples();
+}
+
+// Load the sh2perl corpus manifest (once).
+async function getCorpus() {
+  if (corpus) return corpus;
+  if (!corpusLoading) {
+    corpusLoading = (async () => {
+      const resp = await fetch(new URL("examples/sh2perl/index.json", import.meta.url));
+      if (!resp.ok) throw new Error("corpus manifest not found (" + resp.status + ")");
+      corpus = await resp.json();
+      return corpus;
+    })();
+  }
+  return corpusLoading;
+}
+
+function renderLangPills() {
+  const el = $("lang-pills");
+  el.innerHTML = "";
+  for (const lang of Object.keys(LANGS)) {
+    const b = document.createElement("button");
+    b.className = "lang-pill" + (lang === srcLang ? " active" : "");
+    b.textContent = LANGS[lang].label;
+    b.title = LANGS[lang].full;
+    b.addEventListener("click", () => {
+      srcLang = lang;
+      renderLangPills();
+      renderExamples();
+      // switch to this language's first example
+      const exs = getExamples(lang);
+      if (exs.length) loadExample(exs[0]);
+      else $("input").value = "";
+      if (autoUpdate) execute();
+    });
+    el.appendChild(b);
+  }
+}
+
+function renderExamples() {
+  const container = $("examples-container");
+  container.innerHTML = "";
+  const q = searchQuery;
+
+  // curated examples (filtered)
+  const exs = getExamples(srcLang).filter((ex) => !q || ex.name.toLowerCase().includes(q) || ex.desc.toLowerCase().includes(q));
+  const cat = document.createElement("div");
+  cat.className = "category";
+  const h = document.createElement("h3");
+  h.textContent = LANGS[srcLang].full + " examples";
+  cat.appendChild(h);
+  if (!exs.length) {
+    const p = document.createElement("div");
+    p.className = "example-description";
+    p.textContent = q ? "no curated examples match \u201c" + q + "\u201d" : "no examples yet";
+    cat.appendChild(p);
+  }
+  for (const ex of exs) {
+    const div = document.createElement("div");
+    div.className = "example-item";
+    const btn = document.createElement("button");
+    btn.className = "example-btn" + (currentExample === ex.name ? " active" : "");
+    btn.textContent = ex.name;
+    btn.title = ex.desc;
+    btn.addEventListener("click", () => loadExample(ex));
+    div.appendChild(btn);
+    cat.appendChild(div);
+  }
+  container.appendChild(cat);
+
+  // sh2perl corpus (sh only) — a separate section, lazily loaded
+  if (srcLang === "sh") {
+    const corpCat = document.createElement("div");
+    corpCat.className = "category";
+    const ch = document.createElement("h3");
+    ch.innerHTML = 'sh2perl corpus <span class="example-count" id="corpus-count"></span>';
+    corpCat.appendChild(ch);
+    const hint = document.createElement("div");
+    hint.className = "corpus-hint";
+    hint.textContent = "the sh2perl test corpus (" +
+      (corpus ? corpus.length : "531") + " scripts). Many need external tools (date, sed, grep…) that don't exist in the browser sandbox — they transpile, but the stdout diff may show errors.";
+    corpCat.appendChild(hint);
+    const list = document.createElement("div");
+    list.id = "corpus-list";
+    list.textContent = "…";
+    corpCat.appendChild(list);
+    container.appendChild(corpCat);
+    getCorpus().then((names) => {
+      $("corpus-count").textContent = names.length;
+      renderCorpusList(names);
+    }).catch((e) => {
+      list.textContent = "corpus unavailable: " + e.message;
+    });
+  }
+
+  const note = $("runtime-note");
+  note.innerHTML =
+    "<b>original runs in:</b> " + RUNTIME_LABEL[srcLang] + "<br>" +
+    (CAVEAT[srcLang] ? "⚠ " + CAVEAT[srcLang] + "<br>" : "") +
+    "stdout diff compares the original against the transpiled target when both have a browser runtime (java/rs/zig render code only).";
+}
+
+// corpus buttons, filtered by the search box; each fetches its script on click
+function renderCorpusList(names) {
+  const list = $("corpus-list");
+  if (!list) return;
+  const q = searchQuery;
+  const hit = names.filter((n) => !q || n.toLowerCase().includes(q));
+  list.innerHTML = "";
+  if (!hit.length) {
+    list.textContent = q ? "no corpus examples match \u201c" + q + "\u201d" : "";
+    return;
+  }
+  // cap the rendered buttons; typing narrows it down
+  const shown = hit.slice(0, 200);
+  if (hit.length > shown.length) {
+    const more = document.createElement("div");
+    more.className = "corpus-hint";
+    more.textContent = hit.length + " match — keep typing to narrow";
+    list.appendChild(more);
+  }
+  for (const name of shown) {
+    const div = document.createElement("div");
+    div.className = "example-item";
+    const btn = document.createElement("button");
+    btn.className = "example-btn corpus-name" + (currentExample === name ? " active" : "");
+    btn.textContent = name;
+    btn.title = "sh2perl corpus: " + name;
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      btn.textContent = "… " + name;
+      try {
+        const resp = await fetch(new URL("examples/sh2perl/" + name, import.meta.url));
+        if (!resp.ok) throw new Error("fetch " + resp.status);
+        loadExample({ name, desc: "sh2perl corpus example", code: await resp.text() });
+      } catch (e) {
+        showStatus("corpus example failed: " + e.message, "error");
+      } finally {
+        btn.disabled = false;
+        btn.textContent = name;
+      }
+    });
+    div.appendChild(btn);
+    list.appendChild(div);
+  }
+}
+
+function loadExample(ex) {
+  currentExample = ex.name;
+  $("input").value = ex.code;
+  $("example-description").innerHTML =
+    '<span class="ex-name">' + ex.name + "</span> — " + ex.desc;
+  renderExamples();
+  hideStatus();
+  if (autoUpdate) execute();
+}
+
+function renderTargets() {
+  const el = $("target-buttons");
+  el.innerHTML = "";
+  for (const t of TARGETS) {
+    const b = document.createElement("button");
+    b.className = "target-btn" + (t === tgtLang ? " active" : "");
+    b.textContent = t;
+    b.title = "transpile to " + t;
+    b.addEventListener("click", () => {
+      tgtLang = t;
+      renderTargets();
+      if (autoUpdate) execute();
+    });
+    el.appendChild(b);
+  }
+}
+
+function setupInput() {
+  $("input").addEventListener("input", () => {
+    if (!autoUpdate) return;
+    clearTimeout(autoTimer);
+    autoTimer = setTimeout(() => { if (autoUpdate && $("input").value.trim()) execute(); }, 250);
+  });
+  $("run-btn").addEventListener("click", execute);
+  $("example-search").addEventListener("input", (e) => setSearch(e.target.value));
+  const toggle = $("auto-update-toggle");
+  toggle.addEventListener("click", () => {
+    autoUpdate = !autoUpdate;
+    toggle.textContent = "Auto: " + (autoUpdate ? "ON" : "OFF");
+    toggle.classList.toggle("off", !autoUpdate);
+    if (autoUpdate) execute();
+  });
+}
+
+// ─── copy to clipboard buttons (one per textarea) ───────────────
+function copyToClipboard(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(String(text));
+  }
+  // fallback (non-secure contexts / older browsers)
+  return new Promise((resolve, reject) => {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = String(text);
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      ok ? resolve() : reject(new Error("copy failed"));
+    } catch (e) { reject(e); }
+  });
+}
+
+function wireCopyButtons() {
+  document.querySelectorAll(".copy-btn[data-copy]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const id = btn.dataset.copy;
+      let text = "";
+      if (id === "input") text = $("input").value;
+      else if (id === "diff") text = $("diff-lines").textContent;
+      else if ($("out-" + id)) text = $("out-" + id).value || $("out-" + id).textContent || "";
+      if (!text || text === "—") { showStatus("nothing to copy yet", "warn"); return; }
+      try {
+        await copyToClipboard(text);
+        const old = btn.textContent;
+        btn.textContent = "Copied ✓";
+        btn.classList.add("copied");
+        setTimeout(() => { btn.textContent = old; btn.classList.remove("copied"); }, 1200);
+      } catch (e) {
+        showStatus("copy failed: " + e.message, "error");
+      }
+    });
+  });
+}
+
+async function init() {
+  initPanels();
+  renderLangPills();
+  renderTargets();
+  setupInput();
+  wireCopyButtons();
+  $("input-label").textContent = LANGS[srcLang].label + " source input";
+  // load the first example of the default language
+  const exs = getExamples(srcLang);
+  if (exs.length) loadExample(exs[0]);
+  showStatus("ready — otranspilerl " + (await libPromise).version(), "success");
+}
+
+init().catch((e) => showStatus("init failed: " + e.message, "error"));
+</script>
+</body>
+</html>
