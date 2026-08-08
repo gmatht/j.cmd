@@ -2359,16 +2359,21 @@ async function runSegment(segmentText, stdin, isLast) {
   if (cmd === "/bin/bash") {
     try {
       const { runRealBash } = await import("./realbash.js");
+      const hostRun = async (cmdline) => {
+        const h = await runNestedCommand(cmdline);
+        if (h && h.out) process.stdout.write(h.out);
+        if (h && h.err) process.stderr.write(h.err);
+      };
       let script = "";
       if (args[0] === "-c") script = args.slice(1).join(" ");
       else if (args.length && !args[0].startsWith("-")) {
         try { script = await fs.read(args[0]); } catch { script = args[0]; }
       } else if (stdin) script = pipeText(stdin);
       if (!script.trim()) {
-        process.stderr.write("/bin/bash: the real bash 5.3 — give it a script: /bin/bash -c 'echo hi' · /bin/bash script.sh · cat x | /bin/bash (bare `bash` is the interactive builtin)\n");
+        process.stderr.write("/bin/bash: the real bash 5.3 — give it a script: /bin/bash -c 'echo hi' · /bin/bash script.sh · cat x | /bin/bash — sees /tmp and /home (writes sync back); builtins only (bash.wasm can't fork external commands — those need the shell) · inside bash, `web <cmd>` runs a command in the shell (wrapper functions route cat/seq/… outside; subshells still need fork) · bare `bash` is the interactive builtin\n");
         return { ok: false, code: 2, output: "" };
       }
-      const r = await runRealBash(script);
+      const r = await runRealBash(script, { hostRun });
       if (outputRedirect) await writeOut(outputRedirect, r.out, appendRedirect);
       else if (isLast) { if (r.out) process.stdout.write(r.out); }
       else output = r.out;

@@ -160,7 +160,17 @@ function installVirtualFSMount(FS) {
 // { out, err, code } (emscripten's exit/flush/syscall chatter is
 // filtered from err). The shell's cwd is the starting directory and
 // the VirtualFS is mounted live at /vfs (see installVirtualFSMount).
-export async function runRealBash(script) {
+//
+// opts.hostRun(cmdline) — an async host command runner. bash.wasm
+// can't fork ("Function not implemented"), but the build has a `web`
+// builtin that calls globalThis.__bash_web_internal: we point it at
+// hostRun, so `web <cmd>` (and the injected wrapper functions for the
+// common external commands — cat, ls, sed, grep, …) send the command
+// OUTSIDE bash.wasm to the shell. The host run is async (the EM_JS
+// can't block without an asyncify build), so its output streams to the
+// shell terminal as it completes and $? may lag — the ordering caveat.
+export async function runRealBash(script, opts = {}) {
+  const hostRun = opts.hostRun;
   const factory = await bashFactory();
   let out = "", err = "";
   const m = await factory({
@@ -172,6 +182,22 @@ export async function runRealBash(script) {
   let code = 0;
   try {
     installVirtualFSMount(m.FS);
+    // the `web` builtin → the host shell (runs the command outside bash.wasm)
+    globalThis.__bash_web_internal = (args) => {
+      const cmd = (args || []).join(" ");
+      // Defer the host run OUT of the wasm's synchronous EM_JS frame —
+      // async machinery (dynamic imports, fs, wasm runs) deadlocks the
+      // event loop while the wasm call is on the stack. The host run
+      // therefore completes after the script (output streams in after
+      // bash's own output; $? from a web command reads 0).
+      if (hostRun && cmd) { setImmediate(() => { try { hostRun(cmd); } catch {} }); }
+      return 0;
+    };
+    // wrapper functions: external commands (unforkable in bash.wasm) go
+    // through `web` to the host. Functions shadow commands in bash, so
+    // `cat x` inside the script runs the shell's cat.
+    const WEB_WRAPPERS = ["cat", "ls", "grep", "sed", "tr", "cut", "seq", "wc", "head", "tail", "sort", "uniq", "tee", "date", "mkdir", "rm", "cp", "mv", "touch", "sleep", "printf", "find", "diff", "cmp", "base64", "md5sum", "sha256sum", "dirname", "basename", "readlink", "realpath", "uname", "env", "printenv", "whoami"];
+    const wrappers = WEB_WRAPPERS.map((c) => `${c}() { web ${c} "$@"; }`).join("\n");
     // bash can't start with its cwd ON a custom-FS mountpoint (it exits
     // silently) — subdirs inside the mount are fine. Start at / when the
     // shell's cwd is one of the mounted roots.
@@ -182,7 +208,7 @@ export async function runRealBash(script) {
     } else {
       try { m.FS.chdir(cwd); } catch { try { m.FS.chdir("/"); } catch {} }
     }
-    m.FS.writeFile("/script.sh", String(script));
+    m.FS.writeFile("/script.sh", wrappers + "\n" + String(script));
     try {
       m.callMain(["/script.sh"]);
     } catch (e) {
