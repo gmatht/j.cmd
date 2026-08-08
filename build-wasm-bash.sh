@@ -12,8 +12,10 @@
 #                     stdin redirects / here-strings all work.
 #
 # Prereqs: emsdk active (emcc 6.0.6 tested), bash source at
-#          bash-wasm/bash-5.3 (patched execute_cmd.c), configured build
-#          tree at bash-wasm/build (emconfigure).
+#          bash-wasm/bash-5.3 (patched execute_cmd.c — the patch lives at
+#          patches/bash-web-spawn.patch and is applied on top of the
+#          vendored emscripten-bash-wasm repo), configured build tree at
+#          bash-wasm/build (emconfigure).
 #
 # Usage:  . /root/src/emsdk/emsdk_env.sh   (if not already active)
 #         ./build-wasm-bash.sh

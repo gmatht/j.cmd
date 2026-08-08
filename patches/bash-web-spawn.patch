@@ -1,0 +1,102 @@
+diff --git a/bash-5.3/execute_cmd.c b/bash-5.3/execute_cmd.c
+index 070f511..f1f5011 100644
+--- a/bash-5.3/execute_cmd.c
++++ b/bash-5.3/execute_cmd.c
+@@ -67,6 +67,7 @@ extern int errno;
+ 
+ #include "memalloc.h"
+ #include "shell.h"
++#include "subst.h"
+ #include <y.tab.h>	/* use <...> so we pick it up from the build directory */
+ #include "parser.h"
+ #include "flags.h"
+@@ -84,6 +85,39 @@ extern int errno;
+ #  include "test.h"
+ #endif
+ 
++/* ── web-spawn bridge: run an external command in the host shell ──
++   bash.wasm can't fork, so top-level external commands (no pipeline,
++   no async) run via a JS hook (__bash_spawn) that executes them in the
++   host jtsh. Asyncify.handleAsync blocks the wasm until the host
++   command finishes; the exit status is returned so $? is correct and
++   the output lands in the right order. Returns -1 when the host hook
++   is unavailable (caller falls through to the normal fork path, which
++   fails with ENOSYS as before). */
++#if defined (BASH_WEB_SPAWN)
++#  include <emscripten.h>
++EM_JS (int, bash_web_spawn, (char **argv, char *stdin_file, char *stdin_data, char *bash_cwd), {
++  if (!globalThis.__bash_spawn) return -1;
++  var args = [];
++  for (var i = 0; ; i++) {
++    var p = HEAPU32[(argv >> 2) + i];
++    if (!p) break;
++    args.push(UTF8ToString(p));
++  }
++  // the stdin redirect (< file / <<< here-string): read the resolved
++  // filename through the live VirtualFS mount so the host command gets
++  // the piped data too
++  var stdin = '';
++  if (stdin_data) {
++    stdin = UTF8ToString(stdin_data);
++  } else if (stdin_file) {
++    try { stdin = FS.readFile(UTF8ToString(stdin_file), { encoding: 'utf8' }); } catch (e) {}
++  }
++  return Asyncify.handleAsync(function () {
++    return globalThis.__bash_spawn(args, stdin, bash_cwd ? UTF8ToString(bash_cwd) : '');
++  });
++});
++#endif
++
+ #include "builtins/common.h"
+ #include "builtins/builtext.h"	/* list of builtins */
+ 
+@@ -5826,6 +5860,49 @@ execute_disk_command (WORD_LIST *words, REDIRECT *redirects, char *command_line,
+      of COMMAND, since we want the error messages to be redirected. */
+   /* If we can get away without forking and there are no pipes to deal with,
+      don't bother to fork, just directly exec the command. */
++#if defined (BASH_WEB_SPAWN)
++  /* Web-spawn bridge: a top-level external command (no pipeline, no
++     async) runs in the HOST shell instead of forking (bash.wasm can't
++     fork). Runs synchronously via asyncify and returns the exit status;
++     falls through to the normal path when the host hook is absent. */
++  if (pipe_in == NO_PIPE && pipe_out == NO_PIPE && async == 0)
++    {
++      char **wargs = strvec_from_word_list (words, 0, 0, (int *)NULL);
++      /* the stdin redirect (< file / <<< here): the host command needs
++         the data, so hand the resolved filename over to the JS hook */
++      char *stdin_file = (char *)NULL;
++      char *stdin_data = (char *)NULL;
++      REDIRECT *rd;
++      for (rd = redirects; rd; rd = rd->next)
++	{
++	  if (rd->instruction == r_input_direction ||
++	      rd->instruction == r_inputa_direction ||
++	      rd->instruction == r_deblank_reading_until)
++	    {
++	      if (rd->redirectee.filename && rd->redirectee.filename->word)
++		stdin_file = rd->redirectee.filename->word;
++	      break;
++	    }
++	  else if (rd->instruction == r_reading_string)
++	    {
++	      if (rd->redirectee.filename && rd->redirectee.filename->word)
++		stdin_data = expand_assignment_string_to_string (rd->redirectee.filename->word, 0);
++	      break;
++	    }
++	}
++      /* the host command runs in the host shell — give it bash's cwd so
++         relative paths resolve the same way */
++      const char *bwd = get_string_value ("PWD");
++      int s = bash_web_spawn (wargs, stdin_file, stdin_data, bwd ? bwd : (char *)"");
++      /* NB: no strvec_dispose here — running complex C right after the
++         asyncify rewind seems to trip the instrumentation (abort). */
++      if (s >= 0)
++	{
++	  last_command_exit_value = s;
++	  return (s);
++	}
++    }
++#endif
+   if (nofork && pipe_in == NO_PIPE && pipe_out == NO_PIPE)
+     pid = 0;
+   else
