@@ -777,6 +777,8 @@ function currentUrlParams() {
   } else if (code) {
     p.set("code", code);
   }
+  // the "try in j.cmd" command line, so the URL carries the whole setup
+  if (code.trim()) p.set("cmd", tryCommand());
   return p.toString();
 }
 function syncUrl() {

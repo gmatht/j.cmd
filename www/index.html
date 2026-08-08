@@ -7905,6 +7905,7 @@ document.addEventListener("click", (e) => {
       currentLine = String(p.cmd || "");
       cursorPos = currentLine.length;
       recordLineRedraw();
+      renderInput();       // draw the pre-filled line (recordLineRedraw only records)
       input.focus();
       // don't re-fill on refresh
       history.replaceState(null, "", location.pathname + location.search);
