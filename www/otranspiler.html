@@ -46,6 +46,8 @@
   .header { text-align: center; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 2px solid var(--accent); }
   .header h1 { color: var(--text); margin: 0 0 6px; font-size: 22px; }
   .header p { color: var(--muted); font-size: 12px; margin: 0; }
+  .header .try-btn { margin-top: 8px; font-size: 12px; padding: 6px 14px; background: #28a745; }
+  .header .try-btn:hover { background: #1e7e34; }
   .lang-pills { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 8px; }
   .lang-pill {
     background: #6c757d; color: white; border: none;
@@ -185,6 +187,7 @@
     <div class="header">
       <h1>otranspiler</h1>
       <p>one contract, every language</p>
+      <button id="try-btn" type="button" class="try-btn" title="Open j.cmd and run the current example through the transpile → compile → run pipeline">▶ Try in j.cmd</button>
     </div>
     <div class="lang-pills" id="lang-pills"></div>
     <div class="search-wrap">
@@ -832,6 +835,41 @@ function setupInput() {
   });
 }
 
+// ─── try in j.cmd ───────────────────────────────────────────────
+// The extension-driven j.cmd pipeline for the current source + target
+// (the source lands in /home/examples/<name>.<ext>, the output file's
+// extension drives the target — no --target): transpile, then compile
+// and run where j.cmd has a runtime/compiler for that target.
+function tryCommand() {
+  const ext = { sh: "sh", zsh: "zsh", fish: "fish", go: "go", py: "py", c: "c", pl: "pl" }[srcLang] || "sh";
+  const src = "/home/examples/" + (currentExample || "try") + "." + ext;
+  const outExt = { sh: "sh", js: "js", c: "c", go: "go", py: "py", pl: "pl", java: "java", rs: "rs", zig: "zig" }[tgtLang] || "sh";
+  const out = "/tmp/out." + outExt;
+  switch (tgtLang) {
+    case "sh":  return "otranspiler " + src + " " + out + " && bash " + out;
+    case "js":  return "otranspiler " + src + " - --run";
+    case "c":   return "otranspiler " + src + " " + out + " && cc " + out + " && ./a.wasm";
+    case "zig": return "otranspiler " + src + " " + out + " && zig build-exe " + out + " -target wasm32-wasi && " + out.replace(/\.zig$/, ".wasm");
+    case "go":  return "otranspiler " + src + " " + out + " && go run " + out;
+    case "py":  return "otranspiler " + src + " " + out + " && python " + out;
+    case "pl":  return "otranspiler " + src + " " + out + " && perl " + out;
+    default:    return "otranspiler " + src + " " + out;   // java/rs — transpile only (no runtime in j.cmd)
+  }
+}
+function wireTryButton() {
+  $("try-btn").addEventListener("click", () => {
+    const src = $("input").value;
+    if (!src.trim()) { showStatus("enter source first, then try it in j.cmd", "warn"); return; }
+    const payload = encodeURIComponent(JSON.stringify({
+      src, lang: srcLang, target: tgtLang, name: currentExample || "try",
+    }));
+    const url = new URL("index.html", location.href);
+    url.hash = "try=" + payload;
+    showStatus("opening j.cmd → " + tryCommand(), "info");
+    window.open(url.href, "_blank");
+  });
+}
+
 // ─── copy to clipboard buttons (one per textarea) ───────────────
 function copyToClipboard(text) {
   if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -882,6 +920,7 @@ async function init() {
   renderTargets();
   setupInput();
   wireCopyButtons();
+  wireTryButton();
   $("input-label").textContent = LANGS[srcLang].label + " source input";
   // nothing selected (or restored) — load the default language's first example
   if (!currentExample && !$("input").value) {
