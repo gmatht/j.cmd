@@ -1,5 +1,5 @@
 diff --git a/bash-5.3/execute_cmd.c b/bash-5.3/execute_cmd.c
-index 070f511..832a73c 100644
+index 070f511..215cb36 100644
 --- a/bash-5.3/execute_cmd.c
 +++ b/bash-5.3/execute_cmd.c
 @@ -67,6 +67,7 @@ extern int errno;
@@ -10,7 +10,7 @@ index 070f511..832a73c 100644
  #include <y.tab.h>	/* use <...> so we pick it up from the build directory */
  #include "parser.h"
  #include "flags.h"
-@@ -84,6 +85,58 @@ extern int errno;
+@@ -84,6 +85,73 @@ extern int errno;
  #  include "test.h"
  #endif
  
@@ -64,12 +64,64 @@ index 070f511..832a73c 100644
 +    });
 +  });
 +});
++
++/* Fire-and-forget host run for `cmd &` — no suspend (Asyncify not
++   involved): the host runs the command deferred and bash moves on. */
++EM_JS (int, bash_web_spawn_async, (char **argv), {
++  if (!globalThis.__bash_web_internal) return -1;
++  var args = [];
++  for (var i = 0; ; i++) {
++    var p = HEAPU32[(argv >> 2) + i];
++    if (!p) break;
++    args.push(UTF8ToString(p));
++  }
++  globalThis.__bash_web_internal(args);
++  return 0;
++});
++
 +#endif
 +
  #include "builtins/common.h"
  #include "builtins/builtext.h"	/* list of builtins */
  
-@@ -2616,6 +2669,144 @@ uw_lastpipe_cleanup (void *s)
+@@ -680,6 +748,36 @@ execute_command_internal (COMMAND *command, int asynchronous, int pipe_in, int p
+     }
+ #endif
+ 
++#if defined (BASH_WEB_SPAWN)
++  /* Virtual subshell: `( cmd )` can't fork, so run the whole subshell
++     body in the host shell (make_command_string gives us the exact
++     text). Falls through to the normal fork path when the hook is
++     absent. Async `( cmd ) &` still falls through (needs a real fork). */
++  if (asynchronous == 0 && pipe_in == NO_PIPE && pipe_out == NO_PIPE &&
++      command->type == cm_subshell)
++    {
++      /* run the subshell BODY — the host shell doesn't understand
++         `( ... )` grouping, but the inner command string is plain
++         shell text it can execute */
++      char *tcmd = make_command_string (command->value.Subshell->command);
++      if (tcmd)
++        {
++          char *pargv[2];
++          pargv[0] = tcmd;
++          pargv[1] = (char *)NULL;
++          const char *bwd = get_string_value ("PWD");
++          int s = bash_web_spawn (pargv, (char *)NULL, (char *)NULL, bwd ? (char *)bwd : (char *)"");
++          if (s >= 0)
++            {
++              last_command_exit_value = s;
++              /* NB: no free(tcmd) here — complex C after the asyncify
++                 rewind trips the instrumentation (see execute_disk_command). */
++              return (s);
++            }
++        }
++    }
++#endif
++
+   if (command->type == cm_subshell ||
+       (command->flags & (CMD_WANT_SUBSHELL|CMD_FORCE_SUBSHELL)) ||
+       (shell_control_structure (command->type) &&
+@@ -2616,6 +2714,144 @@ uw_lastpipe_cleanup (void *s)
    set_jobs_list_frozen ((intptr_t) s);
  }
  
@@ -214,7 +266,7 @@ index 070f511..832a73c 100644
  static int
  execute_pipeline (COMMAND *command, int asynchronous, int pipe_in, int pipe_out, struct fd_bitmap *fds_to_close)
  {
-@@ -2625,6 +2816,33 @@ execute_pipeline (COMMAND *command, int asynchronous, int pipe_in, int pipe_out,
+@@ -2625,6 +2861,33 @@ execute_pipeline (COMMAND *command, int asynchronous, int pipe_in, int pipe_out,
    struct fd_bitmap *fd_bitmap;
    pid_t lastpid;
  
@@ -248,7 +300,44 @@ index 070f511..832a73c 100644
  #if defined (JOB_CONTROL)
    sigset_t set, oset;
    BLOCK_CHILD (set, oset);
-@@ -5826,6 +6044,49 @@ execute_disk_command (WORD_LIST *words, REDIRECT *redirects, char *command_line,
+@@ -2825,6 +3088,36 @@ execute_connection (COMMAND *command, int asynchronous, int pipe_in, int pipe_ou
+       if (tc == 0)
+ 	return (EXECUTION_SUCCESS);
+ 
++#if defined (BASH_WEB_SPAWN)
++      /* `cmd &` — fire-and-forget in the host (no suspend): the command
++         string runs deferred via the web builtin hook and bash moves on.
++         Falls through to the async fork path when the hook is absent. */
++      if (pipe_in == NO_PIPE && pipe_out == NO_PIPE)
++	{
++	  char *bgt = make_command_string (tc);
++	  if (bgt)
++	    {
++	      char *bgargv[2];
++	      bgargv[0] = bgt;
++	      bgargv[1] = (char *)NULL;
++	      int bs = bash_web_spawn_async (bgargv);
++	      if (bs >= 0)
++		{
++		  /* NB: no free(bgt) here — complex C after the EM_JS call
++		     trips the asyncify instrumentation (same as the argv
++		     leak in execute_disk_command). Skip the async exec but
++		     still run the rest of the & chain (`a & b` → b runs). */
++		  second = command->value.Connection->second;
++		  if (second)
++		    exec_result = execute_command_internal (second, asynchronous, pipe_in, pipe_out, fds_to_close);
++		  else
++		    exec_result = 0;
++		  break;
++		}
++	    }
++	}
++#endif
++
+       if (ignore_return)
+ 	tc->flags |= CMD_IGNORE_RETURN;
+       tc->flags |= CMD_AMPERSAND;
+@@ -5826,6 +6119,61 @@ execute_disk_command (WORD_LIST *words, REDIRECT *redirects, char *command_line,
       of COMMAND, since we want the error messages to be redirected. */
    /* If we can get away without forking and there are no pipes to deal with,
       don't bother to fork, just directly exec the command. */
@@ -292,6 +381,18 @@ index 070f511..832a73c 100644
 +	{
 +	  last_command_exit_value = s;
 +	  return (s);
++	}
++    }
++  else if (pipe_in == NO_PIPE && pipe_out == NO_PIPE && async != 0)
++    {
++      /* `cmd &` — fire-and-forget in the host (no suspend): the job
++         "starts" and bash moves on; output streams in when it finishes. */
++      char **wargs = strvec_from_word_list (words, 0, 0, (int *)NULL);
++      int s = bash_web_spawn_async (wargs);
++      if (s >= 0)
++	{
++	  last_command_exit_value = 0;
++	  return (0);
 +	}
 +    }
 +#endif

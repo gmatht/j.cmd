@@ -58,8 +58,20 @@ The fork sites are bridged too (same asyncify trick):
   so the host never sees its own substitution. `$?`/`last_command_subst_status`
   carry the host status; `$(< file)` and other nofork optimizations are
   untouched (they never fork anyway).
-- **Background `&`** and `( )` subshells still fork and fail; `web <cmd>`
-  remains the fire-and-forget fallback.
+- **`( )` subshells**: the subshell body (the inner command string via
+  `make_command_string`) runs in the host shell — `( echo one; echo two )`,
+  `(cd /home && pwd)` and even pipelines inside work. Subshell variable
+  isolation is real (`x=5; ( x=7 ); echo $x` → 5).
+- **Background `&`**: `cmd &` runs fire-and-forget in the host via the
+  `web` builtin hook — bash moves on immediately, the command is queued
+  and flushed **sequentially after** the bash run (a setImmediate would
+  run concurrently with the next host spawn and the shell's nested
+  runner is not reentrant — it hangs). `a & b` still runs `b`.
+- `web <cmd>` remains the fire-and-forget fallback.
+
+All three EM_JS hooks (spawn / capture / async) have the same asyncify
+caveat: no complex C (free/dispose) after the call — the allocations are
+deliberately leaked.
 
 ## The capture gotcha
 

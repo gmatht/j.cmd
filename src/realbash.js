@@ -187,6 +187,7 @@ export async function runRealBash(script, opts = {}) {
   // The asyncify build runs main via the runtime's own auto-run (a
   // manual callMain breaks the asyncify unwind/rewind — main re-runs).
   let finished = false;
+  const pendingBg = [];
   const cfg = {
     noInitialRun: false,
     arguments: ["/script.sh"],   // auto-run passes these to main (callMain can't — it breaks asyncify)
@@ -236,11 +237,14 @@ export async function runRealBash(script, opts = {}) {
           return { out: "", code: 127 };
         }
       };
-      // the `web` builtin → the host (fire-and-forget; output streams in
-      // after the script, $? reads 0).
+      // the `web` builtin / `cmd &` → the host. Fire-and-forget: the
+      // command is queued and flushed SEQUENTIALLY after the bash run
+      // finishes — a setImmediate here would run concurrently with the
+      // next host spawn and the shell's runNestedCommand is not
+      // reentrant (it hangs).
       globalThis.__bash_web_internal = (args) => {
         const cmd = (args || []).join(" ");
-        if (hostRun && cmd) { setImmediate(() => { try { hostRun(cmd); } catch {} }); }
+        if (hostRun && cmd) pendingBg.push(cmd);
         return 0;
       };
       // bash can't start with its cwd ON a custom-FS mountpoint — subdirs
@@ -271,6 +275,12 @@ export async function runRealBash(script, opts = {}) {
   const mm = out.match(new RegExp(MARKER + "(\\d+)_"));
   if (mm) code = Number(mm[1]);
   out = out.replace(new RegExp(MARKER + "\\d+_", "g"), "").trim() + "\n";
+
+  // flush queued background jobs (`cmd &`) — sequential, after bash is
+  // done, so the shell's runner is never reentered mid-run.
+  for (const bgCmd of pendingBg) {
+    try { await hostRun(bgCmd, "", cwd); } catch {}
+  }
 
   // emscripten's runtime notices are noise — drop them.
   err = err.split("\n").filter((l) =>

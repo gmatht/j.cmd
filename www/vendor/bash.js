@@ -6589,6 +6589,8 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
 
 
 
+
+
   var FS_createPath = (...args) => FS.createPath(...args);
 
 
@@ -7088,6 +7090,7 @@ function checkIncomingModuleAPI() {
 }
 function bash_web_spawn(argv,stdin_file,stdin_data,bash_cwd) { if (!globalThis.__bash_spawn) return -1; var args = []; for (var i = 0; ; i++) { var p = HEAPU32[(argv >> 2) + i]; if (!p) break; args.push(UTF8ToString(p)); } var stdin = ''; if (stdin_data) { stdin = UTF8ToString(stdin_data); } else if (stdin_file) { try { stdin = FS.readFile(UTF8ToString(stdin_file), { encoding: 'utf8' }); } catch (e) {} } return Asyncify.handleAsync(function () { return globalThis.__bash_spawn(args, stdin, bash_cwd ? UTF8ToString(bash_cwd) : ''); }); }
 function bash_web_spawn_capture(cmd,buf,buflen,bash_cwd) { if (!globalThis.__bash_spawn_capture) return -1; var c = UTF8ToString(cmd); return Asyncify.handleAsync(function () { return globalThis.__bash_spawn_capture(c, bash_cwd ? UTF8ToString(bash_cwd) : '').then(function (r) { if (r && r.out && r.out.length < buflen) { stringToUTF8(r.out, buf, buflen); } return (r && typeof r.code === 'number') ? r.code : 0; }); }); }
+function bash_web_spawn_async(argv) { if (!globalThis.__bash_web_internal) return -1; var args = []; for (var i = 0; ; i++) { var p = HEAPU32[(argv >> 2) + i]; if (!p) break; args.push(UTF8ToString(p)); } globalThis.__bash_web_internal(args); return 0; }
 function bash_web(argc,argv) { const args = []; for (let i = 0; i < argc; i++) { args.push(UTF8ToString(HEAP32[(argv >> 2) + i])); } return globalThis.__bash_web_internal(args); }
 
 // Imports from the Wasm binary.
@@ -7306,6 +7309,8 @@ var wasmImports = {
   bash_web,
   /** @export */
   bash_web_spawn,
+  /** @export */
+  bash_web_spawn_async,
   /** @export */
   bash_web_spawn_capture,
   /** @export */
