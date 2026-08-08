@@ -244,7 +244,7 @@ import { GoRunner } from "../src/go.js";
 import { WasmRunner } from "../src/wasm.js";
 import { ensureBusyboxWasm, busyboxA1 } from "../src/busybox.js";
 import { pyExec } from "../src/py.js";
-import { LANGS, getExamples } from "./otranspiler-examples.js";
+import { LANGS, getExamples } from "./otranspiler-examples.js?v=2";  // v=2: added gnu-isms (bump on example changes)
 
 // ─── state ──────────────────────────────────────────────────────
 let srcLang = "sh";
@@ -349,8 +349,8 @@ async function transpile(source, srcLang, tgt) {
     text = lib.render(JSON.stringify(a1), tgt);
   }
   if (tgt === "js") {
-    // the js backend emits an ESTree AST — render it through our emitter
-    return estreeToJs(JSON.parse(text));
+    // the js backend emits an ESTree AST — render it through astring
+    return await estreeToJs(JSON.parse(text));
   }
   return text;
 }
