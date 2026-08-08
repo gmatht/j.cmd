@@ -92,7 +92,7 @@ function installVirtualFSMount(FS) {
       const vp = join(parent.vpath, name);
       const st = vfs.statSync(vp);
       if (!st) throw E(ENOENT);
-      const mode = (st.type === "dir" ? S_IFDIR : S_IFREG) | 0o644;
+      const mode = (st.type === "dir" ? S_IFDIR | 0o755 : S_IFREG | 0o644);
       const node = makeNode(parent, name, mode, vp);
       if (st.type === "file") node._data = vfs.readSync(vp) || new Uint8Array(0);
       return node;
@@ -111,8 +111,16 @@ function installVirtualFSMount(FS) {
     unlink() { throw E(ENOSYS); },
     rmdir() { throw E(ENOSYS); },
     rename() { throw E(ENOSYS); },
-    symlink() { throw E(ENOSYS); },
-    readlink() { throw E(ENOSYS); },
+    symlink(parent, newname, oldpath) {
+      // nodeOps.symlink contract: (parent, newname, oldpath) — MEMFS style
+      const node = makeNode(parent, newname, 0o120777, join(parent.vpath, newname));
+      node.link = oldpath;
+      return node;
+    },
+    readlink(node) {
+      if (!node.link) throw E(ENOSYS);
+      return node.link;
+    },
   };
   const streamOps = {
     read(stream, buffer, offset, length, position) {
@@ -173,55 +181,81 @@ export async function runRealBash(script, opts = {}) {
   const hostRun = opts.hostRun;
   const factory = await bashFactory();
   let out = "", err = "";
-  const m = await factory({
-    noInitialRun: true,
+  const MARKER = "__OTRANSPILER_EXIT_";
+  // The asyncify build runs main via the runtime's own auto-run (a
+  // manual callMain breaks the asyncify unwind/rewind — main re-runs).
+  let finished = false;
+  const cfg = {
+    noInitialRun: false,
+    arguments: ["/script.sh"],   // auto-run passes these to main (callMain can't — it breaks asyncify)
     locateFile: wasmUrl,
     print: (t) => { out += t + "\n"; },
-    printErr: (t) => { err += t + "\n"; },
-  });
-  let code = 0;
-  try {
-    installVirtualFSMount(m.FS);
-    // the `web` builtin → the host shell (runs the command outside bash.wasm)
-    globalThis.__bash_web_internal = (args) => {
-      const cmd = (args || []).join(" ");
-      // Defer the host run OUT of the wasm's synchronous EM_JS frame —
-      // async machinery (dynamic imports, fs, wasm runs) deadlocks the
-      // event loop while the wasm call is on the stack. The host run
-      // therefore completes after the script (output streams in after
-      // bash's own output; $? from a web command reads 0).
-      if (hostRun && cmd) { setImmediate(() => { try { hostRun(cmd); } catch {} }); }
-      return 0;
-    };
-
-    // bash can't start with its cwd ON a custom-FS mountpoint (it exits
-    // silently) — subdirs inside the mount are fine. Start at / when the
-    // shell's cwd is one of the mounted roots.
-    const cwd = (vfs.cwd !== undefined ? vfs.cwd : "/") || "/";
-    const MOUNT_ROOTS = ["/tmp", "/home", "/usr/bin", "/bin"];
-    if (MOUNT_ROOTS.includes(cwd)) {
-      try { m.FS.chdir("/"); } catch {}
-    } else {
-      try { m.FS.chdir(cwd); } catch { try { m.FS.chdir("/"); } catch {} }
-    }
-    // wrapper functions: external commands (unforkable in bash.wasm) go
-    // through `web` to the host. Functions shadow commands in bash, so
-    // `cat x` inside the script runs the shell's cat (output arrives
-    // after the script; $? from a web command reads 0).
-    const WEB_WRAPPERS = ["cat", "ls", "grep", "sed", "tr", "cut", "seq", "wc", "head", "tail", "sort", "uniq", "tee", "date", "mkdir", "rm", "cp", "mv", "touch", "sleep", "find", "diff", "cmp", "base64", "md5sum", "sha256sum", "dirname", "basename", "readlink", "realpath", "uname", "env", "printenv", "whoami"];
-    const wrappers = WEB_WRAPPERS.map((c) => `${c}() { web ${c} "$@"; }`).join("\n");
-    m.FS.writeFile("/script.sh", wrappers + "\n" + String(script));
-    try {
-      m.callMain(["/script.sh"]);
-    } catch (e) {
-      code = (e && e.exitStatus) || (e && e.status) || 1;
-    }
-  } catch (e) {
-    err += (e && e.message ? e.message : e) + "\n";
+    printErr: (t) => {
+      err += t + "\n";
+      // `exit N` in the script exits bash before the marker — detect the
+      // runtime's exit notice (keepRuntimeAlive suppresses onExit).
+      const em = /program exited \(with status: (\d+)\)/.exec(t);
+      if (em) { finished = true; cfg.__exitCode = Number(em[1]); }
+    },
+    preRun: [() => {
+      installVirtualFSMount(cfg.FS);
+      // the patched bash calls __bash_spawn(argv, stdin, cwd) for
+      // top-level external commands — ASYNCIFY blocks until the host
+      // finishes, so output is in the right order and $? is correct.
+      globalThis.__bash_spawn = async (args, stdin, bashCwd) => {
+        const cmd = (args || []).join(" ");
+        if (!hostRun || !cmd) return 127;
+        try {
+          // bash's PWD is "/" when it started on a mount root (it can't
+          // sit there) — fall back to the shell's cwd for host commands.
+          const useCwd = bashCwd && bashCwd !== "/" ? bashCwd : cwd;
+          const h = await hostRun(cmd, stdin || "", useCwd || "");
+          // host output goes through bash's own stdout so the execution
+          // order is preserved in the final transcript.
+          if (h && h.out) out += h.out;
+          if (h && h.err) err += h.err;
+          return (h && typeof h.code === "number") ? h.code : 0;
+        } catch {
+          return 127;
+        }
+      };
+      // the `web` builtin → the host (fire-and-forget; output streams in
+      // after the script, $? reads 0).
+      globalThis.__bash_web_internal = (args) => {
+        const cmd = (args || []).join(" ");
+        if (hostRun && cmd) { setImmediate(() => { try { hostRun(cmd); } catch {} }); }
+        return 0;
+      };
+      // bash can't start with its cwd ON a custom-FS mountpoint — subdirs
+      // inside the mount are fine. Start at / when the cwd is a mount root.
+      const cwd = (vfs.cwd !== undefined ? vfs.cwd : "/") || "/";
+      const MOUNT_ROOTS = ["/tmp", "/home", "/usr/bin", "/bin"];
+      if (MOUNT_ROOTS.includes(cwd)) {
+        try { cfg.FS.chdir("/"); } catch {}
+      } else {
+        try { cfg.FS.chdir(cwd); } catch { try { cfg.FS.chdir("/"); } catch {} }
+      }
+      // the script + a completion marker carrying the last exit status
+      // (the only reliable "main has finished" signal in the asyncify
+      // runtime — onExit never fires while keepRuntimeAlive is set).
+      cfg.FS.writeFile("/script.sh", String(script) + "\necho " + MARKER + "$?_\n");
+    }],
+  };
+  const m = await factory(cfg);
+  // wait for the completion marker (all asyncify rewinds done by then)
+  // or an explicit exit (the runtime's "program exited" notice).
+  const deadline = Date.now() + 120000;
+  while (!out.includes(MARKER) && !finished) {
+    if (Date.now() > deadline) break;
+    await new Promise((r) => setTimeout(r, 20));
   }
+  let code = 0;
+  if (cfg.__exitCode !== undefined) code = Number(cfg.__exitCode);
+  const mm = out.match(new RegExp(MARKER + "(\\d+)_"));
+  if (mm) code = Number(mm[1]);
+  out = out.replace(new RegExp(MARKER + "\\d+_", "g"), "").trim() + "\n";
 
-  // emscripten's runtime notices are noise — drop them (the real bash
-  // output is in stdout; these are just exit/flush chatter).
+  // emscripten's runtime notices are noise — drop them.
   err = err.split("\n").filter((l) =>
     !/^warning: unsupported syscall/.test(l) &&
     !/^program exited \(with status/.test(l) &&

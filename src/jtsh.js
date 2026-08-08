@@ -2359,11 +2359,14 @@ async function runSegment(segmentText, stdin, isLast) {
   if (cmd === "/bin/bash") {
     try {
       const { runRealBash } = await import("./realbash.js");
-      const hostRun = async (cmdline) => {
-        const h = await runNestedCommand(cmdline);
-        if (h && h.out) process.stdout.write(h.out);
-        if (h && h.err) process.stderr.write(h.err);
-        return (h && typeof h.code === "number") ? h.code : 0;
+      const hostRun = async (cmdline, stdinIn, bashCwd) => {
+        const prevCwd = fs.cwd;
+        if (bashCwd) { try { fs.cwd = bashCwd; } catch {} }
+        // NB: the output is NOT written here — runRealBash appends it to
+        // bash's own stdout so the transcript stays in execution order.
+        const h = await runNestedCommand(cmdline, stdinIn || "");
+        if (bashCwd) { try { fs.cwd = prevCwd; } catch {} }
+        return h;
       };
       let script = "";
       if (args[0] === "-c") script = args.slice(1).join(" ");
@@ -2371,7 +2374,7 @@ async function runSegment(segmentText, stdin, isLast) {
         try { script = await fs.read(args[0]); } catch { script = args[0]; }
       } else if (stdin) script = pipeText(stdin);
       if (!script.trim()) {
-        process.stderr.write("/bin/bash: the real bash 5.3 — give it a script: /bin/bash -c 'echo hi' · /bin/bash script.sh · cat x | /bin/bash — sees /tmp and /home (writes sync back); builtins only (bash.wasm can't fork external commands — those need the shell) · inside bash, `web <cmd>` runs a command in the shell (wrapper functions route cat/seq/… outside; subshells still need fork) · bare `bash` is the interactive builtin\n");
+        process.stderr.write("/bin/bash: the real bash 5.3 — give it a script: /bin/bash -c 'echo hi' · /bin/bash script.sh · cat x | /bin/bash — sees /tmp and /home (writes sync back). Top-level external commands run synchronously in the shell (correct order, $? and stdin redirects); pipelines/subshells still need a real fork — those fail. `web <cmd>` also runs in the shell. Bare `bash` is the interactive builtin\n");
         return { ok: false, code: 2, output: "" };
       }
       const r = await runRealBash(script, { hostRun });
