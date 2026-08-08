@@ -124,6 +124,17 @@
   .target-btn:hover { background: #c82333; }
   .target-btn.active { background: #a71d2a; box-shadow: 0 2px 4px rgba(220,53,69,0.4); }
   .target-btn:disabled { background: #e9ecef; color: #adb5bd; }
+  /* backend gate status colors (sh2loop setup_backends.sh --backend-gate) */
+  .target-btn.gate-green { background: #28a745; }
+  .target-btn.gate-green:hover { background: #1e7e34; }
+  .target-btn.gate-green.active { background: #1e7e34; box-shadow: 0 0 0 2px #0d5c1f inset; }
+  .target-btn.gate-yellow { background: #ffc107; color: #333; }
+  .target-btn.gate-yellow:hover { background: #e0a800; }
+  .target-btn.gate-yellow.active { background: #e0a800; box-shadow: 0 0 0 2px #8a6d00 inset; }
+  .target-btn.gate-red { background: #dc3545; }
+  .target-btn.gate-red:hover { background: #c82333; }
+  .target-btn.gate-red.active { background: #c82333; box-shadow: 0 0 0 2px #7a1420 inset; }
+  .gate-legend { font-size: 11px; color: var(--muted); margin-top: 6px; }
   .auto-update-toggle { background: #28a745 !important; margin-left: auto; }
   .auto-update-toggle.off { background: #dc3545 !important; }
 
@@ -199,6 +210,7 @@
         <button id="run-btn">Transpile</button>
         <button id="auto-update-toggle" class="auto-update-toggle">Auto: ON</button>
       </div>
+      <div class="gate-legend">gate: 🟢 ≥90% · 🟡 ≥10% · 🔴 &lt;10% of the sh2loop backend corpus — hover a target for its pass/total</div>
     </div>
 
     <div class="status" id="status"></div>
@@ -244,6 +256,36 @@ let busy = false;
 const libPromise = getOtranspilerl();
 
 const TARGETS = ["js", "pl", "c", "go", "py", "java", "rs", "zig", "sh", "shir"];
+
+// ── backend gate status ─────────────────────────────────────────
+// pass/total on the shared corpus (sh2perl/examples/*.sh + frontend
+// testdata — 539 for the core-only corpus, 613 with frontend testdata),
+// from `setup_backends.sh --backend-gate <lang>` (as of 2026-08-08).
+// js/perl are the production backends (gate GREEN: 100% of renderable);
+// the scaffolds are the per-worktree renderers. shir is the neutral A1
+// contract itself — always 100%. Refresh: run the gate for each lang
+// and update pass/total here.
+const BACKEND_STATUS = {
+  js:   { pass: 535, total: 539, name: "estree" },
+  pl:   { pass: 535, total: 539, name: "perl" },
+  sh:   { pass: 498, total: 613, name: "sh" },
+  c:    { pass: 440, total: 613, name: "c" },
+  go:   { pass: 0,   total: 613, name: "go", note: "no renderer wired yet" },
+  py:   { pass: 0,   total: 613, name: "python" },
+  java: { pass: 19,  total: 613, name: "java" },
+  rs:   { pass: 23,  total: 539, name: "rust" },
+  zig:  { pass: 0,   total: 539, name: "zig" },
+  shir: { pass: 0,   total: 0,   name: "A1 contract" },
+};
+// green ≥90% · yellow ≥10% · red <10% (0/0 = the contract — always green)
+function backendGrade(lang) {
+  const s = BACKEND_STATUS[lang];
+  if (!s) return { cls: "red", label: "no gate data" };
+  if (s.total === 0) return { cls: "green", label: s.name + " — the contract itself, 100%" };
+  const pct = s.pass / s.total;
+  const cls = pct >= 0.9 ? "green" : pct >= 0.1 ? "yellow" : "red";
+  return { cls, label: s.name + " " + Math.round(pct * 100) + "% (" + s.pass + "/" + s.total + ")" + (s.note ? " — " + s.note : "") };
+}
 // Which languages have a browser runtime we can execute for the stdout diff.
 // (java/rs/zig render code but have no browser runtime — the diff notes it.)
 const RUNNABLE = { sh: 1, zsh: 1, fish: 1, go: 1, py: 1, c: 1, pl: 1, js: 1 };
@@ -707,8 +749,10 @@ function renderTargets() {
   for (const t of TARGETS) {
     const b = document.createElement("button");
     b.className = "target-btn" + (t === tgtLang ? " active" : "");
+    const g = backendGrade(t);
+    b.classList.add("gate-" + g.cls);
     b.textContent = t;
-    b.title = "transpile to " + t;
+    b.title = "transpile to " + t + " · gate: " + g.label;
     b.addEventListener("click", () => {
       tgtLang = t;
       renderTargets();
