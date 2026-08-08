@@ -27,6 +27,17 @@
 
 const WASM_PATH = "wasm-bin/otranspilerl.wasm";  // browser: relative to the page
 
+import { leanC, leanSh } from "./lean.js";
+
+// The renderers prepend a fixed prologue (the C shell-out runtime, the
+// sh _num() helper) regardless of what the script needs.  Everything
+// there is `static` — drop the parts nothing kept references.
+function leanTarget(out, lang) {
+  if (lang === "c") return leanC(String(out));
+  if (lang === "sh") return leanSh(String(out));
+  return out;
+}
+
 let libPromise = null;
 
 export function getOtranspilerl() {
@@ -157,11 +168,11 @@ function wrapLibrary(instance, mem, out) {
     version: () => call("otranspilerl_version", []).output,
     // shell source → target source (in-process: sh and shir only)
     transpile: (src, srcLang, tgtLang) =>
-      call("otranspilerl_transpile", [String(src), srcLang || "sh", tgtLang || "js"]).output,
+      leanTarget(call("otranspilerl_transpile", [String(src), srcLang || "sh", tgtLang || "js"]).output, tgtLang),
     // shell source → A1 shIR JSON (the neutral contract)
     shir: (src) => call("otranspilerl_shir", [String(src)]).output,
     // A1 shIR JSON → target source (lang: c|go|java|js|perl|python|rs|sh|zig)
-    render: (a1, lang) => call("otranspilerl_render", [String(a1), lang]).output,
+    render: (a1, lang) => leanTarget(call("otranspilerl_render", [String(a1), lang]).output, lang),
     raw: call,
   };
 }

@@ -176,6 +176,52 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     return buf.out.replace(/\n+$/, "");  // command substitution strips trailing newlines
   }
 
+  // SYNC variants the estree emitter uses for sync builtins (no await —
+  // the sync builtins RETURN their output string, so captureSync just
+  // returns the arrow's result; pipelineSync mirrors the async pipeline
+  // without awaiting).
+  function captureSync(fn) {
+    const r = fn();
+    if (r && typeof r.then === "function") {
+      throw new Error("captureSync: async result (emit path expects a sync builtin)");
+    }
+    const s = r === undefined || r === null ? "" : typeof r === "string" ? r : String(r);
+    return s.replace(/\n+$/, "");
+  }
+
+  function pipelineSync(fns) {
+    const prev = mode;
+    const buf = { out: "", stdin: "" };
+    mode = { type: "pipe", buf };
+    let finalOut;
+    try {
+      for (const fn of fns) {
+        if (typeof fn === "function") {
+          // a command stage: previous stage's output becomes its stdin;
+          // a sync builtin RETURNS its output (no mode-buffer write), so
+          // the return value is the stage's output
+          buf.stdin = buf.out;
+          buf.out = "";
+          const r = fn();
+          if (r && typeof r.then === "function") {
+            throw new Error("pipelineSync: async stage (emit path expects sync builtins)");
+          }
+          if (typeof r === "string" && r) buf.out += r;
+        } else {
+          // a literal stage (e.g. `(sh2.lastExit = 0, "test output" + "\n")`)
+          // — the data flowing through the pipeline
+          buf.out = String(fn ?? "");
+        }
+      }
+    } finally {
+      mode = prev;
+    }
+    finalOut = buf.out;
+    if (prev.type === "capture" || prev.type === "pipe" || prev.type === "redirect") prev.buf.out += finalOut;
+    else if (finalOut) stdout.write(finalOut);
+    return finalOut;
+  }
+
   async function captureWords(fn) {
     const s = await capture(fn);
     const t = s.trim();
@@ -654,7 +700,7 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
 
   return {
     sh2: {
-      exec, pipeline, capture, captureWords, redirect, test,
+      exec, pipeline, capture, captureSync, pipelineSync, captureWords, redirect, test,
       forLoop, whileLoop, caseMatch, define, brace, param, arith,
       guard, and, or, arithEval,
       setArray, setArrayAppend, arrayIndex, arrayLen, join,
@@ -707,6 +753,26 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
         readFile: async (p) => { const b = await fs.read(p).catch(() => ""); return typeof b === "string" ? b : new TextDecoder().decode(b); },
         readdir: async (p) => { try { return await fs.list(p); } catch { return []; } },
         mkdir: async (p) => { await fs.write(p + "/.directory", ""); },
+        // `mktemp -d` (the native estree lowers it to sh2.fs.mkdtemp):
+        // create a unique directory under the prefix and resolve to its
+        // path (the `.directory` marker is the VirtualFS dir convention).
+        mkdtemp: async (prefix) => {
+          const base = String(prefix ?? "/tmp/tmp.");
+          for (let i = 0; i < 20; i++) {
+            const rnd = Math.random().toString(36).slice(2, 8);
+            const p = base + rnd;
+            const st = await fs.stat(p).catch(() => null);
+            if (!st) {
+              await fs.write(p + "/.directory", "");
+              return p;
+            }
+          }
+          throw new Error("mkdtemp: could not create a unique dir under " + base);
+        },
+        // `rm` / `unlink` (the native estree lowers rm -f/-r and unlink to
+        // these): remove a file or directory tree from the VirtualFS.
+        unlink: async (p) => { await fs.remove(p); },
+        rm: async (p) => { await fs.remove(p); },
       },
       // the native estree reads sh2.cwd as a value (getter — always current)
       get cwd() { return (fs.cwd !== undefined ? fs.cwd : "/") || "/"; },
@@ -758,16 +824,20 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
             return "";
           }
           default:
-            throw new Error("sh2.builtin('" + name + "'): the sync builtin bridge needs the async shell; try `bash` for this construct");
+            // bash semantics for an unknown sync command: report it,
+            // set $? = 127, and CONTINUE — the script keeps running
+            // (a command substitution yields ""). Only commands the
+            // async shellExec bridge can run used to refuse loudly
+            // here; bash itself just says "command not found".
+            if (stderr && typeof stderr.write === "function") stderr.write(String(name) + ": command not found\n");
+            lastStatus = 127;
+            return "";
         }
       },
-      // the native estree backend's *Sync pipeline/capture/redirect forms
-      // need the async bridge — refuse loudly rather than mis-run.
+      // captureSync / pipelineSync are the real sync variants defined
+      // above (the estree emitter uses them for sync builtins).
       captureWordsSync() {
         throw new Error("command substitution needs the async capture bridge; try `bash '$(...)'`");
-      },
-      pipelineSync() {
-        throw new Error("pipelines need the async pipeline bridge; try `bash` for this construct");
       },
       redirectSync() {
         throw new Error("redirection needs the async redirect bridge; try `bash` for this construct");

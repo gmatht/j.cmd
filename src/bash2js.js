@@ -42,7 +42,7 @@ export async function bashToJS(fs, bashSource) {
     "// bash source:\n" +
     escapeJsComment(bashSource) + "\n" +
     "// ── transpiled statements ─────────────────────────────\n" +
-    estreeToJs(ast);
+    await estreeToJs(ast);
   return { js, ast };
 }
 

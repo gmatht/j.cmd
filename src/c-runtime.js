@@ -107,6 +107,8 @@ export function createCRuntime({ getMem, memory, out, err }) {
   return {
     "$printf": (fmt, ...args) => doPrintf(Ptr(fmt), args, out),
     "$puts": (p) => { out(readStr(p) + "\n"); return 0; },
+    "$freopen": (name, mode, stream) => stream,  // reopen a stream — sandbox: keep it
+    "$setvbuf": (stream, buf, mode, size) => 0,   // buffer mode — sandbox: no-op
     "$putchar": (c) => { out(String.fromCharCode(c)); return c; },
     "$fprintf": (stream, fmt, ...args) => doPrintf(Ptr(fmt), args, out),
     "$sprintf": (dst, fmt, ...args) => { dst = Ptr(dst);

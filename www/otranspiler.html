@@ -48,6 +48,30 @@
   .header p { color: var(--muted); font-size: 12px; margin: 0; }
   .header .try-btn { margin-top: 8px; font-size: 12px; padding: 6px 10px; background: #28a745; width: 100%; }
   .header .try-btn:hover { background: #1e7e34; }
+  /* the red bug button — same look as j.cmd's 🐞 bug toolbar button,
+     but this one opens the sh2perl issue web form pre-filled with the
+     current session (source, target, generated code, stdout diff). */
+  .header .bug-btn {
+    margin-top: 8px;
+    width: 100%;
+    background: rgba(215, 58, 73, 0.07);
+    border: 1px solid rgba(215, 58, 73, 0.45);
+    color: #d73a49;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    line-height: 1.4;
+    padding: 6px 10px;
+    font-family: inherit;
+  }
+  .header .bug-btn:hover { background: rgba(215, 58, 73, 0.14); color: #b31d28; border-color: rgba(179, 29, 40, 0.6); }
+  .header .bug-btn:active { background: rgba(215, 58, 73, 0.22); }
+  .header .bug-note {
+    margin: 6px 0 0;
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--muted);
+  }
   .try-btn .try-main { display: block; }
   .try-btn .try-cmd {
     display: block; font-size: 9px; line-height: 1.3; margin-top: 3px;
@@ -182,6 +206,26 @@
   .diff-line.add { background: var(--add); color: #155724; }
   .diff-line .mark { display: inline-block; width: 14px; font-weight: 700; }
 
+  /* ── clickable generated-code lines ── */
+  .out-code-lines { max-height: 320px; overflow-y: auto; background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px; font-family: 'Cascadia Code', 'Fira Code', 'Courier New', monospace; font-size: 12px; line-height: 1.45; }
+  .code-row { display: flex; cursor: pointer; }
+  .code-row:hover { background: #eef4fb; }
+  .code-row.hl { background: #fff3cd; }
+  .code-row .code-no { flex: 0 0 38px; text-align: right; padding: 0 8px; color: #adb5bd; user-select: none; border-right: 1px solid var(--border); }
+  .code-row .code-txt { flex: 1; padding: 0 8px; white-space: pre-wrap; word-break: break-word; color: #333; }
+
+  /* ── source ↔ generated line map ── */
+  .map-hint { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .map-wrap { display: flex; gap: 10px; }
+  .map-col { flex: 1; min-width: 0; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .map-col-title { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; padding: 6px 10px; background: #f0f2f5; border-bottom: 1px solid var(--border); }
+  .map-lines { max-height: 320px; overflow-y: auto; font-family: 'Cascadia Code', 'Fira Code', 'Courier New', monospace; font-size: 12px; line-height: 1.45; }
+  .map-row { display: flex; cursor: pointer; }
+  .map-row:hover { background: #eef4fb; }
+  .map-row.hl { background: #fff3cd; }
+  .map-row .map-no { flex: 0 0 34px; text-align: right; padding: 0 8px; color: #adb5bd; user-select: none; border-right: 1px solid var(--border); }
+  .map-row .map-txt { flex: 1; padding: 0 8px; white-space: pre-wrap; word-break: break-word; color: #333; }
+
   @media (max-width: 768px) {
     body { flex-direction: column; overflow-y: auto; }
     .sidebar { width: 100%; max-height: 40vh; }
@@ -197,6 +241,8 @@
         <span class="try-main">▶ Try in j.cmd</span>
         <span class="try-cmd" id="try-cmd"></span>
       </button>
+      <button id="bug-btn" type="button" class="bug-btn" title="Report a bug — opens the sh2perl issue form pre-filled with this session (source, target, generated code, stdout diff)">🐞 Bug Report</button>
+      <p class="bug-note">There are plenty of bugs to fix, but if you'd like to draw attention to one in particular, feel free to submit a bug report.</p>
     </div>
     <div class="lang-pills" id="lang-pills"></div>
     <div class="search-wrap">
@@ -230,7 +276,7 @@
     <div id="sections">
       <div class="panel" id="sec-code" data-persist="otp:sec-code">
         <div class="panel-head"><span class="arrow">▾</span><span class="panel-title">Generated code</span><span class="panel-tag" id="tag-code"></span></div>
-        <div class="panel-body"><div class="ta-wrap"><textarea id="out-code" class="out-ta" readonly spellcheck="false" aria-label="Generated code">—</textarea><button type="button" class="copy-btn ta-copy" data-copy="code">Copy</button></div></div>
+        <div class="panel-body"><div class="ta-wrap"><div id="out-code" class="out-code-lines" aria-label="Generated code">—</div><button type="button" class="copy-btn ta-copy" data-copy="code">Copy</button></div></div>
       </div>
       <div class="panel" id="sec-orig" data-persist="otp:sec-orig">
         <div class="panel-head"><span class="arrow">▾</span><span class="panel-title">Original stdout</span><span class="panel-tag" id="tag-orig"></span></div>
@@ -243,6 +289,17 @@
       <div class="panel" id="sec-diff" data-persist="otp:sec-diff">
         <div class="panel-head"><span class="arrow">▾</span><span class="panel-title">stdout diff</span><span class="panel-tag" id="tag-diff"></span><button type="button" class="copy-btn" data-copy="diff">Copy</button></div>
         <div class="panel-body"><div class="diff-summary" id="diff-summary"></div><div id="diff-lines"></div></div>
+      </div>
+    </div>
+      <div class="panel" id="sec-map" data-persist="otp:sec-map">
+        <div class="panel-head"><span class="arrow">▾</span><span class="panel-title">source ↔ generated line map</span><span class="panel-tag" id="tag-map"></span></div>
+        <div class="panel-body">
+          <div class="map-hint">click a generated line to highlight the source line(s) it came from — and vice versa.</div>
+          <div class="map-wrap">
+            <div class="map-col" id="map-src"><div class="map-col-title">source</div><div class="map-lines" id="map-src-lines"></div></div>
+            <div class="map-col" id="map-js"><div class="map-col-title">generated</div><div class="map-lines" id="map-js-lines"></div></div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -268,6 +325,7 @@ let busy = false;
 const libPromise = getOtranspilerl();
 
 const TARGETS = ["js", "pl", "c", "go", "py", "java", "rs", "zig", "sh", "shir"];
+const TARGETS_TEXT = ["sh", "pl", "c", "go", "py", "java", "rs", "zig"];
 
 // ── backend gate status ─────────────────────────────────────────
 // pass/total on the shared corpus (sh2perl/examples/*.sh + frontend
@@ -345,26 +403,132 @@ function initPanels() {
 function setTag(id, text) { $("tag-" + id).textContent = text || ""; }
 
 // ─── transpile: source → A1 (busybox for non-sh) → target ───────
+// Build a source↔generated line map for TEXT targets.
+//  • sh: fixed prologue (`#!/bin/sh` + `exec 2>/dev/null` + blanks +
+//    `_num(){…}`), then the A1 top-level statements in order with
+//    known per-statement line counts (blocks recurse).
+//  • pl: EXACT — the perl backend emits ` # line N` on each top-level
+//    statement (the shIR source-mapping convention); a statement spans
+//    from its comment line to the next comment.
+//  • py / c / go / rs / zig / java: best-effort — find the body
+//    (inside `main()` or after the py prologue) and walk the A1
+//    statements with per-language block rules. Simple statements map
+//    exactly; backend-transformed loops (for→range/while + setup +
+//    TODO comments) can drift.
+function buildTextMap(text, tgt, a1Stmts, stmtLines) {
+  const lines = String(text).split("\n");
+  const srcLineOf = new Map();
+  for (const e of stmtLines || []) srcLineOf.set(e.stmt, e.line);
+
+  // ── backends that emit `line N` comments (pl/py/c/go/rs/zig/java):
+  //     EXACT — a statement spans from its ` # line N` / ` // line N` /
+  //     ` /* line N */` line to the next one. (The shIR source-mapping
+  //     convention, emitted by every backend.)
+  if (tgt !== "sh") {
+    const map = [];
+    let cur = null;
+    for (let j = 0; j < lines.length; j++) {
+      const m = /(?:#|\/\/|\/\*)\s*line (\d+)/.exec(lines[j]);
+      if (m) {
+        const line = Number(m[1]);
+        let a1Idx = null;
+        for (const [k, v] of srcLineOf) if (v === line) { a1Idx = k; break; }
+        if (a1Idx != null) {
+          if (cur) cur.jsEnd = j;               // previous ends before this line
+          cur = { jsStart: j + 1, jsEnd: j + 1, sourceLine: line };
+          map.push(cur);
+        } else if (cur) {
+          cur.jsEnd = j + 1;                    // unmatched comment → extend current
+        }
+      } else if (cur) {
+        cur.jsEnd = j + 1;
+      }
+    }
+    return map;
+  }
+
+  // ── other targets: per-target body start + recursive counter ──
+  const count = (st, t) => {
+    switch (st && st.type) {
+      case "If": {
+        let n = 1;                                // if … { / if …:
+        n += (st.then || []).reduce((s, x) => s + count(x, t), 0);
+        for (const [, b] of st.elsifs || []) n += 1 + b.reduce((s, x) => s + count(x, t), 0);
+        if (st.else && st.else.length) n += 1 + st.else.reduce((s, x) => s + count(x, t), 0);
+        return t === "py" ? n : n + 1;            // py: no closing brace
+      }
+      case "For":
+      case "While":
+      case "DoWhile":
+        return (t === "py" ? 1 : 2) + (st.body || []).reduce((s, x) => s + count(x, t), 0);
+      case "Case": {
+        let n = 1;
+        for (const c of st.clauses || []) n += 1 + (c.body || []).reduce((s, x) => s + count(x, t), 0) + 1;
+        return n + 1;
+      }
+      case "Function":
+        return (t === "py" ? 1 : 2) + (st.body || []).reduce((s, x) => s + count(x, t), 0);
+      default:
+        return 1;
+    }
+  };
+
+  // find the body END (the line before the closing brace of main() /
+  // the trailing bookkeeping / the trailing TODO-count comment), then the
+  // body occupies the LAST `total` lines up to it.
+  let closeIdx = lines.length;                   // default: end of output
+  for (let j = lines.length - 1; j >= 0; j--) {
+    const t = lines[j].trim();
+    if (t === "}" || t === "};") { closeIdx = j; break; }
+    if (/\d+ construct\(s\) lowered to TODO/.test(t)) { closeIdx = j; break; }
+  }
+  // trailing bookkeeping inside main: `_ = i`, `return;`, `return 0;`, `_ = n;`
+  let bk = 0;
+  for (let j = closeIdx - 1; j >= 0 && /^_\s*=\s*\w+;?$|^return(\s+\d+)?;?$/.test(lines[j].trim()); j--) bk++;
+  const total = (a1Stmts || []).reduce((s, x) => s + count(x, tgt), 0);
+  const bodyEnd = closeIdx - bk;                 // line index of the last body line
+  const bodyStart = Math.max(0, bodyEnd - total);
+
+  const map = [];
+  let line = bodyStart + 1;
+  (a1Stmts || []).forEach((st, idx) => {
+    const n = count(st, tgt);
+    const sl = srcLineOf.get(idx);
+    if (sl) map.push({ jsStart: line, jsEnd: line + n - 1, sourceLine: sl });
+    line += n;
+  });
+  return map;
+}
+
 async function transpile(source, srcLang, tgt) {
   const lib = await libPromise;
-  let text;
+  let text, a1 = null, map = null;
   if (srcLang === "sh") {
     // the debashl core — full bash, in-process (fast path)
     text = lib.transpile(String(source), "sh", tgt);
+    try { a1 = JSON.parse(lib.shir(String(source))); } catch {}
   } else {
     // zsh/fish/go/py/c/pl → A1 via the merged frontend (prebuilt busybox)
     const goRunner = new GoRunner(fs);
     const fetchBytes = async () => new Uint8Array(
       await (await fetch(new URL("wasm-bin/otranspiler-busybox.wasm", import.meta.url))).arrayBuffer());
     const wasmPath = await ensureBusyboxWasm(fs, { fetchBytes, onLog: (m) => showStatus(m, "info") });
-    const a1 = await busyboxA1(String(source), srcLang, { fs, wasmPath, goRunner });
+    a1 = await busyboxA1(String(source), srcLang, { fs, wasmPath, goRunner });
     text = lib.render(JSON.stringify(a1), tgt);
   }
   if (tgt === "js") {
-    // the js backend emits an ESTree AST — render it through astring
-    return await estreeToJs(JSON.parse(text));
+    // the js backend emits an ESTree AST — render it through astring,
+    // and build the source↔generated line map from the A1's stmt_lines
+    const { estreeToJsMapped } = await import("../src/estree.js");
+    const estree = JSON.parse(text);
+    const r = await estreeToJsMapped(estree, (a1 && a1.stmt_lines) || [], (a1 && a1.stmts) || []);
+    return { text: r.js, map: r.map };
   }
-  return text;
+  if (a1 && a1.stmt_lines && a1.stmt_lines.length && TARGETS_TEXT.indexOf(tgt) >= 0) {
+    // text targets: build the line map from the A1 statements
+    map = buildTextMap(text, tgt, a1.stmts, a1.stmt_lines);
+  }
+  return { text, map };
 }
 
 // ─── runtimes (stdout capture) ──────────────────────────────────
@@ -509,6 +673,169 @@ function lineDiff(a, b) {
 }
 
 // ─── the main transpile + run + diff flow ───────────────────────
+// ── source ↔ generated line map ─────────────────────────────────
+// `map` = [{ jsStart, jsEnd, sourceLine }] (from estreeToJsMapped).
+// Renders both panes as numbered rows; clicking one side highlights the
+// corresponding rows on the other.
+let otCode = "";            // the generated code (for copy)
+let otSrcLines = [];      // source lines (strings)
+let otJsLines = [];       // generated lines (strings)
+let otMap = [];           // [{ jsStart, jsEnd, sourceLine }]
+
+// Render the generated code as clickable line rows. Clicking a row
+// highlights it and selects + scrolls the source line it came from.
+function renderCodeLines(code) {
+  otCode = String(code ?? "");
+  const el = $("out-code");
+  el.innerHTML = "";
+  const lines = otCode.split("\n");
+  otJsLines = lines;
+  lines.forEach((txt, j) => {
+    const row = document.createElement("div");
+    row.className = "code-row";
+    const no = document.createElement("span");
+    no.className = "code-no";
+    no.textContent = j + 1;
+    const t = document.createElement("span");
+    t.className = "code-txt";
+    t.textContent = txt || " ";
+    row.appendChild(no);
+    row.appendChild(t);
+    row.addEventListener("click", () => {
+      // move the source textarea CURSOR to the source line this came from
+      const sl = jsLineToSource(j + 1);
+      selectSourceLine(sl);
+      // highlight this generated line (and any siblings from the same line)
+      document.querySelectorAll("#out-code .code-row.hl").forEach((r) => r.classList.remove("hl"));
+      if (sl != null) highlightGeneratedForSourceLine(sl);
+      row.classList.add("hl");
+    });
+    el.appendChild(row);
+  });
+}
+
+// Generated JS line → the 1-based source line it came from (or null).
+function jsLineToSource(jsLine) {
+  for (const m of otMap) {
+    if (jsLine >= m.jsStart && jsLine <= m.jsEnd) return m.sourceLine;
+  }
+  return null;
+}
+
+// Select + scroll the source textarea to `line` (native selection is the
+// highlight). The browser scrolls the selection to the BOTTOM edge by
+// default — centre the line instead so it is fully visible.
+function selectSourceLine(line) {
+  const ta = $("input");
+  if (!ta || line == null || line < 1) return;
+  const lines = String(ta.value).split("\n");
+  if (line > lines.length) return;
+  let start = 0;
+  for (let i = 0; i < line - 1; i++) start += lines[i].length + 1;
+  const end = start + lines[line - 1].length;
+  ta.focus();
+  try { ta.setSelectionRange(start, end); } catch {}
+  try {
+    const lh = parseFloat(getComputedStyle(ta).lineHeight) || 18;
+    ta.scrollTop = Math.max(0, (line - 1) * lh - ta.clientHeight / 2 + lh / 2);
+  } catch {}
+}
+
+// The source line under the textarea's caret (click/selection position).
+function sourceLineAtCaret(ta) {
+  const pos = ta.selectionStart;
+  return String(ta.value).slice(0, pos).split("\n").length;
+}
+
+// Highlight the generated-code rows derived from `sourceLine` (and scroll
+// the code view to the first one).
+function highlightGeneratedForSourceLine(sourceLine) {
+  document.querySelectorAll("#out-code .code-row.hl").forEach((r) => r.classList.remove("hl"));
+  const codeEl = $("out-code");
+  const rows = codeEl.querySelectorAll(".code-row");
+  let first = null;
+  rows.forEach((row, j) => {
+    if (jsLineToSource(j + 1) === sourceLine) {
+      row.classList.add("hl");
+      if (!first) first = row;
+    }
+  });
+  if (first) first.scrollIntoView({ block: "nearest" });
+}
+
+function renderLineMap(source, map) {
+  otSrcLines = String(source || "").split("\n");
+  otMap = map || [];   // otJsLines stays from renderCodeLines
+  const srcEl = $("map-src-lines"), jsEl = $("map-js-lines");
+  srcEl.innerHTML = ""; jsEl.innerHTML = "";
+
+  if (!map || !map.length) {
+    srcEl.innerHTML = '<div class="map-hint">no line mapping (source lines are only tracked for sh sources).</div>';
+    $("tag-map").textContent = "";
+    return;
+  }
+
+  // generated lines, each tagged with its source line (or null)
+  const jsLineSrc = [];
+  for (let j = 0; j < otJsLines.length; j++) {
+    let sl = null;
+    for (const m of map) {
+      if (j + 1 >= m.jsStart && j + 1 <= m.jsEnd) { sl = m.sourceLine; break; }
+    }
+    jsLineSrc.push(sl);
+  }
+
+  // source pane rows
+  otSrcLines.forEach((txt, i) => {
+    const row = mkMapRow(i + 1, txt, i + 1);
+    row.addEventListener("click", () => {
+      // highlight generated lines whose source line matches
+      clearHl();
+      for (let j = 0; j < jsLineSrc.length; j++) {
+        if (jsLineSrc[j] === i + 1) {
+          const r = jsEl.children[j];
+          if (r) { r.classList.add("hl"); r.scrollIntoView({ block: "nearest" }); }
+        }
+      }
+      row.classList.add("hl");
+    });
+    srcEl.appendChild(row);
+  });
+  // generated pane rows
+  otJsLines.forEach((txt, j) => {
+    const row = mkMapRow(j + 1, txt, j + 1);
+    row.addEventListener("click", () => {
+      clearHl();
+      const sl = jsLineSrc[j];
+      if (sl != null) {
+        const sr = srcEl.children[sl - 1];
+        if (sr) { sr.classList.add("hl"); sr.scrollIntoView({ block: "nearest" }); }
+      }
+      row.classList.add("hl");
+    });
+    jsEl.appendChild(row);
+  });
+  $("tag-map").textContent = map.length + " statements mapped";
+}
+
+function mkMapRow(no, txt, key) {
+  const row = document.createElement("div");
+  row.className = "map-row";
+  const noEl = document.createElement("div");
+  noEl.className = "map-no";
+  noEl.textContent = no;
+  const txtEl = document.createElement("div");
+  txtEl.className = "map-txt";
+  txtEl.textContent = txt || " ";
+  row.appendChild(noEl);
+  row.appendChild(txtEl);
+  return row;
+}
+
+function clearHl() {
+  document.querySelectorAll(".map-row.hl").forEach((r) => r.classList.remove("hl"));
+}
+
 async function execute() {
   const source = $("input").value;
   if (!source.trim()) { showStatus("Enter source first.", "error"); return; }
@@ -521,14 +848,18 @@ async function execute() {
     $("diff-lines").innerHTML = ""; $("diff-summary").textContent = "";
 
     // 1) generate the target code
-    let code;
+    let code, lineMap = null;
     try {
-      code = await transpile(source, srcLang, tgtLang);
-      setOut("code", code);
+      const tr = await transpile(source, srcLang, tgtLang);
+      code = tr.text;
+      lineMap = tr.map || null;
+      renderCodeLines(code);
       setTag("code", srcLang + " → " + tgtLang + " · " + code.split("\n").length + " lines");
+      renderLineMap(source, lineMap);
     } catch (e) {
-      setOut("code", "transpile error: " + e.message);
+      renderCodeLines("transpile error: " + e.message);
       setTag("code", srcLang + " → " + tgtLang);
+      renderLineMap(null, null);
       showStatus("transpile failed: " + e.message, "error");
       return;
     }
@@ -792,6 +1123,8 @@ async function applyUrlState() {
   if (p.has("target") && TARGETS.includes(p.get("target"))) tgtLang = p.get("target");
   if (p.has("code") && p.get("code")) {
     $("input").value = p.get("code");     // a custom edited source wins
+    currentExample = p.get("example") || null;
+    if (autoUpdate) execute();            // restore the shared URL → actually run it
     return;
   }
   const exName = p.get("example");
@@ -833,6 +1166,13 @@ function renderTargets() {
 }
 
 function setupInput() {
+  // cursor move in the source → highlight the generated line(s) it
+  // produced (selectionchange fires on clicks AND arrow-key moves)
+  document.addEventListener("selectionchange", () => {
+    const ta = $("input");
+    if (!ta || document.activeElement !== ta || ta.selectionStart === undefined) return;
+    highlightGeneratedForSourceLine(sourceLineAtCaret(ta));
+  });
   $("input").addEventListener("input", () => {
     if (!autoUpdate) return;
     clearTimeout(autoTimer);
@@ -902,6 +1242,56 @@ function wireTryButton() {
   });
 }
 
+// ─── bug report button ──────────────────────────────────────────
+// Same look as j.cmd's 🐞 bug toolbar button; instead of filing on
+// j.cmd it opens the sh2perl issue web form pre-filled with this
+// session, so the report carries the failing source + target +
+// generated code + stdout diff without any token leaving the page.
+function bugFence(t) {
+  return { c: "c", go: "go", rs: "rust", zig: "zig", py: "python", pl: "perl",
+           js: "javascript", sh: "sh", shir: "json", java: "java" }[t] || "";
+}
+function bugDiff() {
+  const ops = lineDiff($("out-orig").value, $("out-tgt").value);
+  if (!ops.length) return "(no stdout diff)";
+  return ops.map((o) => (o.t === "del" ? "-" : o.t === "add" ? "+" : " ") + " " + o.s).join("\n");
+}
+function wireBugButton() {
+  $("bug-btn").addEventListener("click", () => {
+    const src = $("input").value;
+    if (!src.trim()) { showStatus("enter source first, then file the bug report", "warn"); return; }
+    const first = src.split("\n").find((l) => l.trim()) || "";
+    const title = ("otranspiler: " + srcLang + " → " + tgtLang + " — " +
+      (currentExample || first.slice(0, 60) || "bug report")).slice(0, 200);
+    const body = [
+      "## What I did",
+      "Transpiled a **" + srcLang + "** script to **" + tgtLang + "** in the otranspiler web GUI.",
+      "",
+      "## Source",
+      "```sh",
+      src,
+      "```",
+      "",
+      "## Generated " + tgtLang,
+      "```" + bugFence(tgtLang),
+      otCode || "(not transpiled yet)",
+      "```",
+      "",
+      "## Stdout diff (original vs target)",
+      "```diff",
+      bugDiff(),
+      "```",
+      "",
+      "## Expected / actual",
+      "<!-- what did you expect to happen, and what happened instead? -->",
+    ].join("\n");
+    const url = "https://github.com/gmatht/sh2perl/issues/new?title=" +
+      encodeURIComponent(title) + "&body=" + encodeURIComponent(body);
+    showStatus("opening the sh2perl issue form — pre-filled (review & submit there)", "info");
+    window.open(url, "_blank");
+  });
+}
+
 // ─── copy to clipboard buttons (one per textarea) ───────────────
 function copyToClipboard(text) {
   if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -930,6 +1320,7 @@ function wireCopyButtons() {
       let text = "";
       if (id === "input") text = $("input").value;
       else if (id === "diff") text = $("diff-lines").textContent;
+      else if (id === "code") text = otCode || "";
       else if ($("out-" + id)) text = $("out-" + id).value || $("out-" + id).textContent || "";
       if (!text || text === "—") { showStatus("nothing to copy yet", "warn"); return; }
       try {
@@ -953,6 +1344,7 @@ async function init() {
   setupInput();
   wireCopyButtons();
   wireTryButton();
+  wireBugButton();
   updateTryHint();
   $("input-label").textContent = LANGS[srcLang].label + " source input";
   // nothing selected (or restored) — load the default language's first example

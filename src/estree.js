@@ -12,7 +12,95 @@
 //   ArrowFunctionExpression, TemplateLiteral, TemplateElement
 // -----------------------------------------------------------------
 
-export function estreeToJs(program) {
+// The debashl estree is STANDARD ESTree (16 node types), so a real
+// estree→JS generator — astring (single file, MIT, vendored at
+// www/vendor/astring.mjs) — replaces the hand-rolled emitter below. It
+// handles every node type (no "unsupported statement" gaps), including
+// ForStatement/ForOfStatement/SequenceExpression and the sh2.* calls.
+const astringCache = new Map();   // module url → { generate }
+let astringUrl = null;
+async function getAstring() {
+  if (astringCache.has(astringUrl)) return astringCache.get(astringUrl);
+  const url = new URL("../www/vendor/astring.mjs", import.meta.url).href;
+  const mod = await import(url);
+  astringUrl = url;
+  astringCache.set(url, mod);
+  return mod;
+}
+
+export async function estreeToJs(program) {
+  return (await estreeToJsMapped(program, null, null)).js;
+}
+
+// A final top-level statement that corresponds to a source statement:
+// declaration hoists (`let x = 0`) and lastExit bookkeeping carry no
+// source line — everything else maps to an A1 stmt in order.
+function isMeaningful(st) {
+  if (!st) return false;
+  if (st.type === "VariableDeclaration") return false;
+  if (
+    st.type === "ExpressionStatement" &&
+    st.expression &&
+    st.expression.type === "AssignmentExpression" &&
+    st.expression.left &&
+    st.expression.left.type === "MemberExpression" &&
+    st.expression.left.object &&
+    st.expression.left.object.name === "sh2"
+  ) {
+    return false; // sh2.lastExit = N bookkeeping
+  }
+  return true;
+}
+
+// estreeToJs + a source↔generated LINE MAP: `stmtLines` is the A1
+// contract's `stmt_lines` (top-level stmt index → 1-based source line);
+// `a1Stmts` is the A1 `stmts` array (for TYPE-aware correspondence —
+// the estree hoists all assignments into `let` declarations, so the
+// statement ORDER doesn't line up: A1 Assigns map to the declarations,
+// every other A1 stmt maps to the meaningful statements, each in order).
+// Returns { js, map } where map[i] = { jsStart, jsEnd, sourceLine }.
+export async function estreeToJsMapped(program, stmtLines, a1Stmts) {
+  const { lowerNativeArrays, hoistLoopLastExit, hoistCommonLastExit, dropDeadFlags, mergeInitAssignments, pushLastExitToEnd } = await import("./lower.js");
+  const lowered = lowerNativeArrays(program);
+  hoistLoopLastExit(lowered);
+  hoistCommonLastExit(lowered);
+  dropDeadFlags(lowered);
+  pushLastExitToEnd(lowered);
+  mergeInitAssignments(lowered);
+  const { generate } = await getAstring();
+  const js = generate(lowered);
+
+  const srcLineOf = new Map();
+  for (const e of stmtLines || []) srcLineOf.set(e.stmt, e.line);
+  // A1 stmt indices by kind: assigns (folded into declarations) vs the rest
+  const ASSIGN_KINDS = new Set(["Assign", "Declare", "DeclareArray"]);
+  const a1AssignIdx = [], a1OtherIdx = [];
+  (a1Stmts || []).forEach((st, i) => {
+    (ASSIGN_KINDS.has(st.type) ? a1AssignIdx : a1OtherIdx).push(i);
+  });
+  const map = [];
+  let line = 1, ai = 0, oi = 0;
+  for (const st of lowered.body || []) {
+    const one = generate({ type: "Program", body: [st] });
+    const n = one.split("\n").filter(Boolean).length;
+    let a1Idx = null;
+    if (st.type === "VariableDeclaration") {
+      if (ai < a1AssignIdx.length) a1Idx = a1AssignIdx[ai++];
+    } else if (isMeaningful(st)) {
+      if (oi < a1OtherIdx.length) a1Idx = a1OtherIdx[oi++];
+    }
+    if (a1Idx != null) {
+      const sl = srcLineOf.get(a1Idx);
+      if (sl) map.push({ jsStart: line, jsEnd: line + n - 1, sourceLine: sl });
+    }
+    line += n;
+  }
+  return { js, map };
+}
+
+// The hand-rolled emitter stays for direct sync use (tests, tiny trees)
+// and as a documented fallback — astring is the production path.
+export function estreeToJsSync(program) {
   return program.body.map(statement).join("\n");
 }
 
@@ -40,6 +128,14 @@ function statement(n) {
       return `function ${n.id.name}(${(n.params || []).map((p) => p.name).join(", ")}) ${block(n.body)}`;
     case "WhileStatement":
       return `while (${expression(n.test)}) ${statement(n.body)}`;
+    case "ForStatement": {
+      // classic three-clause for (the go/py/pl/c frontends emit this
+      // shape; the sh/zsh/fish frontends use ForOfStatement instead).
+      const init = n.init
+        ? statement(n.init).replace(/;\s*$/, "")
+        : "";
+      return `for (${init}; ${n.test ? expression(n.test) : ""}; ${n.update ? expression(n.update) : ""}) ${statement(n.body)}`;
+    }
     case "ForOfStatement": {
       // the otranspilerl estree backend's `for i in …` loop — the left is
       // a VariableDeclaration; render it without the statement's `;`.
