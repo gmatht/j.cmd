@@ -221,6 +221,21 @@ export async function runRealBash(script, opts = {}) {
           return 127;
         }
       };
+      // `$( )` command substitution: the string runs in the host shell
+      // and its stdout is captured (fed back into bash's pipe).
+      globalThis.__bash_spawn_capture = async (cmd, bashCwd) => {
+        if (!hostRun || !cmd) return { out: "", code: 127 };
+        try {
+          const useCwd = bashCwd && bashCwd !== "/" ? bashCwd : cwd;
+          const h = await hostRun(cmd, "", useCwd || "");
+          return {
+            out: h && h.out ? h.out : "",
+            code: (h && typeof h.code === "number") ? h.code : 0,
+          };
+        } catch {
+          return { out: "", code: 127 };
+        }
+      };
       // the `web` builtin → the host (fire-and-forget; output streams in
       // after the script, $? reads 0).
       globalThis.__bash_web_internal = (args) => {

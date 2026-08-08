@@ -40,9 +40,34 @@ for the whole host run:
   the script's cwd (with a fallback to the shell's cwd when bash started
   on a mount root — bash can't sit on a custom-FS mountpoint)
 
-Pipelines and `$( )` subshells still need a real fork and fail (the bypass
-only covers the top-level no-pipe case); `web <cmd>` remains as the
-fire-and-forget fallback.
+## Virtual-process port: pipelines + `$( )`
+
+The fork sites are bridged too (same asyncify trick):
+
+- **Pipelines** (`a | b | c`): `execute_pipeline` reconstructs the whole
+  pipeline as one command line and runs it in the host shell, which has
+  real pipes. Words are passed through raw (parse-time tokens — the host
+  re-parses the identical shell syntax, so quotes, `$VAR`, escapes and
+  `<<<`/`<`/`>`/`>>` redirects survive); the exit status is the last
+  element's. `lastpipe` semantics are skipped (the last element runs in
+  the host, not the current shell).
+- **Command substitution** (`$(cmd)` / `` `cmd` ``): `command_substitute`
+  runs the string in the host synchronously, writes the captured stdout
+  into the substitution pipe, and feeds the parent read path. Nested
+  `$( )` is pre-expanded bash-side (recursing through the same bridge)
+  so the host never sees its own substitution. `$?`/`last_command_subst_status`
+  carry the host status; `$(< file)` and other nofork optimizations are
+  untouched (they never fork anyway).
+- **Background `&`** and `( )` subshells still fork and fail; `web <cmd>`
+  remains the fire-and-forget fallback.
+
+## The capture gotcha
+
+The first `$( )` hook returned `(null)` on the C side even though the JS
+had the output: the asyncify rewind **restores the wasm stack**, so the
+EM_JS writing into a C stack local (`char *vout`) is lost. The capture
+writes into a caller-allocated **heap** buffer (`xmalloc(1MB)`) instead —
+heap memory survives the unwind/rewind.
 
 ## Asyncify gotchas (all solved here)
 

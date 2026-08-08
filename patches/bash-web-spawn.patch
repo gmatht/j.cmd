@@ -1,5 +1,5 @@
 diff --git a/bash-5.3/execute_cmd.c b/bash-5.3/execute_cmd.c
-index 070f511..f1f5011 100644
+index 070f511..832a73c 100644
 --- a/bash-5.3/execute_cmd.c
 +++ b/bash-5.3/execute_cmd.c
 @@ -67,6 +67,7 @@ extern int errno;
@@ -10,7 +10,7 @@ index 070f511..f1f5011 100644
  #include <y.tab.h>	/* use <...> so we pick it up from the build directory */
  #include "parser.h"
  #include "flags.h"
-@@ -84,6 +85,39 @@ extern int errno;
+@@ -84,6 +85,58 @@ extern int errno;
  #  include "test.h"
  #endif
  
@@ -45,12 +45,210 @@ index 070f511..f1f5011 100644
 +    return globalThis.__bash_spawn(args, stdin, bash_cwd ? UTF8ToString(bash_cwd) : '');
 +  });
 +});
++
++/* Same, but CAPTURES the host output (used by $( ) command substitution —
++   the string runs in the host shell and its stdout comes back as a malloc'd
++   string in *outptr; the caller frees it. Returns the exit status. */
++EM_JS (int, bash_web_spawn_capture, (char *cmd, char *buf, int buflen, char *bash_cwd), {
++  if (!globalThis.__bash_spawn_capture) return -1;
++  var c = UTF8ToString(cmd);
++  return Asyncify.handleAsync(function () {
++    return globalThis.__bash_spawn_capture(c, bash_cwd ? UTF8ToString(bash_cwd) : '').then(function (r) {
++      // NB: write into the caller-allocated HEAP buffer — the asyncify
++      // rewind restores the wasm stack, so writes to C stack locals are
++      // lost; heap memory survives the unwind/rewind.
++      if (r && r.out && r.out.length < buflen) {
++        stringToUTF8(r.out, buf, buflen);
++      }
++      return (r && typeof r.code === 'number') ? r.code : 0;
++    });
++  });
++});
 +#endif
 +
  #include "builtins/common.h"
  #include "builtins/builtext.h"	/* list of builtins */
  
-@@ -5826,6 +5860,49 @@ execute_disk_command (WORD_LIST *words, REDIRECT *redirects, char *command_line,
+@@ -2616,6 +2669,144 @@ uw_lastpipe_cleanup (void *s)
+   set_jobs_list_frozen ((intptr_t) s);
+ }
+ 
++#if defined (BASH_WEB_SPAWN)
++/* ── virtual-process port: whole-pipeline host run ──────────────────
++   A pipeline (`a | b | c`) can't fork in bash.wasm, so instead of
++   forking per element we reconstruct the whole pipeline as a single
++   quoted command line and run it in the host shell (which has real
++   pipes). Words are single-quoted so the host re-tokenises them to the
++   same arguments; per-element redirects (< > >> <<<) are preserved. */
++
++static char *
++web_quote (const char *s)
++{
++  size_t len = STRLEN (s);
++  char *out = xmalloc (len * 2 + 3);
++  char *p = out;
++  *p++ = '\'';
++  for (const char *c = s; *c; c++)
++    {
++      if (*c == '\'')
++        {
++          *p++ = '\''; *p++ = '\\'; *p++ = '\''; *p++ = '\'';
++        }
++      else
++        *p++ = *c;
++    }
++  *p++ = '\'';
++  *p = '\0';
++  return out;
++}
++
++static void
++web_append (char **dst, const char *piece)
++{
++  size_t dl = *dst ? STRLEN (*dst) : 0;
++  size_t pl = STRLEN (piece);
++  *dst = xrealloc (*dst, dl + pl + 2);
++  if (dl)
++    (*dst)[dl++] = ' ';
++  memcpy (*dst + dl, piece, pl + 1);
++}
++
++static char *
++web_words_to_string (WORD_LIST *words)
++{
++  char *res = (char *)NULL;
++  for (WORD_LIST *wl = words; wl; wl = wl->next)
++    {
++      /* Pass the word through RAW — these are the parse-time tokens, not
++         the expanded argv, so the host shell re-parses the exact same
++         syntax (quotes, $VAR, backslash escapes). Extra quoting would
++         mangle things like `echo "b"` (quotes preserved in the token) or
++         `$HOME` (must stay expandable). */
++      web_append (&res, wl->word->word ? wl->word->word : "");
++    }
++  return res;
++}
++
++static char *
++web_redirects_to_string (REDIRECT *redirects)
++{
++  char *res = (char *)NULL;
++  for (REDIRECT *rd = redirects; rd; rd = rd->next)
++    {
++      const char *op = (char *)NULL;
++      switch (rd->instruction)
++        {
++        case r_input_direction: op = "<"; break;
++        case r_output_direction: op = ">"; break;
++        case r_appending_to: op = ">>"; break;
++        case r_reading_string: op = "<<<"; break;
++        default: continue;	/* heredocs, 2>, dup, close — not portable */
++        }
++      const char *target = rd->redirectee.filename ? rd->redirectee.filename->word : (char *)NULL;
++      if (target == 0)
++        continue;
++      char *q = web_quote (target);
++      web_append (&res, op);
++      web_append (&res, q);
++      free (q);
++    }
++  return res;
++}
++
++static char *
++web_pipeline_to_string (COMMAND *command)
++{
++  char *res = (char *)NULL;
++  int first = 1;
++  COMMAND *cmd = command;
++
++  while (cmd && cmd->type == cm_connection &&
++         cmd->value.Connection && cmd->value.Connection->connector == '|')
++    {
++      COMMAND *el = cmd->value.Connection->first;
++      if (el && el->type == cm_simple)
++        {
++          char *w = web_words_to_string (el->value.Simple->words);
++          char *r = web_redirects_to_string (el->value.Simple->redirects);
++          if (!first)
++            web_append (&res, "|");
++          if (w && *w)
++            web_append (&res, w);
++          if (r && *r)
++            web_append (&res, r);
++          free (w);
++          free (r);
++        }
++      else
++        {
++          free (res);
++          return (char *)NULL;	/* nested connections / groups — not portable */
++        }
++      first = 0;
++      cmd = cmd->value.Connection->second;
++    }
++
++  /* the rightmost element */
++  if (cmd && cmd->type == cm_simple)
++    {
++      char *w = web_words_to_string (cmd->value.Simple->words);
++      char *r = web_redirects_to_string (cmd->value.Simple->redirects);
++      if (!first)
++        web_append (&res, "|");
++      if (w && *w)
++        web_append (&res, w);
++      if (r && *r)
++        web_append (&res, r);
++      free (w);
++      free (r);
++    }
++  else
++    {
++      free (res);
++      return (char *)NULL;
++    }
++  return res;
++}
++#endif /* BASH_WEB_SPAWN */
++
+ static int
+ execute_pipeline (COMMAND *command, int asynchronous, int pipe_in, int pipe_out, struct fd_bitmap *fds_to_close)
+ {
+@@ -2625,6 +2816,33 @@ execute_pipeline (COMMAND *command, int asynchronous, int pipe_in, int pipe_out,
+   struct fd_bitmap *fd_bitmap;
+   pid_t lastpid;
+ 
++#if defined (BASH_WEB_SPAWN)
++  /* Whole-pipeline host run: a top-level pipeline can't fork in
++     bash.wasm, so reconstruct it as one quoted command line and run it
++     in the host shell (real pipes there). Falls through to the normal
++     fork path when the hook is absent. */
++  if (asynchronous == 0 && pipe_in == NO_PIPE && pipe_out == NO_PIPE &&
++      command && command->type == cm_connection)
++    {
++      char *pline = web_pipeline_to_string (command);
++      if (pline)
++        {
++          char *pargv[2];
++          pargv[0] = pline;
++          pargv[1] = (char *)NULL;
++          const char *pbwd = get_string_value ("PWD");
++          int ps = bash_web_spawn (pargv, (char *)NULL, (char *)NULL, pbwd ? (char *)pbwd : (char *)"");
++          if (ps >= 0)
++            {
++              last_command_exit_value = ps;
++              free (pline);
++              return (ps);
++            }
++          free (pline);
++        }
++    }
++#endif
++
+ #if defined (JOB_CONTROL)
+   sigset_t set, oset;
+   BLOCK_CHILD (set, oset);
+@@ -5826,6 +6044,49 @@ execute_disk_command (WORD_LIST *words, REDIRECT *redirects, char *command_line,
       of COMMAND, since we want the error messages to be redirected. */
    /* If we can get away without forking and there are no pipes to deal with,
       don't bother to fork, just directly exec the command. */
@@ -100,3 +298,97 @@ index 070f511..f1f5011 100644
    if (nofork && pipe_in == NO_PIPE && pipe_out == NO_PIPE)
      pid = 0;
    else
+diff --git a/bash-5.3/subst.c b/bash-5.3/subst.c
+index e9d3e75..4b9813d 100644
+--- a/bash-5.3/subst.c
++++ b/bash-5.3/subst.c
+@@ -48,6 +48,10 @@
+ #endif
+ 
+ #include "shell.h"
++#if defined (BASH_WEB_SPAWN)
++/* defined in execute_cmd.c (EM_JS, asyncify) */
++extern int bash_web_spawn_capture (char *, char *, int, char *);
++#endif
+ #include "parser.h"
+ #include "redir.h"
+ #include "flags.h"
+@@ -7233,6 +7237,78 @@ command_substitute (char *string, int quoted, int flags)
+     }
+ #endif /* __CYGWIN__ */
+ 
++#if defined (BASH_WEB_SPAWN)
++  /* Virtual command substitution: `$(cmd)` / ``cmd`` can't fork in
++     bash.wasm, so run the string in the host shell synchronously
++     (asyncify), write the captured stdout into the pipe, and let the
++     parent read code below turn it into the substitution word. This
++     path skips the make_child/fork entirely. */
++  {
++    char *vout = (char *)xmalloc (1048576);	/* 1MB heap buffer (see EM_JS) */
++    vout[0] = '\0';
++    /* pre-expand nested $() / `` bash-side so the host never sees its
++       own (buggy) command substitution — this recurses into our own
++       interception for the inner substitutions. Only when the string
++       actually contains one, so plain `tr '\n' ','` style strings stay
++       byte-for-byte intact. */
++    char *vcmd = string;
++    if (strstr (string, "$(") || strstr (string, "`"))
++      {
++        vcmd = expand_string_to_string (string, 0);
++        if (vcmd == (char *)NULL)
++          vcmd = string;
++      }
++    const char *sbwd = get_string_value ("PWD");
++    int vstatus = bash_web_spawn_capture (vcmd, vout, 1048576, sbwd ? (char *)sbwd : (char *)"");
++    if (vcmd != string)
++      free (vcmd);
++    if (vstatus >= 0)
++      {
++        if (vout && *vout)
++          {
++            size_t olen = STRLEN (vout);
++            size_t off = 0;
++            while (off < olen)
++              {
++                ssize_t w = write (fildes[1], vout + off, olen - off);
++                if (w <= 0)
++                  break;
++                off += (size_t)w;
++              }
++          }
++        close (fildes[1]);
++        last_command_subst_status = vstatus;
++        last_command_subst_pid = dollar_dollar_pid;
++        last_made_pid = old_pid;
++        if (posixly_correct == 0)	/* POSIX interp 1150 */
++          last_command_exit_value = vstatus;	/* XXX */
++
++        /* mirror the parent read path below (no child to wait for) */
++        {
++          int vfd;
++          char *vistring;
++          int vtflag = 0;
++          begin_unwind_frame ("read-comsub-v");
++          vfd = fildes[0];
++          add_unwind_protect (uw_close, (void *) (intptr_t) vfd);
++          BLOCK_SIGNAL (SIGINT, set, oset);
++          vistring = read_comsub (fildes[0], quoted, flags, &vtflag);
++          close (fildes[0]);
++          discard_unwind_frame ("read-comsub-v");
++          UNBLOCK_SIGNAL (oset);
++          if (vout)
++            free (vout);
++          ret = alloc_word_desc ();
++          ret->word = vistring;
++          ret->flags = vtflag;
++          return ret;
++        }
++      }
++    if (vout)
++      free (vout);
++  }
++#endif /* BASH_WEB_SPAWN */
++
+ #if defined (JOB_CONTROL)
+   old_pipeline_pgrp = pipeline_pgrp;
+   /* Don't reset the pipeline pgrp if we're already a subshell in a pipeline or

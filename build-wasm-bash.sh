@@ -23,7 +23,7 @@ set -e
 cd "$(dirname "$0")/bash-wasm/build"
 emmake make \
   CFLAGS='-g -O2 -DBASH_WEB_SPAWN' \
-  LDFLAGS='-sFORCE_FILESYSTEM=1 -sEXPORTED_RUNTIME_METHODS=FS,callMain -sMODULARIZE=1 -sEXPORT_NAME=createBashModule -sASYNCIFY=1 -sASYNCIFY_IMPORTS=bash_web_spawn -sASYNCIFY_STACK_SIZE=262144 -sEXPORT_ES6=1'
+  LDFLAGS='-sFORCE_FILESYSTEM=1 -sEXPORTED_RUNTIME_METHODS=FS,callMain -sMODULARIZE=1 -sEXPORT_NAME=createBashModule -sASYNCIFY=1 -sASYNCIFY_IMPORTS=bash_web_spawn,bash_web_spawn_capture -sASYNCIFY_STACK_SIZE=262144 -sEXPORT_ES6=1'
 cp bash.wasm ../../www/wasm-bin/bash.wasm
 cp bash ../../www/vendor/bash.js
 echo "installed www/vendor/bash.js + www/wasm-bin/bash.wasm"
