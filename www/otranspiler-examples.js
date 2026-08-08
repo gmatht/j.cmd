@@ -24,7 +24,7 @@ export const EXAMPLES = {
     { name: "concat", desc: "string concatenation", code: 'a="foo"\nb="bar"\necho "$a$b"\n' },
     { name: "string-length", desc: "${#s} parameter expansion", code: 's="hello"\necho "len=${#s}"\n' },
     { name: "sequence", desc: "brace expansion 1..3", code: 'for i in {1..3}; do echo "$i"; done\n' },
-    { name: "gnu-isms", desc: "GNU-isms — bash/gnu extensions POSIX sh lacks", code: '# GNU-isms — bash/gnu extensions POSIX sh lacks\necho "$(( 5 ** 3 ))"\n(( x = 2 + 3 )); echo $x\nif [[ "a" = "a" ]]; then echo eq; fi\narr=(alpha beta gamma)\necho "${#arr[@]}"\necho "${arr[1]}"\necho $\'tab\there\'\nfor i in {1..3}; do echo "$i"; done\n' },
+    { name: "gnu-isms", desc: "GNU-isms — bash/gnu extensions POSIX sh lacks", code: '# GNU-isms — bash/gnu extensions POSIX sh lacks\necho "$(( 5 ** 3 ))"\ns="Hello World"\necho "${s,,}"\necho "${s^^}"\necho "${s:6:5}"\necho "${s/World/Bash}"\n(( x = 2 + 3 )); echo $x\nif [[ "a" = "a" ]]; then echo eq; fi\narr=(alpha beta gamma)\necho "${#arr[@]}"\necho "${arr[1]}"\necho $\'tab\there\'\nfor i in {1..3}; do echo "$i"; done\n' },
   ],
 
   zsh: [

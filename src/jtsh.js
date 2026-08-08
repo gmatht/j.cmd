@@ -309,6 +309,41 @@ const builtins = {
     return 0;
   },
 
+  async printf(args) {
+    // printf FORMAT [args…] — the bash builtin, enough for the sh
+    // renderers' %s/%d/%f/%x/%o/%c/%% plus \n \t escapes.
+    const fmt = args[0] ?? "";
+    let out = "";
+    let i = 0, a = 1;
+    while (i < fmt.length) {
+      const ch = fmt[i];
+      if (ch === "\\") {
+        const e = fmt[i + 1];
+        out += e === "n" ? "\n" : e === "t" ? "\t" : e === "r" ? "\r" : e === "\\" ? "\\" : e === "0" ? "\0" : (e || "");
+        i += 2;
+      } else if (ch === "%") {
+        const spec = fmt.slice(i + 1).match(/^[-+ #0]*\d*(?:\.\d+)?(.)/);
+        const conv = spec ? spec[1] : "%";
+        const arg = args[a++];
+        i += 1 + (spec ? spec[0].length : 0);
+        if (conv === "s") out += String(arg ?? "");
+        else if (conv === "d" || conv === "i") out += String(Math.trunc(Number(arg) || 0));
+        else if (conv === "f") out += String(Number(arg) || 0);
+        else if (conv === "x") out += Math.trunc(Number(arg) || 0).toString(16);
+        else if (conv === "X") out += Math.trunc(Number(arg) || 0).toString(16).toUpperCase();
+        else if (conv === "o") out += Math.trunc(Number(arg) || 0).toString(8);
+        else if (conv === "c") out += String(arg ?? "")[0] ?? "";
+        else if (conv === "%") out += "%";
+        else { out += "%" + (spec ? spec[0] : ""); i--; }
+      } else {
+        out += ch;
+        i++;
+      }
+    }
+    process.stdout.write(out);
+    return 0;
+  },
+
   async pwd(args) {
     process.stdout.write((fs.view ? fs.view(fs.cwd) : fs.cwd) + "\n");
     return 0;
@@ -2083,10 +2118,10 @@ async function runViaTranspiler(segmentText, stdin) {
   // statements (for/while/if/…) carry the exit code in sh2.lastExit.
   const lastIsExpr = last && last.type === "ExpressionStatement";
   const bodyJs = (lastIsExpr && body.length > 1
-    ? estreeToJs({ type: "Program", body: body.slice(0, -1) })
-    : estreeToJs({ type: "Program", body })) + "\n";
+    ? await estreeToJs({ type: "Program", body: body.slice(0, -1) })
+    : await estreeToJs({ type: "Program", body })) + "\n";
   const lastJs = lastIsExpr
-    ? "return (" + estreeToJs({ type: "Program", body: [last] }).replace(/;\s*$/, "") + ");\n"
+    ? "return (" + (await estreeToJs({ type: "Program", body: [last] })).replace(/;\s*$/, "") + ");\n"
     : "return sh2.lastExit;\n";
   const js = bodyJs + lastJs;
   const { createSh2Runtime } = await import("./sh2runtime.js");
@@ -2131,6 +2166,39 @@ async function runViaTranspiler(segmentText, stdin) {
   // The estree convention: each statement's value is the command's
   // success flag (true/false) — assignments carry their value but exit 0.
   return v === false ? 1 : 0;
+}
+
+// ─── real coreutils (uutils wasm) ────────────────────────────────
+// uutils.org's Rust coreutils compiled to wasm32-wasi (CORS-open, but
+// vendored in www/wasm-bin/ like every other wasm tool). The multi-call
+// uutils.wasm dispatches on argv[0], so a bare command this shell
+// doesn't ship runs it with argv[0] = the command name (sed ships as its
+// own single-call wasm and resolves normally once staged).
+const UUTILS_COMMANDS = new Set(["arch","b2sum","base32","base64","basename","basenc","cat","cksum","comm","cp","csplit","cut","date","dd","dir","dircolors","dirname","echo","expand","factor","fmt","fold","head","join","link","ln","ls","md5sum","mkdir","mktemp","mv","nl","nproc","numfmt","od","paste","pathchk","pr","printenv","printf","ptx","pwd","readlink","realpath","rm","rmdir","seq","sha1sum","sha224sum","sha256sum","sha384sum","sha512sum","shred","shuf","sleep","sort","split","sum","tail","tee","touch","tr","truncate","tsort","tty","uname","unexpand","uniq","unlink","vdir","wc","sed"]);
+
+let uutilsWasmPromise = null;
+function ensureUutilsWasm() {
+  uutilsWasmPromise ??= (async () => {
+    // stage wasm-bin/*.wasm into the VFS (browser auto-load does this
+    // for WASM_BIN; node stages on demand from the repo copy)
+    for (const name of ["uutils.wasm", "sed.wasm"]) {
+      const path = "/usr/bin/" + name;
+      const st = await fs.stat(path).catch(() => null);
+      if (st) continue;
+      let bytes;
+      if (typeof process !== "undefined" && process.versions && process.versions.node) {
+        const { readFile } = await import("node:fs/promises");
+        bytes = new Uint8Array(await readFile(new URL("../www/wasm-bin/" + name, import.meta.url)));
+      } else {
+        const resp = await fetch("wasm-bin/" + name);
+        if (!resp.ok) throw new Error("uutils wasm fetch " + resp.status);
+        bytes = new Uint8Array(await resp.arrayBuffer());
+      }
+      await fs.writeBlob(path, new Blob([bytes]));
+    }
+    return "/usr/bin/uutils.wasm";
+  })();
+  return uutilsWasmPromise;
 }
 
 async function runSegment(segmentText, stdin, isLast) {
@@ -2312,6 +2380,32 @@ async function runSegment(segmentText, stdin, isLast) {
       try {
         const tcode = await runViaTranspiler(segmentText, stdin);
         return { ok: tcode === 0, code: tcode, output: "" };
+      } catch { /* fall through to the normal not-found path */ }
+    }
+    // Real coreutils (uutils wasm): a bare command this shell doesn't
+    // ship natively runs the multi-call uutils.wasm with argv[0] = the
+    // command name (printf, sed, tr, cut, seq, sort, uniq, …).
+    if (!cmd.includes("/") && UUTILS_COMMANDS.has(cmd)) {
+      try {
+        await ensureUutilsWasm();
+        const uuPath = cmd === "sed" ? "/usr/bin/sed.wasm" : "/usr/bin/uutils.wasm";
+        await wasmRunner.run(uuPath, [cmd, ...args], stdin);
+        const uuOut = wasmRunner.getStdoutBytes();
+        const uuErr = wasmRunner.getStderr();
+        if (outputRedirect) {
+          await writeOut(outputRedirect, uuOut.length ? uuOut : "", appendRedirect);
+        } else if (isLast) {
+          if (uuOut.length) process.stdout.write(pipeText(uuOut));
+        } else {
+          output = uuOut;
+        }
+        if (uuErr) process.stderr.write(uuErr);
+        const uuCode = wasmRunner.getExitCode();
+        if (uuCode !== 0) {
+          process.stderr.write(`${cmd}: exited with code ${uuCode}\n`);
+          return { ok: false, code: uuCode, output: "" };
+        }
+        return { ok: true, code: 0, output };
       } catch { /* fall through to the normal not-found path */ }
     }
     const hints = {

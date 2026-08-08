@@ -1095,6 +1095,29 @@ let builtinCapture = false;
 //   pipeBytes — string → UTF-8 bytes (binary consumers)
 //   joinOut   — joins captured write chunks, preserving binary chunks
 const pipeText = (d) => (typeof d === "string" ? d : new TextDecoder().decode(d));
+
+// ─── real coreutils (uutils wasm) ────────────────────────────────
+// uutils.org's Rust coreutils compiled to wasm32-wasi (CORS-open;
+// vendored in www/wasm-bin/). The multi-call uutils.wasm dispatches on
+// argv[0], so a bare command this shell doesn't ship runs it with
+// argv[0] = the command name. sed ships as its own single-call wasm and
+// auto-loads via the normal wasm-bin/<name>.wasm fetch.
+const UUTILS_COMMANDS = new Set(["arch","b2sum","base32","base64","basename","basenc","cat","cksum","comm","cp","csplit","cut","date","dd","dir","dircolors","dirname","echo","expand","factor","fmt","fold","head","join","link","ln","ls","md5sum","mkdir","mktemp","mv","nl","nproc","numfmt","od","paste","pathchk","pr","printenv","printf","ptx","pwd","readlink","realpath","rm","rmdir","seq","sha1sum","sha224sum","sha256sum","sha384sum","sha512sum","shred","shuf","sleep","sort","split","sum","tail","tee","touch","tr","truncate","tsort","tty","uname","unexpand","uniq","unlink","vdir","wc","sed"]);
+let uutilsWasmPromise = null;
+function ensureUutilsWasm() {
+  uutilsWasmPromise ??= (async () => {
+    for (const name of ["uutils.wasm", "sed.wasm"]) {
+      const path = "/usr/bin/" + name;
+      const st = await fs.stat(path).catch(() => null);
+      if (st) continue;
+      const resp = await fetch("wasm-bin/" + name);
+      if (!resp.ok) throw new Error("uutils wasm fetch " + resp.status);
+      await fs.writeBlob(path, await resp.blob());
+    }
+    return "/usr/bin/uutils.wasm";
+  })();
+  return uutilsWasmPromise;
+}
 const pipeBytes = (d) => (typeof d === "string" ? new TextEncoder().encode(d) : d);
 const joinOut = (chunks) => {
   if (chunks.length === 0) return "";
@@ -5414,6 +5437,33 @@ async function runSegment(segmentText, stdin, isLast, target = null) {
     return { ok: false, code: 126, output: "" };
   }
   if (!resolved) {
+    // Real coreutils (uutils wasm): a bare command this shell doesn't
+    // ship natively runs the multi-call uutils.wasm with argv[0] = the
+    // command name (printf, sed, tr, cut, seq, sort, uniq, …).
+    if (!cmd.includes("/") && UUTILS_COMMANDS.has(cmd)) {
+      try {
+        await ensureUutilsWasm();
+        const uuPath = cmd === "sed" ? "/usr/bin/sed.wasm" : "/usr/bin/uutils.wasm";
+        await wasmRunner.run(uuPath, [cmd, ...args], stdin);
+        const uuCode = wasmRunner.getExitCode();
+        const uuOut = wasmRunner.getStdout();
+        const uuBytes = wasmRunner.getStdoutBytes();
+        const uuErr = wasmRunner.getStderr();
+        if (outputRedirect) {
+          await writeOut(outputRedirect, uuBytes.length ? uuBytes : "", appendRedirect);
+        } else if (isLast) {
+          if (uuOut) stdout.write(uuOut);
+        } else {
+          output = uuBytes;
+        }
+        if (uuErr) stderr.write(uuErr);
+        if (uuCode !== 0) {
+          stderr.write(`${cmd}: exited with code ${uuCode}\n`);
+          return { ok: false, code: uuCode, output: "" };
+        }
+        return { ok: true, code: 0, output };
+      } catch (e) { /* fall through to the normal not-found path */ }
+    }
     const hints = {
       "nano": "edit", "emacs": "edit",
       "more": "cat", "less": "cat",
@@ -6192,7 +6242,10 @@ async function runReplLine(line) {
       // Session replay: re-transpile and re-run every line so far plus
       // the new one, with an echo marker between old and new. Variables
       // and functions persist because the whole session re-declares
-      // them; only the output after the marker is shown.
+      // them; only the output after the marker is shown. runBash
+      // rewrites the marker echos to direct stdout writes, so the PRE
+      // marker can't clobber $? for the new line (`false` then
+      // `echo $?` must print 1, like bash).
       replState.bashOut = "";
       const session = replState.bashSession;
       const pre = replState.bashMarker;
@@ -6204,6 +6257,7 @@ async function runReplLine(line) {
         runCmd: runNestedCommand,
         stdout: { write: (s) => { replState.bashOut += s; } },
         stderr: { write: (s) => { replState.bashOut += s; } },
+        markers: [pre, post],
       });
       const pi = replState.bashOut.indexOf(pre);
       const pj = replState.bashOut.lastIndexOf(post);
@@ -7785,6 +7839,48 @@ document.addEventListener("click", (e) => {
   await getJobScheduler().restore();  // re-arm persisted cron jobs
   writeShellPrompt();  // initial prompt line in the scrollback
   input.focus();
+
+  // #try=… — the otranspiler GUI's "Try in j.cmd" entry point. The
+  // payload is { src, lang, target, name? }: write the source to
+  // /home/examples/<name>.<ext> (extension-driven source detection),
+  // then run the pipeline — transpile to <target> (output extension
+  // drives the target, no --target), compile and run where j.cmd has a
+  // runtime/compiler for that target.
+  // Build the j.cmd pipeline for a "try" — transpile <src> to <target>
+  // (the output file's extension drives the target), then compile + run
+  // where this shell has a runtime/compiler for that target.
+  function buildTryCommand(srcPath, target) {
+    const outExt = { sh: "sh", js: "js", c: "c", go: "go", py: "py", pl: "pl", java: "java", rs: "rs", zig: "zig" }[target] || "sh";
+    const out = "/tmp/out." + outExt;
+    switch (target) {
+      case "sh":  return "otranspiler " + srcPath + " " + out + " && bash " + out;
+      case "js":  return "otranspiler " + srcPath + " - --run";
+      case "c":   return "otranspiler " + srcPath + " " + out + " && cc " + out + " && ./a.wasm";
+      case "zig": return "otranspiler " + srcPath + " " + out + " && zig build-exe " + out + " -target wasm32-wasi && " + out.replace(/\.zig$/, ".wasm");
+      case "go":  return "otranspiler " + srcPath + " " + out + " && go run " + out;
+      case "py":  return "otranspiler " + srcPath + " " + out + " && python " + out;
+      case "pl":  return "otranspiler " + srcPath + " " + out + " && perl " + out;
+      default:    return "otranspiler " + srcPath + " " + out;  // java/rs — transpile only (no runtime here)
+    }
+  }
+
+  const tryParam = new URLSearchParams(location.hash.slice(1)).get("try");
+  if (tryParam) {
+    try {
+      const t = JSON.parse(tryParam);
+      const ext = { sh: "sh", zsh: "zsh", fish: "fish", go: "go", py: "py", c: "c", pl: "pl" }[t.lang] || "sh";
+      const name = (t.name || "try").replace(/[^A-Za-z0-9_.-]/g, "_") + "." + ext;
+      try { await fs.write("/home/examples/.directory", ""); } catch {}
+      const srcPath = "/home/examples/" + name;
+      await fs.write(srcPath, String(t.src || ""));
+      const cmd = buildTryCommand(srcPath, t.target || "sh");
+      await handleLine(cmd);
+      // don't re-run on refresh
+      history.replaceState(null, "", location.pathname + location.search);
+    } catch (e) {
+      process.stdout.write("try: " + (e && e.message ? e.message : e) + "\n");
+    }
+  }
 })();
 </script>
 </body>
