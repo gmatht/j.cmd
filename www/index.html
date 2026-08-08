@@ -1503,7 +1503,9 @@ function syncCwdUrl() {
   const params = new URLSearchParams(location.search);
   params.set("cwd", cwd);
   try {
-    window.history.replaceState(null, "", "?" + params.toString());
+    // preserve any #hash (a #try=… / #prefill=… share link) — only the
+    // ?cwd= query is updated here
+    window.history.replaceState(null, "", "?" + params.toString() + location.hash);
   } catch {}  // file:// / sandboxed frames may forbid URL changes — cwd still works
 }
 
@@ -7821,6 +7823,11 @@ document.addEventListener("click", (e) => {
   // is usable — exports, banner, aliases etc. take effect immediately.
   await loadConfig();
 
+  // Capture the incoming hash BEFORE anything rewrites the URL —
+  // syncCwdUrl() below replaces the URL with ?cwd=…, which would drop
+  // a #try=… / #prefill=… link the otranspiler GUI opened.
+  const bootHash = location.hash.slice(1);
+
   // Restore the working directory from ?cwd= (set by cd) so a refresh
   // lands back where you were. The URL wins over any `cd` a config
   // file did; invalid or missing paths fall back to the default. The
@@ -7834,7 +7841,10 @@ document.addEventListener("click", (e) => {
       env.PWD = target;
     } catch {}
   }
-  syncCwdUrl();
+  // Don't rewrite the URL on boot when the page was opened with a
+  // share hash (#try=… / #prefill=…): leave it exactly as opened —
+  // the URL only changes once the user actually does something.
+  if (!bootHash) syncCwdUrl();
 
   await getJobScheduler().restore();  // re-arm persisted cron jobs
   writeShellPrompt();  // initial prompt line in the scrollback
@@ -7870,7 +7880,7 @@ document.addEventListener("click", (e) => {
     }
   }
 
-  const tryParam = new URLSearchParams(location.hash.slice(1)).get("try");
+  const tryParam = new URLSearchParams(bootHash).get("try");
   if (tryParam) {
     try {
       const t = JSON.parse(tryParam);
@@ -7881,8 +7891,8 @@ document.addEventListener("click", (e) => {
       await fs.write(srcPath, String(t.src || ""));
       const cmd = buildTryCommand(srcPath, t.target || "sh");
       await handleLine(cmd);
-      // don't re-run on refresh
-      history.replaceState(null, "", location.pathname + location.search);
+      // NB: the URL is left untouched — it only changes once the user
+      // does something (cd, a command with ?cwd=, …).
     } catch (e) {
       process.stdout.write("try: " + (e && e.message ? e.message : e) + "\n");
     }
@@ -7894,7 +7904,7 @@ document.addEventListener("click", (e) => {
   // auto-run. SECURITY: running a URL-supplied command would be a
   // drive-by execution vector (rm -rf /, data exfiltration) even for a
   // toy web OS; the user reviews the line and presses Enter.
-  const prefillParam = new URLSearchParams(location.hash.slice(1)).get("prefill");
+  const prefillParam = new URLSearchParams(bootHash).get("prefill");
   if (prefillParam) {
     try {
       const p = JSON.parse(prefillParam);
@@ -7907,8 +7917,9 @@ document.addEventListener("click", (e) => {
       recordLineRedraw();
       renderInput();       // draw the pre-filled line (recordLineRedraw only records)
       input.focus();
-      // don't re-fill on refresh
-      history.replaceState(null, "", location.pathname + location.search);
+      // NB: the URL is left untouched — it only changes once the user
+      // does something (cd, a command, …); a refresh re-fills, which
+      // is the point of a share link.
     } catch (e) {
       process.stdout.write("prefill: " + (e && e.message ? e.message : e) + "\n");
     }
