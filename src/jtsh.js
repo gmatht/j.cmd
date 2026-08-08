@@ -2353,6 +2353,32 @@ async function runSegment(segmentText, stdin, isLast) {
   if (cmd === "python" && !cmd.includes("/")) {
     return await runPythonCmd(args, stdin, isLast, outputRedirect, appendRedirect);
   }
+  // /bin/bash — the REAL bash 5.3 (wasm32-emscripten), unlike the bare
+  // `bash` builtin which transpiles bash → JS. Runs -c / a VFS script /
+  // stdin through the actual bash binary.
+  if (cmd === "/bin/bash") {
+    try {
+      const { runRealBash } = await import("./realbash.js");
+      let script = "";
+      if (args[0] === "-c") script = args.slice(1).join(" ");
+      else if (args.length && !args[0].startsWith("-")) {
+        try { script = await fs.read(args[0]); } catch { script = args[0]; }
+      } else if (stdin) script = pipeText(stdin);
+      if (!script.trim()) {
+        process.stderr.write("/bin/bash: the real bash 5.3 — give it a script: /bin/bash -c 'echo hi' · /bin/bash script.sh · cat x | /bin/bash (bare `bash` is the interactive builtin)\n");
+        return { ok: false, code: 2, output: "" };
+      }
+      const r = await runRealBash(script);
+      if (outputRedirect) await writeOut(outputRedirect, r.out, appendRedirect);
+      else if (isLast) { if (r.out) process.stdout.write(r.out); }
+      else output = r.out;
+      if (r.err) process.stderr.write(r.err);
+      return { ok: r.code === 0, code: r.code, output: r.out };
+    } catch (e) {
+      process.stderr.write("/bin/bash: " + (e && e.message ? e.message : e) + "\n");
+      return { ok: false, code: 1, output: "" };
+    }
+  }
   // perl — bare `perl` with no script/stdin opens the interactive REPL
   // (the /bin perl command handles -e / script / stdin as before).
   if (cmd === "perl" && !cmd.includes("/") && args.length === 0 && !pipeText(stdin).trim()) {
@@ -3115,7 +3141,7 @@ function enterBashRepl() {
   replState.mode = "bash";
   shellHistory = rl.history.slice();
   rl.history = [];
-  process.stdout.write("bash REPL — state persists per line · exit or Ctrl-D to leave\n");
+  process.stdout.write("bash REPL — the jtsh BUILTIN (transpiles bash → JS; not /bin/bash — that's the real bash 5.3 wasm). State persists per line · exit or Ctrl-D to leave\n");
   rl.setPrompt("bash> ");
   rl.prompt();
   replState.bashSession = [];
