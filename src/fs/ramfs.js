@@ -100,6 +100,45 @@ export class RamFS {
     return [...entries].sort().filter((e, i, arr) => !(e + "/" === arr[i + 1]));
   }
 
+
+  // Synchronous variants — used by the emscripten custom-FS bridge
+  // (bash.wasm's libc file calls are sync; local mounts are in memory).
+  readSync(path) {
+    const norm = path.replace(/\/$/, "") || "/";
+    if (this.dirs.has(norm)) throw new Error("EISDIR");
+    const data = this.files.get(norm);
+    if (data === undefined) throw new Error(`ENOENT: ${path}`);
+    return data;   // Uint8Array
+  }
+  writeSync(path, content) {
+    const norm = path.replace(/\/$/, "") || "/";
+    this._ensureParent(norm);
+    const encoded = typeof content === "string" ? new TextEncoder().encode(content) : content;
+    this.files.set(norm, encoded);
+    this.mtimes.set(norm, Date.now());
+  }
+  listSync(path) {
+    const norm = path.replace(/\/$/, "") || "/";
+    if (!this.dirs.has(norm)) throw new Error(`ENOTDIR: ${path}`);
+    const entries = new Set();
+    const prefix = norm === "/" ? "/" : norm + "/";
+    for (const key of this.files.keys()) {
+      if (key.startsWith(prefix) && key !== prefix) {
+        const rest = key.slice(prefix.length);
+        const name = rest.split("/")[0];
+        if (name) entries.add(name);
+      }
+    }
+    for (const key of this.dirs) {
+      if (key.startsWith(prefix) && key !== norm) {
+        const rest = key.slice(prefix.length);
+        const name = rest.split("/")[0];
+        if (name) entries.add(name + "/");
+      }
+    }
+    return [...entries].sort().filter((e, i, arr) => !(e + "/" === arr[i + 1]));
+  }
+
   async remove(path) {
     const norm = path.replace(/\/$/, "") || "/";
     if (this.dirs.has(norm)) {

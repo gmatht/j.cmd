@@ -1260,6 +1260,42 @@ print("sum 1..10 = " .. total)
     }
   }
 
+
+  // Synchronous read/write/list for LOCAL mounts — the emscripten
+  // custom-FS bridge (bash.wasm's libc file calls are sync) uses these;
+  // remote mounts (HttpFS/GitHubFS/…) have no sync path → null/false.
+  readSync(path) {
+    try {
+      const r = this._resolve(path);
+      const m = this._findBackend(r);
+      if (!m || !m.backend.readSync) return null;
+      return m.backend.readSync(m.relative);
+    } catch {
+      return null;
+    }
+  }
+  writeSync(path, content) {
+    try {
+      const r = this._resolve(path);
+      const m = this._findBackend(r);
+      if (!m || !m.backend.writeSync) return false;
+      m.backend.writeSync(m.relative, content);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  listSync(path) {
+    try {
+      const r = this._resolve(path);
+      const m = this._findBackend(r);
+      if (!m || !m.backend.listSync) return null;
+      return m.backend.listSync(m.relative);
+    } catch {
+      return null;
+    }
+  }
+
   // ─── formatList: human-readable directory listing ───────────
 
   async formatList(path, opts = {}) {

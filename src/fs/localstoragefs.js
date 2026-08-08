@@ -201,6 +201,54 @@ export class LocalStorageFS {
     return { type: "file", size, mtime: meta && meta.mtime };
   }
 
+
+  // Synchronous variants — used by the emscripten custom-FS bridge
+  // (localStorage is sync under the hood despite the async API).
+  readSync(path) {
+    const norm = path.replace(/\/$/, "") || "/";
+    const dirs = this._dirs();
+    if (dirs.includes(norm)) throw new Error("EISDIR: Is a directory");
+    const key = this._key("file:" + norm);
+    const data = localStorage.getItem(key);
+    if (data === null) throw new Error("ENOENT");
+    if (data.startsWith(B64_MARKER)) return base64ToBytes(data.slice(B64_MARKER.length));
+    return new TextEncoder().encode(data);
+  }
+  writeSync(path, content) {
+    const norm = path.replace(/\/$/, "") || "/";
+    this._ensureParent(norm);
+    const text = typeof content === "string" ? content : new TextDecoder().decode(content);
+    localStorage.setItem(this._key("file:" + norm), text);
+    this._touch(norm);
+  }
+  listSync(path) {
+    const norm = path.replace(/\/$/, "") || "/";
+    const dirs = this._dirs();
+    if (!dirs.includes(norm)) throw new Error("ENOTDIR");
+    const prefix = norm === "/" ? "/" : norm + "/";
+    const entries = new Set();
+    const filePrefix = this._key("file:");
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(filePrefix)) {
+        const rel = k.slice(filePrefix.length);
+        if (rel.startsWith(prefix)) {
+          const rest = rel.slice(prefix.length);
+          const name = rest.split("/")[0];
+          if (name) entries.add(name);
+        }
+      }
+    }
+    for (const d of dirs) {
+      if (d.startsWith(prefix) && d !== norm) {
+        const rest = d.slice(prefix.length);
+        const name = rest.split("/")[0];
+        if (name) entries.add(name + "/");
+      }
+    }
+    return [...entries].sort().filter((e, i, arr) => !(e + "/" === arr[i + 1]));
+  }
+
   async list(path) {
     const norm = path.replace(/\/$/, "") || "/";
     const dirs = this._dirs();
