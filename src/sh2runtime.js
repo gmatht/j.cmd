@@ -272,6 +272,14 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
   // file tests use statSync (local mounts only).
   function test(expr) {
     try {
+      // `${name+x}` — the "defined" marker (batch `if defined NAME`:
+      // true even when set-but-empty, false when unset). The bracket
+      // tokenizer can't express it, so handle it before parsing.
+      const m = /^!?\$\{([A-Za-z_][A-Za-z0-9_]*)\+x\}$/.exec(String(expr));
+      if (m) {
+        const defined = vars.has(m[1]) || (env && env[m[1]] !== undefined);
+        return m[0].startsWith("!") ? !defined : defined;
+      }
       return parseTest(tokenizeTest(expr));
     } catch {
       return false;
@@ -849,6 +857,16 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
         const kept = lines.filter((l) => (invert ? !hit(l) : hit(l)));
         return kept.join("\n") + (s.endsWith("\n") ? "\n" : "");
       },
+      // fileTest(flag, path) — `[ -e/-f/-d path ]`: the estree lowers the
+      // sync file tests to this (statSync on local mounts), returning the
+      // boolean; the renderer sets lastExit from it.
+      fileTest(flag, p) {
+        let st = null;
+        try { st = fs.statSync ? fs.statSync(String(p)) : null; } catch { st = null; }
+        if (flag === "-f") return !!(st && st.type === "file");
+        if (flag === "-d") return !!(st && st.type === "dir");
+        return !!st;   // -e and anything else: exists
+      },
       // `grepMatches(text, pattern, flags)` — the `grep -o` lift: the
       // array of matched substrings (grep -o prints each match on its
       // own line). flags: "E" (pattern is ERE — as-is), "F" (fixed
@@ -962,7 +980,16 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
               else r = !!(st && st.type === "dir");
             } else if (op === "-n") r = operand.length > 0;
             else if (op === "-z") r = operand.length === 0;
-            else r = operand !== "";
+            else {
+              // `${name+x}` — the "defined" marker (batch `if defined NAME`;
+              // true even when the var is set-but-empty, false when unset)
+              const m = /^!?\$\{([A-Za-z_][A-Za-z0-9_]*)\+x\}$/.exec(op);
+              if (m) {
+                const defined = vars.has(m[1]) || (env && env[m[1]] !== undefined);
+                r = op[0] === "!" ? !defined : defined;   // `if not defined`
+              }
+              else r = operand !== "";
+            }
             lastStatus = r ? 0 : 1;
             return "";
           }

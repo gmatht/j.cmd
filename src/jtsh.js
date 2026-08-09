@@ -1953,9 +1953,13 @@ Write new commands by creating .js files in /bin/.
     const resolved = file.includes("/") ? fs._resolve(file) : fs._resolve(base + "/" + file);
     let content;
     try {
-      // readBlob (the cat path) — the read() wrapper's mount resolution
-      // is stricter (the shell's own /tmp works through readBlob).
-      content = String(await (await fs.readBlob(resolved)).text());
+      // read() first (full mount resolution); fall back to readBlob
+      // (the cat path) for writable mounts the read wrapper misses.
+      try {
+        content = await fs.read(resolved);
+      } catch {
+        content = String(await (await fs.readBlob(resolved)).text());
+      }
     } catch (e) {
       process.stderr.write(`source: ${file}: ${e.message}\n`);
       return 1;
