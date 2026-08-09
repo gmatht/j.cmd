@@ -895,11 +895,15 @@ import { materializeBinCommand } from "../src/binsync.js";
 import { formatAge } from "../src/fs/lscache.js";
 import { WasmRunner } from "../src/wasm.js";
 import { WasmerRegistry } from "../src/wasmer.js";
-import { env, expandRef } from "../src/env.js";
+import { env, expandRef, setShellStatus, getShellStatus, setLastBgPid,
+         setPositional, getPositional, getArgv0, setOption, hasOption,
+         markReadonly, isReadonly, listReadonly } from "../src/env.js";
 import { watToWasm } from "../src/wabt-loader.js";
 import { qbe2wasm } from "../src/qbe2wasm.js";
 import { bashToJS, runBash, buildSh2LibFacade } from "../src/bash2js.js";
 import { createSh2Runtime } from "../src/sh2runtime.js";
+import { getOtranspilerl } from "../src/otranspilerl.js";
+import { estreeToJs, keepVariables } from "../src/estree.js";
 import { getManPage, manIndex, searchManPages, MAN_PAGES } from "../src/manpages.js";
 import { GoRunner, createGoCommand } from "../src/go.js";
 import { createBrowserNethackCommand } from "../src/nethack.js";
@@ -1265,7 +1269,11 @@ function renderInput() {
   for (let k = 0; k < bounds.length - 1; k++) {
     const s = bounds[k], e = bounds[k + 1];
     if (s === cursorPos) inputSpan.appendChild(cursor);
-    const piece = currentLine.slice(s, e);
+    // the block cursor already displays the char at cursorPos — skip it
+    // in the following text (a segment starting at the cursor would
+    // otherwise show it TWICE: in the block and again as the first char
+    // of the piece — the "extra character" when arrowing backwards).
+    const piece = currentLine.slice(s + (s === cursorPos ? 1 : 0), e);
     if (!piece) continue;
     if (selA >= 0 && s >= selA && e <= selB) {
       const hl = document.createElement("span");
@@ -2797,11 +2805,21 @@ const builtins = {
   },
 
   async cd(args) {
-    const dir = args[0] || env.HOME;
+    let dir = args[0] || env.HOME;
+    if (dir === "-") {
+      // cd - → the previous directory (and print it, like bash)
+      if (!env.OLDPWD) {
+        stderr.write("cd: OLDPWD not set\n");
+        return 1;
+      }
+      dir = env.OLDPWD;
+    }
     try {
       await fs.list(dir);
+      env.OLDPWD = env.PWD;   // bash keeps OLDPWD for `cd -` / $OLDPWD
       fs.cwd = fs._resolve(dir);
       env.PWD = fs.cwd;
+      if (args[0] === "-") stdout.write(fs.cwd + "\n");
       syncCwdUrl();  // ?cwd= in the URL — a refresh stays in this dir
       // cd into a remote mount may have just fetched (and cached) the
       // listing — surface the API usage from that fetch, like ls does.
@@ -2833,7 +2851,7 @@ const builtins = {
     }
     let hadError = false;
     for (const arg of args) {
-      if (arg === "-p") continue; // harmless to accept alongside assignments
+      if (arg === "-p" || arg === "-n") continue; // -n: jtsh has no un-exported vars (env is the store), so it's a no-op
       const eq = arg.indexOf("=");
       const name = eq === -1 ? arg : arg.slice(0, eq);
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
@@ -2841,7 +2859,105 @@ const builtins = {
         stderr.write(`export: '${arg}': not a valid identifier\n`);
         continue;
       }
+      if (isReadonly(name)) {
+        hadError = true;
+        stderr.write(`export: ${name}: readonly variable\n`);
+        continue;
+      }
       env[name] = eq === -1 ? "" : arg.slice(eq + 1);
+    }
+    return hadError ? 1 : 0;
+  },
+
+  async set(args) {
+    // set                     — print shell variables
+    // set -- a b c            — set the positional parameters ($1 $2 $3)
+    // set a b c               — same (first non-option arg starts $1)
+    // set -eux / set +eux     — option flags (accepted and stored; -x is
+    //                           honoured natively, -e/-u are no-ops in an
+    //                           interactive shell by POSIX design)
+    // set -o errexit|nounset|xtrace — long forms
+    if (args.length === 0) {
+      for (const key of Object.keys(env).sort()) {
+        stdout.write(`${key}=${env[key]}\n`);
+      }
+      return 0;
+    }
+    const OPTION_NAMES = { errexit: "e", nounset: "u", xtrace: "x", noglob: "f", allexport: "a" };
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (a === "--") { setPositional(args.slice(i + 1)); return 0; }
+      if (a === "-o" || a === "+o") {
+        const name = args[i + 1];
+        if (!name) { stderr.write(`set: ${a}: needs an option name\n`); return 2; }
+        const f = OPTION_NAMES[name];
+        if (!f) { stderr.write(`set: -o: ${name}: invalid option name\n`); return 2; }
+        setOption(f, a === "-o");
+        i++;
+        continue;
+      }
+      if (a.startsWith("-") || a.startsWith("+")) {
+        const on = a[0] === "-";
+        for (const ch of a.slice(1)) setOption(ch, on);
+        continue;
+      }
+      // first non-option argument → the positional parameters
+      setPositional(args.slice(i));
+      return 0;
+    }
+    return 0;
+  },
+
+  async readonly(args) {
+    // readonly [NAME[=VALUE]...] — mark variables read-only.
+    // `readonly` / `readonly -p` — list them. Reassignment (export /
+    // transpiled setVar) refuses with "readonly variable" and $? = 1.
+    if (args.length === 0 || (args.length === 1 && args[0] === "-p")) {
+      for (const name of listReadonly().sort()) {
+        const v = env[name] !== undefined ? env[name] : "";
+        stdout.write(`readonly ${name}=${v}\n`);
+      }
+      return 0;
+    }
+    let hadError = false;
+    for (const arg of args) {
+      if (arg === "-p") continue;
+      const eq = arg.indexOf("=");
+      const name = eq === -1 ? arg : arg.slice(0, eq);
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+        hadError = true;
+        stderr.write(`readonly: '${arg}': not a valid identifier\n`);
+        continue;
+      }
+      if (eq !== -1) {
+        if (isReadonly(name) && env[name] !== undefined) {
+          hadError = true;
+          stderr.write(`readonly: ${name}: readonly variable\n`);
+          continue;
+        }
+        env[name] = arg.slice(eq + 1);
+      }
+      markReadonly(name);
+    }
+    return hadError ? 1 : 0;
+  },
+
+  async unset(args) {
+    // unset [NAME...] — remove variables from the environment AND the
+    // transpiled persistent state (env / otVars / otRt.sh2.vars stay in
+    // sync, so native and transpiled code agree). Flags (-v/-f) are
+    // accepted and ignored; `unset` with no args is a no-op, like bash.
+    let hadError = false;
+    for (const arg of args) {
+      if (arg.startsWith("-")) continue;
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(arg)) {
+        hadError = true;
+        stderr.write(`unset: '${arg}': not a valid identifier\n`);
+        continue;
+      }
+      delete env[arg];
+      otVars.delete(arg);
+      try { delete otRt.sh2.vars[arg]; } catch {}
     }
     return hadError ? 1 : 0;
   },
@@ -3089,10 +3205,11 @@ const builtins = {
   },
 
   async grep(args) {
-    // grep [-i] [-n] [-v] [-c] [-l] [-r] [-e PATTERN] [--] PATTERN [FILE...]
+    // grep [-i] [-n] [-v] [-c] [-l] [-r] [-o] [-e PATTERN] [--] PATTERN [FILE...]
     // With no FILE arguments, searches stdin (pipe input).
     let ignoreCase = false, lineNumber = false, invert = false;
     let count = false, filesWithMatches = false, recursive = false;
+    let onlyMatching = false;
     let pattern = null, patternExplicit = false;
     const patterns = [];
     const files = [];
@@ -3106,6 +3223,7 @@ const builtins = {
       l: () => filesWithMatches = true,
       r: () => recursive = true,
       R: () => recursive = true,
+      o: () => onlyMatching = true,
     };
 
     for (let i = 0; i < args.length; i++) {
@@ -3117,6 +3235,7 @@ const builtins = {
       else if (!optsDone && (a === "-c" || a === "--count")) count = true;
       else if (!optsDone && (a === "-l" || a === "--files-with-matches")) filesWithMatches = true;
       else if (!optsDone && (a === "-r" || a === "-R" || a === "--recursive")) recursive = true;
+      else if (!optsDone && (a === "-o" || a === "--only-matching")) onlyMatching = true;
       else if (!optsDone && (a === "-e" || a === "--regexp")) {
         if (i + 1 >= args.length) {
           stderr.write(`grep: option requires an argument -- '${a}'\n`);
@@ -3180,6 +3299,21 @@ const builtins = {
         stdout.write((showLabel ? label + ":" : "") + hits.length + "\n");
       } else if (filesWithMatches) {
         if (hits.length > 0) stdout.write(label + "\n");
+      } else if (onlyMatching && !invert) {
+        // -o: print each match on its own line (GNU: no effect with -v).
+        // Skip zero-length matches to avoid a position walk.
+        const gm = new RegExp(re.source, re.flags.includes("g") ? re.flags : re.flags + "g");
+        for (const h of hits) {
+          let m;
+          while ((m = gm.exec(h.text)) !== null) {
+            if (m[0].length === 0) { gm.lastIndex++; continue; }
+            stdout.write(
+              (showLabel ? label + ":" : "") +
+              (lineNumber ? h.num + ":" : "") +
+              m[0] + "\n"
+            );
+          }
+        }
       } else {
         for (const h of hits) {
           stdout.write(
@@ -3767,6 +3901,150 @@ Loops, conditionals, variables, arithmetic and pipes work:
     } catch (e) {
       if (e instanceof InterruptError) throw e;
       stderr.write(`bash: ${e.message}\n`);
+      return 1;
+    }
+  },
+
+  // ─── translateBatch: Windows batch → sh ──────────────────────
+  // Lets a REAL .bat file source usefully: `set X=v` → X="v",
+  // `set /a X=e` → X=$((e)), `%X%` → $X, and `rem`/`@echo`/`:label`/
+  // `goto`/`call` → comments (batch subroutines need an interpreter).
+  translateBatch(content) {
+    const lines = String(content).split("\n");
+    const out = [];
+    for (const raw of lines) {
+      const line = raw.trim();
+      if (!line) { out.push(""); continue; }
+      if (/^@echo\b/i.test(line) || /^rem\b/i.test(line) || /^::/.test(line)) continue;
+      if (/^:/.test(line)) continue;                       // labels
+      if (/^(goto|call)\b/i.test(line)) continue;          // control flow
+      let m = /^set\s+\/a\s+([A-Za-z_][A-Za-z0-9_]*)=(.*)$/i.exec(line);
+      if (m) {
+        // constant arithmetic evaluates here (SCORE=2+3 → SCORE="5"); the
+        // $(( )) form would be hoisted into a let and lost to the harvest
+        const expr = m[2].replace(/[()]/g, " ").trim();
+        if (/^[-+*\/\d\s.]+$/.test(expr)) {
+          let val;
+          try { val = Function("return (" + expr + ")")(); } catch { val = undefined; }
+          if (typeof val === "number" && Number.isFinite(val)) { out.push(`${m[1]}="${val}"`); continue; }
+        }
+        out.push(`${m[1]}=$(( ${m[2]} ))`);
+        continue;
+      }
+      m = /^set\s+\/p\s+([A-Za-z_][A-Za-z0-9_]*)=/.exec(line);
+      if (m) { out.push(`${m[1]}=""`); continue; }
+      m = /^set\s+([A-Za-z_][A-Za-z0-9_]*)=(.*)$/i.exec(line);
+      if (m) { out.push(`${m[1]}="${m[2].trim()}"`); continue; }
+      const expand = (s) => s.replace(/%(?:%|([A-Za-z_][A-Za-z0-9_]*))%/g, (_, n) => (n ? "$" + n : "%"));
+      out.push(expand(line));
+    }
+    return out.join("\n");
+  },
+
+  async source(args) {
+    // source FILE [args…] — run a script in THIS session, like bash's
+    // `.` / source. Any transpiler source language works: .sh runs
+    // in-process, .zsh/.fish/.go/.py/.c/.pl go through the unified
+    // frontend — so `source profile.zsh` just works. The script runs
+    // against the persistent transpiled runtime: variables it sets
+    // survive for later lines and native commands (harvested back into
+    // the shell's env), and extra args become the script's $1… (the
+    // caller's positional params are restored afterwards).
+    if (args.length === 0 || args[0] === "-h" || args[0] === "--help") {
+      stdout.write(`source — run a script in the current session (bash . / source)
+
+Usage:
+  source FILE [args…]
+  . FILE [args…]
+
+FILE is transpiled to JS and executed against the persistent shell
+runtime, so state set inside it survives (like real sourcing). The
+extension picks the source frontend:
+  .sh (in-process) · .zsh · .fish · .go · .py · .c · .pl (unified
+  frontend — first use may build it with the in-browser Go toolchain)
+Extra args become the script's $1… (the caller's are restored).
+`);
+      return 0;
+    }
+    const file = args[0];
+    let content;
+    try {
+      content = await fs.read(file);
+    } catch (e) {
+      stderr.write(`source: ${file}: ${e.message}\n`);
+      return 1;
+    }
+    const ext = String(file).split(".").pop().toLowerCase();
+    const lang = { sh: "sh", zsh: "zsh", fish: "fish", go: "go", py: "py", c: "c", pl: "pl", js: "js", bat: "bat" }[ext] || "sh";
+    if (lang === "js") return await runJsSourceContent(content, args.slice(1));
+    if (lang === "bat") { content = translateBatch(content); lang = "sh"; }
+    const lib = await getOtranspilerl();
+    let program, a1 = null;
+    try {
+      if (lang === "sh") {
+        // seed session vars so $x reads compile live (same as the line fallback)
+        const seed = [...otVars].map(([k, v]) =>
+          Array.isArray(v)
+            ? `${k}=(${v.map((x) => JSON.stringify(String(x))).join(" ")});`
+            : `${k}=${JSON.stringify(String(v))};`
+        ).join("");
+        const src = seed + String(content);
+        program = JSON.parse(lib.transpile(src, "sh", "js"));
+        keepVariables(program, [...otVars].filter(([, v]) => Array.isArray(v)).map(([k]) => k));
+        try { a1 = JSON.parse(lib.shir(src)); } catch {}
+      } else {
+        const { ensureBusyboxWasm, busyboxA1 } = await import("../src/busybox.js");
+        const fetchBytes = async () => new Uint8Array(
+          await (await fetch(new URL("wasm-bin/otranspiler-busybox.wasm", import.meta.url))).arrayBuffer());
+        const wasmPath = await ensureBusyboxWasm(fs, {
+          goRunner, goCmd, fetchBytes, onLog: (m) => stderr.write(m + "\n"),
+        });
+        a1 = await busyboxA1(String(content), lang, { fs, wasmPath, goRunner });
+        program = JSON.parse(lib.render(JSON.stringify(a1), "js"));
+      }
+    } catch (e) {
+      stderr.write(`source: ${file}: ${e.message}\n`);
+      return 1;
+    }
+    // A1 pre-harvest (like the line fallback): deterministic assignments
+    // — catches dead-stored arrays that emit no JS at all.
+    const lineAssigned = new Set();
+    const lineCaptured = new Set();
+    try {
+      for (const st of (a1 && a1.stmts) || []) {
+        if (st && st.type === "Assign" && st.targets && st.targets[0]) {
+          const t = st.targets[0];
+          if (t.var && !(t.indices && t.indices.length)) {
+            lineAssigned.add(t.var);
+            const val = a1LiteralValue(st.expr);
+            if (val !== undefined) { otVars.set(t.var, val); lineCaptured.add(t.var); }
+          }
+        }
+      }
+    } catch {}
+    // The estree convention: each statement's value is the command's
+    // success flag (true/false). Make the LAST statement's value the
+    // exit code — declarations don't carry one (a bare `x=5` exits 0).
+    const body = program.body || [];
+    const last = body[body.length - 1];
+    const lastIsExpr = last && last.type === "ExpressionStatement";
+    const bodyJs = (lastIsExpr
+      ? (body.length > 1 ? await estreeToJs({ type: "Program", body: body.slice(0, -1) }) : "")
+      : await estreeToJs({ type: "Program", body })) + "\n";
+    const lastJs = lastIsExpr
+      ? "return (" + (await estreeToJs({ type: "Program", body: [last] })).replace(/;\s*$/, "") + ");\n"
+      : "return sh2.lastExit;\n";
+    const js = bodyJs + lastJs;
+    try {
+      // bash semantics: `. file` (no extra args) shares the caller's $@
+      // — a `set --` inside lands in the caller; `. file a b` gives the
+      // script its own $@ and restores the caller's afterwards.
+      return await evalOnOtRt(js, {
+        lineAssigned, lineCaptured,
+        sourcePositional: args.length > 1 ? { args: args.slice(1), argv0: file } : null,
+      });
+    } catch (e) {
+      stderr.write(`source: ${file}: ${e.message}\n`);
       return 1;
     }
   },
@@ -4770,6 +5048,9 @@ Loops, conditionals, variables, arithmetic and pipes work:
   }
 };
 
+// `.` is bash's dot-command — the same builtin as `source`.
+builtins["."] = builtins.source;
+
 // ─── Command Resolution ─────────────────────────────────────────
 
 // Unprivileged users (su nobody/daemon/guest/...) may only run
@@ -4836,6 +5117,29 @@ async function resolveCommandExact(name) {
       if (denied) return denied;
       return { type: "jsfile", path: resolved };
     }
+    // .sh files (and files with a #! shebang line) run through the bash
+    // transpiler — the shell's native format for bash scripts.
+    if (/\.sh$/i.test(resolved)) {
+      const denied = customExecDenied(resolved);
+      if (denied) return denied;
+      return { type: "sh", path: resolved };
+    }
+    // A #! shebang makes any reasonably-sized TEXT file runnable. Skip
+    // known binary extensions, and never read a huge file just to look
+    // at its first line (fs.read supports { limit }).
+    if (st &&
+        !/\.(jpg|jpeg|png|gif|webp|bmp|ico|mp3|mp4|ogg|webm|wav|zip|gz|tgz|wasm|pdf|ttf|otf|woff2?|bin|exe|jar|class)$/i.test(resolved) &&
+        (!st.size || st.size < 1024 * 1024)) {
+      try {
+        const head = String(await fs.read(resolved, { limit: 256 }));
+        const m = /^#!\s*(\S+)/.exec(head.split("\n")[0] || "");
+        if (m) {
+          const denied = customExecDenied(resolved);
+          if (denied) return denied;
+          return { type: "sh", path: resolved, shebang: m[1] };
+        }
+      } catch {}
+    }
     // The file exists but the shell can't run it (no interpreter here).
     return {
       type: "badpath",
@@ -4862,6 +5166,21 @@ async function resolveCommandExact(name) {
   }
 
   if (builtins[name]) return { type: "builtin", fn: builtins[name] };
+
+  // A function defined by a sourced file / transpiled line (the
+  // persistent otRt's sh2.functions map — bash's function table) shadows
+  // commands, like in bash: `source fn.c` defining `testc()` then a bare
+  // `testc` runs the body with the args as $1..$N.
+  if (otRt && otRt.sh2 && otRt.sh2.functions && otRt.sh2.functions.has(name)) {
+    return {
+      type: "builtin",
+      fn: async (args) => {
+        const v = await otRt.sh2.fnCall(name, args);
+        return (v === false ? 1 : (v === true || v === undefined ? 0 : Number(v) || 0));
+      },
+    };
+  }
+
   // Walk the command path from $PATH (colon-separated, like POSIX)
   for (const dir of searchPaths) {
     try {
@@ -4975,11 +5294,29 @@ function tokenize(segment) {
       continue;
     }
     if (ch === "$") {
-      // $NAME / ${NAME} expansion outside quotes
+      // $NAME / ${NAME} expansion outside quotes. The RESULT is
+      // field-split on IFS (bash semantics): `x="a b"; echo $x` passes
+      // two words. Quoted expansions (in the inDouble branch) never
+      // split; a mid-word expansion (`pre$x`) appends unsplit.
       const ref = expandRef(segment, i);
-      cur += ref.value;
       i = ref.end - 1;
-      started = true;
+      if (started) {
+        cur += ref.value;
+      } else {
+        const ifs = env.IFS !== undefined ? String(env.IFS) : " \t\n";
+        const val = String(ref.value);
+        if (ifs === "" || val === "") {
+          cur += val;
+          started = true;
+        } else {
+          const cls = ifs.replace(/[\]\\^$.*+?{}()|[\]-]/g, "\\$&");
+          const pieces = val.split(new RegExp("[" + cls + "]+")).filter((p) => p !== "");
+          if (pieces.length === 0) continue;   // empty/unset var → no field (bash)
+          for (let k = 0; k < pieces.length - 1; k++) tokens.push(pieces[k]);
+          cur = pieces[pieces.length - 1];
+          started = true;
+        }
+      }
       continue;
     }
     if (ch === ">") {
@@ -5351,6 +5688,71 @@ async function globExpandTokens(tokens) {
 // stdout. Returns { ok, code, output } — `code` is the command's exit
 // status (0 success), `output` is the captured stdout that should be
 // fed to the next segment (empty for the last segment).
+// ─── runShellScript: execute a whole bash SCRIPT (.sh file / #! file) ──
+// Transpiles the entire file with the unified otranspilerl compiler (the
+// same engine as the line fallback — it handles backtick seq ranges and
+// arithmetic in for-headers that the debashcl path mis-joins), then runs
+// it against a FRESH sh2 runtime: script variables stay script-local,
+// like bash. Returns the exit code.
+async function runShellScript(content, opts = {}) {
+  const { args = [], argv0 = "script", runCmd = runNestedCommand } = opts;
+  const lib = await getOtranspilerl();
+  const program = JSON.parse(lib.transpile(String(content), "sh", "js"));
+  // Restore dead-stored arrays: debashl drops the `arr=(…)` assignment
+  // when the reads are bare (`arr.length`, `arr[1]`), so the A1's literal
+  // values are pre-seeded into the fresh runtime and the reads are
+  // rewritten to arrayIndex/arrayLen (keepVariables).
+  const scriptArrays = [];
+  const arrayVals = new Map();
+  try {
+    const a1 = JSON.parse(lib.shir(String(content)));
+    for (const st of a1.stmts || []) {
+      if (st && st.type === "Assign" && st.targets && st.targets[0]) {
+        const t = st.targets[0];
+        if (t.var && !(t.indices && t.indices.length)) {
+          const val = a1LiteralValue(st.expr);
+          if (Array.isArray(val)) { scriptArrays.push(t.var); arrayVals.set(t.var, val); }
+        }
+      }
+    }
+  } catch {}
+  keepVariables(program, scriptArrays);
+  const body = program.body || [];
+  const last = body[body.length - 1];
+  const lastIsExpr = last && last.type === "ExpressionStatement";
+  const bodyJs = (lastIsExpr
+    ? (body.length > 1 ? await estreeToJs({ type: "Program", body: body.slice(0, -1) }) : "")
+    : await estreeToJs({ type: "Program", body })) + "\n";
+  const lastJs = lastIsExpr
+    ? "return (" + (await estreeToJs({ type: "Program", body: [last] })).replace(/;\s*$/, "") + ");\n"
+    : "return sh2.lastExit;\n";
+  const js = bodyJs + lastJs;
+  const rt = createSh2Runtime({ fs, env, shellExec: runCmd, stdout, stderr, args, argv0 });
+  for (const [name, vals] of arrayVals) { try { rt.sh2.setArray(name, vals); } catch {} }
+  const proc = {
+    stdout, stderr, pid: 1,
+    argv: [argv0, ...args],
+    env: env || {},
+    cwd: () => (fs.cwd !== undefined ? fs.cwd : "/"),
+    exit(code) { const e = new Error("__otranspiler_exit__" + code); e.exitCode = Number(code) || 0; throw e; },
+    chdir(p) {
+      if (fs && fs.cwd !== undefined) {
+        fs.cwd = String(p).replace(/\/+$/, "") || "/";
+        try { env.PWD = fs.cwd; } catch {}
+      }
+    },
+  };
+  const fn = new Function("fs", "env", "process", "sh2", `return (async () => { ${js} })();`);
+  let v;
+  try {
+    v = await fn(fs, env, proc, rt.sh2);
+  } catch (e) {
+    if (e && e.exitCode !== undefined) return e.exitCode;  // `exit N`
+    throw e;
+  }
+  return v === false ? 1 : 0;
+}
+
 async function runSegment(segmentText, stdin, isLast, target = null) {
   let tokens;
   try {
@@ -5524,6 +5926,56 @@ async function runSegment(segmentText, stdin, isLast, target = null) {
   rawStdin = stdin;
 
   try {
+    if (resolved.type === "sh") {
+      // .sh script or a #!-shebang file. bash/sh → run through the bash
+      // transpiler; any other interpreter is re-dispatched as
+      // `<interp> <script> <args>` through the normal command machinery.
+      let interp = "bash";
+      if (resolved.shebang) {
+        const words = resolved.shebang.split(/\s+/);
+        interp = words[words.length - 1].split("/").pop();
+        if (interp.startsWith("-")) interp = "bash";   // `#!/bin/sh -e` style
+      }
+      if (interp !== "bash" && interp !== "sh" && interp !== "dash" && interp !== "ash" && interp !== "ksh") {
+        const q = (w) => "'" + String(w).replace(/'/g, "'\\''") + "'";
+        const quoted = [interp, q(resolved.path), ...args.map((a) => q(a))].join(" ");
+        return await runSegment(quoted, stdin, isLast, target);
+      }
+      let content;
+      try {
+        content = await fs.read(resolved.path);
+      } catch (e) {
+        stderr.write(`${cmd}: ${e.message}\n`);
+        return { ok: false, code: 1, output: "" };
+      }
+      // Capture output for pipes/redirects, like the builtin branch.
+      const origWrite = stdout.write;
+      const chunks = [];
+      const capture = outputRedirect || !isLast;
+      let captureFn = null;
+      if (capture) {
+        const preCapture = stdout.write;
+        captureFn = (chunk) => {
+          if (stdout.write === captureFn) { chunks.push(chunk); return true; }
+          return preCapture.call(stdout, chunk);
+        };
+        stdout.write = captureFn;
+      }
+      let code = 1;
+      try {
+        code = await runShellScript(content, { args, argv0: cmd, runCmd: runNestedCommand });
+      } catch (e) {
+        stderr.write(`${cmd}: ${e.message}\n`);
+      } finally {
+        if (capture) {
+          if (stdout.write === captureFn) stdout.write = origWrite;
+          const captured = joinOut(chunks);
+          if (outputRedirect) await writeOut(outputRedirect, captured, appendRedirect);
+          else output = captured;
+        }
+      }
+      return { ok: code === 0, code, output };
+    }
     if (resolved.type === "wasm") {
       try {
         // cc — the REAL C compiler: cproc (wasm32-wasi) → QBE IR →
@@ -5940,12 +6392,339 @@ async function handleLine(line, initialStdin, target = null) {
   for (const seg of segments) {
     if (seg.bg) {
       const job = getBgJobs().launch(seg.text);
+      setLastBgPid(job.pid);   // $! — last background job's pid
       write(`[${job.id}] ${job.pid}\n`);
     } else {
       exitCode = await runConditionalList(seg.text, initialStdin, target);
     }
   }
   return exitCode;
+}
+
+// ─── otranspilerl fallback: bash concepts jtsh's parser doesn't know ──
+// Lines carrying bash-only syntax (statement separators (`;`), the
+// for/while/if/case keywords, `$(…)` command substitution, `[[ ]]`) —
+// route through the unified otranspilerl library (the real debashl core
+// + estree backend): sh → A1 shIR → ESTree → JS, executed with the sh2.*
+// runtime. `x=5; echo $x`, `for i in …; do …; done`, `if …; then …; fi`
+// and friends just work; constructs needing the sync bridge (command
+// substitution, pipelines, redirection) refuse loudly with a pointer to
+// `bash`.
+// The sh2 runtime + process shim are created ONCE and shared by every
+// call, so state (functions, sh2.lastExit, cwd via fs) survives across
+// lines. NB: plain shell variables (x=5) are emitted as bare JS
+// identifiers in each eval's function scope, so they reset per line.
+let otRt = null;     // persistent createSh2Runtime result
+let otProc = null;   // process shim for the generated JS
+
+// Lazily build the persistent transpiled-bash runtime (shared by the
+// line fallback, sourcing, and JS sources). Created once; state —
+// functions (sh2.functions), sh2.lastExit, positionals, vars — survives
+// across lines.
+async function ensureOtRuntime() {
+  if (otRt) return;
+  // The native estree backend writes through process.stdout.write and
+  // reads process.env/argv — provide a shim (there is no node process
+  // in the browser).
+  otProc = {
+    stdout,
+    stderr,
+    pid: 1,
+    argv: ["jtsh"],
+    env: env || {},
+    cwd: () => (fs.cwd !== undefined ? fs.cwd : "/"),
+    // `exit N` in the generated JS — must NOT kill the shell.
+    exit(code) {
+      const e = new Error("__otranspiler_exit__" + code);
+      e.exitCode = Number(code) || 0;
+      throw e;
+    },
+    // `cd DIR` / `pwd` — the native estree drives cwd through process
+    chdir(p) {
+      if (fs && fs.cwd !== undefined) {
+        fs.cwd = String(p).replace(/\/+$/, "") || "/";
+        try { env.PWD = fs.cwd; } catch {}   // keep $PWD honest for native lines
+      }
+    },
+    cwd() { return (fs.cwd !== undefined ? fs.cwd : "/") || "/"; },
+  };
+  otRt = createSh2Runtime({
+    fs, env, shellExec: runNestedCommand,
+    stdout, stderr, args: [], argv0: "sh",
+  });
+}
+
+// ─── runJsSourceContent: source a .js / .bat file as NATIVE JavaScript ──
+// jtsh's native format is JS — this runs the file against the persistent
+// runtime so `sh2.vars.X = …`, `sh2.functions.set("name", fn)` and bare
+// global assignments survive the source. Returns the exit code.
+async function runJsSourceContent(content, srcArgs) {
+  await ensureOtRuntime();
+  try { otRt.sh2.positional = (srcArgs && srcArgs.length ? srcArgs : getPositional()); } catch {}
+  try { otRt.sh2.argv0 = getArgv0(); } catch {}
+  const fn = new Function("fs", "env", "process", "sh2", `return (async () => { ${content} })();`);
+  const beforeGlobals = new Set(Object.keys(globalThis));
+  const beforeRtVars = new Set(Object.keys(otRt.sh2.vars));
+  let v;
+  try {
+    v = await fn(fs, env, otProc, otRt.sh2);
+  } catch (e) {
+    if (e && e.exitCode !== undefined) return e.exitCode;  // `exit N`
+    throw e;
+  }
+  // harvest bare global assignments (`x = 5` → globalThis.x) AND
+  // sh2.vars writes (`sh2.vars.X = …`) into the shell's persistent state
+  const keepable = (val) => typeof val === "string" || typeof val === "number" || Array.isArray(val);
+  for (const k of Object.keys(otRt.sh2.vars)) {
+    if (beforeRtVars.has(k) || isReadonly(k)) continue;
+    const val = otRt.sh2.vars[k];
+    if (keepable(val) && !k.startsWith("__")) otVars.set(k, Array.isArray(val) ? val : String(val));
+  }
+  for (const k of Object.keys(globalThis)) {
+    if (beforeGlobals.has(k)) continue;
+    const val = globalThis[k];
+    if (keepable(val) && !k.startsWith("__")) otVars.set(k, Array.isArray(val) ? val : String(val));
+    try { delete globalThis[k]; } catch {}
+  }
+  for (const [k, val] of otVars) {
+    if (isReadonly(k)) continue;
+    try { env[k] = Array.isArray(val) ? val.join(" ") : String(val); } catch {}
+  }
+  setShellStatus(v === false ? 1 : 0);
+  return v === false ? 1 : 0;
+}
+// Persistent shell-variable state across transpiled lines. The debashl
+// compiler folds `$x` reads to "" when x isn't assigned in the same
+// program, so each line is SEEDED with the known variables (assignments
+// prepended — reads then compile live), and after the run the variables
+// the line set are HARVESTED back: bare assignments (`x = 5`) land on
+// globalThis (sloppy new Function), `sh2.vars.*` writes land in the
+// runtime's map — both are diffed against a before-snapshot.
+let otVars = new Map();
+
+// The A1 contract's Assign expr → literal value, or undefined when
+// computed (Str → string; a "…" with no interpolations (the shIR
+// lowers `name="world"` to Interpolate{parts:[lit]}) → the literal;
+// setArray Call → array of strings; anything else → the runtime diffs
+// below harvest it if it materializes).
+function a1LiteralValue(expr) {
+  if (!expr) return undefined;
+  if (expr.type === "Str") return String(expr.value ?? "");
+  if (expr.type === "Interpolate" && Array.isArray(expr.parts)) {
+    // concatenate literal parts + statically resolvable getVar parts
+    // (`DEVDIR=$HOME/dev` — the eval hoists a `let DEVDIR`, invisible
+    // to the runtime diff, so resolve it here from env/otVars)
+    let out = "";
+    for (const p of expr.parts) {
+      if (p && p.kind === "lit") { out += String(p.text ?? ""); continue; }
+      if (p && p.kind === "expr" && p.expr && p.expr.type === "Call" &&
+          p.expr.func === "getVar" && p.expr.args && p.expr.args[0] && p.expr.args[0].type === "Str") {
+        const name = p.expr.args[0].value;
+        if (otVars.has(name)) out += Array.isArray(otVars.get(name)) ? otVars.get(name).join(" ") : String(otVars.get(name));
+        else if (env[name] !== undefined) out += String(env[name]);
+        else out += "";
+        continue;
+      }
+      return undefined;   // computed part we can't resolve statically
+    }
+    return out;
+  }
+  if (expr.type === "Call" && expr.func === "setArray" &&
+      expr.args && expr.args[1] && expr.args[1].type === "Array") {
+    const out = [];
+    for (const el of expr.args[1].elements || []) {
+      if (el && el.type === "Str") out.push(String(el.value ?? ""));
+      else return undefined;
+    }
+    return out;
+  }
+  return undefined;
+}
+
+// Does the line carry bash syntax jtsh's tokenizer doesn't handle?
+// (Quoted text is ignored — `echo 'a;b'` is one argument, not bash.)
+function looksLikeBash(text) {
+  // strip ONLY single quotes — double quotes are not inert: ${…} /
+  // $(…) inside them is real bash (`echo "${a[1]}"` must route to the
+  // transpiler, while `echo 'a;b'` is one literal argument)
+  const unquoted = String(text).replace(/'(?:[^'\\]|\\.)*'/g, "");
+  // a leading `name=value` (no space before `=`) is an assignment, not a
+  // command — bash always parses it that way (`a = 5` stays a command
+  // named `a` because the tokenizer splits on whitespace)
+  if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(unquoted)) return true;
+  if (/\b(for|while|until|if|case|select|function)\b/.test(unquoted)) return true;
+  if (/[;{}]/.test(unquoted)) return true;                 // `;` separator, `{ … }` group
+  if (/\$\(|\[\[/.test(unquoted)) return true;          // $(…) / [[ ]]
+  if (/\[[^\]]*\]/.test(unquoted)) return true;           // [ … ] test
+  return /\$\{/.test(unquoted);
+}
+
+// Transpile a bash line with otranspilerl and execute the generated JS.
+// Returns the exit code; throws when the library refuses or the shape
+// needs the sync bridge (caller falls back to the normal pipeline path).
+async function runViaTranspiler(segmentText, stdin) {
+  const lib = await getOtranspilerl();
+  // Seed: declare the known variables in-program so $x reads compile
+  // live instead of folding to "". Scalars seed as `k="v";`; arrays as
+  // `k=("a" "b");` so debashl emits a real array declaration.
+  const seed = [...otVars].map(([k, v]) =>
+    Array.isArray(v)
+      ? `${k}=(${v.map((x) => JSON.stringify(String(x))).join(" ")});`
+      : `${k}=${JSON.stringify(String(v))};`
+  ).join("");
+  const src = seed + segmentText;
+  const program = JSON.parse(lib.transpile(src, "sh", "js"));
+  // KEEP_VARIABLES: route known array state through the persistent
+  // runtime store (bare `a[1]`/`a.length` reads → arrayIndex/arrayLen;
+  // `let a = […]` declarations also sync to sh2.vars).
+  keepVariables(program, [...otVars].filter(([, v]) => Array.isArray(v)).map(([k]) => k));
+  // A1 harvest: deterministic assignment values — catches dead-stored
+  // arrays (`a=(1 2 3);` alone emits no JS at all) that never reach the
+  // runtime diffs below.
+  const lineAssigned = new Set();   // names this line's A1 says were assigned
+  const lineCaptured = new Set();   // names a VALUE was captured for this line
+  try {
+    const a1 = JSON.parse(lib.shir(src));
+    for (const st of a1.stmts || []) {
+      if (st && st.type === "Assign" && st.targets && st.targets[0]) {
+        const t = st.targets[0];
+        if (t.var && !(t.indices && t.indices.length)) {
+          lineAssigned.add(t.var);
+          const val = a1LiteralValue(st.expr);
+          if (val !== undefined) { otVars.set(t.var, val); lineCaptured.add(t.var); }
+        }
+      }
+    }
+  } catch {}
+  // The estree convention: each statement's value is the command's
+  // success flag (true/false). Make the LAST statement's value the exit
+  // code — declarations don't carry one (a bare `x=5` exits 0).
+  const body = program.body || [];
+  const last = body[body.length - 1];
+  // ExpressionStatement → its value is the success flag; control-flow
+  // statements (for/while/if/…) carry the exit code in sh2.lastExit.
+  const lastIsExpr = last && last.type === "ExpressionStatement";
+  // When the last statement is an ExpressionStatement it is wrapped in
+  // `return (…)` below — emitting the full body here too would run it
+  // TWICE (debashing a single `echo hi` into one statement used to
+  // print twice). bodyJs carries everything BEFORE the last statement.
+  const bodyJs = (lastIsExpr
+    ? (body.length > 1
+        ? await estreeToJs({ type: "Program", body: body.slice(0, -1) })
+        : "")
+    : await estreeToJs({ type: "Program", body })) + "\n";
+  const lastJs = lastIsExpr
+    ? "return (" + (await estreeToJs({ type: "Program", body: [last] })).replace(/;\s*$/, "") + ");\n"
+    : "return sh2.lastExit;\n";
+  const js = bodyJs + lastJs;
+  return await evalOnOtRt(js, { lineAssigned, lineCaptured });
+}
+
+// Run generated JS against the PERSISTENT transpiled runtime (otRt) and
+// harvest shell state back into otVars/env — shared by runViaTranspiler
+// (one bash line) and the `source` builtin (a whole file, any source
+// language). `lineAssigned`/`lineCaptured` name the vars the source's
+// A1 harvest already dealt with, so the post-eval diff skips untouched
+// pre-seeded state. `sourcePositional` = { args, argv0 } for
+// `source FILE args…`: the script sees $1… = args, and the NATIVE
+// positional params are restored afterwards (bash semantics — a sourced
+// script's `shift`/`set --` must not clobber the caller's $@).
+async function evalOnOtRt(js, { lineAssigned = new Set(), lineCaptured = new Set(), sourcePositional = null } = {}) {
+  await ensureOtRuntime();
+  const fn = new Function("fs", "env", "process", "sh2", `
+    return (async () => { ${js} })();
+  `);
+  // pre-seed the runtime store so native-store reads (sh2.vars.x,
+  // sh2.arrayIndex / sh2.arrayLen) see the persistent state. Arrays go
+  // through sh2.setArray — `sh2.vars.a = …` would stringify them.
+  // preseedVars records what we planted, so the post-eval diff can tell
+  // a line's OWN write (value changed) from untouched pre-seed state.
+  const preseedVars = new Map();
+  for (const [k, v] of otVars) {
+    try {
+      if (Array.isArray(v)) { otRt.sh2.setArray(k, v); preseedVars.set(k, v); }
+      else { otRt.sh2.vars[k] = v; preseedVars.set(k, String(v)); }
+    } catch {}
+  }
+  try { otRt.sh2.lastExit = getShellStatus(); } catch {}   // native $? → transpiled
+  const savedPositional = getPositional();                  // the caller's $1..$9
+  const savedArgv0 = getArgv0();                            // the caller's $0
+  try {
+    otRt.sh2.positional = sourcePositional ? sourcePositional.args : savedPositional;
+    otRt.sh2.argv0 = sourcePositional ? sourcePositional.argv0 : savedArgv0;
+  } catch {}
+  let v;
+  let exitCode = null;
+  const beforeGlobals = new Set(Object.keys(globalThis));
+  const beforeRtVars = new Set(Object.keys(otRt.sh2.vars));
+  try {
+    v = await fn(fs, env, otProc, otRt.sh2);
+  } catch (e) {
+    if (e && e.exitCode !== undefined) exitCode = e.exitCode;  // `exit N`
+    else throw e;
+  }
+  // Introspection: harvest the variables this line set. Bare assignments
+  // (`x = 5`) became implicit globals (sloppy function scope); the
+  // `sh2.vars.* = …` writes went into the runtime's map. Strings,
+  // numbers and arrays are shell data — functions and other objects
+  // (the emitter's `__fn_*` closures) are skipped and dropped, keeping
+  // the page global scope clean.
+  const keepable = (val) => typeof val === "string" || typeof val === "number" || Array.isArray(val);
+  // runtime store first: it holds the line's OWN writes (sh2.setVar /
+  // sh2.setArray — the scalar re-assignment of an array name lands here,
+  // not on globalThis). Skip untouched state: a pre-seeded name this
+  // line didn't assign, OR whose value is still exactly the pre-seed
+  // (the line's write went elsewhere — a bare `x = …` lands on
+  // globalThis, which the next loop captures).
+  const sameValue = (a, b) => {
+    if (Array.isArray(a) && Array.isArray(b)) {
+      return a.length === b.length && a.every((x, i) => String(x) === String(b[i]));
+    }
+    return String(a) === String(b);
+  };
+  for (const k of Object.keys(otRt.sh2.vars)) {
+    const val = otRt.sh2.vars[k];
+    if (!keepable(val) || k.startsWith("__")) continue;
+    if (beforeRtVars.has(k) && !lineAssigned.has(k)) continue;
+    if (preseedVars.has(k) && sameValue(preseedVars.get(k), val)) continue;
+    if (isReadonly(k)) continue;   // setVar refuses these anyway
+    otVars.set(k, Array.isArray(val) ? val : String(val));
+    lineCaptured.add(k);
+  }
+  // globalThis last: bare assignments land here — but so does the seed's
+  // own `a = [...]` leftover, which is STALE when the line re-assigned
+  // via setVar/setArray or a literal. Names already captured this line
+  // are not overridden; everything else is harvested and cleaned up.
+  for (const k of Object.keys(globalThis)) {
+    if (beforeGlobals.has(k)) continue;
+    const val = globalThis[k];
+    if (!lineCaptured.has(k) && keepable(val) && !k.startsWith("__")) {
+      otVars.set(k, Array.isArray(val) ? val : String(val));
+      lineCaptured.add(k);
+    }
+    try { delete globalThis[k]; } catch {}   // ALWAYS clean up — even when the A1
+                                             // already captured the value, the
+                                             // global must not linger (it would
+                                             // shadow the next line's re-assign)
+  }
+  // mirror the persistent state into the shell's env so NATIVE lines
+  // (`echo $a` without bash syntax) see transpiled variables too — the
+  // native tokenizer expands $NAME from the shared env object. Readonly
+  // names are skipped (never overwrite them).
+  for (const [k, v] of otVars) {
+    if (isReadonly(k)) continue;
+    try { env[k] = Array.isArray(v) ? v.join(" ") : String(v); } catch {}
+  }
+  // positional: a sourced script's $@ is its own (restore the caller's);
+  // a plain transpiled line round-trips native → runtime → native so
+  // `set --` still lands.
+  try { setPositional(sourcePositional ? savedPositional : otRt.sh2.positional,
+                     sourcePositional ? savedArgv0 : otRt.sh2.argv0); } catch {}
+  if (exitCode !== null) { setShellStatus(exitCode); return exitCode; }  // `exit N`
+  // The estree convention: each statement's value is the command's
+  // success flag (true/false) — assignments carry their value but exit 0.
+  setShellStatus(v === false ? 1 : 0);   // transpiled $? → native
+  return v === false ? 1 : 0;
 }
 
 // Run one conditional list (`&&` / `||`-joined pipelines) — the
@@ -5976,7 +6755,24 @@ async function runConditionalList(text, initialStdin, target = null) {
       if (parts[i].op === "&&" && exitCode !== 0) continue;
       if (parts[i].op === "||" && exitCode === 0) continue;
     }
+    // Bash-only syntax (statement separators, for/if keywords, $(…)…)
+    // routes through the otranspilerl fallback BEFORE the tokenizer —
+    // jtsh's own parser doesn't understand it natively.
+    if (hasOption("x")) stderr.write(`+ ${parts[i].text}\n`);   // set -x
+    if (looksLikeBash(parts[i].text)) {
+      try {
+        exitCode = await runViaTranspiler(parts[i].text, initialStdin);
+      } catch (e) {
+        // The library refused (outside its subset) or the shape needs the
+        // sync bridge — fall back to the normal pipeline, which reports
+        // the not-found / literal exactly as before.
+        exitCode = await runPipeline(parts[i].text, initialStdin, target);
+      }
+      setShellStatus(exitCode);   // $? reflects every command, native or transpiled
+      continue;
+    }
     exitCode = await runPipeline(parts[i].text, initialStdin, target);
+    setShellStatus(exitCode);
   }
   return exitCode;
 }
