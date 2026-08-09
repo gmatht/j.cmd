@@ -715,6 +715,23 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       // $1..$9 / $@ — the native estree reads sh2.positional
       get positional() { return scriptArgs; },
       set positional(v) { scriptArgs = Array.isArray(v) ? v.map(String) : []; },
+      // the native store the otranspilerl estree backend reads/writes
+      // (`sh2.vars.x` — see sh2perl/src/estree.rs native-store fold;
+      // generated code adds the env fallback itself as
+      // `sh2.vars.x ?? (process.env.x ?? "")`, so a Map miss must read
+      // as undefined, not ""). A live Proxy over the internal Map keeps
+      // every setVar/getVar path and the native property access in sync.
+      vars: new Proxy(Object.create(null), {
+        get: (t, k) => (typeof k === "string" ? vars.get(k) : undefined),
+        set: (t, k, v) => { if (typeof k === "string") setVar(k, v); return true; },
+        has: (t, k) => typeof k === "string" && vars.has(k),
+        deleteProperty: (t, k) => { if (typeof k === "string") vars.delete(k); return true; },
+        ownKeys: () => [...vars.keys()],
+        getOwnPropertyDescriptor: (t, k) =>
+          vars.has(k)
+            ? { value: vars.get(k), writable: true, enumerable: true, configurable: true }
+            : undefined,
+      }),
       // minimal sync bridges for the native estree backend's common shapes
       _g: (name) => getVar(name),
       // node-style fs bridge for the native estree backend (file tests,

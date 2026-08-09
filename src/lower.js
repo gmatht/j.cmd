@@ -125,6 +125,19 @@ export function lowerNativeArrays(program) {
         }
         return;
       }
+      if (fn === "arrayLen") {
+        // `${#arr[@]}` lowers to sh2.arrayLen("arr") in the current
+        // estree backend (the older sh2.param("slice", "#arr", "@", "")
+        // shape is handled below) — SAME len read: without this, the
+        // length call survives the lowering while the array itself went
+        // native (never in the runtime Map) and reads 0.
+        const arg = n.arguments[0];
+        if (arg && arg.type === "Literal") {
+          nameRefs.push({ node: n, kind: "len", name: String(arg.value) });
+          return;
+        }
+        return;
+      }
       if (fn === "param") {
         const op = n.arguments[0];
         const target = n.arguments[1];
@@ -436,6 +449,28 @@ export function dropDeadFlags(program) {
   const body = program.body || [];
   const last = body[body.length - 1];
 
+  // True only for expressions with NO observable effect (no calls, no
+  // assignments, no member reads that could be getters). The trailing
+  // element of `(cmd, flag)` is only a dead flag when it is pure — an
+  // if-statement lowers to `(test, lastExit === 0 ? BRANCH : false)`
+  // where the tail is the BRANCH conditional (stdout.write, lastExit
+  // assigns…), which popping would DELETE. Never pop a side-effecting
+  // tail.
+  const pureExpr = (e) => {
+    if (!e) return false;
+    switch (e.type) {
+      case "Literal": return true;
+      case "Identifier": return true;
+      case "TemplateLiteral": return e.expressions.every(pureExpr);
+      case "UnaryExpression": return pureExpr(e.argument);
+      case "BinaryExpression":
+      case "LogicalExpression": return pureExpr(e.left) && pureExpr(e.right);
+      case "ConditionalExpression":
+        return pureExpr(e.test) && pureExpr(e.consequent) && pureExpr(e.alternate);
+      default: return false;
+    }
+  };
+
   const processStmt = (stmt) => {
     if (
       !stmt ||
@@ -454,7 +489,10 @@ export function dropDeadFlags(program) {
       else stmt._dead = true;
       return;
     }
-    seq.expressions.pop(); // the trailing success flag — unconsumed here
+    // the trailing success flag — unconsumed here — but ONLY when it is
+    // pure (see the header comment: branch conditionals aren't flags)
+    if (!pureExpr(seq.expressions[seq.expressions.length - 1])) return;
+    seq.expressions.pop();
     if (seq.expressions.length === 1) stmt.expression = seq.expressions[0];
   };
 
@@ -498,9 +536,41 @@ export function dropDeadFlags(program) {
 // before the candidate assignment, the assignment is a top-level `=`
 // (not `+=` etc., not inside a block/loop/function), and the RHS does
 // not reference `v` (a self-reference would hit the TDZ in the folded
-// initializer). Runs per statement-list (program / blocks / functions).
+// initializer). CRITICAL: the fold moves the RHS evaluation to the
+// declaration site, so the RHS must be PURE — a side-effecting call
+// (`sh2.date(…)`, `String(…).replace(…)`) or sequence would run
+// EARLIER (before the interleaved statements) and change observable
+// order (errors, sh2.lastExit, reads of later-mutated vars). Runs per
+// statement-list (program / blocks / functions).
 
 export function mergeInitAssignments(program) {
+  // True for expressions that can be evaluated with no observable
+  // effect and cannot throw: literals, pure arithmetic/string ops on
+  // pure parts, and plain variable reads.
+  const isPureExpr = (e) => {
+    if (!e) return false;
+    switch (e.type) {
+      case "Literal": return true;
+      case "Identifier": return true;
+      case "TemplateLiteral": return e.expressions.every(isPureExpr);
+      case "UnaryExpression": return isPureExpr(e.argument);
+      case "BinaryExpression":
+      case "LogicalExpression": return isPureExpr(e.left) && isPureExpr(e.right);
+      case "ConditionalExpression": return isPureExpr(e.test) && isPureExpr(e.consequent) && isPureExpr(e.alternate);
+      case "ArrayExpression": return e.elements.every((x) => !x || isPureExpr(x));
+      default: return false;   // calls, member reads (getters), sequences, assignments, …
+    }
+  };
+  const readsVars = (e, out) => {
+    walk(e, (n) => { if (n.type === "Identifier") out.add(n.name); });
+  };
+  const stmtWrites = (s, out) => {
+    walk(s, (n) => {
+      if (n.type === "AssignmentExpression" && n.left && n.left.type === "Identifier") out.add(n.left.name);
+      if (n.type === "UpdateExpression" && n.argument && n.argument.type === "Identifier") out.add(n.argument.name);
+      if (n.type === "VariableDeclarator" && n.id && n.id.type === "Identifier") out.add(n.id.name);
+    });
+  };
   const mergeList = (stmts) => {
     if (!Array.isArray(stmts)) return;
     // name → { declIdx, declarator, declStmt }
@@ -556,11 +626,28 @@ export function mergeInitAssignments(program) {
         continue; // first touch is not a plain `name = ...`
       }
       // RHS must not reference `name` (TDZ in the folded initializer)
+      // and must be side-effect-free (the fold moves its evaluation to
+      // the declaration site — see the header comment).
       let selfRef = false;
       walk(expr.right, (n) => {
         if (n.type === "Identifier" && n.name === name) selfRef = true;
       });
       if (selfRef) continue;
+      if (!isPureExpr(expr.right)) continue;
+      // identifier reads in the RHS must not be written by any statement
+      // between the declaration and the assignment (the read would move
+      // earlier, seeing the pre-write value)
+      const reads = new Set();
+      readsVars(expr.right, reads);
+      if (reads.size) {
+        let clobbered = false;
+        for (let k = info.i + 1; k < firstTouch.j && !clobbered; k++) {
+          const w = new Set();
+          stmtWrites(stmts[k], w);
+          for (const r of reads) if (w.has(r)) { clobbered = true; break; }
+        }
+        if (clobbered) continue;
+      }
       info.d.init = expr.right;
       drop.add(firstTouch.j);
     }
