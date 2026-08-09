@@ -86,6 +86,17 @@
   }
   .lang-pill:hover { background: #545b62; }
   .lang-pill.active { background: var(--accent); box-shadow: 0 2px 4px rgba(0,122,204,0.3); }
+  /* frontend→js gate colours (mirror the target-btn gate classes — the
+     legend on the wide panel defines the thresholds once) */
+  .lang-pill.gate-green { background: #28a745; }
+  .lang-pill.gate-green:hover { background: #1e7e34; }
+  .lang-pill.gate-green.active { background: #1e7e34; box-shadow: 0 2px 4px rgba(40,167,69,0.3); }
+  .lang-pill.gate-yellow { background: #ffc107; color: #333; }
+  .lang-pill.gate-yellow:hover { background: #e0a800; }
+  .lang-pill.gate-yellow.active { background: #e0a800; box-shadow: 0 2px 4px rgba(224,168,0,0.3); }
+  .lang-pill.gate-red { background: #dc3545; }
+  .lang-pill.gate-red:hover { background: #c82333; }
+  .lang-pill.gate-red.active { background: #c82333; box-shadow: 0 2px 4px rgba(220,53,69,0.3); }
   .category h3 {
     color: #495057; font-size: 12px; text-transform: uppercase;
     letter-spacing: 0.5px; border-bottom: 1px solid var(--border);
@@ -110,6 +121,14 @@
   }
   .example-btn:hover { background: #545b62; transform: translateX(2px); }
   .example-btn.active { background: var(--accent); }
+  /* example gate colours — 🟢 passes on the currently selected backend,
+     🔴 fails, grey = no cached gate result (sync-backend-gates.sh) */
+  .example-btn.gate-green { background: #28a745; }
+  .example-btn.gate-green:hover { background: #1e7e34; transform: translateX(2px); }
+  .example-btn.gate-green.active { background: #1e7e34; }
+  .example-btn.gate-red { background: #dc3545; }
+  .example-btn.gate-red:hover { background: #c82333; transform: translateX(2px); }
+  .example-btn.gate-red.active { background: #c82333; }
   .runtime-note { font-size: 11px; color: var(--muted); margin-top: 12px; line-height: 1.5; }
 
   /* ── main ── */
@@ -268,7 +287,7 @@
         <button id="run-btn">Transpile</button>
         <button id="auto-update-toggle" class="auto-update-toggle">Auto: ON</button>
       </div>
-      <div class="gate-legend">gate: 🟢 ≥90% · 🟡 &gt;50% · 🔴 ≤50% of the sh2loop backend corpus — hover a target for its pass/total</div>
+      <div class="gate-legend">gate: 🟢 ≥90% · 🟡 &gt;50% · 🔴 ≤50% — hover a target for its sh2loop backend pass/total, a source pill for its frontend→js pass/total<br>example: 🟢 passes on the selected backend · 🔴 fails · ⚪ not measured (frontend corpora are gated for the js render)</div>
     </div>
 
     <div class="status" id="status"></div>
@@ -313,7 +332,7 @@ import { GoRunner } from "../src/go.js";
 import { WasmRunner } from "../src/wasm.js";
 import { ensureBusyboxWasm, busyboxA1 } from "../src/busybox.js";
 import { pyExec } from "../src/py.js";
-import { LANGS, getExamples } from "./otranspiler-examples.js?v=5";  // v=5: added nospace demo (bump on example changes)
+import { LANGS, getExamples } from "./otranspiler-examples.js?v=6";  // v=6: added grep_p demo (bump on example changes)
 
 // ─── state ──────────────────────────────────────────────────────
 let srcLang = "sh";
@@ -328,17 +347,17 @@ const TARGETS = ["js", "pl", "c", "go", "py", "java", "rs", "zig", "sh", "shir"]
 const TARGETS_TEXT = ["sh", "pl", "c", "go", "py", "java", "rs", "zig"];
 
 // ── backend gate status ─────────────────────────────────────────
-// pass/total on the shared corpus (sh2perl/examples/*.sh + frontend
-// testdata — 539 for the core-only corpus, 613 with frontend testdata),
-// from `setup_backends.sh --backend-gate <lang>` (as of 2026-08-08).
-// js/perl are the production backends (gate GREEN: 100% of renderable);
-// the scaffolds are the per-worktree renderers. shir is the neutral A1
-// contract itself — always 100%. Refresh: run the gate for each lang
-// and update pass/total here.
+// pass/total on the shared sh corpus (sh2perl/examples/*.sh + frontend
+// testdata — the examples-only corpus is 532, 614 with the frontends),
+// from the cached sh2loop gate results (~llm/sh2loop/.{estree,perl,sh}
+// _pass_set, refreshed here at load from examples/gate.json — run
+// ./sync-backend-gates.sh to regenerate). js/perl are the production
+// backends; the scaffolds are the per-worktree renderers. shir is the
+// neutral A1 contract itself — always 100%.
 const BACKEND_STATUS = {
-  js:   { pass: 535, total: 539, name: "estree" },
-  pl:   { pass: 535, total: 539, name: "perl" },
-  sh:   { pass: 498, total: 613, name: "sh" },
+  js:   { pass: 530, total: 532, name: "estree" },
+  pl:   { pass: 413, total: 532, name: "perl" },
+  sh:   { pass: 520, total: 614, name: "sh" },
   c:    { pass: 440, total: 613, name: "c" },
   go:   { pass: 0,   total: 613, name: "go", note: "no renderer wired yet" },
   py:   { pass: 0,   total: 613, name: "python" },
@@ -356,6 +375,126 @@ function backendGrade(lang) {
   const cls = pct >= 0.9 ? "green" : pct > 0.5 ? "yellow" : "red";
   return { cls, label: s.name + " " + Math.round(pct * 100) + "% (" + s.pass + "/" + s.total + ")" + (s.note ? " — " + s.note : "") };
 }
+
+// ── frontend→js gate (source pills) ───────────────────────────────
+// How well each SOURCE frontend translates to the DEFAULT JS output:
+// frontend(testdata file) → A1 → estree render → run → stdout diff vs
+// the native run (bash / go run / python3 / fish / zsh / perl / gcc).
+// Computed by sh2loop's ./frontend-js-gate.sh (as of 2026-08-09).
+// `total` = runnable programs only (pass + fail); `skip` = parse-only
+// testdata fragments whose translation isn't observable via output.
+const FRONTEND_STATUS = {
+  sh:   { pass: 77, total: 78, name: "posix-sh-go", note: "0 fragments skipped" },
+  go:   { pass: 2,  total: 12, name: "go-sh",      note: "64 parse-only fragments skipped; 2/12 runnable pass" },
+  py:   { pass: 67, total: 70, name: "py-sh-go",   note: "1 fragment skipped" },
+  fish: { pass: 70, total: 73, name: "fish-sh-go", note: "2 fragments skipped" },
+  zsh:  { pass: 73, total: 75, name: "zsh-sh-go",  note: "0 fragments skipped" },
+  pl:   { pass: 65, total: 65, name: "perl-sh-go", note: "1 fragment skipped" },
+  c:    { pass: 31, total: 31, name: "c-sh-go",    note: "0 fragments skipped" },
+};
+// Same thresholds as the backend gate (defined once in the legend).
+function frontendGrade(lang) {
+  const s = FRONTEND_STATUS[lang];
+  if (!s) return { cls: null, label: "no frontend gate data" };
+  const pct = s.pass / s.total;
+  const cls = pct >= 0.9 ? "green" : pct > 0.5 ? "yellow" : "red";
+  return { cls, label: s.name + " → js: " + Math.round(pct * 100) + "% (" + s.pass + "/" + s.total + ")" + (s.note ? " — " + s.note : "") };
+}
+// ── example gate colours ────────────────────────────────────────
+// www/examples/gate.json (regenerate: ./sync-backend-gates.sh) — the
+// cached sh2loop gate results:
+//   backends  — ~llm/sh2loop/.{estree,perl,sh}_pass_set (sh-source
+//               corpus → target render, setup_backends.sh
+//               --backend-gate); applies on any target with a cache.
+//   frontends — ~llm/sh2loop/.frontend_gate.tsv (frontend → A1 → js
+//               render + run vs native, frontend-js-gate.sh); only
+//               measures the DEFAULT js render, so it colours the
+//               non-sh corpora when the target is js.
+// Each sidebar example button is coloured 🟢 (passes on the
+// currently selected backend) / 🔴 (fails) / ⚪ (no cached gate).
+let GATE = null;              // { backends:{…}, frontends:{ dir: {total,pass,results} } }
+const GATE_SETS = {};         // backend → { pass:Set, corpus:Set }
+// corpus dir → the backend-gate relative path prefix (sh-source
+// corpora only — the frontend corpora are gated per-file instead).
+const GATE_DIR_PREFIX = {
+  sh2perl: "sh2perl/examples/",
+  "sh-posix": "frontends/posix-sh-go/testdata/",
+};
+async function loadGate() {
+  try {
+    const resp = await fetch(new URL("examples/gate.json", import.meta.url));
+    GATE = resp.ok ? await resp.json() : null;
+  } catch { GATE = null; }
+  for (const k of Object.keys(GATE_SETS)) delete GATE_SETS[k];
+  if (GATE) for (const [lang, info] of Object.entries(GATE.backends || {})) {
+    GATE_SETS[lang] = {
+      pass: new Set(info.passPaths || []),
+      corpus: new Set(info.corpusPaths || []),
+    };
+    // keep the target pills honest — refresh pass/total for the
+    // backends that have cached results
+    if (BACKEND_STATUS[lang]) {
+      BACKEND_STATUS[lang].pass = info.pass;
+      BACKEND_STATUS[lang].total = info.total;
+    }
+  }
+  renderTargets();
+  colourExamples();
+}
+// gate status of one example — { cls, label } | null (no cached gate)
+function gateStatus(dir, name) {
+  // 1) sh-source corpora → the current backend's pass set
+  const prefix = GATE_DIR_PREFIX[dir];
+  if (prefix && GATE) {
+    const s = GATE_SETS[tgtLang];
+    if (s) {
+      const path = prefix + name;
+      if (s.pass.has(path)) return { cls: "gate-green", label: "passes the " + tgtLang + " backend gate" };
+      if (s.corpus.has(path)) return { cls: "gate-red", label: "fails the " + tgtLang + " backend gate" };
+    }
+  }
+  // 2) every source frontend's testdata corpus → the frontend gate
+  //    (frontend → A1 → js render + run vs native; measured for the
+  //    default js render only — see frontend-js-gate.sh in sh2loop)
+  if (tgtLang === "js" && GATE && GATE.frontends) {
+    const f = GATE.frontends[dir];
+    const v = f && f.results && f.results[name];
+    if (v === "PASS") return { cls: "gate-green", label: "passes the " + srcLang + " frontend gate (→ js render + run)" };
+    if (v === "FAIL") return { cls: "gate-red", label: "fails the " + srcLang + " frontend gate (→ js render + run)" };
+  }
+  return null;                         // no cached gate for this example
+}
+// (re)paint every corpus example button + header count for the current target
+function colourExamples() {
+  document.querySelectorAll(".example-btn[data-gate-dir]").forEach((btn) => {
+    const g = gateStatus(btn.dataset.gateDir, btn.dataset.gateName);
+    btn.classList.remove("gate-green", "gate-red");
+    if (g) btn.classList.add(g.cls);
+    btn.title = btn.dataset.gateHint + (g ? " — " + g.label : " — no cached gate result");
+  });
+  document.querySelectorAll(".example-count[data-gate-dir]").forEach((c) => {
+    const t = corpusCountText(c.dataset.gateDir);
+    if (t) c.textContent = t;
+  });
+}
+// corpus-header pass text for the current target (or null = no data)
+function corpusCountText(dir) {
+  // sh-source corpora → the current backend's pass set
+  const prefix = GATE_DIR_PREFIX[dir];
+  const s = prefix && GATE_SETS[tgtLang];
+  if (s) {
+    let pass = 0, total = 0;
+    for (const p of s.corpus) if (p.startsWith(prefix)) { total++; if (s.pass.has(p)) pass++; }
+    if (total) return total + " examples · " + pass + " pass";
+  }
+  // frontend corpora → the frontend gate (measured for the js render)
+  if (tgtLang === "js" && GATE && GATE.frontends) {
+    const f = GATE.frontends[dir];
+    if (f) return f.total + " examples · " + f.pass + " pass";
+  }
+  return null;
+}
+
 // Which languages have a browser runtime we can execute for the stdout diff.
 // (java/rs/zig render code but have no browser runtime — the diff notes it.)
 const RUNNABLE = { sh: 1, zsh: 1, fish: 1, go: 1, py: 1, c: 1, pl: 1, js: 1 };
@@ -473,21 +612,21 @@ function buildTextMap(text, tgt, a1Stmts, stmtLines) {
     }
   };
 
-  // find the body END (the line before the closing brace of main() /
-  // the trailing bookkeeping / the trailing TODO-count comment), then the
-  // body occupies the LAST `total` lines up to it.
-  let closeIdx = lines.length;                   // default: end of output
-  for (let j = lines.length - 1; j >= 0; j--) {
-    const t = lines[j].trim();
-    if (t === "}" || t === "};") { closeIdx = j; break; }
-    if (/\d+ construct\(s\) lowered to TODO/.test(t)) { closeIdx = j; break; }
-  }
-  // trailing bookkeeping inside main: `_ = i`, `return;`, `return 0;`, `_ = n;`
-  let bk = 0;
-  for (let j = closeIdx - 1; j >= 0 && /^_\s*=\s*\w+;?$|^return(\s+\d+)?;?$/.test(lines[j].trim()); j--) bk++;
+  // sh target: a FLAT script (no main() wrapper, no line comments).
+  // The leading polyfill prologue (shebang, comments, and the
+  // grep_p/_num/_readlink/_cmp helper functions) is NOT part of the
+  // A1 statement body — the body is the LAST `total` lines (trailing
+  // blanks and main()-style bookkeeping excluded). The old closeIdx
+  // search stopped at the polyfill's closing `}`, mapping every click
+  // into the polyfill instead of the program.
   const total = (a1Stmts || []).reduce((s, x) => s + count(x, tgt), 0);
-  const bodyEnd = closeIdx - bk;                 // line index of the last body line
-  const bodyStart = Math.max(0, bodyEnd - total);
+  let last = lines.length - 1;
+  while (last >= 0 && (
+    lines[last].trim() === "" ||
+    /^_\s*=\s*\w+;?$|^return(\s+\d+)?;?$/.test(lines[last].trim())
+  )) last--;
+  const bodyEnd = last;                          // 0-based last body line
+  const bodyStart = Math.max(0, bodyEnd - total + 1);
 
   const map = [];
   let line = bodyStart + 1;
@@ -959,9 +1098,10 @@ function renderLangPills() {
   el.innerHTML = "";
   for (const lang of Object.keys(LANGS)) {
     const b = document.createElement("button");
-    b.className = "lang-pill" + (lang === srcLang ? " active" : "");
+    const g = frontendGrade(lang);
+    b.className = "lang-pill" + (lang === srcLang ? " active" : "") + (g.cls ? " gate-" + g.cls : "");
     b.textContent = LANGS[lang].label;
-    b.title = LANGS[lang].full;
+    b.title = LANGS[lang].full + " · frontend→js: " + g.label;
     b.addEventListener("click", () => {
       srcLang = lang;
       $("input-label").textContent = LANGS[lang].label + " source input";
@@ -1030,7 +1170,7 @@ function renderExamples() {
     container.appendChild(corpCat);
     getCorpus(dir).then((names) => {
       const c = document.getElementById(id);
-      if (c) c.textContent = names.length;
+      if (c) { c.textContent = names.length; c.dataset.gateDir = dir; }
       renderCorpusList(dir, names);
     }).catch((e) => {
       list.textContent = "corpus unavailable: " + e.message;
@@ -1070,6 +1210,10 @@ function renderCorpusList(dir, names) {
     btn.className = "example-btn corpus-name" + (currentExample === name ? " active" : "");
     btn.textContent = name;
     btn.title = dir + " corpus: " + name;
+    // gate colouring (green = passes the current backend, red = fails)
+    btn.dataset.gateDir = dir;
+    btn.dataset.gateName = name;
+    btn.dataset.gateHint = dir + " corpus: " + name;
     btn.addEventListener("click", async () => {
       btn.disabled = true;
       btn.textContent = "… " + name;
@@ -1087,6 +1231,7 @@ function renderCorpusList(dir, names) {
     div.appendChild(btn);
     list.appendChild(div);
   }
+  colourExamples();
 }
 
 function loadExample(ex) {
@@ -1176,6 +1321,7 @@ function renderTargets() {
     b.addEventListener("click", () => {
       tgtLang = t;
       renderTargets();
+      colourExamples();            // re-colour the examples for the new backend
       syncUrl();
       updateTryHint();
       if (autoUpdate) execute();
@@ -1369,6 +1515,7 @@ function wireCopyButtons() {
 async function init() {
   initPanels();
   await applyUrlState();       // restore a shared #lang=…&target=…&example=…&code=… URL
+  loadGate();                  // async — refreshes target pills + example colours when gate.json lands
   renderLangPills();
   renderTargets();
   setupInput();
