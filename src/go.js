@@ -99,10 +99,20 @@ export class GoRunner {
     if (isNodeEnv()) {
       return import("node:fs").then(({ readFileSync }) => readFileSync(this.baseUrl + url));
     }
-    return fetch(url).then((r) => {
-      if (!r.ok) throw new Error(`HTTP ${r.status}: ${url}`);
-      return r.arrayBuffer();
-    });
+    // Browser: prefer the MODULE-relative URL (always correct no matter
+    // where the page is served from), fall back to the page-relative one.
+    try {
+      const abs = new URL(url, import.meta.url);
+      return fetch(abs.href).then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}: ${abs.href}`);
+        return r.arrayBuffer();
+      });
+    } catch {
+      return fetch(url).then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}: ${url}`);
+        return r.arrayBuffer();
+      });
+    }
   }
 
   async _loadText(url) {
@@ -116,7 +126,12 @@ export class GoRunner {
   ensureWasmExec() {
     if (!this._wasmExecPromise) {
       this._wasmExecPromise = (async () => {
-        if (globalThis.Go) return;
+        // A stale truthy-but-not-a-class globalThis.Go (set by an aborted
+        // eval, a different wasm_exec version, or a partial page load)
+        // would make `new globalThis.Go()` throw "is not a constructor" —
+        // clear it and (re)load the real one.
+        if (globalThis.Go && typeof globalThis.Go === "function") return;
+        delete globalThis.Go;
         const src = await this._loadText("vendor/wasm_exec.js");
         if (isNodeEnv()) {
           const vm = await import("node:vm");
@@ -124,7 +139,9 @@ export class GoRunner {
         } else {
           (0, eval)(src);
         }
-        if (!globalThis.Go) throw new Error("wasm_exec.js did not define globalThis.Go");
+        if (!globalThis.Go || typeof globalThis.Go !== "function") {
+          throw new Error("wasm_exec.js did not define globalThis.Go as a constructor");
+        }
       })();
     }
     return this._wasmExecPromise;
@@ -454,7 +471,19 @@ export class GoRunner {
     await this.ensureWasmExec();
     const wasm = await this._readBlobBytes(wasmPath);
     const module = await WebAssembly.compile(wasm);
-    const go = new globalThis.Go();
+    // A run's wasm (or an aborted eval) can leave a stale
+    // globalThis.Go that is a function but not a constructor — the
+    // ensureWasmExec check above then passes and `new Go()` throws.
+    // Self-heal: drop it and reload wasm_exec.js, exactly once.
+    let go;
+    try {
+      go = new globalThis.Go();
+    } catch {
+      delete globalThis.Go;
+      this._wasmExecPromise = null;
+      await this.ensureWasmExec();
+      go = new globalThis.Go();
+    }
     go.argv = args;
     go.env = { ...(isNodeEnv() ? process.env : {}), GOROOT };
     go.exit = (code) => { this._exitCode = code; };
