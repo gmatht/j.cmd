@@ -268,7 +268,7 @@
         <button id="run-btn">Transpile</button>
         <button id="auto-update-toggle" class="auto-update-toggle">Auto: ON</button>
       </div>
-      <div class="gate-legend">gate: 🟢 ≥90% · 🟡 ≥10% · 🔴 &lt;10% of the sh2loop backend corpus — hover a target for its pass/total</div>
+      <div class="gate-legend">gate: 🟢 ≥90% · 🟡 &gt;50% · 🔴 ≤50% of the sh2loop backend corpus — hover a target for its pass/total</div>
     </div>
 
     <div class="status" id="status"></div>
@@ -347,13 +347,13 @@ const BACKEND_STATUS = {
   zig:  { pass: 0,   total: 539, name: "zig" },
   shir: { pass: 0,   total: 0,   name: "A1 contract" },
 };
-// green ≥90% · yellow ≥10% · red <10% (0/0 = the contract — always green)
+// green ≥90% · yellow >50% · red ≤50% (0/0 = the contract — always green)
 function backendGrade(lang) {
   const s = BACKEND_STATUS[lang];
   if (!s) return { cls: "red", label: "no gate data" };
   if (s.total === 0) return { cls: "green", label: s.name + " — the contract itself, 100%" };
   const pct = s.pass / s.total;
-  const cls = pct >= 0.9 ? "green" : pct >= 0.1 ? "yellow" : "red";
+  const cls = pct >= 0.9 ? "green" : pct > 0.5 ? "yellow" : "red";
   return { cls, label: s.name + " " + Math.round(pct * 100) + "% (" + s.pass + "/" + s.total + ")" + (s.note ? " — " + s.note : "") };
 }
 // Which languages have a browser runtime we can execute for the stdout diff.
@@ -924,26 +924,34 @@ async function execute() {
 
 // ─── UI wiring ──────────────────────────────────────────────────
 let searchQuery = "";
-let corpus = null;      // sh2perl corpus manifest ({ name, size }[]), lazy
-let corpusLoading = null;
+// per-corpus-dir manifests (www/examples/<dir>/index.json), lazy.
+// The corpus dirs mirror the frontend testdata (one per source frontend).
+const corpusCache = {};
+const CORPUS_DIRS = {
+  sh:   [{ dir: "sh2perl",  label: "sh2perl corpus",      hint: "the sh2perl test corpus. Many need external tools (date, sed, grep…) that don't exist in the browser sandbox — they transpile, but the stdout diff may show errors." },
+         { dir: "sh-posix", label: "posix-sh-go testdata", hint: "the posix-sh-go frontend testdata (POSIX sh)." }],
+  go:   [{ dir: "go",   label: "go-sh testdata",      hint: "the go-sh frontend testdata (Go)." }],
+  fish: [{ dir: "fish", label: "fish-sh-go testdata", hint: "the fish-sh-go frontend testdata (fish)." }],
+  zsh:  [{ dir: "zsh",  label: "zsh-sh-go testdata",  hint: "the zsh-sh-go frontend testdata (zsh)." }],
+  py:   [{ dir: "py",   label: "py-sh-go testdata",   hint: "the py-sh-go frontend testdata (Python)." }],
+  pl:   [{ dir: "pl",   label: "perl-sh-go testdata", hint: "the perl-sh-go frontend testdata (Perl)." }],
+  c:    [{ dir: "c",    label: "c-sh-go testdata",    hint: "the c-sh-go frontend testdata (C)." }],
+};
 
 function setSearch(q) {
   searchQuery = (q || "").toLowerCase().trim();
   renderExamples();
 }
 
-// Load the sh2perl corpus manifest (once).
-async function getCorpus() {
-  if (corpus) return corpus;
-  if (!corpusLoading) {
-    corpusLoading = (async () => {
-      const resp = await fetch(new URL("examples/sh2perl/index.json", import.meta.url));
-      if (!resp.ok) throw new Error("corpus manifest not found (" + resp.status + ")");
-      corpus = await resp.json();
-      return corpus;
-    })();
-  }
-  return corpusLoading;
+// Load a corpus-dir manifest (once per dir).
+async function getCorpus(dir) {
+  if (corpusCache[dir]) return corpusCache[dir];
+  corpusCache[dir] = (async () => {
+    const resp = await fetch(new URL("examples/" + dir + "/index.json", import.meta.url));
+    if (!resp.ok) throw new Error("corpus manifest not found (" + resp.status + ")");
+    return await resp.json();
+  })();
+  return corpusCache[dir];
 }
 
 function renderLangPills() {
@@ -1001,26 +1009,28 @@ function renderExamples() {
   }
   container.appendChild(cat);
 
-  // sh2perl corpus (sh only) — a separate section, lazily loaded
-  if (srcLang === "sh") {
+  // frontend-testdata corpora — one section per corpus dir for the
+  // source language (sh2perl for sh + the per-frontend testdata), lazy
+  for (const { dir, label, hint } of (CORPUS_DIRS[srcLang] || [])) {
     const corpCat = document.createElement("div");
     corpCat.className = "category";
     const ch = document.createElement("h3");
-    ch.innerHTML = 'sh2perl corpus <span class="example-count" id="corpus-count"></span>';
+    const id = "corpus-count-" + dir;
+    ch.innerHTML = label + ' <span class="example-count" id="' + id + '"></span>';
     corpCat.appendChild(ch);
-    const hint = document.createElement("div");
-    hint.className = "corpus-hint";
-    hint.textContent = "the sh2perl test corpus (" +
-      (corpus ? corpus.length : "531") + " scripts). Many need external tools (date, sed, grep…) that don't exist in the browser sandbox — they transpile, but the stdout diff may show errors.";
-    corpCat.appendChild(hint);
+    const hintEl = document.createElement("div");
+    hintEl.className = "corpus-hint";
+    hintEl.textContent = hint;
+    corpCat.appendChild(hintEl);
     const list = document.createElement("div");
-    list.id = "corpus-list";
+    list.id = "corpus-list-" + dir;
     list.textContent = "…";
     corpCat.appendChild(list);
     container.appendChild(corpCat);
-    getCorpus().then((names) => {
-      $("corpus-count").textContent = names.length;
-      renderCorpusList(names);
+    getCorpus(dir).then((names) => {
+      const c = document.getElementById(id);
+      if (c) c.textContent = names.length;
+      renderCorpusList(dir, names);
     }).catch((e) => {
       list.textContent = "corpus unavailable: " + e.message;
     });
@@ -1034,8 +1044,8 @@ function renderExamples() {
 }
 
 // corpus buttons, filtered by the search box; each fetches its script on click
-function renderCorpusList(names) {
-  const list = $("corpus-list");
+function renderCorpusList(dir, names) {
+  const list = $("corpus-list-" + dir);
   if (!list) return;
   const q = searchQuery;
   const hit = names.filter((n) => !q || n.toLowerCase().includes(q));
@@ -1058,14 +1068,14 @@ function renderCorpusList(names) {
     const btn = document.createElement("button");
     btn.className = "example-btn corpus-name" + (currentExample === name ? " active" : "");
     btn.textContent = name;
-    btn.title = "sh2perl corpus: " + name;
+    btn.title = dir + " corpus: " + name;
     btn.addEventListener("click", async () => {
       btn.disabled = true;
       btn.textContent = "… " + name;
       try {
-        const resp = await fetch(new URL("examples/sh2perl/" + name, import.meta.url));
+        const resp = await fetch(new URL("examples/" + dir + "/" + name, import.meta.url));
         if (!resp.ok) throw new Error("fetch " + resp.status);
-        loadExample({ name, desc: "sh2perl corpus example", code: await resp.text() });
+        loadExample({ name, desc: dir + " corpus example", code: await resp.text() });
       } catch (e) {
         showStatus("corpus example failed: " + e.message, "error");
       } finally {
@@ -1136,11 +1146,14 @@ async function applyUrlState() {
       loadExample(ex);
       return;
     }
-    // a corpus example (sh2perl, sh only) reloads by name
-    if (srcLang === "sh") {
+    // a corpus example (any frontend testdata dir) reloads by name
+    for (const { dir } of (CORPUS_DIRS[srcLang] || [])) {
       try {
-        const resp = await fetch(new URL("examples/sh2perl/" + exName, import.meta.url));
-        if (resp.ok) loadExample({ name: exName, desc: "sh2perl corpus example", code: await resp.text() });
+        const resp = await fetch(new URL("examples/" + dir + "/" + exName, import.meta.url));
+        if (resp.ok) {
+          loadExample({ name: exName, desc: dir + " corpus example", code: await resp.text() });
+          return;
+        }
       } catch {}
     }
   }
@@ -1198,12 +1211,25 @@ function setupInput() {
 // — the ExamplesFS mount), the output file's extension drives the
 // target (no --target): transpile, then compile and run where j.cmd
 // has a runtime/compiler for that target.
+// Which corpus dir holds a loaded example, if any (the frontend-testdata
+// corpora — sh2perl for sh + one per frontend). Empty for curated examples.
+function corpusDirOf(name) {
+  if (!name) return "";
+  for (const { dir } of (CORPUS_DIRS[srcLang] || [])) {
+    if (getExamples(srcLang).some((e) => e.name === name)) return ""; // curated
+    if (dir === "sh2perl" || name.endsWith("." + { sh: "sh", go: "go", fish: "fish", zsh: "zsh", py: "py", pl: "pl", c: "c" }[srcLang] || "sh")) {
+      return dir; // a corpus file (the manifest names carry the ext)
+    }
+  }
+  return "";
+}
 function tryCommand() {
   const ext = { sh: "sh", zsh: "zsh", fish: "fish", go: "go", py: "py", c: "c", pl: "pl" }[srcLang] || "sh";
-  const isCorpus = srcLang === "sh" && currentExample &&
-    !getExamples("sh").some((e) => e.name === currentExample);
-  const src = isCorpus
-    ? "/examples/sh2perl/" + currentExample
+  // a frontend-testdata corpus example (any source lang) is served
+  // read-only at /examples/<dir>/ via the ExamplesFS mount
+  const corpusEntry = corpusDirOf(currentExample);
+  const src = corpusEntry
+    ? "/examples/" + corpusEntry + "/" + currentExample
     : "/home/examples/" + (currentExample || "try") + "." + ext;
   const outExt = { sh: "sh", js: "js", c: "c", go: "go", py: "py", pl: "pl", java: "java", rs: "rs", zig: "zig" }[tgtLang] || "sh";
   const out = "/tmp/out." + outExt;
@@ -1220,9 +1246,7 @@ function tryCommand() {
 }
 function trySrcPath() {
   const ext = { sh: "sh", zsh: "zsh", fish: "fish", go: "go", py: "py", c: "c", pl: "pl" }[srcLang] || "sh";
-  const isCorpus = srcLang === "sh" && currentExample &&
-    !getExamples("sh").some((e) => e.name === currentExample);
-  return isCorpus ? "" : "/home/examples/" + (currentExample || "try") + "." + ext;
+  return corpusDirOf(currentExample) ? "" : "/home/examples/" + (currentExample || "try") + "." + ext;
 }
 function updateTryHint() {
   const el = $("try-cmd");

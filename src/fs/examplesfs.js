@@ -38,21 +38,27 @@ export class ExamplesFS {
     return this._loader;
   }
 
-  // The corpus manifest (sh2perl/index.json) lists every script name.
-  async _corpusNames() {
-    if (this._corpus) return this._corpus;
+  // The corpus manifest (<dir>/index.json) lists every script name. The
+  // corpus dirs mirror www/examples/: sh2perl (the sh2perl corpus) plus
+  // one per frontend testdata (go / fish / zsh / py / pl / c / sh-posix).
+  CORPUS_DIRS = ["sh2perl", "go", "fish", "zsh", "py", "pl", "c", "sh-posix"];
+
+  async _corpusNames(dir) {
+    const d = dir || "sh2perl";
+    if (this._corpus && this._corpus[d]) return this._corpus[d];
+    this._corpus ??= {};
     try {
-      this._corpus = JSON.parse(await (await this._source())("sh2perl/index.json"));
+      this._corpus[d] = JSON.parse(await (await this._source())(d + "/index.json"));
     } catch {
-      this._corpus = [];
+      this._corpus[d] = [];
     }
-    return this._corpus;
+    return this._corpus[d];
   }
 
   async list(path) {
     const rel = this._rel(path);
-    if (!rel) return ["sh2perl"];
-    if (rel === "sh2perl") return await this._corpusNames();
+    if (!rel) return [...this.CORPUS_DIRS];
+    if (this.CORPUS_DIRS.includes(rel)) return await this._corpusNames(rel);
     throw new Error("ENOTDIR: " + path);
   }
 
