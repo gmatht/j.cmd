@@ -229,6 +229,15 @@ function langOf(path) {
   var ext = path.split(".").pop();
   return SOURCE_EXTS[ext] ? ext : "sh"; // no extension or anything else → shell
 }
+// The TARGET languages (a superset of the source exts — js/java/rs/zig
+// are targets only). The output file's extension picks the target; `-`
+// (stdout) and an extensionless output default to js (see the CLI).
+var TARGET_EXTS = { js: 1, pl: 1, c: 1, go: 1, py: 1, java: 1, rs: 1, zig: 1, sh: 1, shir: 1 };
+function targetLangOf(path) {
+  if (path === "-") return "";
+  var ext = path.split(".").pop();
+  return TARGET_EXTS[ext] ? ext : "";
+}
 
 // Absolutize a VFS path (for the frontend's file argument).
 function absPath(p) {
@@ -374,7 +383,7 @@ if (!input) { console.log(usage()); return 2; }
 
 var srcLang = forceSrc || langOf(input);
 var tgtLang = forceTgt;
-if (!tgtLang && output) tgtLang = langOf(output);
+if (!tgtLang && output) tgtLang = targetLangOf(output);
 if (!tgtLang) tgtLang = "js";                    // the default target
 if (!{ js: 1, pl: 1, c: 1, go: 1, py: 1, java: 1, rs: 1, zig: 1, sh: 1, shir: 1 }[tgtLang]) {
   console.log("otranspiler: target '" + tgtLang + "' not wired (js | pl | c | go | py | java | rs | zig | sh | shir)");
@@ -391,6 +400,8 @@ try {
   var contract = await contractFor(srcLang, source, srcName);
   var text = await render(tgtLang, contract, source, srcLang);
   if (doRun && tgtLang === "js") {
+    // "also execute" — the output file (when given) is still written
+    if (output && output !== "-") await fs.write(output, text);
     // The estree output writes through process.stdout.write / reads
     // process.env — shim them (the shell itself survives).
     var pout = { write: (s) => { if (s) console.log(String(s).replace(/\n$/, "")); } };
