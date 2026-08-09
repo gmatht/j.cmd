@@ -497,6 +497,10 @@ func userStmtsA1(stmts []*uStmt, params []string) []any {
 				"type":  "Return",
 				"value": userExprA1(s.e, params),
 			})
+		case "exec":
+			if s.a1 != nil {
+				out = append(out, s.a1)
+			}
 		}
 	}
 	return out
@@ -539,11 +543,12 @@ var userFuncs = map[string]*userFunc{}
 // uStmt — a user-function body statement (the mini-AST the literal-arg
 // fold interprets; see foldUserBody).
 type uStmt struct {
-	kind string // assign | while | ret | skip
+	kind string // assign | while | ret | skip | exec
 	name string // assign target
 	op   string // "=" | "+=" | "-="
 	e    *expr  // assign rhs / while cond / return expr
 	body []*uStmt
+	a1   any // a raw A1 statement (exec-carrier kind)
 }
 
 // evUExpr — evaluate a body expression with the va_arg stack (a
@@ -1755,7 +1760,7 @@ func (p *parser) stmt() (any, error) {
 		// fall through to the type-keyword handling
 		p.next()
 		return p.stmt()
-	case p.isId("int") || p.isId("char") || p.isId("double") || p.isId("float") || p.isId("return"):
+	case p.isId("int") || p.isId("char") || p.isId("double") || p.isId("float") || p.isId("void") || p.isId("return"):
 		kw := p.next().text
 		if kw == "return" {
 			var e *expr
@@ -2772,6 +2777,37 @@ func (p *parser) userStmt() (*uStmt, error) {
 			return nil, err
 		}
 		return &uStmt{kind: "skip"}, nil
+	case p.isId("printf"):
+		// printf(...) in a function body — the same execPrintf lowering
+		// the main body uses, carried as a raw A1 stmt.
+		p.next()
+		if err := p.expectOp("("); err != nil {
+			return nil, err
+		}
+		var args []any
+		for {
+			if tk := p.peek(); tk != nil && tk.kind == "str" {
+				args = append(args, st(tk.text))
+				p.next()
+			} else {
+				e, err := p.expr()
+				if err != nil {
+					return nil, err
+				}
+				args = append(args, valueNode(e))
+			}
+			if p.isOp(")") {
+				break
+			}
+			if err := p.expectOp(","); err != nil {
+				return nil, err
+			}
+		}
+		p.next() // )
+		if err := p.expectOp(";"); err != nil {
+			return nil, err
+		}
+		return &uStmt{kind: "exec", a1: execPrintf(args)}, nil
 	case p.isId("va_start") || p.isId("va_end"):
 		p.next()
 		for !p.isOp(";") && p.peek() != nil {

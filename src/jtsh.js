@@ -2096,6 +2096,20 @@ async function findCommandExact(name) {
 
   if (builtins[name]) return { type: "builtin", fn: builtins[name] };
 
+  // A function defined by a sourced file / transpiled line (the
+  // persistent otRt's sh2.functions map — bash's function table) shadows
+  // commands, like in bash: `source fn.c` defining `testc()` then a bare
+  // `testc` runs the body with the args as $1..$N.
+  if (otRt && otRt.sh2 && otRt.sh2.functions && otRt.sh2.functions.has(name)) {
+    return {
+      type: "builtin",
+      fn: async (args) => {
+        const v = await otRt.sh2.fnCall(name, args);
+        return (v === false ? 1 : (v === true || v === undefined ? 0 : Number(v) || 0));
+      },
+    };
+  }
+
   // Walk the command path from $PATH (colon-separated, like POSIX)
   for (const dir of searchPaths) {
     try {
@@ -2670,6 +2684,7 @@ async function runJsSourceContent(content, srcArgs) {
   try { otRt.sh2.argv0 = getArgv0(); } catch {}
   const fn = new Function("fs", "env", "process", "sh2", `return (async () => { ${content} })();`);
   const beforeGlobals = new Set(Object.keys(globalThis));
+  const beforeRtVars = new Set(Object.keys(otRt.sh2.vars));
   let v;
   try {
     v = await fn(fs, env, otProc, otRt.sh2);
@@ -2677,9 +2692,14 @@ async function runJsSourceContent(content, srcArgs) {
     if (e && e.exitCode !== undefined) return e.exitCode;  // `exit N`
     throw e;
   }
-  // harvest bare global assignments (`x = 5` → globalThis.x) into the
-  // shell's persistent variable state
+  // harvest bare global assignments (`x = 5` → globalThis.x) AND
+  // sh2.vars writes (`sh2.vars.X = …`) into the shell's persistent state
   const keepable = (val) => typeof val === "string" || typeof val === "number" || Array.isArray(val);
+  for (const k of Object.keys(otRt.sh2.vars)) {
+    if (beforeRtVars.has(k) || isReadonly(k)) continue;
+    const val = otRt.sh2.vars[k];
+    if (keepable(val) && !k.startsWith("__")) otVars.set(k, Array.isArray(val) ? val : String(val));
+  }
   for (const k of Object.keys(globalThis)) {
     if (beforeGlobals.has(k)) continue;
     const val = globalThis[k];
