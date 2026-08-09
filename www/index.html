@@ -3982,8 +3982,9 @@ Extra args become the script's $1… (the caller's are restored).
         try { a1 = JSON.parse(lib.shir(src)); } catch {}
       } else {
         const { ensureBusyboxWasm, busyboxA1 } = await import("../src/busybox.js");
+        const { BUSYBOX_VERSION } = await import("../src/busybox.js");
         const fetchBytes = async () => new Uint8Array(
-          await (await fetch(new URL("wasm-bin/otranspiler-busybox.wasm", import.meta.url))).arrayBuffer());
+          await (await fetch(new URL("wasm-bin/otranspiler-busybox.wasm?v=" + BUSYBOX_VERSION, import.meta.url))).arrayBuffer());
         const wasmPath = await ensureBusyboxWasm(fs, {
           goRunner, goCmd, fetchBytes, onLog: (m) => stderr.write(m + "\n"),
         });
@@ -4033,6 +4034,33 @@ Extra args become the script's $1… (the caller's are restored).
       });
     } catch (e) {
       stderr.write(`source: ${file}: ${e.message}\n`);
+      return 1;
+    }
+  },
+
+  async addr(args) {
+    // addr NAME — print the C-style memory handle for a shell variable
+    // (a pointer to it), so sourced C functions taking `int *` can be
+    // called from the shell:
+    //   a=10; sum_first "$(addr a)" 1    → "10" (sums one element)
+    // The handle is \u0001mem:NAME:0 — the runtime's slice-1 pointer
+    // format (sh2.memAddrOf); keep it in quotes / "$(…)" so the
+    // control character survives tokenization.
+    if (!args.length || args[0] === "-h" || args[0] === "--help") {
+      stdout.write("addr NAME — print the C-style mem handle for a shell variable (a pointer to it)\n");
+      return 0;
+    }
+    const name = args[0];
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+      stderr.write(`addr: '${name}': not a valid variable name\n`);
+      return 2;
+    }
+    await ensureOtRuntime();
+    try {
+      stdout.write(otRt.sh2.memAddrOf(name) + "\n");
+      return 0;
+    } catch (e) {
+      stderr.write(`addr: ${e.message}\n`);
       return 1;
     }
   },
@@ -8802,12 +8830,21 @@ document.addEventListener("click", (e) => {
   const prefillParam = new URLSearchParams(bootHash).get("prefill");
   if (prefillParam) {
     try {
-      const p = JSON.parse(prefillParam);
-      if (p.src && p.srcPath) {
-        try { await fs.write(p.srcPath.slice(0, p.srcPath.lastIndexOf("/")) + "/.directory", ""); } catch {}
-        await fs.write(p.srcPath, String(p.src));
+      // Two accepted shapes: the JSON object {"cmd":"…", src?, srcPath?}
+      // (the otranspiler GUI's form), OR a bare command string — a plain
+      // `#prefill=for f in …; do . $f; done` share link is friendlier
+      // than hand-encoding the JSON.
+      let p = null;
+      try { p = JSON.parse(prefillParam); } catch { p = null; }
+      if (p && typeof p === "object" && !Array.isArray(p)) {
+        if (p.src && p.srcPath) {
+          try { await fs.write(p.srcPath.slice(0, p.srcPath.lastIndexOf("/")) + "/.directory", ""); } catch {}
+          await fs.write(p.srcPath, String(p.src));
+        }
+        currentLine = String(p.cmd || "");
+      } else {
+        currentLine = prefillParam;
       }
-      currentLine = String(p.cmd || "");
       cursorPos = currentLine.length;
       recordLineRedraw();
       renderInput();       // draw the pre-filled line (recordLineRedraw only records)
