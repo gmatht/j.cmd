@@ -95,24 +95,30 @@ export class GoRunner {
 
   // ─── Loading glue / bundle / binaries ──────────────────────
 
-  _fetch(url) {
+  async _fetch(url) {
     if (isNodeEnv()) {
       return import("node:fs").then(({ readFileSync }) => readFileSync(this.baseUrl + url));
     }
-    // Browser: prefer the MODULE-relative URL (always correct no matter
-    // where the page is served from), fall back to the page-relative one.
-    try {
-      const abs = new URL(url, import.meta.url);
-      return fetch(abs.href).then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}: ${abs.href}`);
+    // Browser: resolve against the PAGE first — the page always lives in
+    // www/ (otranspiler.html, index.html), so "vendor/…" and
+    // "wasm-bin/…" are right there in every serving layout (www-as-root,
+    // repo-root, or the Pages site where www/ + src/ are siblings). Then
+    // fall back to module-relative (src/) for any server that mirrors www
+    // content under src/. The old code only fell back on URL-construction
+    // errors — an HTTP 404 from the module-relative path (the normal
+    // case: src/vendor/ never exists) propagated as a hard failure.
+    const candidates = [];
+    try { candidates.push(new URL(url, location.href).href); } catch {}
+    try { candidates.push(new URL(url, import.meta.url).href); } catch {}
+    let lastErr = null;
+    for (const href of candidates) {
+      try {
+        const r = await fetch(href);
+        if (!r.ok) throw new Error(`HTTP ${r.status}: ${href}`);
         return r.arrayBuffer();
-      });
-    } catch {
-      return fetch(url).then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}: ${url}`);
-        return r.arrayBuffer();
-      });
+      } catch (e) { lastErr = e; }
     }
+    throw lastErr || new Error("fetch: no candidate URL for " + url);
   }
 
   async _loadText(url) {

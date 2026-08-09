@@ -2,15 +2,15 @@
 //
 // This is the browser port of the sh2loop fleet's busybox (one binary
 // over the whole frontend fleet): after the otranspiler command merges
-// the six <lang>-sh-go libraries + posix-sh-go (the shell frontend) +
+// the seven <lang>-sh-go libraries + posix-sh-go (the shell frontend) +
 // shir-emit-go into one main.go, THIS main dispatches by --lang. The
 // lib entry points are the merge's prefixed names (c_Shir, go_Shir,
 // ..., sh_shirForSource — shirForSource is posix-sh-go's library
 // entry; upstream posix-sh-go is a package-main CLI, so the merge
 // renames its main() to sh_main and the dispatcher uses shirForSource).
 //
-//   <merged> --lang <c|fish|go|perl|py|sh|zsh> --shir <file> [--raw]
-//   <merged> --shir <file> [--raw]                    (lang from extension)
+//	<merged> --lang <c|fish|go|perl|py|sh|zsh> --shir <file> [--raw]
+//	<merged> --shir <file> [--raw]                    (lang from extension)
 //
 // Source of truth for the lib sources: www/bin/<frontend>/ (vendored
 // from gmatht/sh2loop/frontends/<frontend>/).
@@ -28,6 +28,7 @@ type frontend struct {
 }
 
 var langAliases = map[string]string{
+	"bat": "bat", "bat-sh-go": "bat", "cmd": "bat",
 	"c": "c", "c-sh-go": "c",
 	"fish": "fish", "fish-sh-go": "fish",
 	"go": "go", "go-sh": "go",
@@ -38,6 +39,7 @@ var langAliases = map[string]string{
 }
 
 var frontends = map[string]frontend{
+	"bat":  {"bat-sh-go", bat_Shir},
 	"c":    {"c-sh-go", c_Shir},
 	"fish": {"fish-sh-go", fish_Shir},
 	"go":   {"go-sh", go_Shir},
@@ -48,12 +50,14 @@ var frontends = map[string]frontend{
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: frontend [--lang <c|fish|go|perl|py|sh|zsh>] --shir <file> [--raw]")
+	fmt.Fprintln(os.Stderr, "usage: frontend [--lang <bat|c|fish|go|perl|py|sh|zsh>] --shir <file> [--raw]")
 	os.Exit(2)
 }
 
 func inferLang(path string) string {
 	switch filepath.Ext(path) {
+	case ".bat":
+		return "bat"
 	case ".c":
 		return "c"
 	case ".fish":

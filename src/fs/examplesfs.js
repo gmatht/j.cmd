@@ -40,8 +40,8 @@ export class ExamplesFS {
 
   // The corpus manifest (<dir>/index.json) lists every script name. The
   // corpus dirs mirror www/examples/: sh2perl (the sh2perl corpus) plus
-  // one per frontend testdata (go / fish / zsh / py / pl / c / sh-posix).
-  CORPUS_DIRS = ["sh2perl", "go", "fish", "zsh", "py", "pl", "c", "sh-posix"];
+  // one per frontend testdata (go / fish / zsh / py / pl / c / bat / sh-posix).
+  CORPUS_DIRS = ["sh2perl", "go", "fish", "zsh", "py", "pl", "c", "bat", "sh-posix"];
 
   async _corpusNames(dir) {
     const d = dir || "sh2perl";

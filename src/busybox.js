@@ -1,8 +1,8 @@
 // ─── busybox: the unified transpiler frontend (one merged Go binary) ─
 //
-// Every non-sh source frontend (go, py, c, pl, zsh, fish) is a plain Go
+// Every non-sh source frontend (go, py, c, pl, zsh, fish, bat) is a plain Go
 // program vendored in www/bin/<frontend>/. The browser Go toolchain
-// builds a SINGLE stdlib-only file out of all SEVEN frontend libraries
+// builds a SINGLE stdlib-only file out of all EIGHT frontend libraries
 // + the shared A1 JSON emitter (shir-emit-go) + the dispatcher CLI, so
 // one artifact serves every source language:
 //
@@ -19,8 +19,9 @@
 //   busyboxA1(source, srcLang) → parsed A1 shIR JSON contract
 // -----------------------------------------------------------------
 
-const FRONTEND_DIRS = { c: "c-sh-go", fish: "fish-sh-go", go: "go-sh", pl: "perl-sh-go", py: "py-sh-go", sh: "posix-sh-go", zsh: "zsh-sh-go" };
+const FRONTEND_DIRS = { bat: "bat-sh-go", c: "c-sh-go", fish: "fish-sh-go", go: "go-sh", pl: "perl-sh-go", py: "py-sh-go", sh: "posix-sh-go", zsh: "zsh-sh-go" };
 const FRONTEND_FILES = {
+  bat:  ["bat.go"],
   c:    ["main.go"],
   fish: ["fish-sh-go.go"],
   go:   ["go-sh.go"],
@@ -34,6 +35,11 @@ const DISPATCH_CLI = "busybox/main.go";            // the merged CLI (browser di
 const SHIR_EMIT = "shir-emit-go/emit.go";
 const SCRATCH = "/tmp/otranspiler-busybox";
 const PREBUILT = "wasm-bin/otranspiler-busybox.wasm";  // shipped static build
+// cache-buster — bump whenever www/wasm-bin/otranspiler-busybox.wasm
+// changes so a browser never reuses a stale staged copy (the staged
+// VFS file at /usr/bin/otranspiler-busybox.wasm persists across page
+// loads; ensureBusyboxWasm re-fetches when this version differs).
+export const BUSYBOX_VERSION = "v12-bat";
 
 // Read one vendored frontend source file (browser: fetch; node: disk).
 // `base` is unused in node (paths resolve against the repo root); in the
@@ -43,9 +49,22 @@ async function readVendoredFile(base, name) {
     const { readFile } = await import("node:fs/promises");
     return await readFile(process.cwd() + "/www/bin/" + name, "utf8");
   }
-  const resp = await fetch(new URL("bin/" + name, new URL(base + "/", import.meta.url)));
-  if (!resp.ok) throw new Error("vendored frontend source not found (" + resp.status + "): " + name);
-  return resp.text();
+  // Browser (the in-browser build fallback): try the page-relative
+  // www/bin/ path first (the page always lives in www/), then
+  // module-relative — same rule as GoRunner._fetch (src/go.js). The
+  // old code resolved against src/ only, which 404s everywhere.
+  const candidates = [];
+  try { candidates.push(new URL("bin/" + name, location.href).href); } catch {}
+  try { candidates.push(new URL("bin/" + name, new URL(base + "/", import.meta.url)).href); } catch {}
+  let lastErr = null;
+  for (const href of candidates) {
+    try {
+      const resp = await fetch(href);
+      if (resp.ok) return resp.text();
+      lastErr = new Error("vendored frontend source not found (" + resp.status + "): " + name);
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error("vendored frontend source not found: " + name);
 }
 
 function stripPkg(s) {
@@ -116,7 +135,7 @@ function prefixBody(s, pre, prefixMain) {
   return out;
 }
 
-// Merge the seven frontend libraries + the A1 emitter + the dispatcher
+// Merge the eight frontend libraries + the A1 emitter + the dispatcher
 // CLI into a single stdlib-only main.go. `base` = www/ base (URL in
 // browser, path prefix in node).
 export async function mergedBusyboxSource(base) {
@@ -144,7 +163,7 @@ export async function mergedBusyboxSource(base) {
   });
   const imports = Object.keys(impSet).sort();
   return (
-    "// Generated unified frontend (busybox): seven frontend libs + shir-emit-go + the dispatcher CLI.\n" +
+    "// Generated unified frontend (busybox): eight frontend libs + shir-emit-go + the dispatcher CLI.\n" +
     "// Source of truth: gmatht/sh2loop/frontends, vendored in www/bin/.\n" +
     "package main\n\n" +
     "import (\n" + imports.map((i) => '\t"' + i + '"').join("\n") + "\n)\n\n" +
@@ -193,13 +212,19 @@ export async function buildBusybox(fs, goRunner, goCmd, onLog) {
 export async function ensureBusyboxWasm(fs, { goRunner, goCmd, fetchBytes, onLog } = {}) {
   const log = onLog || (() => {});
   const PREBUILT_VFS = "/usr/bin/otranspiler-busybox.wasm";
+  const VER_VFS = PREBUILT_VFS + ".ver";
   let st = await vfsStat(fs, PREBUILT_VFS);
-  if (!st && fetchBytes) {
+  // Re-stage when the staged copy is missing OR built by an older
+  // busybox (the version marker is written alongside the wasm).
+  let stagedVer = null;
+  try { stagedVer = await fs.read(VER_VFS); } catch {}
+  if ((!st || stagedVer !== BUSYBOX_VERSION) && fetchBytes) {
     try {
-      const bytes = await fetchBytes(PREBUILT);
+      const bytes = await fetchBytes(PREBUILT + "?v=" + BUSYBOX_VERSION);
       await fs.writeBlob(PREBUILT_VFS, new Blob([bytes]));
+      try { await fs.write(VER_VFS, BUSYBOX_VERSION); } catch {}
       st = await vfsStat(fs, PREBUILT_VFS);
-      log("using prebuilt busybox frontend (" + (bytes.byteLength / 1024).toFixed(0) + "K)");
+      log("using prebuilt busybox frontend (" + (bytes.byteLength / 1024).toFixed(0) + "K, " + BUSYBOX_VERSION + ")");
     } catch (e) {
       log("prebuilt busybox unavailable (" + e.message + ") — building from source");
     }

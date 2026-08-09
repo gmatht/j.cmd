@@ -332,7 +332,7 @@ import { GoRunner } from "../src/go.js";
 import { WasmRunner } from "../src/wasm.js";
 import { ensureBusyboxWasm, busyboxA1 } from "../src/busybox.js";
 import { pyExec } from "../src/py.js";
-import { LANGS, getExamples } from "./otranspiler-examples.js?v=6";  // v=6: added grep_p demo (bump on example changes)
+import { LANGS, getExamples } from "./otranspiler-examples.js?v=7";  // v=7: added bat frontend (bump on example changes)
 
 // ─── state ──────────────────────────────────────────────────────
 let srcLang = "sh";
@@ -391,11 +391,13 @@ const FRONTEND_STATUS = {
   zsh:  { pass: 73, total: 75, name: "zsh-sh-go",  note: "0 fragments skipped" },
   pl:   { pass: 65, total: 65, name: "perl-sh-go", note: "1 fragment skipped" },
   c:    { pass: 31, total: 31, name: "c-sh-go",    note: "0 fragments skipped" },
+  bat:  { pass: 0,  total: 0,  name: "bat-sh-go",  note: "not gated — no native cmd.exe reference for the stdout gate, and no browser cmd.exe either" },
 };
 // Same thresholds as the backend gate (defined once in the legend).
 function frontendGrade(lang) {
   const s = FRONTEND_STATUS[lang];
   if (!s) return { cls: null, label: "no frontend gate data" };
+  if (s.total === 0) return { cls: null, label: s.name + " — " + s.note };  // ungated → neutral pill
   const pct = s.pass / s.total;
   const cls = pct >= 0.9 ? "green" : pct > 0.5 ? "yellow" : "red";
   return { cls, label: s.name + " → js: " + Math.round(pct * 100) + "% (" + s.pass + "/" + s.total + ")" + (s.note ? " — " + s.note : "") };
@@ -502,6 +504,7 @@ const RUNTIME_LABEL = {
   sh: "bash.wasm", zsh: "zsh.wasm", fish: "fish.wasm",
   go: "go.wasm (toolchain)", py: "micropython.wasm", c: "tcc.wasm",
   pl: "zeroperl.wasm (Perl 5.42)", js: "browser JS (sh2 runtime)",
+  bat: "none (no cmd.exe in the browser)",
 };
 const CAVEAT = {
   py: "micropython is an older build — f-strings / some imports in generated code may fail (syntax error shows below)",
@@ -1076,6 +1079,7 @@ const CORPUS_DIRS = {
   py:   [{ dir: "py",   label: "py-sh-go testdata",   hint: "the py-sh-go frontend testdata (Python)." }],
   pl:   [{ dir: "pl",   label: "perl-sh-go testdata", hint: "the perl-sh-go frontend testdata (Perl)." }],
   c:    [{ dir: "c",    label: "c-sh-go testdata",    hint: "the c-sh-go frontend testdata (C)." }],
+  bat:  [{ dir: "bat",  label: "bat-sh-go testdata",  hint: "the bat-sh-go frontend testdata (Windows batch, cmd.exe)." }],
 };
 
 function setSearch(q) {
@@ -1368,14 +1372,14 @@ function corpusDirOf(name) {
   if (!name) return "";
   for (const { dir } of (CORPUS_DIRS[srcLang] || [])) {
     if (getExamples(srcLang).some((e) => e.name === name)) return ""; // curated
-    if (dir === "sh2perl" || name.endsWith("." + { sh: "sh", go: "go", fish: "fish", zsh: "zsh", py: "py", pl: "pl", c: "c" }[srcLang] || "sh")) {
+    if (dir === "sh2perl" || name.endsWith("." + { sh: "sh", go: "go", fish: "fish", zsh: "zsh", py: "py", pl: "pl", c: "c", bat: "bat" }[srcLang] || "sh")) {
       return dir; // a corpus file (the manifest names carry the ext)
     }
   }
   return "";
 }
 function tryCommand() {
-  const ext = { sh: "sh", zsh: "zsh", fish: "fish", go: "go", py: "py", c: "c", pl: "pl" }[srcLang] || "sh";
+  const ext = { sh: "sh", zsh: "zsh", fish: "fish", go: "go", py: "py", c: "c", pl: "pl", bat: "bat" }[srcLang] || "sh";
   // a frontend-testdata corpus example (any source lang) is served
   // read-only at /examples/<dir>/ via the ExamplesFS mount
   const corpusEntry = corpusDirOf(currentExample);
@@ -1424,7 +1428,7 @@ function wireTryButton() {
 // generated code + stdout diff without any token leaving the page.
 function bugFence(t) {
   return { c: "c", go: "go", rs: "rust", zig: "zig", py: "python", pl: "perl",
-           js: "javascript", sh: "sh", shir: "json", java: "java" }[t] || "";
+           js: "javascript", sh: "sh", shir: "json", java: "java", bat: "bat" }[t] || "";
 }
 function bugDiff() {
   const ops = lineDiff($("out-orig").value, $("out-tgt").value);

@@ -212,6 +212,30 @@ int main(void) {
     { name: "switch-case", desc: "if / elsif chain", code: 'my $x = "b";\nif ($x eq "a") {\n    print "first\\n";\n} elsif ($x eq "b") {\n    print "second\\n";\n} else {\n    print "other\\n";\n}\n' },
     { name: "multi-echo", desc: "several outputs", code: 'print "one\\n";\nprint "two\\n";\nprint "three\\n";\n' },
   ],
+
+  bat: [
+    // Windows batch (cmd.exe) — the bat-sh-go frontend's v1.1 subset:
+    // @echo off / rem / echo, set + set /a, %var% expansion, if/else
+    // blocks, for %%v + for /l + for /f, goto/label, call :label,
+    // exit /b, > redirects, ^ continuation, builtin→posix mapping.
+    // NO browser cmd.exe exists, so the original stdout can't run —
+    // the GUI shows the transpiled code + the target's stdout only.
+    { name: "hello", desc: "echo + set", code: '@echo off\r\nset name=world\r\necho hello %name%\r\n' },
+    { name: "arith", desc: "set /a integer arithmetic", code: '@echo off\r\nset /a x=2+3*4\r\necho x=%x%\r\n' },
+    { name: "conditional", desc: "if / else (parenthesized)", code: '@echo off\r\nif "1"=="1" (echo eq) else (echo ne)\r\n' },
+    { name: "for-loop", desc: "for %%v over a word list", code: '@echo off\r\nfor %%v in (alpha beta gamma) do echo item %%v\r\n' },
+    { name: "for-l", desc: "for /l numeric range", code: '@echo off\r\nfor /l %%i in (1 1 3) do echo num %%i\r\n' },
+    { name: "goto", desc: "goto + label (jump)", code: '@echo off\r\necho before\r\ngoto skip\r\necho never\r\n:skip\r\necho after\r\n' },
+    { name: "call", desc: "call :label subroutine", code: '@echo off\r\necho start\r\ncall :greet World\r\necho done\r\ngoto :eof\r\n:greet\r\necho hello %1\r\ngoto :eof\r\n' },
+    { name: "args", desc: "%1 %2 %* arguments", code: '@echo off\r\necho arg1=%1 arg2=%2 all=%*\r\n' },
+    { name: "if-defined", desc: "if defined / exist", code: '@echo off\r\nset myvar=hello\r\nif defined myvar (echo defined) else (echo not-defined)\r\nif exist . (echo here) else (echo missing)\r\n' },
+    { name: "redirect", desc: "> file, type, del (mapped to posix)", code: '@echo off\r\necho one > a.txt\r\ntype a.txt\r\ndel /q a.txt\r\n' },
+    { name: "for-f", desc: "for /f line + field tokens", code: '@echo off\r\necho alpha beta > f.txt\r\nfor /f %%w in (f.txt) do echo word %%w\r\n' },
+    { name: "exit", desc: "exit /b early", code: '@echo off\r\necho before\r\nexit /b 0\r\necho never\r\n' },
+    { name: "echo-blank", desc: "echo. / echo: blank lines", code: '@echo off\r\necho hello world\r\necho.\r\necho:\r\n' },
+    { name: "continuation", desc: "^ line continuation", code: '@echo off\r\necho one^\r\ntwo\r\n' },
+    { name: "block", desc: "multi-line parenthesized block", code: '@echo off\r\nif "1"=="1" (\r\n    echo in-block\r\n    echo second-line\r\n)\r\necho after\r\n' },
+  ],
 };
 
 // Language metadata for the sidebar pills.
@@ -223,6 +247,7 @@ export const LANGS = {
   py:   { label: "py",   full: "Python",       runtime: "micropython.wasm" },
   c:    { label: "c",    full: "C",            runtime: "tcc.wasm" },
   pl:   { label: "pl",   full: "Perl",         runtime: "zeroperl.wasm (Perl 5.42)" },
+  bat:  { label: "bat",  full: "Windows batch", runtime: "none (no cmd.exe in browser)" },
 };
 
 export function getExamples(lang) {

@@ -10,13 +10,14 @@ command builds on first use (one unified binary, see `/bin/otranspiler.js`):
 | `py-sh-go/`  | pylib             | Python → shIR |
 | `c-sh-go/`   | clib              | C → shIR |
 | `perl-sh-go/`| pllib             | Perl → shIR |
+| `bat-sh-go/` | batlib            | Windows batch → shIR (v1.1: echo/set, set /a, %var%, if/else blocks, for %%v + for /l + for /f, goto/label, call :label, exit /b, > redirects, ^ continuation, builtin→posix mapping) |
 | `zsh-sh-go/` | zshlib            | Zsh → shIR |
 | `fish-sh-go/`| fishlib           | Fish → shIR |
 | `shir-emit-go/` | shiremit       | the shared A1 JSON emitter (the contract's single source of truth) |
-| `busybox/`   | —                 | the unified CLI: one binary over all seven libs (`--lang <lang> --shir <file> [--raw]`) |
+| `busybox/`   | —                 | the unified CLI: one binary over all eight libs (`--lang <lang> --shir <file> [--raw]`) |
 
 The browser go toolchain builds a **single stdlib-only main.go**: the
-`otranspiler` command merges all seven libs + `shir-emit-go` + the
+`otranspiler` command merges all eight libs + `shir-emit-go` + the
 dispatcher CLI into one file (package/import lines stripped, imports
 unioned, per-part name prefixes so no identifiers collide — the merge
 mirrors the upstream layout; posix-sh-go is a package-main CLI, so its
