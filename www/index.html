@@ -1432,29 +1432,38 @@ cursorPin.addEventListener("pointerdown", (e) => {
 cursorPin.addEventListener("pointermove", (e) => {
   if (pinDragging) moveCursorToPointer(e);
 });
-function moveCursorToPointer(e) {
+// Map a client (x, y) to a character index in the typed line, with the
+// fallbacks needed for pointer interaction: the pin floats ABOVE the
+// cursor, so a sideways pointer move lands on the row above the text
+// (project X onto the cursor's own row); beyond the line's ends, map X
+// by character width on the monospace line.
+function caretIndexAtClient(x, y) {
   // 1) Exact caret lookup at the pointer.
-  let idx = caretIndexAtPoint(e.clientX, e.clientY);
-  // 2) The pin floats ABOVE the cursor, so a sideways drag happens on
-  //    the row above the text — no caret there. Project the pointer's X
-  //    onto the cursor's own row so horizontal drags always track.
+  let idx = caretIndexAtPoint(x, y);
+  // 2) The pointer is on the row above/below the text — project onto
+  //    the cursor's own row so horizontal drags always track.
   if (idx === null) {
     const cur = inputSpan.querySelector(".cursor");
     if (cur) {
       const r = cur.getBoundingClientRect();
-      idx = caretIndexAtPoint(e.clientX, r.top + r.height / 2);
+      idx = caretIndexAtPoint(x, r.top + r.height / 2);
     }
   }
-  // 3) Still nothing (pointer beyond the line's ends) — map the X by
+  // 3) Still nothing (pointer beyond the line's ends) — map X by
   //    character width on the monospace line.
   if (idx === null) {
     const r = inputSpan.getBoundingClientRect();
     if (r.width > 0) {
       const cur = inputSpan.querySelector(".cursor");
       const cw = (cur && cur.getBoundingClientRect().width) || r.width / Math.max(currentLine.length, 1);
-      idx = Math.round((e.clientX - r.left) / cw);
+      idx = Math.round((x - r.left) / cw);
     }
   }
+  return idx;
+}
+
+function moveCursorToPointer(e) {
+  const idx = caretIndexAtClient(e.clientX, e.clientY);
   if (idx === null) return;
   cursorPos = Math.max(0, Math.min(idx, currentLine.length));
   selEnd = cursorPos;  // the highlight tracks the drag
@@ -1473,6 +1482,21 @@ function endPinDrag(e) {
 }
 cursorPin.addEventListener("pointerup", endPinDrag);
 cursorPin.addEventListener("pointercancel", endPinDrag);
+// Click on the input text moves the cursor to the clicked character,
+// like a real terminal. The pin drag stays the way to select text; a
+// plain click repositions the cursor and drops any previous selection
+// (the cut/copy/paste row hides with it). A drag never produces a
+// click, so this never fights the pin selection. The document-level
+// click handler still focuses the hidden input (typing continues).
+promptLine.addEventListener("click", (e) => {
+  const idx = caretIndexAtClient(e.clientX, e.clientY);
+  if (idx === null) return;
+  cursorPos = Math.max(0, Math.min(idx, currentLine.length));
+  selStart = null;
+  selEnd = null;
+  selActions.classList.add("hidden");
+  renderInput();
+});
 // Keep the pin parked on the cursor if the user scrolls the terminal
 // or the window resizes without a re-render.
 term.addEventListener("scroll", positionCursorPin);
