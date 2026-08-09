@@ -964,6 +964,7 @@ function renderLangPills() {
     b.title = LANGS[lang].full;
     b.addEventListener("click", () => {
       srcLang = lang;
+      $("input-label").textContent = LANGS[lang].label + " source input";
       renderLangPills();
       renderExamples();
       // switch to this language's first example
@@ -1131,7 +1132,10 @@ async function applyUrlState() {
   const h = location.hash.slice(1);
   if (!h) return;
   const p = new URLSearchParams(h);
-  if (p.has("lang") && LANGS[p.get("lang")]) srcLang = p.get("lang");
+  if (p.has("lang") && LANGS[p.get("lang")]) {
+    srcLang = p.get("lang");
+    $("input-label").textContent = LANGS[srcLang].label + " source input";
+  }
   if (p.has("target") && TARGETS.includes(p.get("target"))) tgtLang = p.get("target");
   if (p.has("code") && p.get("code")) {
     $("input").value = p.get("code");     // a custom edited source wins
