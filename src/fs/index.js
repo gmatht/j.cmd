@@ -68,6 +68,17 @@ class RootFS {
     return new TextDecoder().decode(data);
   }
 
+  // readLimit(path, n) — the first n BYTES as text, without decoding the
+  // whole file. Only the memory backends (RamFS, OverlayFS) can do this
+  // cheaply; the network backends (http/github/…) fetch whole resources
+  // regardless, so the VirtualFS wrapper slices their result instead.
+  async readLimit(path, n) {
+    const norm = path.replace(/\/$/, "") || "/";
+    const data = this.files.get(norm);
+    if (data === undefined) throw new Error("ENOENT");
+    return new TextDecoder().decode(data.subarray(0, n));
+  }
+
   async write(path, content) {
     const norm = path.replace(/\/$/, "") || "/";
     this._ensureParent(norm);
@@ -233,13 +244,16 @@ class OverlayFS {
     }
   }
 
-  async read(path) {
+  async read(path, opts) {
     if (this.files.has(path)) {
       const c = this.files.get(path);
       if (c === WHITEOUT) throw new Error("ENOENT");
-      return c.startsWith(B64) ? b64ToStr(c.slice(B64.length)) : c;
+      const text = c.startsWith(B64) ? b64ToStr(c.slice(B64.length)) : c;
+      return opts && opts.limit !== undefined ? text.slice(0, opts.limit) : text;
     }
-    return this.backend.read(path);
+    return opts && opts.limit !== undefined
+      ? String(await this.backend.read(path)).slice(0, opts.limit)
+      : this.backend.read(path);
   }
 
   async readBlob(path) {
@@ -255,6 +269,21 @@ class OverlayFS {
       return new Blob([c], { type: "text/plain" });
     }
     return this.backend.readBlob ? this.backend.readBlob(path) : new Blob([await this.backend.read(path)], { type: "text/plain" });
+  }
+
+  // readLimit — the first n BYTES as text. Overlay files are strings
+  // (slice cheaply); the underlying backend may have its own readLimit
+  // (RamFS decodes only n bytes), else read-and-slice.
+  async readLimit(path, n) {
+    if (this.files.has(path)) {
+      const c = this.files.get(path);
+      if (c === WHITEOUT) throw new Error("ENOENT");
+      const text = c.startsWith(B64) ? b64ToStr(c.slice(B64.length)) : c;
+      return text.slice(0, n);
+    }
+    return this.backend.readLimit
+      ? this.backend.readLimit(path, n)
+      : String(await this.backend.read(path)).slice(0, n);
   }
 
   async write(path, content) {
@@ -528,7 +557,200 @@ class VirtualFS {
       `for i in 1 2 3; do\n` +
       `  echo "Counting: \$i"\n` +
       `done\n`);
-    syncWrite(this._getBackend("/home/examples/note.txt"), "/examples/note.txt",
+    syncWrite(this._getBackend("/home/examples/loop-count.sh"), "/examples/loop-count.sh",
+      `for i in 1 2 3; do\n` +
+      `  echo "count \$i"\n` +
+      `done\n`);
+    syncWrite(this._getBackend("/home/examples/gnu-isms.sh"), "/examples/gnu-isms.sh",
+      `# GNU-isms — bash/gnu extensions POSIX sh lacks\n` +
+      `echo "\$(( 5 ** 3 ))"\n` +
+      `s="Hello World"\n` +
+      `echo "\${s,,}"\n` +
+      `echo "\${s^^}"\n` +
+      `echo "\${s:6:5}"\n` +
+      `echo "\${s/World/Bash}"\n` +
+      `(( x = 2 + 3 )); echo \$x\n` +
+      `arr=(alpha beta gamma)\n` +
+      `echo "\${#arr[@]}"\n` +
+      `echo "\${arr[1]}"\n` +
+      `echo $'tab\there'\n` +
+      `for i in {1..3}; do echo "\$i"; done\n`);
+    syncWrite(this._getBackend("/home/examples/sqrt1337.sh"), "/examples/sqrt1337.sh",
+      `for i in \`seq 1 10000\`\n` +
+      `do\n` +
+      `\tif echo \$((i*i)) | grep 1337 > /dev/null\n` +
+      `\tthen \n` +
+      `\t\techo \$i\n` +
+      `\tfi\n` +
+      `done\n`);
+    // ── source.{sh,zsh,fish,bat,c} — samples to ./source into the shell ──
+    // Interesting variables + functions, one per language flavour. After
+    // `source examples/source.sh`, call the functions with a trailing `;`
+    // so the bash transpiler runs them (native lines resolve commands
+    // only):  mkcd /tmp/scratch;  ll;  bak note.txt
+    syncWrite(this._getBackend("/home/examples/source.sh"), "/examples/source.sh",
+      `# ── examples/source.sh — handy variables + functions ─────────────\n` +
+      `#   source examples/source.sh          (or:  . examples/source.sh)\n` +
+      `#\n` +
+      `# After sourcing, call the functions with a trailing \`;\` so the bash\n` +
+      `# transpiler runs them:  mkcd /tmp/scratch;   ll;   bak note.txt\n` +
+      `# ────────────────────────────────────────────────────────────────\n` +
+      `\n` +
+      `# paths & preferences\n` +
+      `DEVDIR=\$HOME/dev\n` +
+      `SCRIPTS=\$HOME/scripts\n` +
+      `NOTES=\$HOME/note.txt      # your scratch notes (edit notes)\n` +
+      `TMPD=/tmp\n` +
+      `\n` +
+      `# status helpers (✓ / ⚠ / ✗ markers)\n` +
+      `ok()   { echo \"✓ \$*\"; }\n` +
+      `warn() { echo \"⚠ \$*\"; }\n` +
+      `err()  { echo \"✗ \$*\"; }\n` +
+      `\n` +
+      `# directory helpers\n` +
+      `ll()   { ls -l \"\$1\"; }\n` +
+      `la()   { ls -la \"\$1\"; }\n` +
+      `mkcd() { mkdir -p \"\$1\" && cd \"\$1\" && pwd; }   # make + enter\n` +
+      `take() { mkcd \"\$1\"; }\n` +
+      `\n` +
+      `# bash-specific parameter expansion + arithmetic\n` +
+      `upper() { echo "\${1^^}"; }             # \${var^^} — bash-only case mod\n` +
+      `lower() { echo "\${1,,}"; }             # \${var,,} — lowercase\n` +
+      `strip() { echo "\${1%.txt}"; }          # \${var%pat} — strip a suffix\n` +
+      `slice() { echo "\${1:0:5}"; }           # \${var:off:len} — substring\n` +
+      `halve() { n=\${1:-0}; echo \$(( n / 2 )); }   # \${var:-def} + \$(( )) arithmetic\n` +
+      `len()   { s=\$1; echo "\${#s}"; }            # \${#var} — string length\n`);
+    syncWrite(this._getBackend("/home/examples/source.zsh"), "/examples/source.zsh",
+      `# ── examples/source.zsh — zsh-flavoured (sourced via the sh frontend) ──\n` +
+      `#   source examples/source.zsh\n` +
+      `# (zsh runs this natively too; jtsh transpiles it with its sh compiler)\n` +
+      `ZSH_NAME=\"zsh-powered\"\n` +
+      `ZDOTDIR=\$HOME\n` +
+      `fpath=(/usr/local/share/zsh/site-functions /usr/share/zsh/site-functions)\n` +
+      `zfn() { echo \"zsh fn: \$1 (powered by \$ZSH_NAME)\"; }\n` +
+      `mkcd() { mkdir -p \"\$1\" && cd \"\$1\" && pwd; }\n` +
+      `ll()   { ls -l \"\$1\"; }\n` +
+      `\n` +
+      `# zsh-specific: 1-based arrays, \${var:l:u} mods, (( )) arithmetic\n` +
+      `favs=(zsh fish vim)\n` +
+      `first()  { echo \$favs[1]; }             # 1-based array index\n` +
+      `nitems() { echo "\${#favs[@]}"; }        # array element count\n` +
+      `lcase()  { echo "\${1:l}"; }             # \${var:l} — lowercase\n` +
+      `ucase()  { echo "\${1:u}"; }             # \${var:u} — uppercase\n` +
+      `sl()     { echo "\${1:1:3}"; }           # \${var:off:len} slice\n` +
+      `bump()   { (( i += 1 )); echo \$i; }      # (( )) arithmetic assign\n`);
+    syncWrite(this._getBackend("/home/examples/source.fish"), "/examples/source.fish",
+      `# ── examples/source.fish — fish-flavoured vars + functions ──\n` +
+      `#   source examples/source.fish\n` +
+      `set -g fish_greeting \"the fish sample was sourced\"\n` +
+      `set -g FISH_COLOR_MAGENTA brred\n` +
+      `set -g MY_EDITOR vi\n` +
+      `set -g TODO_FILE /home/todo.txt\n` +
+      `function greet\n` +
+      `  echo \"hello \$argv!\"\n` +
+      `end\n` +
+      `function today\n` +
+      `  echo \"it is always today, says \$argv\"\n` +
+      `end\n` +
+      `\n` +
+      `# fish-specific: the string builtin (sub / upper) + math\n` +
+      `set -g LETTERS a b c d e\n` +
+      `function middle\n` +
+      `  string sub -s 2 -l 2 \$argv[1]\n` +
+      `end\n` +
+      `function shout\n` +
+      `  echo (string upper \$argv[1])\n` +
+      `end\n`);
+    syncWrite(this._getBackend("/home/examples/source.c"), "/examples/source.c",
+      `/* ── examples/source.c — C-flavoured constants (sourced by jtsh) ──\n` +
+      `   source examples/source.c\n` +
+      `   The variables become \$vars in the shell. This file is also a\n` +
+      `   valid little C translation unit — compile it with tcc/cc. */\n` +
+      `int MAX_RETRIES = 5;\n` +
+      `int APP_ID = 7;\n` +
+      `int width = 80;\n` +
+      `int height = 24;\n` +
+      `int GRACE = 3;\n` +
+      `\n` +
+      `/* ── more C flavour: arithmetic + char* strings ── */\n` +
+      `int FULL_W = 80 * 2;             /* width * 2 */\n` +
+      `int CUBE   = 80 * 80 * 80;       /* width * width * width */\n` +
+      `char *BANNER = "c-sourced";\n` +
+      `char *GREETING = "hello from C";\n` +
+      `int RETRIES = 5 + 3;             /* MAX_RETRIES + GRACE */\n` +
+      `int AREA   = 80 * 24;            /* width * height */\n` +
+      `\n` +
+      `/* a real C function with pointer arithmetic: sum the first n ints\n` +
+      `   of s. Valid C — compile with tcc/cc; when sourced it becomes a\n` +
+      `   callable shell function (the c frontend emits the pointer walk).\n` +
+      `\n` +
+      `   Run it from jtsh:\n` +
+      `     source examples/source.c\n` +
+      `     a=(10 20 30)\n` +
+      `     addr a                        -> \\u0001mem:a:0   (the array's pointer)\n` +
+      `     sum_first \"$(addr a)\" 3; echo $?    -> 60\n` +
+      `   (the function returns its value, so a bare call leaves it in $?.) */\n` +
+      `int sum_first(int *s, int n) {\n` +
+      `    int total = 0;\n` +
+      `    while (n > 0) {\n` +
+      `        total += *s;\n` +
+      `        s = s + 1;\n` +
+      `        n = n - 1;\n` +
+      `    }\n` +
+      `    return total;\n` +
+      `}\n` +
+      `\n` +
+      `/* a pointer WRITE: fill the first n ints through the pointer — the\n` +
+      `   writes land in the caller's shell array (C call-by-reference):\n` +
+      `     fill \"$(addr a)\" 3; echo \"a=($a)\"    -> a=(0 10 20) */\n` +
+      `int fill(int *p, int n) {\n` +
+      `    int i = 0;\n` +
+      `    while (i < n) {\n` +
+      `        *p++ = i * 10;\n` +
+      `        i = i + 1;\n` +
+      `    }\n` +
+      `    return 0;\n` +
+      `}\n` +
+      `\n` +
+      `/* a READ+WRITE walk: selection-sort the first n ints in place —
+` +
+      `   the swaps land in the caller's shell array (call-by-reference):
+` +
+      `     a=(10 30 20)
+` +
+      `     sort_ints \"$(addr a)\" 3; echo \"a=($a)\"    -> a=(10 20 30) */
+` +
+      `int sort_ints(int *a, int n) {\n` +
+      `    int i, j, t;\n` +
+      `    for (i = 0; i < n - 1; i = i + 1) {\n` +
+      `        for (j = i + 1; j < n; j = j + 1) {\n` +
+      `            if (a[j] < a[i]) {\n` +
+      `                t = a[i];\n` +
+      `                a[i] = a[j];\n` +
+      `                a[j] = t;\n` +
+      `            }\n` +
+      `        }\n` +
+      `    }\n` +
+      `    return 0;\n` +
+      `}\n`);
+            syncWrite(this._getBackend("/home/examples/source.bat"), "/examples/source.bat",
+      `@echo off\n` +
+      `rem ── examples/source.bat — a Windows batch file ──────────────\n` +
+      `rem   Runs in cmd.exe. In jtsh, .bat sources go through the real\n` +
+      `rem   bat-sh-go frontend (A1 shIR → JS): set / echo / %%VAR%% /\n` +
+      `rem   if (also defined/exist/errorlevel) / for /l ranges / exit /b\n` +
+      `rem   and ^ line continuation all work; call, setlocal, pipes and\n` +
+      `rem   the other v1-unsupported constructs refuse loudly.\n` +
+      `set GREETING=Hello from batch-land\n` +
+      `set /a SCORE=2+3\n` +
+      `set EMPTY=\n` +
+      `echo %GREETING% score=%SCORE%\n` +
+      `if %SCORE%==5 (echo the answer!) else (echo wrong)\n` +
+      `if defined EMPTY (echo empty is defined) else (echo nope)\n` +
+      `if exist examples/hello.sh (echo hello.sh is here)\n` +
+      `for %%v in (alpha beta gamma) do echo item %%v\n` +
+      `for /l %%n in (1 1 3) do echo count %%n\n` +
+      `rem after sourcing: echo $greeting · echo $score (batch lowercases)\n`);syncWrite(this._getBackend("/home/examples/note.txt"), "/examples/note.txt",
       `Notes\n=====\n\nEdit this file with:  edit /home/examples/note.txt\n` +
       `Ctrl+S to save, Esc to cancel.\n`);
 
@@ -993,7 +1215,7 @@ print("sum 1..10 = " .. total)
     return t;
   }
 
-  async read(path) {
+  async read(path, opts) {
     const r = this._resolve(path);
     await this._ensureZipMounts(r);
     this._check(this._parent(r), "x");
@@ -1006,6 +1228,14 @@ print("sum 1..10 = " .. total)
     if (m.zip && r === m.prefix) {
       const raw = this._findBackendRaw(r);
       if (raw) return raw.backend.read(raw.relative);
+    }
+    // read(path, { limit }) — only the first N bytes. Memory backends
+    // (RamFS/OverlayFS) expose readLimit and avoid decoding the whole
+    // file; everything else (http/github/docs/…) fetches whole
+    // resources anyway, so slice their result.
+    if (opts && opts.limit !== undefined) {
+      if (m.backend.readLimit) return await m.backend.readLimit(m.relative, opts.limit);
+      return String(await m.backend.read(m.relative)).slice(0, opts.limit);
     }
     return m.backend.read(m.relative);
   }

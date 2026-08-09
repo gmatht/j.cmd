@@ -4065,6 +4065,119 @@ Extra args become the script's $1… (the caller's are restored).
     }
   },
 
+  async wasmcall(args) {
+    // wasmcall MODULE.wasm FN [args…] — call an exported function of a
+    // compiled wasm LIBRARY (no main needed), passing shell data by
+    // POINTER via the `addr` handles:
+    //   cc -c lib.c -o lib.wasm          (or tcc)
+    //   a=(10 30 20)
+    //   wasmcall lib.wasm sum_first "$(addr a)" 3   -> 60
+    // An `addr NAME` handle is marshalled into the module's linear
+    // memory: an ARRAY variable becomes an int* (4-byte elements), a
+    // scalar becomes a char* (NUL-terminated). After the call the
+    // memory is written back, so in-place writes (sort, fill) land in
+    // the shell variable. All-numeric args pass as ints; other strings
+    // as char* copies.
+    const help = () => stdout.write(
+      `wasmcall MODULE.wasm FN [args…] — call a compiled wasm library function with pointers
+\n` +
+      `  \`addr NAME\` args are marshalled: an array becomes an int*, a\n` +
+      `  scalar a char*; the memory is written back after the call, so\n` +
+      `  in-place writes land in the shell variable. Numeric args pass\n` +
+      `  as ints, other strings as char* copies.\n` +
+      `\n  e.g. cc -c sort.c -o sort.wasm; a=(10 30 20)\n` +
+      `       wasmcall sort.wasm sum_first \"\$(addr a)\" 3\n`
+    );
+    if (!args.length || args[0] === "-h" || args[0] === "--help") { help(); return 0; }
+    const modArg = args[0], fnName = args[1];
+    if (!modArg || !fnName) { help(); return 1; }
+    const resolve = (p) => (p && p.startsWith("/") ? p : (fs._resolve ? fs._resolve(p) : p));
+    const modPath = resolve(modArg);
+    let lib;
+    try {
+      lib = await wasmRunner.instantiateLibrary(modPath);
+    } catch (e) {
+      stderr.write(`wasmcall: ${modPath}: ${e.message}\n`);
+      return 1;
+    }
+    const fn = lib.instance.exports[fnName];
+    if (typeof fn !== "function") {
+      stderr.write(`wasmcall: '${fnName}' is not an exported function of ${modArg}\n`);
+      return 1;
+    }
+    await ensureOtRuntime();
+    const sh2 = otRt.sh2;
+    const enc = new TextEncoder();
+    const dec = new TextDecoder();
+    const u8 = () => new Uint8Array(lib.memRef.memory.buffer);
+    const callArgs = [];
+    const writeBacks = [];   // { name, off, ptr, n } | { name, ptr, str: true }
+    try {
+      for (const a of args.slice(2)) {
+        const s = String(a);
+        const m = /^\u0001mem:([^:]*):(-?\d+)$/.exec(s);
+        if (m) {
+          const name = m[1], off = Number(m[2]);
+          const val = sh2.vars[name];
+          if (Array.isArray(val)) {
+            // int* — copy the elements (from `off` to the end) as i32s
+            const n = Math.max(0, val.length - off);
+            const ptr = lib.envRt.$malloc(Math.max(n, 1) * 4);
+            const view = new DataView(lib.memRef.memory.buffer);
+            for (let i = 0; i < n; i++) view.setInt32(ptr + i * 4, Number(val[off + i]) || 0, true);
+            callArgs.push(ptr);
+            writeBacks.push({ name, off, ptr, n });
+          } else {
+            // char* — NUL-terminated copy of the scalar value
+            const txt = String(val ?? "");
+            const ptr = lib.envRt.$malloc(txt.length + 1);
+            const m8 = u8();
+            for (let i = 0; i < txt.length; i++) m8[ptr + i] = txt.charCodeAt(i);
+            m8[ptr + txt.length] = 0;
+            callArgs.push(ptr);
+            writeBacks.push({ name, ptr, str: true });
+          }
+        } else if (/^-?\d+$/.test(s)) {
+          callArgs.push(Number(s));
+        } else {
+          // plain string → char* copy (read-only)
+          const ptr = lib.envRt.$malloc(s.length + 1);
+          const m8 = u8();
+          for (let i = 0; i < s.length; i++) m8[ptr + i] = s.charCodeAt(i);
+          m8[ptr + s.length] = 0;
+          callArgs.push(ptr);
+        }
+      }
+      const value = fn(...callArgs);
+      // write back the marshalled pointers (in-place changes land in
+      // the shell variables)
+      const view = new DataView(lib.memRef.memory.buffer);
+      for (const w of writeBacks) {
+        if (w.str) {
+          const m8 = u8();
+          let end = w.ptr;
+          while (end < m8.length && m8[end] !== 0) end++;
+          sh2.setVar(w.name, dec.decode(m8.slice(w.ptr, end)));
+        } else {
+          const arr = [];
+          for (let i = 0; i < w.n; i++) arr.push(String(view.getInt32(w.ptr + i * 4, true)));
+          const prev = sh2.vars[w.name];
+          if (w.off === 0 || !Array.isArray(prev)) sh2.setArray(w.name, arr);
+          else {
+            const merged = prev.slice(0, w.off);
+            for (const v of arr) merged.push(v);
+            sh2.setArray(w.name, merged);
+          }
+        }
+      }
+      stdout.write(String(value) + "\n");
+      return 0;
+    } catch (e) {
+      stderr.write(`wasmcall: ${fnName}: ${e.message}\n`);
+      return 1;
+    }
+  },
+
   async man(args) {
     // man [command]       — show the manual page for a command
     // man -k <keyword>    — search manual pages (like apropos)

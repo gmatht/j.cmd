@@ -331,6 +331,47 @@ export class WasmRunner {
     return instance;
   }
 
+  // ─── Library export call (wasmcall) ──────────────────────────
+  // Instantiate a wasm LIBRARY module (no main required — compiled by
+  // tcc/cc) with the env libc runtime, WITHOUT running an entry point.
+  // Returns { instance, memRef, envRt } so the caller can marshal shell
+  // values into the module's linear memory (envRt.$malloc + memRef),
+  // call any exported function, and read results back. The env runtime
+  // is returned so the same instance can serve repeated calls.
+  async instantiateLibrary(path) {
+    await this._ensureInit();
+    let module = this.cache.get(path);
+    if (!module) {
+      const blob = await this.vfs.readBlob(path);
+      module = await WebAssembly.compile(await blob.arrayBuffer());
+      this.cache.set(path, module);
+    }
+    const memRef = { memory: null };
+    const custom = this._buildCustomImports(module, memRef);
+    const needsWasi = WebAssembly.Module.imports(module)
+      .some((i) => i.module === "wasi_snapshot_preview1");
+    const instance = await WebAssembly.instantiate(module, {
+      ...(needsWasi ? { wasi_snapshot_preview1: this._wasiShim() } : {}),
+      ...custom,
+    });
+    if (instance.exports.memory) memRef.memory = instance.exports.memory;
+    // The marshalling allocator: when the module imports env, reuse its
+    // own runtime (the same heap it allocates from); otherwise a
+    // standalone one over the same memory — its $malloc bumps from the
+    // END of the current memory, clear of the module's stack/data.
+    let envRt = custom.env;
+    if (!envRt) {
+      const { createCRuntime } = await import("./c-runtime.js");
+      envRt = createCRuntime({
+        getMem: () => new Uint8Array(memRef.memory.buffer),
+        memory: () => memRef.memory,
+        out: () => {},
+        err: () => {},
+      });
+    }
+    return { instance, memRef, envRt };
+  }
+
   // ─── VirtualFS → WasmFs (seed) ─────────────────────────────
 
   async _seedWasmFs(wasmfs) {
