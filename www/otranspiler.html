@@ -1108,8 +1108,10 @@ function currentUrlParams() {
   } else if (code) {
     p.set("code", code);
   }
-  // the "try in j.cmd" command line, so the URL carries the whole setup
-  if (code.trim()) p.set("cmd", tryCommand());
+  // NB: no cmd here — the "try in j.cmd" command goes ONLY into the
+  // j.cmd prefill URL (see wireTryButton); the otranspiler's own
+  // shareable URL carries lang/target/example/code, which is enough to
+  // restore the page.
   return p.toString();
 }
 function syncUrl() {
