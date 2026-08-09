@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -420,12 +421,103 @@ func callNode(e *expr) any {
 		}
 		refuse("unsupported function call " + e.name)
 	}
-	// strcmp / user functions — fold with all-literal args; refuse otherwise
+	// strcmp / user functions — fold with all-literal args (the v1
+	// compile-time interpretation). A user function with a RUNTIME
+	// (non-literal) argument is a real call: the A1 `fnCall` dispatch —
+	// the definition is emitted as an IrStmt::Function (see Shir), and
+	// the estree/perl backends lower fnCall to the function-map/sub
+	// call. The varargs idiom stays literal-fold-only in v1 (the runtime
+	// body model has no va_arg stack).
 	if s, ok := foldCallConst(e, nil); ok {
 		return st(s)
 	}
+	if fn, ok := userFuncs[e.name]; ok {
+		if fn.varargs {
+			refuse("unsupported function call " + e.name + " (varargs need literal args in v1)")
+		}
+		args := make([]any, 0, len(e.args))
+		for _, a := range e.args {
+			args = append(args, valueNode(a))
+		}
+		return call("fnCall", []any{st(e.name), map[string]any{"type": "Array", "elements": args}})
+	}
 	refuse("unsupported function call " + e.name)
 	return nil
+}
+
+// userExprA1 — a user-function body expression → the A1 expr. Param
+// reads lower to the positional `getVar("N")` (the $N shape the estree
+// maps to sh2.positional[N-1]); everything else reuses the main's
+// valueNode/arithNode lowering.
+func userExprA1(e *expr, params []string) any {
+	if e == nil {
+		return st("")
+	}
+	switch e.kind {
+	case "num", "str":
+		return st(e.num)
+	case "id":
+		for i, pn := range params {
+			if pn == e.name {
+				return call("getVar", []any{st(strconv.Itoa(i + 1))})
+			}
+		}
+		return call("getVar", []any{st(e.name)})
+	case "bin":
+		return map[string]any{"type": "Arith", "ast": arithNode(e)}
+	case "call":
+		return callNode(e)
+	case "index", "deref", "addr":
+		return valueNode(e)
+	}
+	return st("")
+}
+
+// userStmtsA1 — a user-function body (the uStmt mini-AST) → A1 stmts.
+func userStmtsA1(stmts []*uStmt, params []string) []any {
+	out := []any{}
+	for _, s := range stmts {
+		switch s.kind {
+		case "skip":
+			continue
+		case "assign":
+			out = append(out, map[string]any{
+				"type":    "Assign",
+				"targets": []any{map[string]any{"var": s.name, "indices": []any{}, "sigil": nil}},
+				"expr":    userExprA1(s.e, params),
+			})
+		case "while":
+			out = append(out, map[string]any{
+				"type": "While",
+				"cond": userExprA1(s.e, params),
+				"body": userStmtsA1(s.body, params),
+			})
+		case "ret":
+			out = append(out, map[string]any{
+				"type":  "Return",
+				"value": userExprA1(s.e, params),
+			})
+		}
+	}
+	return out
+}
+
+// buildUserFnA1 — a user function definition → the A1 `Function` stmt
+// (the same shape the shell frontends emit; the estree lowers it to
+// sh2.define, the perl backend to a `sub`). The params bind the
+// positional args first ($1..$N — the fnCall/callDirect dispatch sets
+// scriptArgs), then the body runs; `return e` carries the value out.
+func buildUserFnA1(name string, fn *userFunc) map[string]any {
+	body := []any{}
+	for i, pn := range fn.params {
+		body = append(body, map[string]any{
+			"type":    "Assign",
+			"targets": []any{map[string]any{"var": pn, "indices": []any{}, "sigil": nil}},
+			"expr":    call("getVar", []any{st(strconv.Itoa(i + 1))}),
+		})
+	}
+	body = append(body, userStmtsA1(fn.body, fn.params)...)
+	return map[string]any{"type": "Function", "name": name, "body": body}
 }
 
 // userFuncs — USER function definitions (`static int triple(int n) {
@@ -2881,6 +2973,21 @@ func Shir(src string) (out []byte, err error) {
 		return nil, fmt.Errorf("REFUSE: %w", err)
 	}
 	stmts = applyStoreRouting(stmts)
+	// The user function definitions — the runtime-callable subset (the
+	// varargs idiom stays literal-fold-only in v1). Prepended so the
+	// definitions precede every call site; the estree/perl backends turn
+	// them into sh2.define / `sub` declarations.
+	userDefs := []any{}
+	for name, fn := range userFuncs {
+		if fn.varargs {
+			continue
+		}
+		userDefs = append(userDefs, buildUserFnA1(name, fn))
+	}
+	sort.Slice(userDefs, func(i, j int) bool {
+		return userDefs[i].(map[string]any)["name"].(string) < userDefs[j].(map[string]any)["name"].(string)
+	})
+	stmts = append(userDefs, stmts...)
 	prog := map[string]any{
 		"type":             "Program",
 		"contract_version": 1,

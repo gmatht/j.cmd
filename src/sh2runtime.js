@@ -9,6 +9,8 @@
 // commands see the same builtins, PATH and VFS as typed commands.
 // -----------------------------------------------------------------
 
+import { isReadonly } from "./env.js";
+
 // Quote a word for a command line (the shell's tokenizer round-trips it).
 function quoteWord(w) {
   const s = String(w);
@@ -83,6 +85,13 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
 
   function setVar(name, value) {
     const s = String(name);
+    // readonly guard — refuse reassignment (bash: "readonly variable",
+    // $? = 1). Check the base name for indexed writes ("arr[$i]").
+    const base = s.lastIndexOf("[") > 0 && s.endsWith("]") ? s.slice(0, s.lastIndexOf("[")) : s;
+    if (isReadonly(base)) {
+      lastStatus = 1;
+      return;
+    }
     const val = value === undefined || value === null ? "" : String(value);
     // "arr[$i]" — array element assignment (the compiler passes the
     // index unexpanded)
@@ -520,6 +529,37 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     }
   }
 
+  // Sync twin of whileLoop — the estree lowers provably-sync loops
+  // (cond + body await-free) to `sh2.whileLoopSync(cond, body)` with NO
+  // per-iteration promises. Same break/continue LoopSignal contract.
+  function whileLoopSync(cond, body) {
+    while (cond()) {
+      try {
+        body();
+      } catch (e) {
+        if (e instanceof LoopSignal && e.kind === "break") break;
+        if (e instanceof LoopSignal && e.kind === "continue") continue;
+        throw e;
+      }
+    }
+  }
+
+  // C float arithmetic (the c-sh-go frontend's `fparith` call — the
+  // `(expr)` string over $vars, evaluated with JS float semantics).
+  function fparith(s) {
+    const src = String(s).replace(/\$([A-Za-z_][A-Za-z0-9_]*)/g, (_, n) => {
+      const v = vars.get(n) ?? (env && env[n]) ?? "";
+      const f = Number(String(v));
+      return Number.isFinite(f) ? String(f) : "0";
+    });
+    try {
+      const f = Function('"use strict"; return (' + src + ');')();
+      return Number.isFinite(Number(f)) ? String(f) : "0";
+    } catch {
+      return "0";
+    }
+  }
+
   function caseMatch(value, patterns) {
     const v = String(value);
     for (let i = 0; i < patterns.length; i++) {
@@ -701,7 +741,7 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
   return {
     sh2: {
       exec, pipeline, capture, captureSync, pipelineSync, captureWords, redirect, test,
-      forLoop, whileLoop, caseMatch, define, brace, param, arith,
+      forLoop, whileLoop, whileLoopSync, caseMatch, define, brace, param, arith, fparith,
       guard, and, or, arithEval,
       setArray, setArrayAppend, arrayIndex, arrayLen, join,
       memAddrOf: memAddrOf, memLoad, memStore, memAlloc, memElemSize, memFree,
@@ -715,6 +755,10 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       // $1..$9 / $@ — the native estree reads sh2.positional
       get positional() { return scriptArgs; },
       set positional(v) { scriptArgs = Array.isArray(v) ? v.map(String) : []; },
+      // $0 / the script name (sh2.argv0 — settable so `bash script.sh`
+      // and `set --` can change it per line)
+      get argv0() { return argv0; },
+      set argv0(v) { argv0 = String(v ?? "bash"); },
       // the native store the otranspilerl estree backend reads/writes
       // (`sh2.vars.x` — see sh2perl/src/estree.rs native-store fold;
       // generated code adds the env fallback itself as
@@ -846,8 +890,63 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
           case "pwd": return ((fs.cwd !== undefined ? fs.cwd : "/") || "/") + "\n";
           case "cd": {
             const target = (a[0] || (env && env.HOME) || "/").replace(/\/+$/, "") || "/";
-            if (fs && fs.cwd !== undefined) fs.cwd = target;
+            if (fs && fs.cwd !== undefined) {
+              fs.cwd = target;
+              if (env) env.PWD = target;   // keep $PWD honest across native/transpiled
+            }
             lastStatus = 0;
+            return "";
+          }
+          case "export": {
+            // `export X="value"` — debashl splits this into ["X=", "value"]
+            // (a quoted value with spaces arrives as its own arg), so a
+            // trailing `NAME=` takes the next arg as its value.
+            let pending = null;
+            for (const a0 of argsArr || []) {
+              const arg = String(a0 ?? "");
+              if (pending !== null) { vars.set(pending, arg); pending = null; continue; }
+              if (arg.endsWith("=")) { pending = arg.slice(0, -1); continue; }
+              const eq = arg.indexOf("=");
+              if (eq > 0) { vars.set(arg.slice(0, eq), arg.slice(eq + 1)); continue; }
+              if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(arg)) vars.set(arg, "");
+            }
+            if (pending !== null) vars.set(pending, "");
+            return "";
+          }
+          case "ls": {
+            // SYNC ls for sourced function bodies (debashl renders a
+            // single-command body through sh2.builtin). Basic listing via
+            // fs.listSync/statSync — the async builtin ls in the shell
+            // handles the pretty interactive form.
+            let long = false;
+            const names = [];
+            for (const x of a) {
+              if (x === "-l" || x === "-la" || x === "-al") long = true;
+              else if (x.startsWith("-")) continue;
+              else names.push(x);
+            }
+            if (!names.length) names.push(".");
+            let out = "";
+            for (const d of names) {
+              const base = d.replace(/\/+$/, "") || "/";
+              let st = null;
+              try { st = fs.statSync ? fs.statSync(d) : null; } catch {}
+              if (st && st.type === "file") { out += base.split("/").filter(Boolean).pop() + "\n"; continue; }
+              const entries = fs.listSync ? fs.listSync(d) : null;
+              if (entries === null) { out += `ls: ${d}: No such file or directory\n`; continue; }
+              for (const e of entries) {
+                const clean = e.replace(/\/$/, "");
+                let est = null;
+                try { est = fs.statSync ? fs.statSync(base + "/" + clean) : null; } catch {}
+                const isDir = est && est.type === "dir";
+                out += (isDir ? clean + "/" : clean) + (long ? "\n" : "  ");
+              }
+              out += "\n";
+            }
+            // write, don't return — a function body's return value is only
+            // used for $?, so output must reach stdout directly (the same
+            // pattern grepMatches uses)
+            if (out && stdout && typeof stdout.write === "function") stdout.write(out);
             return "";
           }
           case "test": {
@@ -886,7 +985,12 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       redirectSync() {
         throw new Error("redirection needs the async redirect bridge; try `bash` for this construct");
       },
-      async fnCall(name, argsArr) {
+      // Sync-capable fnCall: the estree's PROVABLY-SYNC function path
+      // (fn_call_sync_set) emits `sh2.fnCall(...)` WITHOUT await — so for
+      // an await-free body this must return the VALUE, not a promise. An
+      // async body still returns a promise (the async dispatch awaits it;
+      // the sync no-await path is only used for bodies proven await-free).
+      fnCall(name, argsArr) {
         const fn = fns.get(name);
         if (typeof fn !== "function") throw new Error("sh2.fnCall: no function '" + name + "'");
         const prev = scriptArgs;
@@ -894,25 +998,42 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
         let r;
         try {
           r = fn();
-          if (r && typeof r.then === "function") r = await r;
-        } finally {
+        } catch (e) {
           scriptArgs = prev;
+          throw e;
         }
+        if (r && typeof r.then === "function") {
+          return r.then((v) => {
+            scriptArgs = prev;
+            lastStatus = v === false ? 1 : 0;
+            return v;
+          });
+        }
+        scriptArgs = prev;
         lastStatus = r === false ? 1 : 0;
         return r;
       },
-      async callDirect(name, fn, argsArr) {
-        // `f …` — invoke the registered function body with positional args.
+      // `f …` — invoke a DIRECT-registered function body (the estree's
+      // native-direct subset); same sync-capable contract as fnCall.
+      callDirect(name, fn, argsArr) {
         if (typeof fn !== "function") throw new Error("sh2.callDirect: no function '" + name + "'");
         const prev = scriptArgs;
         scriptArgs = (argsArr || []).map(String);
         let r;
         try {
           r = fn();
-          if (r && typeof r.then === "function") r = await r;
-        } finally {
+        } catch (e) {
           scriptArgs = prev;
+          throw e;
         }
+        if (r && typeof r.then === "function") {
+          return r.then((v) => {
+            scriptArgs = prev;
+            lastStatus = v === false ? 1 : 0;
+            return v;
+          });
+        }
+        scriptArgs = prev;
         lastStatus = r === false ? 1 : 0;
         return r;
       },
