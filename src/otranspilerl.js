@@ -26,6 +26,9 @@
 // -----------------------------------------------------------------
 
 const WASM_PATH = "wasm-bin/otranspilerl.wasm";  // browser: relative to the page
+// cache-buster — bump whenever www/wasm-bin/otranspilerl.wasm changes so
+// the browser (and the otranspiler GUI) never serves a stale wasm.
+const WASM_VERSION = "v7-nospace"; // v7: 'No spaces' IR tag + estree split-skip
 
 let libPromise = null;
 
@@ -38,7 +41,7 @@ async function loadWasmBytes() {
   // Browser: fetch from the server. Node (CLI): read from the repo.
   if (typeof fetch !== "undefined") {
     try {
-      const resp = await fetch(WASM_PATH);
+      const resp = await fetch(WASM_PATH + "?v=" + WASM_VERSION);
       if (resp.ok) return new Uint8Array(await resp.arrayBuffer());
     } catch { /* fall through to disk */ }
   }

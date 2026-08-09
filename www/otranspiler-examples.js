@@ -25,6 +25,20 @@ export const EXAMPLES = {
     { name: "string-length", desc: "${#s} parameter expansion", code: 's="hello"\necho "len=${#s}"\n' },
     { name: "sequence", desc: "brace expansion 1..3", code: 'for i in {1..3}; do echo "$i"; done\n' },
     { name: "gnu-isms", desc: "GNU-isms — bash/gnu extensions POSIX sh lacks", code: '# GNU-isms — bash/gnu extensions POSIX sh lacks\necho "$(( 5 ** 3 ))"\ns="Hello World"\necho "${s,,}"\necho "${s^^}"\necho "${s:6:5}"\necho "${s/World/Bash}"\n(( x = 2 + 3 )); echo $x\nif [[ "a" = "a" ]]; then echo eq; fi\narr=(alpha beta gamma)\necho "${#arr[@]}"\necho "${arr[1]}"\necho $\'tab\there\'\nfor i in {1..3}; do echo "$i"; done\n' },
+    { name: "sqrt1337", desc: "for loop + pipe — find squares containing 1337", code: 'for i in `seq 1 10000`\ndo\n\tif echo $((i*i)) | grep 1337 > /dev/null 2> /dev/null\n\tthen \n\t\techo $i\n\tfi\ndone\n' },
+            { name: "nospace", desc: "the 'No spaces' tag — provably spaceless vars skip the word-split", code: `# the 'No spaces' tag: vars provably free of IFS whitespace
+# (numeric values, spaceless constants, \`tr -d '[:space:]'\` outputs,
+# transitively through assignments) skip the word-split on unquoted
+# \`$var\` — look at the GENERATED JS: the tagged vars emit bare
+# (\`[n, s, t, ...]\`), the untagged \`w\` (which has spaces) keeps its
+# \`String(w).split(/\\s+/).filter(...)\` word-split.
+n=42
+s="hello"
+t="xy"
+w="a  b"
+echo "$n|$s|$t|$w"
+echo $n $s $t $w
+` },
   ],
 
   zsh: [
