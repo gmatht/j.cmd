@@ -1352,6 +1352,10 @@ async function init() {
     const exs = getExamples(srcLang);
     if (exs.length) loadExample(exs[0]);
   }
+  // always paint the examples sidebar at boot (the URL's &code= branch
+  // restores the source without a loadExample, which would leave the
+  // container empty until a language pill is clicked)
+  renderExamples();
   showStatus("ready — otranspilerl " + (await libPromise).version(), "success");
 }
 
