@@ -1953,7 +1953,9 @@ Write new commands by creating .js files in /bin/.
     const resolved = file.includes("/") ? fs._resolve(file) : fs._resolve(base + "/" + file);
     let content;
     try {
-      content = await fs.read(resolved);
+      // readBlob (the cat path) — the read() wrapper's mount resolution
+      // is stricter (the shell's own /tmp works through readBlob).
+      content = String(await (await fs.readBlob(resolved)).text());
     } catch (e) {
       process.stderr.write(`source: ${file}: ${e.message}\n`);
       return 1;
@@ -2332,6 +2334,46 @@ function looksLikeBash(text) {
 // only the bash REPL's session replay preserves them.
 let otRt = null;     // persistent createSh2Runtime result
 let otProc = null;   // process shim for the generated JS
+
+// Lazily build the persistent transpiled-bash runtime (shared by the
+// line fallback, sourcing, and JS sources). Created once; state —
+// functions (sh2.functions), sh2.lastExit, positionals, vars — survives
+// across lines.
+async function ensureOtRuntime() {
+  if (otRt) return;
+  const { createSh2Runtime } = await import("./sh2runtime.js");
+  const out = { write: (s) => { if (s) process.stdout.write(s); } };
+  const err = { write: (s) => { if (s) process.stderr.write(s); } };
+  // The native estree backend writes through process.stdout.write and
+  // reads process.env/argv — provide a shim (in the browser there is no
+  // node process at all).
+  otProc = {
+    stdout: out,
+    stderr: err,
+    pid: 1,
+    argv: ["jtsh"],
+    env: env || {},
+    cwd: () => (fs.cwd !== undefined ? fs.cwd : "/"),
+    // `exit N` in the generated JS — must NOT kill the shell.
+    exit(code) {
+      const e = new Error("__otranspiler_exit__" + code);
+      e.exitCode = Number(code) || 0;
+      throw e;
+    },
+    // `cd DIR` / `pwd` — the native estree drives cwd through process
+    chdir(p) {
+      if (fs && fs.cwd !== undefined) {
+        fs.cwd = String(p).replace(/\/+$/, "") || "/";
+        try { env.PWD = fs.cwd; } catch {}   // keep $PWD honest for native lines
+      }
+    },
+    cwd() { return (fs.cwd !== undefined ? fs.cwd : "/") || "/"; },
+  };
+  otRt = createSh2Runtime({
+    fs, env, shellExec: runNestedCommand,
+    stdout: out, stderr: err, args: [], argv0: "sh",
+  });
+}
 // Persistent shell-variable state across transpiled lines. The debashl
 // compiler folds `$x` reads to "" when x isn't assigned in the same
 // program, so each line is SEEDED with the known variables (assignments
@@ -2348,9 +2390,24 @@ function a1LiteralValue(expr) {
   if (!expr) return undefined;
   if (expr.type === "Str") return String(expr.value ?? "");
   if (expr.type === "Num" || expr.type === "Bool") return String(expr.value ?? "");
-  if (expr.type === "Interpolate" && expr.parts &&
-      expr.parts.every((p) => p && p.kind === "lit")) {
-    return expr.parts.map((p) => String(p.text ?? "")).join("");
+  if (expr.type === "Interpolate" && Array.isArray(expr.parts)) {
+    // concatenate literal parts + statically resolvable getVar parts
+    // (`DEVDIR=$HOME/dev` — the eval hoists a `let DEVDIR`, invisible
+    // to the runtime diff, so resolve it here from env/otVars)
+    let out = "";
+    for (const p of expr.parts) {
+      if (p && p.kind === "lit") { out += String(p.text ?? ""); continue; }
+      if (p && p.kind === "expr" && p.expr && p.expr.type === "Call" &&
+          p.expr.func === "getVar" && p.expr.args && p.expr.args[0] && p.expr.args[0].type === "Str") {
+        const name = p.expr.args[0].value;
+        if (otVars.has(name)) out += Array.isArray(otVars.get(name)) ? otVars.get(name).join(" ") : String(otVars.get(name));
+        else if (env[name] !== undefined) out += String(env[name]);
+        else out += "";
+        continue;
+      }
+      return undefined;   // computed part we can't resolve statically
+    }
+    return out;
   }
   if (expr.type === "Call" && expr.func === "setArray" &&
       expr.args && expr.args[1] && expr.args[1].type === "Array") {
@@ -2471,6 +2528,7 @@ async function runViaTranspiler(segmentText, stdin) {
 }
 
 async function runEstreeProgram(program, lineAssigned, srcArgs) {
+  const lineCaptured = new Set();   // names a VALUE was captured for this run
   const { estreeToJs, keepVariables } = await import("./estree.js");
   // KEEP_VARIABLES: route known array state through the persistent
   // runtime store (bare `a[1]`/`a.length` reads → arrayIndex/arrayLen;
@@ -2497,41 +2555,7 @@ async function runEstreeProgram(program, lineAssigned, srcArgs) {
     ? "return (" + (await estreeToJs({ type: "Program", body: [last] })).replace(/;\s*$/, "") + ");\n"
     : "return sh2.lastExit;\n";
   const js = bodyJs + lastJs;
-  if (!otRt) {
-    const { createSh2Runtime } = await import("./sh2runtime.js");
-    const out = { write: (s) => { if (s) process.stdout.write(s); } };
-    const err = { write: (s) => { if (s) process.stderr.write(s); } };
-    // The native estree backend writes through process.stdout.write and
-    // reads process.env/argv — provide a shim (in the browser there is no
-    // node process at all).
-    otProc = {
-      stdout: out,
-      stderr: err,
-      pid: 1,
-      argv: ["jtsh"],
-      env: env || {},
-      cwd: () => (fs.cwd !== undefined ? fs.cwd : "/"),
-      // `exit N` in the generated JS — must NOT kill the shell.
-      exit(code) {
-        const e = new Error("__otranspiler_exit__" + code);
-        e.exitCode = Number(code) || 0;
-        throw e;
-      },
-      // `cd DIR` / `pwd` — the native estree drives cwd through process
-      chdir(p) {
-        if (fs && fs.cwd !== undefined) {
-          fs.cwd = String(p).replace(/\/+$/, "") || "/";
-          try { env.PWD = fs.cwd; } catch {}   // keep $PWD honest for native lines
-        }
-      },
-      cwd() { return (fs.cwd !== undefined ? fs.cwd : "/") || "/"; },
-    };
-    otRt = createSh2Runtime({
-      fs, env, shellExec: runNestedCommand,
-      stdout: out, stderr: err, args: [], argv0: "sh",
-    });
-  }
-  const fn = new Function("fs", "env", "process", "sh2", `
+  await ensureOtRuntime();  const fn = new Function("fs", "env", "process", "sh2", `
     return (async () => { ${js} })();
   `);
   // pre-seed the runtime store so native-store reads (sh2.vars.x,
@@ -2633,10 +2657,47 @@ async function runEstreeProgram(program, lineAssigned, srcArgs) {
 function sourceLangOf(path) {
   const m = /\.([A-Za-z0-9]+)$/.exec(path);
   const ext = m ? m[1].toLowerCase() : "";
-  return { sh: "sh", zsh: "zsh", fish: "fish", c: "c", go: "go", py: "py", pl: "pl", perl: "pl" }[ext] || "sh";
+  return { sh: "sh", zsh: "zsh", fish: "fish", c: "c", go: "go", py: "py", pl: "pl", perl: "pl", js: "js", bat: "js" }[ext] || "sh";
+}
+
+// ─── runJsSourceContent: source a .js / .bat file as NATIVE JavaScript ──
+// jtsh's native format is JS — this runs the file against the persistent
+// runtime so `sh2.vars.X = …`, `sh2.functions.set("name", fn)` and bare
+// global assignments survive the source. Returns the exit code.
+async function runJsSourceContent(content, srcArgs) {
+  await ensureOtRuntime();
+  try { otRt.sh2.positional = (srcArgs && srcArgs.length ? srcArgs : getPositional()); } catch {}
+  try { otRt.sh2.argv0 = getArgv0(); } catch {}
+  const fn = new Function("fs", "env", "process", "sh2", `return (async () => { ${content} })();`);
+  const beforeGlobals = new Set(Object.keys(globalThis));
+  let v;
+  try {
+    v = await fn(fs, env, otProc, otRt.sh2);
+  } catch (e) {
+    if (e && e.exitCode !== undefined) return e.exitCode;  // `exit N`
+    throw e;
+  }
+  // harvest bare global assignments (`x = 5` → globalThis.x) into the
+  // shell's persistent variable state
+  const keepable = (val) => typeof val === "string" || typeof val === "number" || Array.isArray(val);
+  for (const k of Object.keys(globalThis)) {
+    if (beforeGlobals.has(k)) continue;
+    const val = globalThis[k];
+    if (keepable(val) && !k.startsWith("__")) otVars.set(k, Array.isArray(val) ? val : String(val));
+    try { delete globalThis[k]; } catch {}
+  }
+  for (const [k, val] of otVars) {
+    if (isReadonly(k)) continue;
+    try { env[k] = Array.isArray(val) ? val.join(" ") : String(val); } catch {}
+  }
+  setShellStatus(v === false ? 1 : 0);
+  return v === false ? 1 : 0;
 }
 
 async function runSourceContent(content, lang, srcArgs) {
+  if (lang === "js") {
+    return await runJsSourceContent(content, srcArgs);
+  }
   const { getOtranspilerl } = await import("./otranspilerl.js");
   const lib = await getOtranspilerl();
   let a1;
