@@ -28,7 +28,7 @@
 const WASM_PATH = "wasm-bin/otranspilerl.wasm";  // browser: relative to the page
 // cache-buster — bump whenever www/wasm-bin/otranspilerl.wasm changes so
 // the browser (and the otranspiler GUI) never serves a stale wasm.
-const WASM_VERSION = "v7-nospace"; // v7: 'No spaces' IR tag + estree split-skip
+const WASM_VERSION = "v8-greplift"; // v8: grep→contains lift no longer needs 2>/dev/null
 
 let libPromise = null;
 
