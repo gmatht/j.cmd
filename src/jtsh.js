@@ -2404,6 +2404,31 @@ function a1LiteralValue(expr) {
   if (!expr) return undefined;
   if (expr.type === "Str") return String(expr.value ?? "");
   if (expr.type === "Num" || expr.type === "Bool") return String(expr.value ?? "");
+  // Arith: `set /a X=2+3` — the bat-sh-go frontend emits constant
+  // arithmetic as {type:"Arith", ast:{Bin …}}; evaluate it statically so
+  // the value survives the harvest (the $(( )) render hoists a let).
+  if (expr.type === "Arith" && expr.ast) {
+    const evalBin = (n) => {
+      if (!n) return undefined;
+      if (n.type === "Num") return Number(n.value);
+      if (n.type === "Bin") {
+        const l = evalBin(n.lhs), r = evalBin(n.rhs);
+        if (l === undefined || r === undefined) return undefined;
+        switch (n.op) {
+          case "+": return l + r;
+          case "-": return l - r;
+          case "*": return l * r;
+          case "/": return l / r;
+          case "%": return l % r;
+        }
+        return undefined;
+      }
+      return undefined;   // a %var% operand — can't resolve statically
+    };
+    const v = evalBin(expr.ast);
+    if (typeof v === "number" && Number.isFinite(v)) return String(v);
+    return undefined;
+  }
   if (expr.type === "Interpolate" && Array.isArray(expr.parts)) {
     // concatenate literal parts + statically resolvable getVar parts
     // (`DEVDIR=$HOME/dev` — the eval hoists a `let DEVDIR`, invisible
@@ -2671,7 +2696,7 @@ async function runEstreeProgram(program, lineAssigned, srcArgs) {
 function sourceLangOf(path) {
   const m = /\.([A-Za-z0-9]+)$/.exec(path);
   const ext = m ? m[1].toLowerCase() : "";
-  return { sh: "sh", zsh: "zsh", fish: "fish", c: "c", go: "go", py: "py", pl: "pl", perl: "pl", js: "js", bat: "js" }[ext] || "sh";
+  return { sh: "sh", zsh: "zsh", fish: "fish", c: "c", go: "go", py: "py", pl: "pl", perl: "pl", js: "js", bat: "bat" }[ext] || "sh";
 }
 
 // ─── runJsSourceContent: source a .js / .bat file as NATIVE JavaScript ──
@@ -2718,6 +2743,8 @@ async function runSourceContent(content, lang, srcArgs) {
   if (lang === "js") {
     return await runJsSourceContent(content, srcArgs);
   }
+  // .bat goes through the unified frontend (bat-sh-go, merged into the
+  // busybox): a real batch lexer/parser → A1 shIR → JS.
   const { getOtranspilerl } = await import("./otranspilerl.js");
   const lib = await getOtranspilerl();
   let a1;
@@ -3688,6 +3715,56 @@ async function loadConfig() {
   }
 }
 
+// ─── History expansion: !!, !N, !-N, !string, !?s, !$ — bash-style ──
+// Expanded at the interactive prompt BEFORE the line is parsed, like
+// bash: the expansion is echoed first (`$ !!` prints the replayed line),
+// and an unknown designator errors with "<designator>: event not found".
+// Single-quoted regions and `\!` are literal. `history` is the command
+// list, most recent LAST.
+function expandHistory(line, history) {
+  if (!line.includes("!")) return { line, note: null, err: null };
+  const n = history.length;
+  const prev = () => (n ? history[n - 1] : null);
+  const startsWith = (s) => {
+    for (let i = n - 1; i >= 0; i--) if (history[i].startsWith(s)) return history[i];
+    return null;
+  };
+  const contains = (s) => {
+    for (let i = n - 1; i >= 0; i--) if (history[i].includes(s)) return history[i];
+    return null;
+  };
+  let out = "";
+  let i = 0;
+  let inSingle = false;
+  let used = false;
+  let bad = null;
+  while (i < line.length) {
+    const ch = line[i];
+    if (ch === "'") { inSingle = !inSingle; out += ch; i++; continue; }
+    if (inSingle) { out += ch; i++; continue; }
+    if (ch === "\\" && line[i + 1] === "!") { out += "!"; i += 2; continue; }
+    if (ch !== "!") { out += ch; i++; continue; }
+    const rest = line.slice(i + 1);
+    let ev = null, label = "!";
+    if (rest[0] === "!") { ev = prev(); label = "!!"; i += 2; }
+    else if (/^\d+/.test(rest)) { const m = /^(\d+)/.exec(rest); ev = (n && parseInt(m[1], 10) >= 1 && parseInt(m[1], 10) <= n) ? history[parseInt(m[1], 10) - 1] : null; label = "!" + m[1]; i += 1 + m[1].length; }
+    else if (/^-\d+/.test(rest)) { const m = /^-(\d+)/.exec(rest); const k = parseInt(m[1], 10); ev = (n && k >= 1 && k <= n) ? history[n - k] : null; label = "!" + m[0]; i += 1 + m[0].length; }
+    else if (rest[0] === "$") { const p = prev(); ev = p ? p.split(/\s+/).filter(Boolean).pop() : null; label = "!$"; i += 2; }
+    else if (rest.startsWith("?")) {
+      const end = rest.indexOf("?", 1);
+      const needle = end > 0 ? rest.slice(1, end) : rest.slice(1);
+      ev = contains(needle); label = "!?" + needle + (end > 0 ? "?" : ""); i += 1 + (end > 0 ? end : rest.length);
+    }
+    else if (/^[A-Za-z0-9_./-]/.test(rest)) { const m = /^([A-Za-z0-9_./-]+)/.exec(rest); ev = startsWith(m[1]); label = "!" + m[1]; i += 1 + m[1].length; }
+    else { out += ch; i++; continue; }   // `! `, trailing `!` — literal
+    if (ev === null || ev === undefined) { bad = label + ": event not found"; break; }
+    out += String(ev);
+    used = true;
+  }
+  if (bad) return { line, note: null, err: bad };
+  return { line: out, note: used ? line : null, err: null };
+}
+
 // ─── Tab Completion ─────────────────────────────────────────────
 // Complete the word under the cursor, readline callback-style
 // (fs.* is async and some Node builds ignore Promise-returning
@@ -3952,7 +4029,11 @@ if (process.stdin.isTTY) {
   rl.on("line", (line) => {
     lineQueue = lineQueue.then(async () => {
       if (replState.active) { await runReplLine(line); return; }
-      await runInterruptible(handleLine(line));
+      // bash-style history expansion (!! / !N / !-N / !string / !?s / !$)
+      const exp = expandHistory(line, rl.history);
+      if (exp.err) { process.stderr.write(`jtsh: ${exp.err}\n`); return; }
+      if (exp.note) process.stdout.write(exp.note + "\n");
+      await runInterruptible(handleLine(exp.line));
       rl.setPrompt(shellPrompt());
       rl.prompt();
     }).catch((e) => {

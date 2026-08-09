@@ -3905,42 +3905,6 @@ Loops, conditionals, variables, arithmetic and pipes work:
     }
   },
 
-  // ─── translateBatch: Windows batch → sh ──────────────────────
-  // Lets a REAL .bat file source usefully: `set X=v` → X="v",
-  // `set /a X=e` → X=$((e)), `%X%` → $X, and `rem`/`@echo`/`:label`/
-  // `goto`/`call` → comments (batch subroutines need an interpreter).
-  translateBatch(content) {
-    const lines = String(content).split("\n");
-    const out = [];
-    for (const raw of lines) {
-      const line = raw.trim();
-      if (!line) { out.push(""); continue; }
-      if (/^@echo\b/i.test(line) || /^rem\b/i.test(line) || /^::/.test(line)) continue;
-      if (/^:/.test(line)) continue;                       // labels
-      if (/^(goto|call)\b/i.test(line)) continue;          // control flow
-      let m = /^set\s+\/a\s+([A-Za-z_][A-Za-z0-9_]*)=(.*)$/i.exec(line);
-      if (m) {
-        // constant arithmetic evaluates here (SCORE=2+3 → SCORE="5"); the
-        // $(( )) form would be hoisted into a let and lost to the harvest
-        const expr = m[2].replace(/[()]/g, " ").trim();
-        if (/^[-+*\/\d\s.]+$/.test(expr)) {
-          let val;
-          try { val = Function("return (" + expr + ")")(); } catch { val = undefined; }
-          if (typeof val === "number" && Number.isFinite(val)) { out.push(`${m[1]}="${val}"`); continue; }
-        }
-        out.push(`${m[1]}=$(( ${m[2]} ))`);
-        continue;
-      }
-      m = /^set\s+\/p\s+([A-Za-z_][A-Za-z0-9_]*)=/.exec(line);
-      if (m) { out.push(`${m[1]}=""`); continue; }
-      m = /^set\s+([A-Za-z_][A-Za-z0-9_]*)=(.*)$/i.exec(line);
-      if (m) { out.push(`${m[1]}="${m[2].trim()}"`); continue; }
-      const expand = (s) => s.replace(/%(?:%|([A-Za-z_][A-Za-z0-9_]*))%/g, (_, n) => (n ? "$" + n : "%"));
-      out.push(expand(line));
-    }
-    return out.join("\n");
-  },
-
   async source(args) {
     // source FILE [args…] — run a script in THIS session, like bash's
     // `.` / source. Any transpiler source language works: .sh runs
@@ -3977,7 +3941,7 @@ Extra args become the script's $1… (the caller's are restored).
     const ext = String(file).split(".").pop().toLowerCase();
     const lang = { sh: "sh", zsh: "zsh", fish: "fish", go: "go", py: "py", c: "c", pl: "pl", js: "js", bat: "bat" }[ext] || "sh";
     if (lang === "js") return await runJsSourceContent(content, args.slice(1));
-    if (lang === "bat") { content = translateBatch(content); lang = "sh"; }
+
     const lib = await getOtranspilerl();
     let program, a1 = null;
     try {
@@ -6510,6 +6474,31 @@ let otVars = new Map();
 function a1LiteralValue(expr) {
   if (!expr) return undefined;
   if (expr.type === "Str") return String(expr.value ?? "");
+  // Arith: `set /a X=2+3` — the bat-sh-go frontend emits constant
+  // arithmetic as {type:"Arith", ast:{Bin …}}; evaluate it statically so
+  // the value survives the harvest (the $(( )) render hoists a let).
+  if (expr.type === "Arith" && expr.ast) {
+    const evalBin = (n) => {
+      if (!n) return undefined;
+      if (n.type === "Num") return Number(n.value);
+      if (n.type === "Bin") {
+        const l = evalBin(n.lhs), r = evalBin(n.rhs);
+        if (l === undefined || r === undefined) return undefined;
+        switch (n.op) {
+          case "+": return l + r;
+          case "-": return l - r;
+          case "*": return l * r;
+          case "/": return l / r;
+          case "%": return l % r;
+        }
+        return undefined;
+      }
+      return undefined;   // a %var% operand — can't resolve statically
+    };
+    const v = evalBin(expr.ast);
+    if (typeof v === "number" && Number.isFinite(v)) return String(v);
+    return undefined;
+  }
   if (expr.type === "Interpolate" && Array.isArray(expr.parts)) {
     // concatenate literal parts + statically resolvable getVar parts
     // (`DEVDIR=$HOME/dev` — the eval hoists a `let DEVDIR`, invisible
@@ -6828,6 +6817,55 @@ function saveHistory() {
     }
     localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
   } catch {}
+}
+
+// ─── History expansion: !!, !N, !-N, !string, !?s, !$ — bash-style ──
+// Expanded at the prompt BEFORE the line is parsed, like bash: the
+// expansion is echoed first, and an unknown designator errors with
+// "<designator>: event not found". Single-quoted regions and \! are
+// literal. `history` is the command list, most recent LAST.
+function expandHistory(line, history) {
+  if (!line.includes("!")) return { line, note: null, err: null };
+  const n = history.length;
+  const prev = () => (n ? history[n - 1] : null);
+  const startsWith = (s) => {
+    for (let i = n - 1; i >= 0; i--) if (history[i].startsWith(s)) return history[i];
+    return null;
+  };
+  const contains = (s) => {
+    for (let i = n - 1; i >= 0; i--) if (history[i].includes(s)) return history[i];
+    return null;
+  };
+  let out = "";
+  let i = 0;
+  let inSingle = false;
+  let used = false;
+  let bad = null;
+  while (i < line.length) {
+    const ch = line[i];
+    if (ch === "'") { inSingle = !inSingle; out += ch; i++; continue; }
+    if (inSingle) { out += ch; i++; continue; }
+    if (ch === "\\" && line[i + 1] === "!") { out += "!"; i += 2; continue; }
+    if (ch !== "!") { out += ch; i++; continue; }
+    const rest = line.slice(i + 1);
+    let ev = null, label = "!";
+    if (rest[0] === "!") { ev = prev(); label = "!!"; i += 2; }
+    else if (/^\d+/.test(rest)) { const m = /^(\d+)/.exec(rest); ev = (n && parseInt(m[1], 10) >= 1 && parseInt(m[1], 10) <= n) ? history[parseInt(m[1], 10) - 1] : null; label = "!" + m[1]; i += 1 + m[1].length; }
+    else if (/^-\d+/.test(rest)) { const m = /^-(\d+)/.exec(rest); const k = parseInt(m[1], 10); ev = (n && k >= 1 && k <= n) ? history[n - k] : null; label = "!" + m[0]; i += 1 + m[0].length; }
+    else if (rest[0] === "$") { const p = prev(); ev = p ? p.split(/\s+/).filter(Boolean).pop() : null; label = "!$"; i += 2; }
+    else if (rest.startsWith("?")) {
+      const end = rest.indexOf("?", 1);
+      const needle = end > 0 ? rest.slice(1, end) : rest.slice(1);
+      ev = contains(needle); label = "!?" + needle + (end > 0 ? "?" : ""); i += 1 + (end > 0 ? end : rest.length);
+    }
+    else if (/^[A-Za-z0-9_./-]/.test(rest)) { const m = /^([A-Za-z0-9_./-]+)/.exec(rest); ev = startsWith(m[1]); label = "!" + m[1]; i += 1 + m[1].length; }
+    else { out += ch; i++; continue; }   // `! `, trailing `!` — literal
+    if (ev === null || ev === undefined) { bad = label + ": event not found"; break; }
+    out += String(ev);
+    used = true;
+  }
+  if (bad) return { line, note: null, err: bad };
+  return { line: out, note: used ? line : null, err: null };
 }
 
 function addHistory(line) {
@@ -7382,7 +7420,12 @@ async function onCommand() {
 
   if (!line.trim()) return;  // empty Enter — nothing to do, no new prompt
 
-  addHistory(line);
+  // bash-style history expansion (!! / !N / !-N / !string / !?s / !$)
+  const exp = expandHistory(line, history);
+  if (exp.err) { stdout.write(`jtsh: ${exp.err}\n`); return; }
+  if (exp.note) stdout.write(exp.note + "\n");
+
+  addHistory(exp.line);
 
   if (busy) {
     // A previous command is still executing (e.g. the line before was
@@ -7390,7 +7433,7 @@ async function onCommand() {
     // free, like a real shell queues input while busy. Without this, two
     // commands run concurrently and the earlier one's completion draws a
     // spurious prompt while the later one (e.g. watch) is still going.
-    commandQueue.push(line);
+    commandQueue.push(exp.line);
     return;
   }
 
@@ -7400,7 +7443,7 @@ async function onCommand() {
   // complete. State-modifying / interactive lines run to completion
   // first (spinner, then the prompt), as before.
   if (!lineIsBlocking(line)) {
-    runAsyncCommand(line);
+    runAsyncCommand(exp.line);
     input.focus();
     return;
   }
@@ -7408,7 +7451,7 @@ async function onCommand() {
   // Slow commands (ls /github/..., remote reads) get a spinner where
   // the next prompt will be; the prompt itself is only drawn after the
   // command's output has been printed.
-  await runCommandLine(line);
+  await runCommandLine(exp.line);
   // Drain anything typed while this command was running (Ctrl+C during a
   // queued command leaves the rest of the queue intact, like a real shell).
   while (commandQueue.length > 0 && !pagerState.active && !replState.active) {
