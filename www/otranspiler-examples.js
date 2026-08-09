@@ -24,7 +24,7 @@ export const EXAMPLES = {
     { name: "concat", desc: "string concatenation", code: 'a="foo"\nb="bar"\necho "$a$b"\n' },
     { name: "string-length", desc: "${#s} parameter expansion", code: 's="hello"\necho "len=${#s}"\n' },
     { name: "sequence", desc: "brace expansion 1..3", code: 'for i in {1..3}; do echo "$i"; done\n' },
-    { name: "gnu-isms", desc: "GNU-isms — bash/gnu extensions POSIX sh lacks", code: '# GNU-isms — bash/gnu extensions POSIX sh lacks\necho "$(( 5 ** 3 ))"\ns="Hello World"\necho "${s,,}"\necho "${s^^}"\necho "${s:6:5}"\necho "${s/World/Bash}"\n(( x = 2 + 3 )); echo $x\nif [[ "a" = "a" ]]; then echo eq; fi\narr=(alpha beta gamma)\necho "${#arr[@]}"\necho "${arr[1]}"\necho $\'tab\there\'\nfor i in {1..3}; do echo "$i"; done\n' },
+    { name: "gnu-isms", desc: "GNU-isms — bash/gnu extensions POSIX sh lacks", code: '# GNU-isms — bash/gnu extensions POSIX sh lacks\n# See Also: /www/otranspiler.html#&example=grep_p\necho "$(( 5 ** 3 ))"\ns="Hello World"\necho "${s,,}"\necho "${s^^}"\necho "${s:6:5}"\necho "${s/World/Bash}"\n(( x = 2 + 3 )); echo $x\nif [[ "a" = "a" ]]; then echo eq; fi\narr=(alpha beta gamma)\necho "${#arr[@]}"\necho "${arr[1]}"\necho $\'tab\there\'\nfor i in {1..3}; do echo "$i"; done\n' },
     { name: "sqrt1337", desc: "for loop + pipe — find squares containing 1337", code: 'for i in `seq 1 10000`\ndo\n\tif echo $((i*i)) | grep 1337 > /dev/null\n\tthen \n\t\techo $i\n\tfi\ndone\n' },
             { name: "nospace", desc: "the 'No spaces' tag — provably spaceless vars skip the word-split", code: `# the 'No spaces' tag: vars provably free of IFS whitespace
 # (numeric values, spaceless constants, \`tr -d '[:space:]'\` outputs,
@@ -38,6 +38,25 @@ t="xy"
 w="a  b"
 echo "$n|$s|$t|$w"
 echo $n $s $t $w
+` },
+    { name: "grep_p", desc: "GNU grep -P — ERE-safe forms lower to grep -E, PCRE-only forms keep the grep_p polyfill", code: `# grep_p — GNU grep -P (PCRE). ERE-safe patterns (no \\b \\d \\w (? …)
+# constructs) lower to \`grep -E\` inline; PCRE-only forms keep the
+# portable grep_p polyfill: grep -P || ggrep -P || pcre2grep ||
+# pcregrep || perl. Look at the generated SH (or js, which uses a JS
+# RegExp ≈ PCRE) for each form.
+text='fig:cart<apple-rest;tea'
+
+# ERE-safe: plain alternation → the sh target emits \`grep -E\`
+printf '%s\\n' "$text" | grep -P 'apple|fig'
+
+# ERE-safe: a plain character class → \`grep -E\`
+printf '%s\\n' "$text" | grep -P '[a-z]+'
+
+# PCRE-only: \\b word boundary (ERE has no word-boundary) → grep_p
+printf '%s\\n' "$text" | grep -P '\\bapple\\b'
+
+# PCRE-only: negative lookbehind + -o (only-matching) → grep_p
+printf '%s\\n' "$text" | grep -oP '(?<![:-])\\b\\w+'
 ` },
   ],
 
