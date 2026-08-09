@@ -8940,24 +8940,13 @@ document.addEventListener("click", (e) => {
   // auto-run. SECURITY: running a URL-supplied command would be a
   // drive-by execution vector (rm -rf /, data exfiltration) even for a
   // toy web OS; the user reviews the line and presses Enter.
+  // #prefill=<cmd> — the share-link format: the value IS the command
+  // line (URL-encoded). The shell pre-fills it for review — never
+  // auto-runs — and a refresh re-fills it (the point of a share link).
   const prefillParam = new URLSearchParams(bootHash).get("prefill");
   if (prefillParam) {
     try {
-      // Two accepted shapes: the JSON object {"cmd":"…", src?, srcPath?}
-      // (the otranspiler GUI's form), OR a bare command string — a plain
-      // `#prefill=for f in …; do . $f; done` share link is friendlier
-      // than hand-encoding the JSON.
-      let p = null;
-      try { p = JSON.parse(prefillParam); } catch { p = null; }
-      if (p && typeof p === "object" && !Array.isArray(p)) {
-        if (p.src && p.srcPath) {
-          try { await fs.write(p.srcPath.slice(0, p.srcPath.lastIndexOf("/")) + "/.directory", ""); } catch {}
-          await fs.write(p.srcPath, String(p.src));
-        }
-        currentLine = String(p.cmd || "");
-      } else {
-        currentLine = prefillParam;
-      }
+      currentLine = prefillParam;
       cursorPos = currentLine.length;
       recordLineRedraw();
       renderInput();       // draw the pre-filled line (recordLineRedraw only records)

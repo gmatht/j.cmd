@@ -649,8 +649,9 @@ async function transpile(source, srcLang, tgt) {
   } else {
     // zsh/fish/go/py/c/pl → A1 via the merged frontend (prebuilt busybox)
     const goRunner = new GoRunner(fs);
+    const { BUSYBOX_VERSION } = await import("../src/busybox.js");
     const fetchBytes = async () => new Uint8Array(
-      await (await fetch(new URL("wasm-bin/otranspiler-busybox.wasm", import.meta.url))).arrayBuffer());
+      await (await fetch(new URL("wasm-bin/otranspiler-busybox.wasm?v=" + BUSYBOX_VERSION, import.meta.url))).arrayBuffer());
     const wasmPath = await ensureBusyboxWasm(fs, { fetchBytes, onLog: (m) => showStatus(m, "info") });
     a1 = await busyboxA1(String(source), srcLang, { fs, wasmPath, goRunner });
     text = lib.render(JSON.stringify(a1), tgt);
@@ -1394,10 +1395,6 @@ function tryCommand() {
     default:    return "otranspiler " + src + " " + out;   // java/rs — transpile only (no runtime in j.cmd)
   }
 }
-function trySrcPath() {
-  const ext = { sh: "sh", zsh: "zsh", fish: "fish", go: "go", py: "py", c: "c", pl: "pl" }[srcLang] || "sh";
-  return corpusDirOf(currentExample) ? "" : "/home/examples/" + (currentExample || "try") + "." + ext;
-}
 function updateTryHint() {
   const el = $("try-cmd");
   if (!el) return;
@@ -1408,11 +1405,13 @@ function wireTryButton() {
     const src = $("input").value;
     if (!src.trim()) { showStatus("enter source first, then try it in j.cmd", "warn"); return; }
     const cmd = tryCommand();
-    const payload = { cmd };
-    const srcPath = trySrcPath();
-    if (srcPath) payload.src = src, payload.srcPath = srcPath;
+    // The short #prefill share format: the bare command line, URL-encoded
+    // (the shell pre-fills it for review, never auto-runs). The old JSON
+    // payload (which also carried src/srcPath so the shell could write the
+    // example file) is gone — corpus examples are already served read-only
+    // at /examples/<dir>/<file>, so the command just works.
     const url = new URL("index.html", location.href);
-    url.hash = "prefill=" + encodeURIComponent(JSON.stringify(payload));
+    url.hash = "prefill=" + encodeURIComponent(cmd);
     showStatus("opening j.cmd — command pre-filled (press Enter to run): " + cmd, "info");
     window.open(url.href, "_blank");
   });
