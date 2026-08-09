@@ -28,7 +28,7 @@
 const WASM_PATH = "wasm-bin/otranspilerl.wasm";  // browser: relative to the page
 // cache-buster — bump whenever www/wasm-bin/otranspilerl.wasm changes so
 // the browser (and the otranspiler GUI) never serves a stale wasm.
-const WASM_VERSION = "v9-deaddecl"; // v9: estree drops dead top-level decls (for-loop shadowing)
+const WASM_VERSION = "v10-grepmatch"; // v10: grep-o lift → grepMatches
 
 let libPromise = null;
 

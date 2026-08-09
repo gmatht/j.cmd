@@ -805,6 +805,33 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
         const kept = lines.filter((l) => (invert ? !hit(l) : hit(l)));
         return kept.join("\n") + (s.endsWith("\n") ? "\n" : "");
       },
+      // `grepMatches(text, pattern, flags)` — the `grep -o` lift: the
+      // array of matched substrings (grep -o prints each match on its
+      // own line). flags: "E" (pattern is ERE — as-is), "F" (fixed
+      // string), "i" (case-insensitive); the default is BRE (translated).
+      grepMatches(text, pattern, flags) {
+        const s = String(text ?? "");
+        const fl = String(flags ?? "");
+        let body = String(pattern ?? "");
+        try {
+          if (fl.includes("F")) {
+            body = body.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          } else if (!fl.includes("E")) {
+            body = body
+              .replace(/\\+/g, "+").replace(/\\\?/g, "?")
+              .replace(/\\\(/g, "(").replace(/\\\)/g, ")")
+              .replace(/\\\|/g, "|").replace(/\\\{/g, "{").replace(/\\\}/g, "}");
+          }
+          const g = fl.includes("i") ? "gi" : "g";
+          const re = new RegExp(body, g);
+          const matches = s.match(re) || [];
+          lastStatus = matches.length > 0 ? 0 : 1;
+          return matches.join("\n");   // grep -o: one match per line
+        } catch {
+          lastStatus = 2;
+          return [];
+        }
+      },
       // a tiny SYNC builtin table for the native estree backend (echo /
       // date / pwd / true / false) — everything else needs the async
       // shellExec bridge and refuses loudly.
