@@ -445,6 +445,7 @@ const shellCtx = {
   globExpand: (tokens) => sharedGlobExpandTokens(tokens),
   interceptCommand: interceptCompilers,
   suppressOutput: () => suppressOutput,
+  get stdinBuffer() { return stdinBuffer; },
   set stdinBuffer(v) { stdinBuffer = v; },
   set rawStdin(v) { rawStdin = v; },
   runPythonCmd,

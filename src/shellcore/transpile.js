@@ -182,7 +182,8 @@ export async function evalProgramOnOtRt(js, opts, ctx) {
     } catch {}
   }
   try { otRt.sh2.lastExit = getShellStatus(); } catch {}   // native $? → transpiled
-  try { otRt.sh2.stdin = ctx.stdinBuffer() || ""; } catch {}   // pipe input → read_line()
+  const sb = typeof ctx.stdinBuffer === "function" ? ctx.stdinBuffer() : ctx.stdinBuffer;
+  try { otRt.sh2.stdin = sb || ""; } catch {}   // pipe input → read_line()
   const savedPositional = getPositional();                  // the caller's $1..$9
   const savedArgv0 = getArgv0();                            // the caller's $0
   try {

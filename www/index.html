@@ -3926,6 +3926,7 @@ const shellCtx = {
   get runSegmentGlob() { return globExpandTokens; },
   globExpand: (tokens) => sharedGlobExpandTokens(tokens),
   suppressOutput: () => suppressOutput,
+  get stdinBuffer() { return stdinBuffer; },
   set stdinBuffer(v) { stdinBuffer = v; },
   set rawStdin(v) { rawStdin = v; },
   interceptCommand: interceptCompilers,

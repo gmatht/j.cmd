@@ -93,7 +93,21 @@ check("brace expansion", /a b c/.test(br2), br2);
 check("brace-expanded ls lists both files", /linked_list\.c/.test(br2) && /my_qsort\.c/.test(br2), br2);
 check("ls <file> on /examples prints the name", /^my_qsort\.c/m.test(br2), br2);
 
-// 7. the browser app module must PARSE — no duplicate declarations, no
+// 7. pipe input to a SOURCED C program (regression: ctx.stdinBuffer had
+//    only a setter — the shared eval read it as a function and the piped
+//    stdin silently became "" so getline saw EOF and main printed usage)
+const pipe = run([
+  "printf 'three\\ntwo\\none\\n' | source /examples/c/linked_list.c",
+]);
+check("pipe to sourced C reverses lines", /^one\ntwo\nthree/m.test(pipe) && !/generator/s.test(pipe), pipe);
+
+const slurp = run([
+  "source /examples/c/linked_list.c",
+  "linkedlist=$(printf 'four\\nthree\\ntwo\\none\\n' | slurp2); sink2 $linkedlist",
+]);
+check("slurp2 + sink2 pipe flow", /one\ntwo\nthree\nfour/.test(slurp), slurp);
+
+// 8. the browser app module must PARSE — no duplicate declarations, no
 //    dangling ctx shorthands, no stray brace/comma artifacts (all three
 //    have broken the page at runtime)
 const html = readFileSync("www/index.html", "utf8");
