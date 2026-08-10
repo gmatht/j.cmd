@@ -405,6 +405,7 @@ const shellCtx = {
   },
   ensureOtRuntime,
   get otRt() { return otRt; },
+  syncOtVarsFromStore: () => syncOtVarsFromStore(otRt, otVars),
   runSourceContent,
   wasmRunner,
   goCmd,

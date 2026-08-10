@@ -32,6 +32,35 @@ export async function estreeToJs(program) {
   return (await estreeToJsMapped(program, null, null)).js;
 }
 
+// ─── stripProcessEnv: make the generated code process-free ──────────
+// The otranspilerl estree backend renders store-read fallbacks as
+// `sh2.vars.x ?? (process.env.x ?? "")`. `process` is a parameter of the
+// eval scopes that RUN a program, but a sourced C function is CALLED
+// later from the shell's native dispatch — where `process` may not be a
+// global (browser) — so evaluating the fallback throws "process is not
+// defined". Rewrite every `process.env.<x>` member chain to `sh2.env.<x>`
+// (the runtime facade exposes the shell env) — same semantics, no
+// `process` reference anywhere.
+function stripProcessEnv(node) {
+  if (!node || typeof node !== "object") return node;
+  if (Array.isArray(node)) return node.map(stripProcessEnv);
+  // process.env.<name>  /  process.env  (the env member access itself)
+  if (node.type === "MemberExpression") {
+    if (node.object && node.object.type === "Identifier" && node.object.name === "process" &&
+        node.property && node.property.type === "Identifier" && node.property.name === "env") {
+      return { ...node, object: { type: "Identifier", name: "sh2" } };
+    }
+    if (node.object && node.object.type === "MemberExpression" &&
+        node.object.object && node.object.object.type === "Identifier" && node.object.object.name === "process" &&
+        node.object.property && node.object.property.type === "Identifier" && node.object.property.name === "env") {
+      return { ...node, object: { ...node.object, object: { type: "Identifier", name: "sh2" } } };
+    }
+  }
+  const out = {};
+  for (const k of Object.keys(node)) out[k] = stripProcessEnv(node[k]);
+  return out;
+}
+
 // A final top-level statement that corresponds to a source statement:
 // declaration hoists (`let x = 0`) and lastExit bookkeeping carry no
 // source line — everything else maps to an A1 stmt in order.
@@ -428,7 +457,7 @@ export function normalizeFunctions(program) {
 // Returns { js, map } where map[i] = { jsStart, jsEnd, sourceLine }.
 export async function estreeToJsMapped(program, stmtLines, a1Stmts) {
   const { lowerNativeArrays, hoistLoopLastExit, hoistCommonLastExit, dropDeadFlags, mergeInitAssignments, pushLastExitToEnd } = await import("./lower.js");
-  const normalized = normalizeFunctions(program);
+  const normalized = normalizeFunctions(stripProcessEnv(program));
   const lowered = lowerNativeArrays(normalized);
   hoistLoopLastExit(lowered);
   hoistCommonLastExit(lowered);
@@ -622,7 +651,7 @@ function exprHasAwait(node) {
 // The hand-rolled emitter stays for direct sync use (tests, tiny trees)
 // and as a documented fallback — astring is the production path.
 export function estreeToJsSync(program) {
-  return program.body.map(statement).join("\n");
+  return stripProcessEnv(program).body.map(statement).join("\n");
 }
 
 function statement(n) {

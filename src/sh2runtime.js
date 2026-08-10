@@ -905,6 +905,10 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       // $1..$9 / $@ — the native estree reads sh2.positional
       get positional() { return scriptArgs; },
       set positional(v) { scriptArgs = Array.isArray(v) ? v.map(String) : []; },
+      // the shell env — the generated estree's `process.env.X ?? ""`
+      // fallbacks are rewritten to `sh2.env.X` (no `process` reference,
+      // so a scope without a process global can't throw)
+      get env() { return env || {}; },
       // $0 / the script name (sh2.argv0 — settable so `bash script.sh`
       // and `set --` can change it per line)
       get argv0() { return argv0; },
