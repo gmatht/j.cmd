@@ -1125,24 +1125,6 @@ let builtinCapture = false;
 
 // ─── Pipe data ──────────────────────────────────────────────────
 // A pipeline segment's stdout is either text (string) or raw bytes
-// (Uint8Array — wasm programs, gzip output, ...). The pipe itself
-// carries both; these helpers convert at the boundaries that need a
-// specific kind:
-//   pipeText  — bytes → UTF-8 string (text consumers: head/grep, the
-//               terminal, JS command `stdin` args)
-//   pipeBytes — string → UTF-8 bytes (binary consumers)
-//   joinOut   — joins captured write chunks, preserving binary chunks
-const pipeBytes = (d) => (typeof d === "string" ? new TextEncoder().encode(d) : d);
-const joinOut = (chunks) => {
-  if (chunks.length === 0) return "";
-  if (chunks.every((c) => typeof c === "string")) return chunks.join("");
-  const parts = chunks.map(pipeBytes);
-  const total = parts.reduce((n, p) => n + p.length, 0);
-  const out = new Uint8Array(total);
-  let o = 0;
-  for (const p of parts) { out.set(p, o); o += p.length; }
-  return out;
-};
 // Write pipe data to a VFS file: bytes go through writeBlob (binary
 // safe), text through fs.write.
 async function writeOut(file, data, append) {
