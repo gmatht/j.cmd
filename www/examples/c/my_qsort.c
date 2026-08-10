@@ -56,6 +56,17 @@ int my_qsort(void *base, int nitems, int (*cmp)(const void *, const void *)) {
 }
 
 int main() {
+  printf("my_qsort.c — a C sort whose comparator is a BASH function (sourced into this shell)\n");
+  printf("\n");
+  printf("  first source a comparator — a bash function echoing the C -1/0/1 protocol:\n");
+  printf("    source /examples/sh-posix/alphanumeric_compare.sh\n");
+  printf("\n");
+  printf("  then sort any array IN PLACE — the comparator's NAME is the function-pointer value:\n");
+  printf("    a=(pear apple fig banana); my_qsort a 4 alphanumeric_compare; echo \"${a[@]}\"\n");
+  printf("    -> apple banana fig pear\n");
+  printf("  (swap in any protocol-compatible bash function, e.g. reverse_compare)\n");
+  printf("\n");
+  printf("  demo (this run):\n");
   char *a[4] = {"pear", "apple", "fig", "banana"};
   my_qsort(a, 4, "alphanumeric_compare");
   int k;
@@ -63,9 +74,5 @@ int main() {
     printf("%s ", a[k]);
   }
   printf("\n");
-  printf("\n");
-  printf("usage: this sort ran with the bash comparator alphanumeric_compare — swap it freely:\n");
-  printf("  reverse_compare() { if [[ \"$1\" > \"$2\" ]]; then echo -1; elif [[ \"$1\" < \"$2\" ]]; then echo 1; else echo 0; fi }\n");
-  printf("  a=(pear apple fig banana); my_qsort a 4 reverse_compare; echo \"${a[@]}\"\n");
   return 0;
 }

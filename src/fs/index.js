@@ -664,8 +664,11 @@ class VirtualFS {
     syncWrite(this._getBackend("/home/examples/source.c"), "/examples/source.c",
       `/* ── examples/source.c — C-flavoured constants (sourced by jtsh) ──\n` +
       `   source examples/source.c\n` +
-      `   The variables become \$vars in the shell. This file is also a\n` +
+      `   The variables become \$vars in the shell; the three C functions\n` +
+      `   become callable shell functions (the c frontend emits the pointer\n` +
+      `   walks). Sourcing prints how to use them. This file is also a\n` +
       `   valid little C translation unit — compile it with tcc/cc. */\n` +
+      `#include <stdio.h>\n` +
       `int MAX_RETRIES = 5;\n` +
       `int APP_ID = 7;\n` +
       `int width = 80;\n` +
@@ -732,6 +735,28 @@ class VirtualFS {
       `        }\n` +
       `    }\n` +
       `    return 0;\n` +
+      `}\n` +
+      `\n` +
+      `/* sourcing prints the instructions below — the three functions are\n` +
+      `   now callable shell functions (a pointer is a NAME, so the array\n` +
+      `   name works directly; addr prints the \\u0001mem handle form). */\n` +
+      `int main() {\n` +
+      `  printf("source.c — C constants + pointer-walk functions (sourced into this shell)\\n");\n` +
+      `  printf("\\n");\n` +
+      `  printf("  the constants are now shell variables: \$MAX_RETRIES \$APP_ID \$width \$height\\n");\n` +
+      `  printf("  \$GRACE \$FULL_W \$CUBE \$BANNER \$GREETING \$RETRIES \$AREA\\n");\n` +
+      `  printf("\\n");\n` +
+      `  printf("  sum_first NAME N  — sum the first N ints of the array NAME; the C\\n");\n` +
+      `  printf("    return value lands in \$?:\\n");\n` +
+      `  printf("    a=(10 20 30); sum_first \\\"$(addr a)\\\" 3; echo \$?    -> 60\\n");\n` +
+      `  printf("    (a pointer is a NAME — sum_first a 3 works too; addr prints the handle)\\n");\n` +
+      `  printf("\\n");\n` +
+      `  printf("  fill NAME N       — write 0..N-1 through the pointer (call-by-reference):\\n");\n` +
+      `  printf("    fill a 3; echo \\\"a=(\$a)\\\"    -> a=(0 10 20)\\n");\n` +
+      `  printf("\\n");\n` +
+      `  printf("  sort_ints NAME N  — selection-sort the first N ints in place:\\n");\n` +
+      `  printf("    b=(10 30 20); sort_ints b 3; echo \\\"b=(\$b)\\\"    -> b=(10 20 30)\\n");\n` +
+      `  return 0;\n` +
       `}\n`);
             syncWrite(this._getBackend("/home/examples/source.bat"), "/examples/source.bat",
       `@echo off\n` +

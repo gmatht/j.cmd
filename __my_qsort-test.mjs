@@ -67,8 +67,8 @@ if (!sh2.functions.has("alphanumeric_compare")) {
 await new Function("sh2", "return (async () => { " + cJs + " })();")(sh2);
 
 const lines = stdout._buf.trim().split("\n");
-// the demo's first output line is the sorted array; the usage text follows
-const got = (lines[0] || "").trim();
-process.stderr.write("got: [" + got + "]\n");
-process.stderr.write(got === "apple banana fig pear" ? "PASS: sorted alphanumerically\n" : "FAIL: expected apple banana fig pear\n");
-process.exit(got === "apple banana fig pear" ? 0 : 1);
+// the demo prints usage instructions first, then the sorted array
+const got = lines.find((l) => (l || "").trim() === "apple banana fig pear") || "";
+process.stderr.write("got: [" + got.trim() + "]\n");
+process.stderr.write(got.trim() === "apple banana fig pear" ? "PASS: sorted alphanumerically\n" : "FAIL: expected apple banana fig pear\n");
+process.exit(got.trim() === "apple banana fig pear" ? 0 : 1);
