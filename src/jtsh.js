@@ -13,6 +13,7 @@
 
 import { createInterface } from "readline";
 import { createShellCore } from "./shellcore/index.js";
+import { resolveCommand as shellResolve, isPrivilegedUser, customExecDenied } from "./shellcore/resolve.js";
 import { tokenize } from "./shellcore/tokenize.js";
 import { fs } from "./fs/index.js";
 import { formatAge } from "./fs/lscache.js";
@@ -376,7 +377,31 @@ const shellCtx = {
   get stdin() { return stdinBuffer; },
   get isTTY() { return Boolean(process.stdin.isTTY); },
   runNestedCommand,
-  findCommand,
+  findCommand: (name) => shellResolve(shellCtx, name),
+  get builtins() { return builtins; },
+  autoLoad: async (name) => {
+    // Lazy /bin command templates (www/bin/) — materialize on first use
+    // (perl, lua, tar, zip, mail, …). Only bare names are auto-loaded.
+    if (!name.includes("/")) {
+      const p = await materializeBinCommand(name);
+      if (p) { const denied = customExecDenied(p); if (denied) return denied; return { type: "file", path: p }; }
+    }
+    // a wasm binary from wasm-bin/ (the CLI has no server — node fetches
+    // the same URL the browser does; falls through when offline)
+    if (!isPrivilegedUser()) return null;
+    let wasmName = name;
+    if (name === "cc") wasmName = "compiler";
+    try {
+      const resp = await fetch("wasm-bin/" + wasmName + ".wasm");
+      if (resp.ok) {
+        const blob = await resp.blob();
+        const destPath = "/usr/bin/" + name + ".wasm";
+        await fs.writeBlob(destPath, blob);
+        return { type: "wasm", path: destPath };
+      }
+    } catch {}
+    return null;
+  },
   ensureOtRuntime,
   get otRt() { return otRt; },
   runSourceContent,
@@ -391,6 +416,9 @@ const shellCtx = {
 };
 const { builtins: sharedBuiltins } = createShellCore(shellCtx);
 Object.assign(builtins, sharedBuiltins);
+// the shared resolver, bound to this shell's ctx (the dispatcher calls
+// resolveCommand; the shared builtins call ctx.findCommand — same thing)
+const resolveCommand = (name) => shellResolve(shellCtx, name);
 
 // ─── Command Resolution ─────────────────────────────────────────
 
@@ -410,190 +438,10 @@ Object.assign(builtins, sharedBuiltins);
 // Custom code (anything they — or another non-admin — created) is
 // refused, so an unprivileged session can't escalate by dropping a
 // .js/.wasm file and running it.
-function isPrivilegedUser() {
-  const u = env.USER || "jtsh";
-  return u === "jtsh" || u === "root";
-}
-function customExecDenied(path) {
-  if (isPrivilegedUser()) return null;
-  const a = fs.attrOf(path);
-  const owner = a ? a.owner : "jtsh";
-  if (owner === "jtsh") return null;
-  return {
-    type: "badpath",
-    path,
-    err: "operation not permitted: unprivileged users cannot run custom code (owned by " + owner + ")",
-  };
-}
-
 // Mobile keyboards auto-capitalize the first letter of a sentence, so
 // `Ls` and `ls` should be the same command. Exact-name matches always
 // win; the fold only applies to bare command names (no "/") whose
 // first letter is uppercase. `which Ls` benefits too.
-async function findCommand(name) {
-  const found = await findCommandExact(name);
-  if (found) return found;
-  if (!name.includes("/") && /^[A-Z]/.test(name)) {
-    return await findCommandExact(name[0].toLowerCase() + name.slice(1));
-  }
-  // Lazy /bin command templates (www/bin/) — materialize on first use
-  // (perl, lua, tar, zip, mail, …). Only bare names are auto-loaded.
-  if (!name.includes("/")) {
-    const p = await materializeBinCommand(name);
-    if (p) return await findCommandExact(name);
-  }
-  return null;
-}
-
-async function findCommandExact(name) {
-  if (name.includes("/")) {
-    const resolved = fs._resolve(name);
-    let st;
-    try {
-      st = await fs.stat(resolved);
-    } catch {
-      return null; // no such file
-    }
-    if (!st) return null;
-    if (st.type === "dir") {
-      return { type: "badpath", path: resolved, err: "Is a directory" };
-    }
-    if (/\.wasm$/i.test(resolved)) {
-      const denied = customExecDenied(resolved);
-      if (denied) return denied;
-      return { type: "wasm", path: resolved };
-    }
-    if (/\\.(js|mjs)$/i.test(resolved)) {
-      const denied = customExecDenied(resolved);
-      if (denied) return denied;
-      return { type: "file", path: resolved };
-    }
-    // .sh files (and files with a #! shebang line) run through the bash
-    // transpiler — the shell's native format for bash scripts.
-    if (/\.sh$/i.test(resolved)) {
-      const denied = customExecDenied(resolved);
-      if (denied) return denied;
-      return { type: "sh", path: resolved };
-    }
-    // A #! shebang makes any reasonably-sized TEXT file runnable. Skip
-    // known binary extensions, and never read a huge file just to look
-    // at its first line (fs.read supports { limit }).
-    if (st &&
-        !/\.(jpg|jpeg|png|gif|webp|bmp|ico|mp3|mp4|ogg|webm|wav|zip|gz|tgz|wasm|pdf|ttf|otf|woff2?|bin|exe|jar|class)$/i.test(resolved) &&
-        (!st.size || st.size < 1024 * 1024)) {
-      try {
-        const head = String(await fs.read(resolved, { limit: 256 }));
-        const m = /^#!\s*(\S+)/.exec(head.split("\n")[0] || "");
-        if (m) {
-          const denied = customExecDenied(resolved);
-          if (denied) return denied;
-          return { type: "sh", path: resolved, shebang: m[1] };
-        }
-      } catch {}
-    }
-    // The file exists but the shell can't run it (no interpreter here).
-    return {
-      type: "badpath",
-      path: resolved,
-      err: "cannot execute: only .js/.mjs/.wasm files are runnable",
-    };
-  }
-
-  const searchPaths = env.PATH.split(":").filter(Boolean);
-  for (const dir of searchPaths) {
-    try {
-      const entries = await fs.list(dir);
-      if (entries.includes(name + ".wasm")) {
-        const p = dir + "/" + name + ".wasm";
-        const denied = customExecDenied(p);
-        if (denied) return denied;
-        return { type: "wasm", path: p };
-      }
-    } catch {
-      // Directory doesn't exist, skip
-    }
-  }
-
-  if (builtins[name]) return { type: "builtin", fn: builtins[name] };
-
-  // A function defined by a sourced file / transpiled line (the
-  // persistent otRt's sh2.functions map — bash's function table) shadows
-  // commands, like in bash: `source fn.c` defining `testc()` then a bare
-  // `testc` runs the body with the args as $1..$N.
-  if (otRt && otRt.sh2 && otRt.sh2.functions && otRt.sh2.functions.has(name)) {
-    return {
-      type: "builtin",
-      fn: async (args) => {
-        const v = await otRt.sh2.fnCall(name, args);
-        // the function may have mutated the runtime store (an in-place
-        // sort/fill) — harvest it back so the next transpiled line's
-        // seed sees the LIVE values, not a stale otVars snapshot.
-        syncOtVarsFromStore();
-        return (v === false ? 1 : (v === true || v === undefined ? 0 : Number(v) || 0));
-      },
-    };
-  }
-
-  // Walk the command path from $PATH (colon-separated, like POSIX)
-  for (const dir of searchPaths) {
-    try {
-      const entries = await fs.list(dir);
-      for (const entry of entries) {
-        const clean = entry.replace(/\/$/, "");
-        if (clean === name || clean === name + ".js") {
-          const p = dir + "/" + clean;
-          const denied = customExecDenied(p);
-          if (denied) return denied;
-          return { type: "file", path: p };
-        }
-        if (clean === name + ".mjs") {
-          const p = dir + "/" + clean;
-          const denied = customExecDenied(p);
-          if (denied) return denied;
-          return { type: "file", path: p };
-        }
-        if (clean === name + ".wasm") {
-          const p = dir + "/" + clean;
-          const denied = customExecDenied(p);
-          if (denied) return denied;
-          return { type: "wasm", path: p };
-        }
-      }
-    } catch {
-      // Directory doesn't exist, skip
-    }
-  }
-  return null;
-}
-
-async function resolveCommand(name) {
-  const found = await findCommand(name);
-  if (found) return found;
-
-  // Explicit paths are never auto-loaded — only bare command names
-  // (cc, grep, python...) pull binaries from wasm-bin/ on first use.
-  if (name.includes("/")) return null;
-
-  // Auto-load a wasm binary from the local server's wasm-bin/ on first
-  // use (cc is an alias for the compiler binary). Unprivileged users
-  // never auto-load (and couldn't write to /usr/bin anyway).
-  if (!isPrivilegedUser()) return null;
-  let wasmName = name;
-  if (name === "cc") wasmName = "compiler";
-  try {
-    const resp = await fetch("wasm-bin/" + wasmName + ".wasm");
-    if (resp.ok) {
-      const blob = await resp.blob();
-      const destPath = "/usr/bin/" + name + ".wasm";
-      await fs.writeBlob(destPath, blob);
-      return { type: "wasm", path: destPath };
-    }
-  } catch {
-    // Not available — fall through
-  }
-  return null;
-}
-
 // ─── Line Handler ───────────────────────────────────────────────
 
 // Tokenize a pipeline segment into words the way a shell does:
