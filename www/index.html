@@ -904,7 +904,7 @@ import { bashToJS, runBash, buildSh2LibFacade } from "../src/bash2js.js";
 import { createShellCore } from "../src/shellcore/index.js";
 import { resolveCommand as shellResolve, isPrivilegedUser, customExecDenied } from "../src/shellcore/resolve.js";
 import { tokenize } from "../src/shellcore/tokenize.js";
-import { a1LiteralValue, syncOtVarsFromStore } from "../src/shellcore/transpile.js";
+import { a1LiteralValue, syncOtVarsFromStore, runSourceContent as sharedRunSourceContent } from "../src/shellcore/transpile.js";
 import { batToJS, runBat } from "../src/bat2js.js";
 import { createSh2Runtime } from "../src/sh2runtime.js";
 import { getOtranspilerl } from "../src/otranspilerl.js";
@@ -4034,7 +4034,35 @@ const shellCtx = {
   },
   ensureOtRuntime,
   get otRt() { return otRt; },
-  runSourceContent,
+  runSourceContent: (content, lang, srcArgs) => sharedRunSourceContent(content, lang, srcArgs, shellCtx),
+  // state/backend accessors the shared runSourceContent weaves through
+  getOtVars: () => otVars,
+  goRunner,
+  fetchBusyboxBytes: async () => {
+    const { BUSYBOX_VERSION } = await import("../src/busybox.js");
+    const resp = await fetch(new URL("wasm-bin/otranspiler-busybox.wasm?v=" + BUSYBOX_VERSION, import.meta.url));
+    if (!resp.ok) throw new Error("busybox fetch " + resp.status);
+    return new Uint8Array(await resp.arrayBuffer());
+  },
+  evalProgram: async (program, lineAssigned, srcArgs) => {
+    // estree → JS → run on the persistent runtime (keepVariables syncs
+    // known arrays into the store, like the line fallback)
+    keepVariables(program, [...otVars].filter(([, v]) => Array.isArray(v)).map(([k]) => k));
+    const body = program.body || [];
+    const last = body[body.length - 1];
+    const lastIsExpr = last && last.type === "ExpressionStatement";
+    const bodyJs = (lastIsExpr
+      ? (body.length > 1 ? await estreeToJs({ type: "Program", body: body.slice(0, -1) }) : "")
+      : await estreeToJs({ type: "Program", body })) + "\n";
+    const lastJs = lastIsExpr
+      ? "return (" + (await estreeToJs({ type: "Program", body: [last] })).replace(/;\s*$/, "") + ");\n"
+      : "return sh2.lastExit;\n";
+    const js = bodyJs + lastJs;
+    return await evalOnOtRt(js, {
+      lineAssigned,
+      sourcePositional: (srcArgs && srcArgs.length) ? { args: srcArgs, argv0: "source" } : null,
+    });
+  },
   wasmRunner,
   goCmd,
   isPrivilegedUser,
@@ -5240,79 +5268,6 @@ async function runJsSourceContent(content, srcArgs) {
   }
   setShellStatus(v === false ? 1 : 0);
   return v === false ? 1 : 0;
-}
-
-// runSourceContent — the shared `source` builtin (src/shellcore/builtins.js)
-// calls this via ctx. Transpiles any source language to JS and runs it on
-// the persistent runtime (evalOnOtRt), so sourced variables/functions
-// survive for later lines. Errors THROW — the shared builtin prints
-// `source: FILE: msg` with the file name.
-async function runSourceContent(content, lang, srcArgs) {
-  if (lang === "js") return await runJsSourceContent(content, srcArgs);
-  const lib = await getOtranspilerl();
-  let program, a1 = null;
-  if (lang === "sh" || lang === "zsh") {
-    // seed session vars so $x reads compile live (same as the line fallback)
-    const seed = [...otVars].map(([k, v]) =>
-      Array.isArray(v)
-        ? `${k}=(${v.map((x) => JSON.stringify(String(x))).join(" ")});`
-        : `${k}=${JSON.stringify(String(v))};`
-    ).join("");
-    const s = seed + String(content);
-    program = JSON.parse(lib.transpile(s, "sh", "js"));
-    keepVariables(program, [...otVars].filter(([, v]) => Array.isArray(v)).map(([k]) => k));
-    try { a1 = JSON.parse(lib.shir(s)); } catch {}
-  } else {
-    const { ensureBusyboxWasm, busyboxA1 } = await import("../src/busybox.js");
-    const { BUSYBOX_VERSION } = await import("../src/busybox.js");
-    const fetchBytes = async () => new Uint8Array(
-      await (await fetch(new URL("wasm-bin/otranspiler-busybox.wasm?v=" + BUSYBOX_VERSION, import.meta.url))).arrayBuffer());
-    const wasmPath = await ensureBusyboxWasm(fs, {
-      goRunner, goCmd, fetchBytes, onLog: (m) => stderr.write(m + "\n"),
-    });
-    a1 = await busyboxA1(String(content), lang, { fs, wasmPath, goRunner });
-    // the otranspilerl renderer panics on Goto/Label — refuse loudly
-    if (a1 && Array.isArray(a1.stmts)) {
-      for (const st of a1.stmts) {
-        if (st && (st.type === "Goto" || st.type === "Label")) {
-          throw new Error("goto/labels are not supported by the jtsh renderer yet (the debashc verify pipeline can render them)");
-        }
-      }
-    }
-    program = JSON.parse(lib.render(JSON.stringify(a1), "js"));
-  }
-  // A1 harvest: deterministic assignment values — pre-seeds otVars so a
-  // sourced `int counter = 42` shows up as $counter even though the
-  // generated `let counter = 42` is eval-scoped.
-  const lineAssigned = new Set();
-  const lineCaptured = new Set();
-  try {
-    for (const st of (a1 && a1.stmts) || []) {
-      if (st && st.type === "Assign" && st.targets && st.targets[0]) {
-        const t = st.targets[0];
-        if (t.var && !(t.indices && t.indices.length)) {
-          lineAssigned.add(t.var);
-          const val = a1LiteralValue(st.expr);
-          if (val !== undefined) { otVars.set(t.var, val); lineCaptured.add(t.var); }
-        }
-      }
-    }
-  } catch {}
-  // estree → JS → run on the persistent runtime
-  const body = program.body || [];
-  const last = body[body.length - 1];
-  const lastIsExpr = last && last.type === "ExpressionStatement";
-  const bodyJs = (lastIsExpr
-    ? (body.length > 1 ? await estreeToJs({ type: "Program", body: body.slice(0, -1) }) : "")
-    : await estreeToJs({ type: "Program", body })) + "\n";
-  const lastJs = lastIsExpr
-    ? "return (" + (await estreeToJs({ type: "Program", body: [last] })).replace(/;\s*$/, "") + ");\n"
-    : "return sh2.lastExit;\n";
-  const js = bodyJs + lastJs;
-  return await evalOnOtRt(js, {
-    lineAssigned, lineCaptured,
-    sourcePositional: (srcArgs && srcArgs.length) ? { args: srcArgs, argv0: "source" } : null,
-  });
 }
 
 // Persistent shell-variable state across transpiled lines. The debashl

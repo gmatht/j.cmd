@@ -15,7 +15,7 @@ import { createInterface } from "readline";
 import { createShellCore } from "./shellcore/index.js";
 import { resolveCommand as shellResolve, isPrivilegedUser, customExecDenied } from "./shellcore/resolve.js";
 import { tokenize } from "./shellcore/tokenize.js";
-import { a1LiteralValue, syncOtVarsFromStore } from "./shellcore/transpile.js";
+import { a1LiteralValue, syncOtVarsFromStore, runSourceContent as sharedRunSourceContent } from "./shellcore/transpile.js";
 import { fs } from "./fs/index.js";
 import { formatAge } from "./fs/lscache.js";
 import { WasmRunner } from "./wasm.js";
@@ -406,7 +406,15 @@ const shellCtx = {
   ensureOtRuntime,
   get otRt() { return otRt; },
   syncOtVarsFromStore: () => syncOtVarsFromStore(otRt, otVars),
-  runSourceContent,
+  runSourceContent: (content, lang, srcArgs) => sharedRunSourceContent(content, lang, srcArgs, shellCtx),
+  // state/backend accessors the shared runSourceContent weaves through
+  getOtVars: () => otVars,
+  goRunner,
+  fetchBusyboxBytes: async () => {
+    const { readFile } = await import("node:fs/promises");
+    return new Uint8Array(await readFile(new URL("../www/wasm-bin/otranspiler-busybox.wasm", import.meta.url)));
+  },
+  evalProgram: (program, lineAssigned, srcArgs) => runEstreeProgram(program, lineAssigned, srcArgs),
   wasmRunner,
   goCmd,
   isPrivilegedUser,
@@ -819,124 +827,6 @@ async function runEstreeProgram(program, lineAssigned, srcArgs) {
 }
 
 
-// ─── runSourceContent: run a sourced file in the current shell ──
-// The `source`/`.` core. Transpiles the file's language (sh/zsh in
-// process; fish/c/go/py/pl via the merged busybox frontend) to the A1
-// contract → estree → JS, then runs the generated JS in the SAME
-// persistent otRt the REPL lines use and harvests the variables it set
-// (A1 literal harvest + runtime/globalThis diff — the runEstreeProgram
-// path). Positional args become $1..$9 inside the file.
-// Extension → source language (mirrors the frontend testdata exts:
-// py/.py, go/.go, c/.c, sh/.sh, pl/.pl, fish/.fish, zsh/.zsh). A
-// non-.sh extensionless file defaults to sh, like bash's source.
-function sourceLangOf(path) {
-  const m = /\.([A-Za-z0-9]+)$/.exec(path);
-  const ext = m ? m[1].toLowerCase() : "";
-  return { sh: "sh", zsh: "zsh", fish: "fish", c: "c", go: "go", py: "py", pl: "pl", perl: "pl", js: "js", bat: "bat" }[ext] || "sh";
-}
-
-// ─── runJsSourceContent: source a .js / .bat file as NATIVE JavaScript ──
-// jtsh's native format is JS — this runs the file against the persistent
-// runtime so `sh2.vars.X = …`, `sh2.functions.set("name", fn)` and bare
-// global assignments survive the source. Returns the exit code.
-async function runJsSourceContent(content, srcArgs) {
-  await ensureOtRuntime();
-  try { otRt.sh2.positional = (srcArgs && srcArgs.length ? srcArgs : getPositional()); } catch {}
-  try { otRt.sh2.argv0 = getArgv0(); } catch {}
-  const fn = new Function("fs", "env", "process", "sh2", `return (async () => { ${content} })();`);
-  const beforeGlobals = new Set(Object.keys(globalThis));
-  const beforeRtVars = new Set(Object.keys(otRt.sh2.vars));
-  let v;
-  try {
-    v = await fn(fs, env, otProc, otRt.sh2);
-  } catch (e) {
-    if (e && e.exitCode !== undefined) return e.exitCode;  // `exit N`
-    throw e;
-  }
-  // harvest bare global assignments (`x = 5` → globalThis.x) AND
-  // sh2.vars writes (`sh2.vars.X = …`) into the shell's persistent state
-  const keepable = (val) => typeof val === "string" || typeof val === "number" || Array.isArray(val);
-  for (const k of Object.keys(otRt.sh2.vars)) {
-    if (beforeRtVars.has(k) || isReadonly(k)) continue;
-    const val = otRt.sh2.vars[k];
-    if (keepable(val) && !k.startsWith("__")) otVars.set(k, Array.isArray(val) ? val : String(val));
-  }
-  for (const k of Object.keys(globalThis)) {
-    if (beforeGlobals.has(k)) continue;
-    const val = globalThis[k];
-    if (keepable(val) && !k.startsWith("__")) otVars.set(k, Array.isArray(val) ? val : String(val));
-    try { delete globalThis[k]; } catch {}
-  }
-  for (const [k, val] of otVars) {
-    if (isReadonly(k)) continue;
-    try { env[k] = Array.isArray(val) ? val.join(" ") : String(val); } catch {}
-  }
-  setShellStatus(v === false ? 1 : 0);
-  return v === false ? 1 : 0;
-}
-
-async function runSourceContent(content, lang, srcArgs) {
-  if (lang === "js") {
-    return await runJsSourceContent(content, srcArgs);
-  }
-  // .bat goes through the unified frontend (bat-sh-go, merged into the
-  // busybox): a real batch lexer/parser → A1 shIR → JS.
-  const { getOtranspilerl } = await import("./otranspilerl.js");
-  const lib = await getOtranspilerl();
-  let a1;
-  if (lang === "sh" || lang === "zsh") {
-    // Seed the shell's known variables so $x reads compile live — the
-    // same seeding runViaTranspiler does for REPL lines.
-    const seed = [...otVars].map(([k, v]) =>
-      Array.isArray(v)
-        ? `${k}=(${v.map((x) => JSON.stringify(String(x))).join(" ")});`
-        : `${k}=${JSON.stringify(String(v))};`
-    ).join("");
-    a1 = JSON.parse(lib.shir(seed + content));
-  } else {
-    const { ensureBusyboxWasm, busyboxA1 } = await import("./busybox.js");
-    const fetchBytes = async () => {
-      if (typeof process !== "undefined" && process.versions && process.versions.node) {
-        const { readFile } = await import("node:fs/promises");
-        return new Uint8Array(await readFile(new URL("../www/wasm-bin/otranspiler-busybox.wasm", import.meta.url)));
-      }
-      const { BUSYBOX_VERSION } = await import("./busybox.js");
-      const resp = await fetch("wasm-bin/otranspiler-busybox.wasm?v=" + BUSYBOX_VERSION);
-      if (!resp.ok) throw new Error("busybox fetch " + resp.status);
-      return new Uint8Array(await resp.arrayBuffer());
-    };
-    const wasmPath = await ensureBusyboxWasm(fs, { goRunner, goCmd, fetchBytes });
-    a1 = await busyboxA1(content, lang, { fs, wasmPath, goRunner });
-  // the otranspilerl renderer panics on Goto/Label ("unreachable") —
-  // refuse loudly up front (REFUSE > GUESS) instead of crashing
-  if (a1 && Array.isArray(a1.stmts)) {
-    for (const st of a1.stmts) {
-      if (st && (st.type === "Goto" || st.type === "Label")) {
-        throw new Error("goto/labels are not supported by the jtsh renderer yet (the debashc verify pipeline can render them)");
-      }
-    }
-  }
-  }
-  const program = JSON.parse(lib.render(JSON.stringify(a1), "js"));
-  // A1 literal harvest: deterministic assignment values (Str/Num/Bool/
-  // all-lit Interpolate/setArray) — pre-seeds otVars so a sourced
-  // `int counter = 42` shows up as $counter even though the generated
-  // `let counter = 42` is eval-scoped (invisible to the runtime diff).
-  const lineAssigned = new Set();
-  try {
-    for (const st of a1.stmts || []) {
-      if (st && st.type === "Assign" && st.targets && st.targets[0]) {
-        const t = st.targets[0];
-        if (t.var && !(t.indices && t.indices.length)) {
-          lineAssigned.add(t.var);
-          const val = a1LiteralValue(st.expr);
-          if (val !== undefined) otVars.set(t.var, val);
-        }
-      }
-    }
-  } catch {}
-  return runEstreeProgram(program, lineAssigned, srcArgs);
-}
 
 // ─── real coreutils (uutils wasm) ────────────────────────────────
 // uutils.org's Rust coreutils compiled to wasm32-wasi (CORS-open, but
