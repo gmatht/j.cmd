@@ -3607,7 +3607,7 @@ async function runSegment(segmentText, stdin, isLast) {
     // the previous segment's stdout (string or Uint8Array — the 4th
     // `stdin` arg is its text form), and `pipe.out(data)` captures
     // output into the pipe (strings or raw bytes; gzip emits bytes).
-    const fn = new Function("args", "fs", "console", "stdin", "env", "sh2", "sh2lib", "shell", "qbe2wasm", "pipe", `
+    const fn = new Function("args", "fs", "console", "stdin", "env", "process", "sh2", "sh2lib", "shell", "qbe2wasm", "pipe", `
         return (async () => {
           ${content}
         })();
@@ -3633,7 +3633,13 @@ async function runSegment(segmentText, stdin, isLast) {
       in: stdin,          // raw pipe input (string or Uint8Array)
       out: (data) => logChunks.push(data),  // capture into the pipe
     };
-    const ret = await fn(args, fs, fakeConsole, pipeText(stdin), env, sh2rt.sh2, sh2libFacade, shellApi, qbe2wasm, pipe);
+    // `process` for command files: prefer the persistent runtime's shim
+    // (otProc has env; the browser's global process is go.js's env-less
+    // shim; node's global has everything).
+    const fileProc = (otProc && otProc.env)
+      ? otProc
+      : (typeof process !== "undefined" && process && process.env ? process : { env: env || {} });
+    const ret = await fn(args, fs, fakeConsole, pipeText(stdin), env, fileProc, sh2rt.sh2, sh2libFacade, shellApi, qbe2wasm, pipe);
     // A command file may return a number to set its exit status
     const code = typeof ret === "number" ? ret : 0;
     output = joinOut(logChunks);
@@ -3648,7 +3654,18 @@ async function runSegment(segmentText, stdin, isLast) {
     return { ok: code === 0, code, output };
   } catch (e) {
     if (e instanceof InterruptError) throw e;
-    process.stderr.write(`${cmd}: error: ${e.message}\n`);
+    // A leftover /bin file shadowing a SOURCED function (bash: functions
+    // beat files). If the file failed but the name is a sourced function,
+    // dispatch through the persistent runtime instead.
+    if (otRt && otRt.sh2 && otRt.sh2.functions && otRt.sh2.functions.has(cmd)) {
+      try {
+        const v = await otRt.sh2.fnCall(cmd, args);
+        syncOtVarsFromStore();
+        procfs.finish(pid, 0);
+        return { ok: true, code: 0, output: "" };
+      } catch {}
+    }
+    process.stderr.write(`${cmd}: error: ${e.message} (${resolved.path})\n`);
     procfs.finish(pid, 1);
     return { ok: false, code: 1, output: "" };
   } finally {

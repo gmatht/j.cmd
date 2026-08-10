@@ -6668,7 +6668,7 @@ async function runSegment(segmentText, stdin, isLast, target = null) {
     // the previous segment's stdout (string or Uint8Array — the 4th
     // `stdin` arg is its text form), and `pipe.out(data)` captures
     // output into the pipe (strings or raw bytes; gzip emits bytes).
-    const fn = new Function("args", "fs", "console", "stdin", "env", "sh2", "sh2lib", "shell", "qbe2wasm", "pipe", `
+    const fn = new Function("args", "fs", "console", "stdin", "env", "process", "sh2", "sh2lib", "shell", "qbe2wasm", "pipe", `
         return (async () => { ${content} })();
       `);
     const logChunks = [];
@@ -6701,11 +6701,17 @@ async function runSegment(segmentText, stdin, isLast, target = null) {
       in: stdin,          // raw pipe input (string or Uint8Array)
       out: (data) => logChunks.push(data),  // capture into the pipe
     };
+    // `process` for command files: prefer the persistent runtime's shim
+    // (otProc has env; the browser's global process is go.js's env-less
+    // shim; node's global has everything).
+    const fileProc = (otProc && otProc.env)
+      ? otProc
+      : (typeof process !== "undefined" && process && process.env ? process : { env: env || {} });
     const keyCbsBefore = keyCallbacks.length;
     const intrCbsBefore = interruptCallbacks.length;
     let ret;
     try {
-      ret = await fn(args, fs, fakeConsole, pipeText(stdin), env, sh2rt.sh2, sh2libFacade, shellApi, qbe2wasm, pipe);
+      ret = await fn(args, fs, fakeConsole, pipeText(stdin), env, fileProc, sh2rt.sh2, sh2libFacade, shellApi, qbe2wasm, pipe);
     } finally {
       // Commands may register key/interrupt callbacks (typist, watch,
       // ...). Once the command finishes — normally or via Ctrl+C — the
@@ -6727,7 +6733,18 @@ async function runSegment(segmentText, stdin, isLast, target = null) {
     return { ok: code === 0, code, output };
   } catch (e) {
     if (e instanceof InterruptError) throw e;
-    stderr.write(`${cmd}: error: ${e.message}\n`);
+    // A leftover /bin file shadowing a SOURCED function (bash: functions
+    // beat files). If the file failed but the name is a sourced function,
+    // dispatch through the persistent runtime instead.
+    if (otRt && otRt.sh2 && otRt.sh2.functions && otRt.sh2.functions.has(cmd)) {
+      try {
+        const v = await otRt.sh2.fnCall(cmd, args);
+        syncOtVarsFromStore();
+        procfs.finish(pid, 0);
+        return { ok: true, code: 0, output: "" };
+      } catch {}
+    }
+    stderr.write(`${cmd}: error: ${e.message} (${resolved.path})\n`);
     return { ok: false, code: 1, output: "" };
   }
   } finally {
@@ -6947,6 +6964,15 @@ function syncOtVarsFromStore() {
     if (!keepable(val) || k.startsWith("__")) continue;
     if (isReadonly(k)) continue;
     otVars.set(k, Array.isArray(val) ? val : String(val));
+  }
+  // mirror into the shell's env too — a NATIVE line after the call
+  // (`echo "a=(${a[@]})"`) expands $NAME from env, which the transpiled
+  // evalOnOtRt mirror normally refreshes; a native fnCall dispatch
+  // (findCommand → sh2.fnCall) must do the same or it sees the stale
+  // pre-call value.
+  for (const [k, v] of otVars) {
+    if (isReadonly(k)) continue;
+    try { env[k] = Array.isArray(v) ? v.join(" ") : String(v); } catch {}
   }
 }
 
@@ -7197,8 +7223,13 @@ async function evalOnOtRt(js, { lineAssigned = new Set(), lineCaptured = new Set
   if (exitCode !== null) { setShellStatus(exitCode); return exitCode; }  // `exit N`
   // The estree convention: each statement's value is the command's
   // success flag (true/false) — assignments carry their value but exit 0.
-  setShellStatus(v === false ? 1 : 0);   // transpiled $? → native
-  return v === false ? 1 : 0;
+  // A bare C-function call (`sum_first "$(addr a)" 3`) runs through
+  // sh2.exec, whose boolean masks the C return value — the runtime
+  // already records it as sh2.lastExit (`return 60` → 60), so a failing
+  // (non-zero) call reports the C return as $?, like the docs say.
+  const exitVal = v === false ? (Number(otRt.sh2.lastExit) || 1) : 0;
+  setShellStatus(exitVal);   // transpiled $? → native
+  return exitVal;
 }
 
 // Run one conditional list (`&&` / `||`-joined pipelines) — the
