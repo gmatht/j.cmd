@@ -980,6 +980,24 @@ func userStmtsA1(stmts []*uStmt, params []string, ptrs map[string]string) []any 
 				// `*p++ = v` — advance the pointer after the store
 				out = append(out, memAdvanceCall(s.name, 1))
 			}
+		case "seq":
+			// a comma-separated declaration list (flattened into assigns)
+			out = append(out, userStmtsA1(s.body, params, ptrs)...)
+		case "for":
+			// for (init; cond; step) body — the init assign, then a While
+			// whose body appends the step at its end
+			if s.init != nil {
+				out = append(out, userStmtsA1([]*uStmt{s.init}, params, ptrs)...)
+			}
+			body := s.body
+			if s.step != nil {
+				body = append(append([]*uStmt{}, s.body...), s.step)
+			}
+			out = append(out, map[string]any{
+				"type": "While",
+				"cond": userCondExpr(s.e, params, &out),
+				"body": userStmtsA1(body, params, ptrs),
+			})
 		case "while":
 			out = append(out, map[string]any{
 				"type": "While",
@@ -1074,7 +1092,7 @@ func buildUserFnA1(name string, fn *userFunc) map[string]any {
 		// The normalizeFunctions pass reads the cast shape back to make
 		// the param a real JS parameter (`Number(sh2.positional[N])` in
 		// the adapter).
-		if isIntType(fn.paramTypes[i]) && !fnPtrParamNames[pn] {
+		if isIntType(fn.paramTypes[i]) && !fnPtrParamNames[pn] && fn.ptrParams[pn] == "" {
 			body = append(body, map[string]any{
 				"type":    "Assign",
 				"targets": []any{map[string]any{"var": pn, "indices": []any{}, "sigil": nil}},
@@ -1137,14 +1155,16 @@ var userFuncs = map[string]*userFunc{}
 // uStmt — a user-function body statement (the mini-AST the literal-arg
 // fold interprets; see foldUserBody).
 type uStmt struct {
-	kind     string   // assign | while | if | ret | skip | exec | derefstore | ptrinc | idxassign | arrowstore
+	kind     string   // assign | while | if | ret | skip | exec | derefstore | ptrinc | idxassign | arrowstore | seq | for
 	name     string   // assign target / deref pointer / ptrinc var / idxassign array / arrow pointer var
 	member   string   // arrowstore: the struct member name
 	op       string   // "=" | "+=" | "-="  (ptrinc: "++" | "--")
-	e        *expr    // assign rhs / while cond / if cond / return expr / deref rhs / idxassign value / arrowstore value
+	e        *expr    // assign rhs / while cond / if cond / return expr / deref rhs / idxassign value / arrowstore value / for cond
 	idx      *expr    // idxassign: the array index expression
-	body     []*uStmt // while body / if then-arm
+	body     []*uStmt // while body / if then-arm / for body / seq items
 	elseBody []*uStmt // if else-arm
+	init     *uStmt   // for: the loop initializer (an assign)
+	step     *uStmt   // for: the loop step (an assign)
 	a1       any      // a raw A1 statement (exec-carrier kind)
 	ptrPost  bool     // derefstore: `*p++ = v` — advance the pointer after the store
 }
@@ -1499,6 +1519,9 @@ func lex(src string) ([]tok, error) {
 		case c == '/' && i+1 < n && src[i+1] == '*':
 			i += 2
 			for i+1 < n && !(src[i] == '*' && src[i+1] == '/') {
+				if src[i] == '\n' {
+					line++ // block comments span lines — keep error line numbers true
+				}
 				i++
 			}
 			i += 2
@@ -1761,7 +1784,7 @@ func (p *parser) isOp(s string) bool { t := p.peek(); return t != nil && t.kind 
 func (p *parser) isId(s string) bool { t := p.peek(); return t != nil && t.kind == "id" && t.text == s }
 func (p *parser) expectOp(s string) error {
 	if !p.isOp(s) {
-		return fmt.Errorf("expected %q at token %v", s, p.peek())
+		return fmt.Errorf("expected %q at token %v (line %d)", s, p.peek(), p.currentLine())
 	}
 	p.next()
 	return nil
@@ -2741,44 +2764,44 @@ func (p *parser) stmt() (any, error) {
 			p.userFuncLines[name.text] = stmtStartLine
 			return nil, nil
 		}
-		if p.isOp("=") {
-			p.next()
-			e, err := p.expr()
+		var out []any
+		// emit ONE declared name (with its optional initializer / pointer
+		// registration), then continue over `,`-separated names — so
+		// `int a, b;` / `char *x, *y;` / `int a = 1, b = 2;` all parse.
+		for {
+			emit, err := p.declOne(name, kw, isPtr)
 			if err != nil {
 				return nil, err
 			}
-			if err := p.expectOp(";"); err != nil {
-				return nil, err
+			if emit != nil {
+				out = append(out, emit)
 			}
-			// static pointer target (array / scalar alias / copy): the pointer
-			// is compile-time only — emit NOTHING
-			if isPtr && recordPtrTarget(name.text, e) {
-				return nil, nil
+			if !p.isOp(",") {
+				break
 			}
-			// heap pointer initializer (malloc / pointer copy / p = q + n)
-			if isPtr && kw != "char" {
-				if hp, isRoot, ok := heapAssignRHS(name.text, e, kw); ok {
-					heapPtrs[name.text] = hp
-					if isRoot {
-						// p itself holds the memAlloc handle — the store
-						// write (setVar: the mem seam reads the store)
-						return storeAssignStmt(name.text, valueNode(e)), nil
-					}
-					return nil, nil // compile-time pair only
-				}
-				refuse("unsupported pointer initializer for " + name.text)
+			p.next() // ,
+			// a `*` binds to the NAME (`char *x, *y;` — the type's star is
+			// per-name in C)
+			isPtr = false
+			for p.isOp("*") {
+				p.next()
+				isPtr = true
 			}
-			return assignStmt(name.text, valueNode(e)), nil
+			name = p.next()
+			if name == nil || name.kind != "id" {
+				return nil, fmt.Errorf("expected identifier after ','")
+			}
 		}
-		// bare declaration `int x;` / `int *p;`
-		if isPtr && kw != "char" {
-			// an uninitialized heap-pointer candidate: seed the base pair
-			// so a later `*p = v` / `p = q + n` resolves even if the first
-			// assignment is not the declaration
-			heapPtrs[name.text] = heapPtr{root: name.text, elem: kw, off: 0}
+		if err := p.expectOp(";"); err != nil {
+			return nil, err
 		}
-		p.next() // ;
-		return nil, nil
+		if len(out) == 0 {
+			return nil, nil
+		}
+		if len(out) == 1 {
+			return out[0], nil
+		}
+		return out, nil
 	case p.isId("if"):
 		p.next()
 		if err := p.expectOp("("); err != nil {
@@ -3378,6 +3401,51 @@ func (p *parser) simpleAssign() (any, error) {
 	return nil, nil
 }
 
+// declOne — emit one declared name of a `T name [= expr]` (or a member of
+// a `,`-separated list). The pointer star is per-name in C: `char *x, *y;`
+// (both pointers), `char *x, y;` (y a plain char). Registers the name in
+// charPtrVars / ptrDecls and emits the initializer (if any).
+func (p *parser) declOne(name *tok, kw string, isPtr bool) (any, error) {
+	if p.isOp("=") {
+		p.next()
+		e, err := p.expr()
+		if err != nil {
+			return nil, err
+		}
+		// static pointer target (array / scalar alias / copy): compile-time
+		// only — emit NOTHING
+		if isPtr && recordPtrTarget(name.text, e) {
+			return nil, nil
+		}
+		// heap pointer initializer (malloc / pointer copy / p = q + n)
+		if isPtr && kw != "char" {
+			if hp, isRoot, ok := heapAssignRHS(name.text, e, kw); ok {
+				heapPtrs[name.text] = hp
+				if isRoot {
+					// p itself holds the memAlloc handle — the store
+					// write (setVar: the mem seam reads the store)
+					return storeAssignStmt(name.text, valueNode(e)), nil
+				}
+				return nil, nil // compile-time pair only
+			}
+			refuse("unsupported pointer initializer for " + name.text)
+		}
+		return assignStmt(name.text, valueNode(e)), nil
+	}
+	// bare declaration `int x;` / `char *s;` / `int *p;`
+	if kw == "char" && isPtr {
+		charPtrVars[name.text] = true
+	}
+	if isPtr && kw != "char" {
+		ptrDecls[name.text] = kw
+		// uninitialized heap-pointer candidate: seed the base pair so a
+		// later `*p = v` / `p = q + n` resolves even if the first
+		// assignment is not the declaration
+		heapPtrs[name.text] = heapPtr{root: name.text, elem: kw, off: 0}
+	}
+	return nil, nil
+}
+
 func (p *parser) block() ([]any, []int, error) {
 	if err := p.expectOp("{"); err != nil {
 		return nil, nil, err
@@ -3521,35 +3589,41 @@ func (p *parser) structDecl() (any, error) {
 			return nil, fmt.Errorf("unterminated struct definition")
 		}
 		// member type: `char *word;` / `struct Node *next;` (a pointer
-		// member is one word — the stored handle/string)
-		var ctype string
+		// member is one word — the stored handle/string). The BASE type
+		// is parsed once; a `*` binds to each NAME (`char *x, *y;` — both
+		// pointers, but `char *x, y;` leaves y a plain char).
+		var base string
 		if p.isId("struct") {
 			p.next() // struct
 			sub := p.next()
 			if sub == nil || sub.kind != "id" {
 				return nil, fmt.Errorf("expected struct tag in member type")
 			}
-			ctype = "struct " + sub.text
-			for p.isOp("*") {
-				p.next()
-				ctype += "*"
-			}
+			base = "struct " + sub.text
 		} else {
 			mt := p.next()
 			if mt == nil || mt.kind != "id" {
 				return nil, fmt.Errorf("expected member type at token %v", mt)
 			}
-			ctype = mt.text
+			base = mt.text
+		}
+		// comma-separated member names: `int a, b;` / `char *x, *y;`
+		for {
+			ctype := base
 			for p.isOp("*") {
 				p.next()
 				ctype += "*"
 			}
+			mn := p.next()
+			if mn == nil || mn.kind != "id" {
+				return nil, fmt.Errorf("expected member name at token %v", mn)
+			}
+			members = append(members, structMember{mn.text, ctype})
+			if !p.isOp(",") {
+				break
+			}
+			p.next() // ,
 		}
-		mn := p.next()
-		if mn == nil || mn.kind != "id" {
-			return nil, fmt.Errorf("expected member name at token %v", mn)
-		}
-		members = append(members, structMember{mn.text, ctype})
 		if err := p.expectOp(";"); err != nil {
 			return nil, err
 		}
@@ -3592,7 +3666,13 @@ func (p *parser) userBlock() ([]*uStmt, error) {
 			return nil, err
 		}
 		if s != nil {
-			out = append(out, s)
+			if s.kind == "seq" {
+				// a comma-separated declaration list — flatten so the
+				// mini-AST (and its fold interpreter) sees flat assigns
+				out = append(out, s.body...)
+			} else {
+				out = append(out, s)
+			}
 		}
 	}
 	p.next() // }
@@ -3620,34 +3700,48 @@ func (p *parser) userStmt() (*uStmt, error) {
 		}
 		return &uStmt{kind: "ret", e: e}, nil
 	case p.isId("int") || p.isId("char") || p.isId("double") || p.isId("float") || p.isId("va_list"):
-		// a local declaration: `int s = 0;` / `va_list ap;`
+		// a local declaration: `int s = 0;` / `va_list ap;` — and
+		// comma-separated names: `int i, j, t;` (a "seq" of assigns)
 		p.next()
 		for p.isOp("*") {
 			p.next()
 		}
-		nm := p.next()
-		if nm == nil || nm.kind != "id" {
-			return nil, fmt.Errorf("expected identifier in declaration")
-		}
-		if p.isOp("=") {
-			p.next()
-			e, err := p.expr()
-			if err != nil {
-				return nil, err
+		var seq []*uStmt
+		for {
+			nm := p.next()
+			if nm == nil || nm.kind != "id" {
+				return nil, fmt.Errorf("expected identifier in declaration")
 			}
-			if err := p.expectOp(";"); err != nil {
-				return nil, err
+			if p.isOp("=") {
+				p.next()
+				e, err := p.expr()
+				if err != nil {
+					return nil, err
+				}
+				seq = append(seq, &uStmt{kind: "assign", name: nm.text, op: "=", e: e})
+			} else {
+				// uninitialized local — emit `x = ""` so the store owns it
+				// and later reads lower as store reads (a never-written
+				// name would render as "" — the runtime-only writers like
+				// getLine("b") are invisible to the static never-written
+				// analysis).
+				seq = append(seq, &uStmt{kind: "assign", name: nm.text, op: "=", e: &expr{kind: "str", num: ""}})
 			}
-			return &uStmt{kind: "assign", name: nm.text, op: "=", e: e}, nil
+			if !p.isOp(",") {
+				break
+			}
+			p.next() // ,
+			for p.isOp("*") {
+				p.next()
+			}
 		}
 		if err := p.expectOp(";"); err != nil {
 			return nil, err
 		}
-		// uninitialized local — emit `x = ""` so the store owns it and
-		// later reads lower as store reads (a never-written name would
-		// render as "" — the runtime-only writers like getLine("b")
-		// are invisible to the static never-written analysis).
-		return &uStmt{kind: "assign", name: nm.text, op: "=", e: &expr{kind: "str", num: ""}}, nil
+		if len(seq) == 1 {
+			return seq[0], nil
+		}
+		return &uStmt{kind: "seq", body: seq}, nil
 	case p.isId("struct"):
 		// `struct Node *n = malloc(sizeof(struct Node));` — a local
 		// struct-POINTER declaration in a function body (records the
@@ -3727,6 +3821,78 @@ func (p *parser) userStmt() (*uStmt, error) {
 		}
 		p.next()
 		return &uStmt{kind: "skip"}, nil
+	case p.isId("for"):
+		// for (init; cond; step) body — a `while` with a pre-assign and
+		// a step appended to the body's end (`i = 0; while (i < n) { …;
+		// i = i + 1; }`). init/step are assignments in the v1 subset.
+		p.next()
+		if err := p.expectOp("("); err != nil {
+			return nil, err
+		}
+		var init *uStmt
+		if !p.isOp(";") {
+			nm := p.next()
+			if nm == nil || nm.kind != "id" {
+				return nil, fmt.Errorf("expected assignment in for-initializer")
+			}
+			if !p.isOp("=") && !p.isOp("+=") && !p.isOp("-=") {
+				return nil, fmt.Errorf("expected assignment in for-initializer")
+			}
+			op := p.next().text
+			e, err := p.expr()
+			if err != nil {
+				return nil, err
+			}
+			init = &uStmt{kind: "assign", name: nm.text, op: op, e: e}
+		}
+		if err := p.expectOp(";"); err != nil {
+			return nil, err
+		}
+		var cond *expr
+		if !p.isOp(";") {
+			var err error
+			cond, err = p.expr()
+			if err != nil {
+				return nil, err
+			}
+		}
+		if err := p.expectOp(";"); err != nil {
+			return nil, err
+		}
+		var step *uStmt
+		if !p.isOp(")") {
+			nm := p.next()
+			if nm == nil || nm.kind != "id" {
+				return nil, fmt.Errorf("expected assignment in for-step")
+			}
+			if !p.isOp("=") && !p.isOp("+=") && !p.isOp("-=") {
+				return nil, fmt.Errorf("expected assignment in for-step")
+			}
+			op := p.next().text
+			e, err := p.expr()
+			if err != nil {
+				return nil, err
+			}
+			step = &uStmt{kind: "assign", name: nm.text, op: op, e: e}
+		}
+		if err := p.expectOp(")"); err != nil {
+			return nil, err
+		}
+		var body []*uStmt
+		if p.isOp("{") {
+			var err error
+			body, err = p.userBlock()
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			one, err := p.userStmt()
+			if err != nil {
+				return nil, err
+			}
+			body = []*uStmt{one}
+		}
+		return &uStmt{kind: "for", e: cond, body: body, init: init, step: step}, nil
 	case p.isId("while"):
 		p.next()
 		if err := p.expectOp("("); err != nil {

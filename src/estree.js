@@ -263,8 +263,17 @@ export function normalizeFunctions(program) {
       if (owners.size === 1 && owners.has(r.fnName) && !paramNames.has(name)) locals.add(name);
     }
     // a CAST param's body reads are store reads (`sh2.vars.nitems`) — lift
-    // them to the native parameter (like the locals)
-    for (const p of params) if (p.cast) locals.add(p.name);
+    // them to the native parameter (like the locals). NON-cast params
+    // (pointers, strings, fn-ptrs) get the same lift when they aren't
+    // runtime-written BY NAME: the leading `vars.p = positional[N]`
+    // binding is consumed as the parameter, so the body's `sh2.vars.p`
+    // reads (a mem-arena pointer walk through `*p` / `p->member`) must
+    // become the native param — a store read would see the value the
+    // binding never wrote ("").
+    for (const p of params) {
+      if (p.cast) { locals.add(p.name); continue; }
+      if (!runtimeByName.has(p.name)) locals.add(p.name);
+    }
 
     const paramByPos = new Map(params.filter((p) => !p.cast).map((p) => [p.n, p.name]));
     // rewrite store access → native identifiers inside the body

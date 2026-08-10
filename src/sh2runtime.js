@@ -99,6 +99,13 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     if (b > 0 && s.endsWith("]")) {
       const arrName = s.slice(0, b);
       const idx = Number(expandOperand(s.slice(b + 1, -1)));
+      // a mem handle (\u0001mem:<name>:<off>) — a C pointer write: the
+      // element `off + idx` of the variable the pointer aliases (the
+      // idxassign lowering of `a[j] = v` on a pointer param)
+      if (/^\u0001mem:/.test(arrName) && Number.isFinite(idx)) {
+        memStore1(memAdvance(arrName, Number(idx) || 0), val);
+        return;
+      }
       const existing = vars.get(arrName);
       if (Array.isArray(existing) && Number.isFinite(idx)) {
         const list = existing.slice();
@@ -483,6 +490,12 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     vars.set(name, list);
   }
   function arrayIndex(name, idx) {
+    // a mem handle (`\u0001mem:<name>:<off>`) — a C pointer walk: the
+    // element `off + idx` of the variable the pointer aliases. The c
+    // frontend lowers a POINTER param's `a[j]` reads to arrayIndex on
+    // the handle the param holds (sort_ints), while my_qsort's array-name
+    // pointers pass the bare name — both must work.
+    if (/^\u0001mem:/.test(String(name))) return memLoad1(memAdvance(String(name), Number(idx) || 0));
     const v = vars.get(name);
     const i = Number(expandOperand(String(idx)));   // "$i" → value
     if (Array.isArray(v)) return String(v[i] ?? "");

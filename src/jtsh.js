@@ -1116,6 +1116,25 @@ const builtins = {
     return anyHits > 0 ? 0 : 1;
   },
 
+  async addr(args) {
+    // addr NAME — print the pointer handle for a variable (array or
+    // scalar): `addr a` → `\u0001mem:a:0`. The C frontend's pointer seam
+    // (memLoad/memStore/memAdvance) walks shell arrays through these
+    // handles — `sum_first "$(addr a)" 3` reads a[0..2] from a sourced
+    // C function. A handle is opaque (a pointer is a string, never
+    // self-describing); forging one is unsupported.
+    const name = String(args[0] ?? "");
+    if (!name || /[^A-Za-z0-9_]/.test(name)) {
+      process.stderr.write("addr: usage: addr NAME (a variable name)\n");
+      return 1;
+    }
+    const h = (otRt && otRt.sh2 && otRt.sh2.memAddrOf)
+      ? otRt.sh2.memAddrOf(name)
+      : "\u0001mem:" + name + ":0";
+    process.stdout.write(h + "\n");
+    return 0;
+  },
+
   async find(args) {
     // TWO finds under one name, dispatched on the first argument's shape:
     //   find UTF8_STRING…          → the directory search below
@@ -2965,8 +2984,13 @@ async function runEstreeProgram(program, lineAssigned, srcArgs) {
   if (exitCode !== null) { setShellStatus(exitCode); return exitCode; }  // `exit N`
   // The estree convention: each statement's value is the command's
   // success flag (true/false) — assignments carry their value but exit 0.
-  setShellStatus(v === false ? 1 : 0);   // transpiled $? → native
-  return v === false ? 1 : 0;
+  // A bare C-function call (`sum_first "$(addr a)" 3`) runs through
+  // sh2.exec, whose boolean masks the C return value — the runtime
+  // already records it as sh2.lastExit (`return 60` → 60), so a failing
+  // (non-zero) call reports the C return as $?, like the user docs say.
+  const exitVal = v === false ? (Number(otRt.sh2.lastExit) || 1) : 0;
+  setShellStatus(exitVal);   // transpiled $? → native
+  return exitVal;
 }
 
 
