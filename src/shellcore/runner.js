@@ -6,6 +6,13 @@
 // (runSegment, runViaTranspiler, job launch, output writers) come from
 // ctx: { stderr, write, getBgJobs, runViaTranspiler, runSegment }.
 import { hasOption, setShellStatus, setLastBgPid } from "../env.js";
+import { tokenize } from "./tokenize.js";
+
+// Ctrl+C (SIGINT) — the shared command runners race a command against
+// this so an abort returns status 130 (128 + SIGINT).
+export class InterruptError extends Error {
+  constructor() { super("interrupt"); this.name = "InterruptError"; }
+}
 
 export function splitBgList(line) {
   const parts = [];
@@ -320,3 +327,407 @@ export async function runUutilsCommand(cmd, args, stdin, { outputRedirect, appen
     return { result: { ok: true, code: 0, output } };
   } catch { return null; }   // fall through to the normal not-found path
 }
+
+export async function runSegment(segmentText, stdin, isLast, target, ctx) {
+  let tokens;
+  try {
+    tokens = tokenize(segmentText);
+    if (ctx.globExpand) tokens = await ctx.globExpand(tokens);   // ls *.png → matched paths
+  } catch (e) {
+    ctx.stderr.write(`jtsh: ${e.message}\n`);
+    return { ok: false, code: 2, output: "" };
+  }
+  if (tokens.length === 0) return { ok: false, code: 2, output: "" };
+  let cmd = tokens[0];
+  const args = tokens.slice(1);
+  // Mobile keyboards auto-capitalize the first letter — tolerate `Ls`
+  // for `ls` by folding a bare name's first letter (exact wins, paths
+  // are untouched). The folded name flows through intercepts, hints,
+  // resolution and /proc alike.
+  if (!cmd.includes("/") && /^[A-Z]/.test(cmd)) {
+    const folded = cmd[0].toLowerCase() + cmd.slice(1);
+    if (folded !== cmd) cmd = folded;
+  }
+
+  // Output router for THIS command only (guarded restore): background
+  // jobs render into their panel slice (target), foreground commands go
+  // to the terminal. Because it is installed per command, a job that
+  // runs forever never captures the foreground's output, and nested
+  // routers forward to their saved writer instead of recursing.
+  const preOut = ctx.stdout.write;
+  const preErr = ctx.stderr.write;
+  const routerOut = (chunk) => {
+    if (ctx.stdout.write !== routerOut) return preOut(chunk);
+    if (ctx.suppressOutput()) return true;
+    if (target && target.appendOut) { target.appendOut(chunk); return true; }
+    return preOut(chunk);
+  };
+  // Transparent router: forwards to its saved writer. The __wraps link
+  // lets nested captures (runNestedCommand) recognise they're still in
+  // the active write chain while this router sits on top — without it,
+  // the bash REPL's PRE/POST markers leak to the terminal instead of
+  // reaching the capture buffer.
+  routerOut.__wraps = preOut;
+  const routerErr = (chunk) => {
+    if (ctx.stderr.write !== routerErr) return preErr(chunk);
+    if (ctx.suppressOutput()) return true;
+    if (target && target.appendErr) { target.appendErr(chunk); return true; }
+    return preErr(chunk);
+  };
+  routerErr.__wraps = preErr;
+  ctx.stdout.write = routerOut;
+  ctx.stderr.write = routerErr;
+  const restoreWriters = () => {
+    if (ctx.stdout.write === routerOut) ctx.stdout.write = preOut;
+    if (ctx.stderr.write === routerErr) ctx.stderr.write = preErr;
+  };
+  try {
+
+  let outputRedirect = null;
+  let appendRedirect = false;
+  let redirectIndex = args.indexOf(">>");
+  if (redirectIndex === -1) redirectIndex = args.indexOf(">");
+  else appendRedirect = true;
+  if (redirectIndex !== -1) {
+    outputRedirect = args[redirectIndex + 1];
+    args.splice(redirectIndex, 2);
+  }
+
+  // per-shell command intercepts (cc/cproc/tcc compilers etc.) — a
+  // chance to handle a command before resolution
+  if (ctx.interceptCommand) {
+    const inter = await ctx.interceptCommand(cmd, args, stdin, isLast, { outputRedirect, appendRedirect });
+    if (inter) return inter;
+  }
+
+  // python — MicroPython engine (reactor, src/py.js): REPL, -c, script
+  // files and stdin. Intercepted before resolveCommand so it never
+  // auto-loads python.wasm or needs a worker/SAB.
+  if (cmd === "python" && !cmd.includes("/")) {
+    return await ctx.runPythonCmd(args, stdin, isLast, outputRedirect, appendRedirect);
+  }
+  // perl — bare `perl` with no script/stdin opens the interactive REPL
+  // (the /bin perl command handles -e / script / stdin as before).
+  if (cmd === "perl" && !cmd.includes("/") && args.length === 0 && !pipeText(stdin).trim()) {
+    ctx.enterPerlRepl();
+    return { ok: true, code: 0, output: "" };
+  }
+  // /bin/bash — the REAL bash 5.3 (wasm32-emscripten), unlike the bare
+  // `bash` builtin which transpiles bash → JS. Runs -c / a VFS script /
+  // stdin through the actual bash binary.
+  if (cmd === "/bin/bash") {
+    try {
+      const runRealBash = ctx.runRealBash;
+      const hostRun = async (cmdline, stdinIn, bashCwd) => {
+        // NB: the output is NOT written here — runRealBash appends it to
+        // bash's own stdout so the transcript stays in execution order.
+        const h = await ctx.runNestedCommand(cmdline, stdinIn || "");
+        return h;
+      };
+      let script = "";
+      if (args[0] === "-c") script = args.slice(1).join(" ");
+      else if (args.length && !args[0].startsWith("-")) {
+        try { script = await ctx.fs.read(args[0]); } catch { script = args[0]; }
+      } else if (stdin) script = pipeText(stdin);
+      if (!script.trim()) {
+        ctx.stderr.write("/bin/bash: the real bash 5.3 — give it a script: /bin/bash -c 'echo hi' · /bin/bash script.sh · cat x | /bin/bash — sees /tmp and /home (writes sync back). Top-level external commands run synchronously in the shell (correct order, $? and stdin redirects); pipelines/subshells still need a real fork — those fail. `web <cmd>` also runs in the shell. Bare `bash` is the interactive builtin\n");
+        return { ok: false, code: 2, output: "" };
+      }
+      const r = await runRealBash(script, { hostRun });
+      if (outputRedirect) await ctx.writeOut(outputRedirect, r.out, appendRedirect);
+      else if (isLast) { if (r.out) ctx.stdout.write(r.out); }
+      else output = r.out;
+      if (r.err) ctx.stderr.write(r.err);
+      return { ok: r.code === 0, code: r.code, output: r.out };
+    } catch (e) {
+      ctx.stderr.write("/bin/bash: " + (e && e.message ? e.message : e) + "\n");
+      return { ok: false, code: 1, output: "" };
+    }
+  }
+
+  let output = "";
+
+  const resolved = await ctx.resolveCommand(cmd);
+  if (resolved && resolved.type === "badpath") {
+    // The path exists but can't be executed (a directory, or not a
+    // .js/.mjs/.wasm file) — exit 126, POSIX "found but not executable".
+    ctx.stderr.write(`${cmd}: ${resolved.err}\n`);
+    return { ok: false, code: 126, output: "" };
+  }
+  if (!resolved) {
+    // Real coreutils (uutils wasm): a bare command this shell doesn't
+    // ship natively runs the multi-call uutils.wasm with argv[0] = the
+    // command name (printf, sed, tr, cut, seq, sort, uniq, …).
+    if (!cmd.includes("/") && UUTILS_COMMANDS.has(cmd)) {
+      const uu = await runUutilsCommand(cmd, args, stdin, { outputRedirect, appendRedirect, isLast },
+        { fs: ctx.fs, readBin: ctx.readBin, wasmRunner: ctx.wasmRunner, writeOut: ctx.writeOut, stdout: ctx.stdout, stderr: ctx.stderr });
+      if (uu) return uu.result;
+    }
+    const hints = {
+      "nano": "edit", "emacs": "edit",
+      "more": "cat", "less": "cat",
+      "cls": "clear", "quit": "exit", "q": "exit",
+      "?": "help", "dir": "ls", "ll": "ls", "la": "ls",
+      "chdir": "cd",
+      "apt": "wasmer", "apt-get": "wasmer", "yum": "wasmer",
+      "dnf": "wasmer", "brew": "wasmer", "pacman": "wasmer",
+      "apk": "wasmer", "pip": "wasmer", "npm": "wasmer install",
+      "sh": "bash",
+    };
+    const hint = hints[cmd];
+    if (hint) {
+      ctx.stderr.write(`${cmd}: command not found — try "${hint}" instead\n`);
+    } else {
+      ctx.stderr.write(`${cmd}: command not found\n`);
+    }
+    return { ok: false, code: 127, output: "" };
+  }
+
+  // Make pipe input available to builtins (head etc.) — text form.
+  // Binary consumers (wasm programs, gzip, cat) get the raw `stdin`.
+  ctx.stdinBuffer = pipeText(stdin);
+  ctx.rawStdin = stdin;
+
+  try {
+    if (resolved.type === "sh") {
+      // .sh script or a #!-shebang file. bash/sh → run through the bash
+      // transpiler; any other interpreter is re-dispatched as
+      // `<interp> <script> <args>` through the normal command machinery.
+      let interp = "bash";
+      if (resolved.shebang) {
+        const words = resolved.shebang.split(/\s+/);
+        interp = words[words.length - 1].split("/").pop();
+        if (interp.startsWith("-")) interp = "bash";   // `#!/bin/sh -e` style
+      }
+      if (interp !== "bash" && interp !== "sh" && interp !== "dash" && interp !== "ash" && interp !== "ksh") {
+        const q = (w) => "'" + String(w).replace(/'/g, "'\\''") + "'";
+        const quoted = [interp, q(resolved.path), ...args.map((a) => q(a))].join(" ");
+        return await runSegment(quoted, stdin, isLast, target, ctx);
+      }
+      let content;
+      try {
+        content = await ctx.fs.read(resolved.path);
+      } catch (e) {
+        ctx.stderr.write(`${cmd}: ${e.message}\n`);
+        return { ok: false, code: 1, output: "" };
+      }
+      // Capture output for pipes/redirects, like the builtin branch.
+      const origWrite = ctx.stdout.write;
+      const chunks = [];
+      const capture = outputRedirect || !isLast;
+      let captureFn = null;
+      if (capture) {
+        const preCapture = ctx.stdout.write;
+        captureFn = (chunk) => {
+          if (ctx.stdout.write === captureFn) { chunks.push(chunk); return true; }
+          return preCapture.call(stdout, chunk);
+        };
+        ctx.stdout.write = captureFn;
+      }
+      let code = 1;
+      try {
+        code = await ctx.runShellScript(content, { args, argv0: cmd, runCmd: ctx.runNestedCommand });
+      } catch (e) {
+        ctx.stderr.write(`${cmd}: ${e.message}\n`);
+      } finally {
+        if (capture) {
+          if (ctx.stdout.write === captureFn) ctx.stdout.write = origWrite;
+          const captured = joinOut(chunks);
+          if (outputRedirect) await ctx.writeOut(outputRedirect, captured, appendRedirect);
+          else output = captured;
+        }
+      }
+      return { ok: code === 0, code, output };
+    }
+    if (resolved.type === "wasm") {
+      try {
+        
+
+
+        // Go js/wasm binaries (`go build` output, or anything compiled with
+        // GOOS=js GOARCH=wasm) run through the Go runner (wasm_exec.js +
+        // VirtualFS fs shim), not the WASI runner.
+        if (await ctx.goRunner.isGoModule(resolved.path)) {
+          const gr = await ctx.goRunner.runModule(resolved.path, [cmd, ...args], stdin);
+          if (gr.stdout) ctx.write(gr.stdout);
+          if (gr.stderr) ctx.write(gr.stderr, "err");
+          if (gr.code !== 0) {
+            ctx.write(`${cmd}: exited with code ${gr.code}\n`, "err");
+            return { ok: false, code: gr.code, output: "" };
+          }
+          return { ok: true, code: 0, output: gr.stdout };
+        }
+
+        // Run a wasm32-wasi binary (full WASI via @wasmer/wasi, filesystem
+        // bridged to our VirtualFS via @wasmer/wasmfs)
+        let wasmArgs = [cmd, ...args];
+        await ctx.wasmRunner.run(resolved.path, wasmArgs, stdin);
+        const exitCode = ctx.wasmRunner.getExitCode();
+        let wasmOut = ctx.wasmRunner.getStdout();        // text (program output)
+        let wasmBytes = ctx.wasmRunner.getStdoutBytes(); // raw bytes — what the pipe carries
+        const wasmErr = ctx.wasmRunner.getStderr();
+
+        if (outputRedirect) {
+          await ctx.writeOut(outputRedirect, wasmBytes.length ? wasmBytes : "", appendRedirect);
+        } else if (isLast) {
+          if (wasmOut) ctx.stdout.write(wasmOut);
+        } else {
+          output = wasmBytes;
+        }
+        if (wasmErr) {
+          ctx.stderr.write(wasmErr);
+        }
+        if (exitCode !== 0) {
+          ctx.stderr.write(`${cmd}: exited with code ${exitCode}\n`);
+          return { ok: false, code: exitCode, output: "" };
+        }
+        return { ok: true, code: 0, output };
+      } catch (e) {
+        if (e instanceof InterruptError) throw e;
+        ctx.stderr.write(`${cmd}: wasm error: ${e.message}\n`);
+        return { ok: false, code: 1, output: "" };
+      }
+    }
+
+    if (resolved.type === "builtin") {
+      const origWrite = ctx.stdout.write;
+      const chunks = [];
+      const capture = outputRedirect || !isLast;
+      let captureFn = null;
+      if (capture) {
+        // Guarded capture: only swallow output while THIS command is the
+        // current writer. If a background job has swapped the writer
+        // meanwhile, forward to the pre-capture writer instead —
+        // concurrent output must never be swallowed into someone
+        // else's redirect.
+        const preCapture = ctx.stdout.write;
+        captureFn = (chunk) => {
+          if (ctx.stdout.write === captureFn) { chunks.push(chunk); return true; }
+          return preCapture(chunk);
+        };
+        ctx.stdout.write = captureFn;
+      }
+      let code = 0;
+      try {
+        ctx.builtinCapture = capture;
+        code = (await resolved.fn(args)) ?? 0;
+      } finally {
+        if (capture) {
+          if (ctx.stdout.write === captureFn) ctx.stdout.write = origWrite;
+          const captured = joinOut(chunks);
+          if (outputRedirect) await ctx.writeOut(outputRedirect, captured, appendRedirect);
+          else output = captured;
+        }
+      }
+      return { ok: code === 0, code, output };
+    }
+
+    // Run a .js command file from /commands/ (or /bin/, /usr/bin/)
+    const content = await ctx.fs.read(resolved.path);
+    // `pipe` (10th arg) gives command files the raw pipe: `pipe.in` is
+    // the previous segment's stdout (string or Uint8Array — the 4th
+    // `stdin` arg is its text form), and `pipe.out(data)` captures
+    // output into the pipe (strings or raw bytes; gzip emits bytes).
+    const fn = new Function("args", "fs", "console", "stdin", "env", "process", "sh2", "sh2lib", "shell", "qbe2wasm", "pipe", `
+        return (async () => { ${content} })();
+      `);
+    const logChunks = [];
+    const fakeConsole = { log: (...msgs) => logChunks.push(msgs.join(" ") + "\n") };
+    // `sh2` — the bash runtime (saved bash2js output calls sh2.exec & co.)
+    const sh2rt = createSh2Runtime({
+      fs: ctx.fs, env: ctx.env,
+      shellExec: runNestedCommand,
+      stdout, stderr,
+      args: args.slice(1),
+      argv0: cmd,
+    });
+    // `shell` — lets commands run lines through the shell itself (the
+    // floating xterm terminal uses this); returns { out, err, code }.
+    const shellApi = {
+      runLine: (cmdLine) => runNestedCommand(cmdLine),
+      jobs: ctx.getJobScheduler(),   // at/cron scheduler (src/jobs.js)
+      // When the command runs as a background job, its output lands in
+      // the job's panel slice; direct-DOM commands (watch) render there.
+      outputTarget: target,
+      // Register a callback fired on Ctrl+C — lets long-running commands
+      // (watch, xeyes, ...) tear themselves down when interrupted.
+      onInterrupt: (fn) => { ctx.onInterrupt(fn); },
+      // Register a callback fired on printable keys (and Enter/Backspace)
+      // while the command runs — lets interactive commands (typist) read
+      // the keyboard. Return true to consume the key.
+      onKey: (fn) => { keyCallbacks.push(fn); },
+    };
+    const pipe = {
+      in: stdin,          // raw pipe input (string or Uint8Array)
+      out: (data) => logChunks.push(data),  // capture into the pipe
+    };
+    // `process` for command files: prefer the persistent runtime's shim
+    // (otProc has env; the browser's global process is go.js's env-less
+    // shim; node's global has everything).
+    const fileProc = (ctx.otProc() && ctx.otProc().env)
+      ? otProc
+      : (typeof process !== "undefined" && process && process.env ? process : { env: env || {} });
+    const keyCbsBefore = ctx.keyCallbacks.length;
+    const intrCbsBefore = ctx.interruptCallbacks.length;
+    let ret;
+    try {
+      ret = await fn(args, fs, fakeConsole, pipeText(stdin), env, fileProc, sh2rt.sh2, sh2libFacade, shellApi, qbe2wasm, pipe);
+    } finally {
+      // Commands may register key/interrupt callbacks (typist, watch,
+      // ...). Once the command finishes — normally or via Ctrl+C — the
+      // shell owns the keyboard again: drop whatever it left registered
+      // so a stale callback can never swallow typing or Tab completion.
+      keyCallbacks.length = keyCbsBefore;
+      interruptCallbacks.length = intrCbsBefore;
+    }
+    // A command file may return a number to set its exit status
+    const code = typeof ret === "number" ? ret : 0;
+    output = joinOut(logChunks);
+    if (outputRedirect) {
+      await ctx.writeOut(outputRedirect, output);
+      output = "";
+    } else if (isLast) {
+      if (output) ctx.stdout.write(pipeText(output));
+      output = "";
+    }
+    return { ok: code === 0, code, output };
+  } catch (e) {
+    if (e instanceof InterruptError) throw e;
+    // A leftover /bin file shadowing a SOURCED function (bash: functions
+    // beat files). If the file failed but the name is a sourced function,
+    // dispatch through the persistent runtime instead.
+    if (ctx.getOtRt && ctx.getOtRt() && ctx.getOtRt().sh2 && ctx.getOtRt().sh2.functions && ctx.getOtRt().sh2.functions.has(cmd)) {
+      try {
+        const v = await ctx.getOtRt().sh2.fnCall(cmd, args);
+        syncOtVarsFromStore(ctx.getOtRt(), ctx.getOtVars());
+        ctx.procfs.finish(pid, 0);
+        return { ok: true, code: 0, output: "" };
+      } catch {}
+    }
+    ctx.stderr.write(`${cmd}: error: ${e.message} (${resolved.path})\n${e.stack}\n`);
+    return { ok: false, code: 1, output: "" };
+  }
+  } finally {
+    restoreWriters();
+  }
+}
+
+// Split a line into background segments on a single `&` (respecting
+// quotes and backslash escapes). `&&` is the conditional operator and
+// stays inside a segment (handled by splitConditionals later). Returns
+// { text, bg } parts: bg=true when the segment was terminated by `&`,
+// meaning it runs as a background job (`cmd & cmd2` → cmd bg, cmd2 fg).
+
+
+// ─── otranspilerl fallback: bash concepts jtsh's parser doesn't know ──
+// Lines carrying bash-only syntax (statement separators (`;`), the
+// for/while/if/case keywords, `$(…)` command substitution, `[[ ]]`) —
+// route through the unified otranspilerl library (the real debashl core
+// + estree backend): sh → A1 shIR → ESTree → JS, executed with the sh2.*
+// runtime. `x=5; echo $x`, `for i in …; do …; done`, `if …; then …; fi`
+// and friends just work; constructs needing the sync bridge (command
+// substitution, pipelines, redirection) refuse loudly with a pointer to
+// `bash`.
+// The sh2 runtime + process shim are created ONCE and shared by every
+// call, so state (functions, sh2.lastExit, cwd via fs) survives across
+// lines. NB: plain shell variables (x=5) are emitted as bare JS

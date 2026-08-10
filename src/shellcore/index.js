@@ -23,7 +23,8 @@
 //
 // The shared singletons (fs, env, manpages, shell state) are imported
 // by the builtins directly — both adapters use the same src/ modules.
-import { builtins, InterruptError } from "./builtins.js";
+import { builtins } from "./builtins.js";
+import { InterruptError } from "./runner.js";
 
 // Bind the shared builtins to an adapter's ctx: `async NAME(args)` —
 // the signature both shells' command dispatchers already call.

@@ -12,9 +12,7 @@ import { bashToJS, runBash } from "../bash2js.js";
 import { batToJS, runBat } from "../bat2js.js";
 
 // The interrupt sentinel both shells throw/catch around builtins.
-export class InterruptError extends Error {
-  constructor() { super("interrupt"); this.name = "InterruptError"; }
-}
+
 
 // ── the shared builtins: async NAME(ctx, args) → exit code ─────
 
