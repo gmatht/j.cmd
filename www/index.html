@@ -3856,11 +3856,14 @@ setlocal, call other.bat, …) refuses loudly — see the frontend's v1 subset.
 };
 
 // `.` is bash's dot-command — the same builtin as `source`.
-builtins["."] = builtins.source;
+// Aliases resolve LAZILY through `builtins` at call time — the SHARED
+// shellcore builtins override `source`/`cmdExe` via Object.assign below,
+// so a snapshot taken here would alias a stale (or removed) local.
+builtins["."] = (...a) => builtins.source(...a);
 // cmd.exe (and its `cmd` alias) run Windows batch via the bat2js
 // pipeline — batch → A1 shIR → estree → JS against the sh2.* runtime.
-builtins["cmd.exe"] = builtins.cmdExe;
-builtins["cmd"] = builtins.cmdExe;
+builtins["cmd.exe"] = (...a) => builtins.cmdExe(...a);
+builtins["cmd"] = (...a) => builtins.cmdExe(...a);
 
 // ── the SHARED shell core (src/shellcore) — the stateless command
 // layer both shells run; bound to THIS shell's ctx (I/O + machinery).
