@@ -18,7 +18,7 @@ import { tokenize } from "./shellcore/tokenize.js";
 import { a1LiteralValue, syncOtVarsFromStore, runSourceContent as sharedRunSourceContent, evalProgramOnOtRt, transpileLine as sharedTranspileLine, ensureOtRuntime as sharedEnsureOtRuntime, runShellScript as sharedRunShellScript } from "./shellcore/transpile.js";
 import { handleLine as sharedHandleLine, runConditionalList as sharedRunConditionalList, runPipeline as sharedRunPipeline, splitBgList as sharedSplitBgList, splitConditionals as sharedSplitConditionals, splitPipe as sharedSplitPipe, looksLikeBash as sharedLooksLikeBash } from "./shellcore/runner.js";
 import { pipeText as sharedPipeText, pipeBytes as sharedPipeBytes, joinOut as sharedJoinOut, UUTILS_COMMANDS as sharedUUTILS_COMMANDS, ensureUutilsWasm as sharedEnsureUutilsWasm, runUutilsCommand as sharedRunUutilsCommand } from "./shellcore/runner.js";
-import { runSegment as sharedRunSegment, InterruptError } from "./shellcore/runner.js";
+import { runSegment as sharedRunSegment, InterruptError, runPythonCmd as sharedRunPythonCmd } from "./shellcore/runner.js";
 
 // pipe/uutils helpers — SHARED (shellcore/runner.js)
 const pipeText = (d) => sharedPipeText(d);
@@ -806,58 +806,7 @@ async function runSegment(segmentText, stdin, isLast) {
 // python — run through the MicroPython reactor (src/py.js). The engine
 // is a singleton, so state persists across lines and invocations.
 async function runPythonCmd(args, stdin, isLast, outputRedirect, appendRedirect) {
-  if (args.length === 0) {
-    if (pipeText(stdin).trim()) {
-      args = ["-"];
-    } else if (process.stdin.isTTY) {
-      enterPythonRepl();
-      return { ok: true, code: 0, output: "" };
-    } else {
-      process.stderr.write("python: no script given (python -c CODE | script.py | - for stdin)\n");
-      return { ok: false, code: 2, output: "" };
-    }
-  }
-  let source = null;
-  if (args[0] === "-c" || args[0] === "-e") {
-    source = args.slice(1).join(" ");
-  } else if (args[0] === "-") {
-    source = pipeText(stdin);
-  } else if (!args[0].startsWith("-")) {
-    try {
-      source = await fs.read(args[0]);
-    } catch (e) {
-      process.stderr.write(`python: ${args[0]}: ${e.message}\n`);
-      return { ok: false, code: 1, output: "" };
-    }
-  } else {
-    process.stderr.write(`python: unknown option ${args[0]}\n`);
-    return { ok: false, code: 2, output: "" };
-  }
-  if (source === null) {
-    process.stderr.write("python: no script given (python -c CODE | script.py | - for stdin)\n");
-    return { ok: false, code: 2, output: "" };
-  }
-  const { pyExec } = await import("./py.js");
-  let output = "";
-  const origWrite = process.stdout.write;
-  process.stdout.write = (s) => { output += s; return true; };
-  let code;
-  try {
-    code = await pyExec(source, { stdout: process.stdout, stderr: process.stderr });
-  } catch (e) {
-    process.stderr.write(`python: ${e.message}\n`);
-    code = 1;
-  } finally {
-    process.stdout.write = origWrite;
-  }
-  if (outputRedirect) {
-    await writeOut(outputRedirect, output, appendRedirect);
-    output = "";
-  } else if (isLast) {
-    process.stdout.write(output);
-    output = "";
-  }
-  return { ok: code === 0, code, output };
+  return sharedRunPythonCmd(args, stdin, isLast, outputRedirect, appendRedirect, shellCtx);
 }
 
 

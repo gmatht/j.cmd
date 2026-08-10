@@ -731,3 +731,60 @@ export async function runSegment(segmentText, stdin, isLast, target, ctx) {
 // The sh2 runtime + process shim are created ONCE and shared by every
 // call, so state (functions, sh2.lastExit, cwd via fs) survives across
 // lines. NB: plain shell variables (x=5) are emitted as bare JS
+
+// ─── runPythonCmd: run a Python script through the shared MicroPython ──
+// engine (src/py.js). SHARED by both shells — the only per-shell bits are
+// the TTY check, the REPL entry and the output writers (ctx).
+export async function runPythonCmd(args, stdin, isLast, outputRedirect, appendRedirect, ctx) {
+  if (args.length === 0) {
+    if (pipeText(stdin).trim()) {
+      args = ["-"];
+    } else if (typeof ctx.isTTY === "function" ? ctx.isTTY() : ctx.isTTY) {
+      ctx.enterPythonRepl();
+      return { ok: true, code: 0, output: "" };
+    } else {
+      ctx.stderr.write("python: no script given (python -c CODE | script.py | - for stdin)\n");
+      return { ok: false, code: 2, output: "" };
+    }
+  }
+  let source = null;
+  if (args[0] === "-c" || args[0] === "-e") {
+    source = args.slice(1).join(" ");
+  } else if (args[0] === "-") {
+    source = pipeText(stdin);
+  } else if (!args[0].startsWith("-")) {
+    try {
+      source = await ctx.fs.read(args[0]);
+    } catch (e) {
+      ctx.stderr.write(`python: ${args[0]}: ${e.message}\n`);
+      return { ok: false, code: 1, output: "" };
+    }
+  } else {
+    ctx.stderr.write(`python: unknown option ${args[0]}\n`);
+    return { ok: false, code: 2, output: "" };
+  }
+  if (source === null) {
+    ctx.stderr.write("python: no script given (python -c CODE | script.py | - for stdin)\n");
+    return { ok: false, code: 2, output: "" };
+  }
+  const { pyExec } = await import("../py.js");
+  let output = "";
+  const origWrite = ctx.stdout.write;
+  ctx.stdout.write = (s) => { output += s; return true; };
+  let code;
+  try {
+    code = await pyExec(source, { stdout: ctx.stdout, stderr: ctx.stderr });
+  } catch (e) {
+    ctx.stderr.write(`python: ${e.message}\n`);
+    code = 1;
+  } finally {
+    ctx.stdout.write = origWrite;
+  }
+  if (outputRedirect) {
+    await ctx.writeOut(outputRedirect, output, appendRedirect);
+    output = "";
+  } else if (isLast) {
+    if (output) ctx.stdout.write(output);
+  }
+  return { ok: code === 0, code, output };
+}
