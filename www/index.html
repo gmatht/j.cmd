@@ -3927,7 +3927,7 @@ const shellCtx = {
   interceptCommand: interceptCompilers,
   runPythonCmd,
   enterPerlRepl,
-  runRealBash,
+  runRealBash: async (script, opts) => (await import("../src/realbash.js")).runRealBash(script, opts),
   runShellScript,
   runNestedCommand,
   write,

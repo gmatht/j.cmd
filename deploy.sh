@@ -89,6 +89,14 @@ if dups:
     print("module-scope duplicates:", dups); sys.exit(1)
 if re.search(r",\s*,|\}\s*\},\s*\},|\}\s*\}\s*\},\s*\{", big):
     print("stray brace/comma artifact"); sys.exit(1)
+# ctx shorthand keys must resolve to module-scope declarations/imports
+i = big.find("const shellCtx = {")
+if i >= 0:
+    seg = big[i:i+6000]
+    for s in re.findall(r"^\s{2}([A-Za-z_$][\w$]*),$", seg, re.M):
+        if not re.search(r"^(?:const|let|var|function|async function|class)\s+" + re.escape(s) + r"\b", big, re.M) \
+           and not re.search(r"^import [^;]*\b" + re.escape(s) + r"\b[^;]*;", big, re.M):
+            print("ctx shorthand not in scope:", s); sys.exit(1)
 PY
   if node --check /tmp/deploy-app-check.js > /tmp/deploy-app-check.log 2>&1; then
     echo "  www/index.html module parses"
