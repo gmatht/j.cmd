@@ -912,11 +912,20 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       // the native store the otranspilerl estree backend reads/writes
       // (`sh2.vars.x` — see sh2perl/src/estree.rs native-store fold;
       // generated code adds the env fallback itself as
-      // `sh2.vars.x ?? (process.env.x ?? "")`, so a Map miss must read
-      // as undefined, not ""). A live Proxy over the internal Map keeps
-      // every setVar/getVar path and the native property access in sync.
+      // `sh2.vars.x ?? (process.env.x ?? "")` — but `process` is not a
+      // global in every scope the functions can run from (a sourced C
+      // function called later throws "process is not defined"), so the
+      // proxy resolves the env fallback HERE: a Map miss reads the shell
+      // env (else "") and is never nullish, making the generated
+      // `?? (process.env.x ?? "")` dead code — same semantics, no
+      // `process` reference.
       vars: new Proxy(Object.create(null), {
-        get: (t, k) => (typeof k === "string" ? vars.get(k) : undefined),
+        get: (t, k) => {
+          if (typeof k !== "string") return undefined;
+          if (vars.has(k)) return vars.get(k);
+          if (env && env[k] !== undefined) return env[k];
+          return "";
+        },
         set: (t, k, v) => { if (typeof k === "string") setVar(k, v); return true; },
         has: (t, k) => typeof k === "string" && vars.has(k),
         deleteProperty: (t, k) => { if (typeof k === "string") vars.delete(k); return true; },
