@@ -15,7 +15,7 @@ import { createInterface } from "readline";
 import { createShellCore } from "./shellcore/index.js";
 import { resolveCommand as shellResolve, isPrivilegedUser, customExecDenied } from "./shellcore/resolve.js";
 import { tokenize } from "./shellcore/tokenize.js";
-import { a1LiteralValue, syncOtVarsFromStore, runSourceContent as sharedRunSourceContent, evalProgramOnOtRt } from "./shellcore/transpile.js";
+import { a1LiteralValue, syncOtVarsFromStore, runSourceContent as sharedRunSourceContent, evalProgramOnOtRt, transpileLine as sharedTranspileLine, ensureOtRuntime as sharedEnsureOtRuntime } from "./shellcore/transpile.js";
 import { fs } from "./fs/index.js";
 import { formatAge } from "./fs/lscache.js";
 import { WasmRunner } from "./wasm.js";
@@ -407,6 +407,9 @@ const shellCtx = {
   get otRt() { return otRt; },
   syncOtVarsFromStore: () => syncOtVarsFromStore(otRt, otVars),
   runSourceContent: (content, lang, srcArgs) => sharedRunSourceContent(content, lang, srcArgs, shellCtx),
+  // a .js source file IS generated JS — the shared eval+harvest helper
+  // runs it on the persistent runtime (the file's own $@ = srcArgs)
+  runJsSourceContent: (content, srcArgs) => evalProgramOnOtRt(content, { positional: srcArgs }, shellCtx),
   // state/backend accessors the shared runSourceContent weaves through
   getOtVars: () => otVars,
   goRunner,
@@ -417,6 +420,11 @@ const shellCtx = {
   evalProgram: (program, lineAssigned, srcArgs) => runEstreeProgram(program, lineAssigned, srcArgs),
   stdinBuffer: () => stdinBuffer,
   otProc: () => otProc,
+  stdoutWrite: (s) => process.stdout.write(s),
+  stderrWrite: (s) => process.stderr.write(s),
+  setOtRt: (r) => { otRt = r; },
+  setOtProc: (p) => { otProc = p; },
+  ensureOtRuntime: () => ensureOtRuntime(),
   wasmRunner,
   goCmd,
   isPrivilegedUser,
@@ -545,39 +553,7 @@ let otProc = null;   // process shim for the generated JS
 // functions (sh2.functions), sh2.lastExit, positionals, vars — survives
 // across lines.
 async function ensureOtRuntime() {
-  if (otRt) return;
-  const { createSh2Runtime } = await import("./sh2runtime.js");
-  const out = { write: (s) => { if (s) process.stdout.write(s); } };
-  const err = { write: (s) => { if (s) process.stderr.write(s); } };
-  // The native estree backend writes through process.stdout.write and
-  // reads process.env/argv — provide a shim (in the browser there is no
-  // node process at all).
-  otProc = {
-    stdout: out,
-    stderr: err,
-    pid: 1,
-    argv: ["jtsh"],
-    env: env || {},
-    cwd: () => (fs.cwd !== undefined ? fs.cwd : "/"),
-    // `exit N` in the generated JS — must NOT kill the shell.
-    exit(code) {
-      const e = new Error("__otranspiler_exit__" + code);
-      e.exitCode = Number(code) || 0;
-      throw e;
-    },
-    // `cd DIR` / `pwd` — the native estree drives cwd through process
-    chdir(p) {
-      if (fs && fs.cwd !== undefined) {
-        fs.cwd = String(p).replace(/\/+$/, "") || "/";
-        try { env.PWD = fs.cwd; } catch {}   // keep $PWD honest for native lines
-      }
-    },
-    cwd() { return (fs.cwd !== undefined ? fs.cwd : "/") || "/"; },
-  };
-  otRt = createSh2Runtime({
-    fs, env, shellExec: runNestedCommand,
-    stdout: out, stderr: err, args: [], argv0: "sh",
-  });
+  return sharedEnsureOtRuntime(shellCtx);
 }
 // Persistent shell-variable state across transpiled lines. The debashl
 // compiler folds `$x` reads to "" when x isn't assigned in the same
@@ -673,37 +649,7 @@ async function runShellScript(content, opts = {}) {
 }
 
 async function runViaTranspiler(segmentText, stdin) {
-  const { getOtranspilerl } = await import("./otranspilerl.js");
-  const lib = await getOtranspilerl();
-  // Seed: declare the known variables in-program so $x reads compile
-  // live instead of folding to "". Scalars seed as `k="v";`; arrays as
-  // `k=("a" "b");` so debashl emits a real array declaration.
-  const seed = [...otVars].map(([k, v]) =>
-    Array.isArray(v)
-      ? `${k}=(${v.map((x) => JSON.stringify(String(x))).join(" ")});`
-      : `${k}=${JSON.stringify(String(v))};`
-  ).join("");
-  const src = seed + segmentText;
-  const program = JSON.parse(lib.transpile(src, "sh", "js"));
-  // A1 harvest: deterministic assignment values — catches dead-stored
-  // arrays (`a=(1 2 3);` alone emits no JS at all) that never reach the
-  // runtime diffs below.
-  const lineAssigned = new Set();   // names this line's A1 says were assigned
-  const lineCaptured = new Set();   // names a VALUE was captured for this line
-  try {
-    const a1 = JSON.parse(lib.shir(src));
-    for (const st of a1.stmts || []) {
-      if (st && st.type === "Assign" && st.targets && st.targets[0]) {
-        const t = st.targets[0];
-        if (t.var && !(t.indices && t.indices.length)) {
-          lineAssigned.add(t.var);
-          const val = a1LiteralValue(st.expr);
-          if (val !== undefined) { otVars.set(t.var, val); lineCaptured.add(t.var); }
-        }
-      }
-    }
-  } catch {}
-  return runEstreeProgram(program, lineAssigned, []);
+  return sharedTranspileLine(segmentText, shellCtx);
 }
 
 async function runEstreeProgram(program, lineAssigned, srcArgs) {

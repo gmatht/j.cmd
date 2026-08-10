@@ -268,3 +268,88 @@ export async function evalProgramOnOtRt(js, opts, ctx) {
   setShellStatus(exitVal);   // transpiled $? → native
   return exitVal;
 }
+
+// ─── transpileLine: the bash-line fallback (runViaTranspiler) ───────
+// SHARED: transpile a bash line to JS and run it on the persistent
+// runtime. Seeds the known variables so $x reads compile live, then
+// delegates the eval to ctx.evalProgram (the per-shell program eval
+// wrapper — CLI runEstreeProgram / browser evalOnOtRt).
+export async function transpileLine(segmentText, ctx) {
+  const { getOtranspilerl } = await import("../otranspilerl.js");
+  const lib = await getOtranspilerl();
+  const otVars = ctx.getOtVars();
+  // Seed: declare the known variables in-program so $x reads compile
+  // live instead of folding to "". Scalars seed as `k="v";`; arrays as
+  // `k=("a" "b");` so debashl emits a real array declaration.
+  const seed = [...otVars].map(([k, v]) =>
+    Array.isArray(v)
+      ? `${k}=(${v.map((x) => JSON.stringify(String(x))).join(" ")});`
+      : `${k}=${JSON.stringify(String(v))};`
+  ).join("");
+  const src = seed + segmentText;
+  const program = JSON.parse(lib.transpile(src, "sh", "js"));
+  // A1 harvest: deterministic assignment values — catches dead-stored
+  // arrays (`a=(1 2 3);` alone emits no JS at all) that never reach the
+  // runtime diffs below.
+  const lineAssigned = new Set();   // names this line's A1 says were assigned
+  try {
+    const a1 = JSON.parse(lib.shir(src));
+    for (const st of a1.stmts || []) {
+      if (st && st.type === "Assign" && st.targets && st.targets[0]) {
+        const t = st.targets[0];
+        if (t.var && !(t.indices && t.indices.length)) {
+          lineAssigned.add(t.var);
+          const val = a1LiteralValue(st.expr);
+          if (val !== undefined) otVars.set(t.var, val);
+        }
+      }
+    }
+  } catch {}
+  return ctx.evalProgram(program, lineAssigned, []);
+}
+
+// ─── ensureOtRuntime: build the persistent runtime + process shim ───
+// SHARED by both shells. ctx: { stdoutWrite, stderrWrite, shellExec,
+//   setOtRt, setOtProc } — the per-shell bits are the output writers,
+// the nested-command bridge, and where otRt/otProc live.
+export async function ensureOtRuntime(ctx) {
+  const existing = typeof ctx.getOtRt === "function" ? ctx.getOtRt() : ctx.otRt;
+  if (existing) return existing;
+  const { createSh2Runtime } = await import("../sh2runtime.js");
+  // The native estree backend writes through process.stdout.write and
+  // reads process.env/argv — provide a shim (in the browser there is no
+  // node process at all).
+  const writeOut = ctx.stdoutWrite;
+  const writeErr = ctx.stderrWrite;
+  const out = { write: (s) => { if (s) writeOut(s); } };
+  const err = { write: (s) => { if (s) writeErr(s); } };
+  const otProc = {
+    stdout: out,
+    stderr: err,
+    pid: 1,
+    argv: ["jtsh"],
+    env: env || {},
+    cwd: () => (fs.cwd !== undefined ? fs.cwd : "/"),
+    // `exit N` in the generated JS — must NOT kill the shell.
+    exit(code) {
+      const e = new Error("__otranspiler_exit__" + code);
+      e.exitCode = Number(code) || 0;
+      throw e;
+    },
+    // `cd DIR` / `pwd` — the native estree drives cwd through process
+    chdir(p) {
+      if (fs && fs.cwd !== undefined) {
+        fs.cwd = String(p).replace(/\/+$/, "") || "/";
+        try { env.PWD = fs.cwd; } catch {}   // keep $PWD honest for native lines
+      }
+    },
+    cwd() { return (fs.cwd !== undefined ? fs.cwd : "/") || "/"; },
+  };
+  const otRt = createSh2Runtime({
+    fs, env, shellExec: ctx.shellExec,
+    stdout: out, stderr: err, args: [], argv0: "sh",
+  });
+  ctx.setOtRt(otRt);
+  ctx.setOtProc(otProc);
+  return otRt;
+}
