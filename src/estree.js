@@ -515,6 +515,7 @@ export function keepVariables(program, knownArrays = []) {
   const id = (name) => ({ type: "Identifier", name });
   const member = (obj, prop) => ({ type: "MemberExpression", object: obj, property: prop, computed: false, optional: false });
   const lit = (v) => ({ type: "Literal", value: v, raw: null });
+  const call = (callee, args) => ({ type: "CallExpression", callee, arguments: args, optional: false });
   // debashl's raw form for `a=(1 2 3)` is `sh2.setArray("a", [...])` —
   // lowerNativeArrays later folds that into an eval-scoped `let a = [...]`
   // (unharvestable, and re-declaring a seeded name breaks). Match those
@@ -577,6 +578,22 @@ export function keepVariables(program, knownArrays = []) {
         });
         return;
       }
+      // WHOLE-array reads: debashl renders `$a` / "${a[@]}" of an
+      // in-program `let a = [...]` as the NATIVE `a` (a.join(...),
+      // [...a]) — but a sourced C function (fill/sort_ints) mutates the
+      // RUNTIME STORE, not the native binding. Route the read through
+      // the store so the same-program echo sees the post-call values.
+      if (node.property.type === "Identifier" && node.property.name === "join") {
+        node.object = call(member(id("sh2"), id("arrayItems")), [lit(name)]);
+        walk(node.property);
+        return;
+      }
+    }
+    // `[...a]` — a spread of a known array reads the store too
+    if (node.type === "SpreadElement" && node.argument &&
+        node.argument.type === "Identifier" && known.has(node.argument.name)) {
+      node.argument = call(member(id("sh2"), id("arrayItems")), [lit(node.argument.name)]);
+      return;
     }
     for (const k of Object.keys(node)) walk(node[k]);
   }
@@ -587,6 +604,25 @@ export function keepVariables(program, knownArrays = []) {
   // (NOT `let` — a seeded name would re-declare and throw.)
   const out = [];
   for (const st of program.body || []) {
+    // `let a = [...]` for a KNOWN array — replace with a plain
+    // assignment (sloppy global, harvestable) + a store sync, so
+    // arrayItems/arrayIndex reads in the SAME program see the value and
+    // a C function's store writes are what the echo reads. NOT `let`:
+    // a seeded name would re-declare and throw.
+    if (st.type === "VariableDeclaration" && st.declarations && st.declarations.length === 1) {
+      const d = st.declarations[0];
+      if (d && d.id && d.id.type === "Identifier" && d.init && d.init.type === "ArrayExpression" && known.has(d.id.name)) {
+        out.push({
+          type: "ExpressionStatement",
+          expression: { type: "AssignmentExpression", operator: "=", left: id(d.id.name), right: d.init },
+        });
+        out.push(Object.assign({
+          type: "ExpressionStatement",
+          expression: call(member(id("sh2"), id("setArray")), [lit(d.id.name), id(d.id.name)]),
+        }, { _sh2Sync: true }));
+        continue;
+      }
+    }
     if (st.type === "ExpressionStatement" && isSetArray(st.expression)) {
       const name = String(st.expression.arguments[0].value);
       const arrExpr = st.expression.arguments[1];
