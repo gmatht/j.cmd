@@ -15,7 +15,7 @@ import { createInterface } from "readline";
 import { createShellCore } from "./shellcore/index.js";
 import { resolveCommand as shellResolve, isPrivilegedUser, customExecDenied } from "./shellcore/resolve.js";
 import { tokenize } from "./shellcore/tokenize.js";
-import { a1LiteralValue, syncOtVarsFromStore, runSourceContent as sharedRunSourceContent, evalProgramOnOtRt, transpileLine as sharedTranspileLine, ensureOtRuntime as sharedEnsureOtRuntime } from "./shellcore/transpile.js";
+import { a1LiteralValue, syncOtVarsFromStore, runSourceContent as sharedRunSourceContent, evalProgramOnOtRt, transpileLine as sharedTranspileLine, ensureOtRuntime as sharedEnsureOtRuntime, runShellScript as sharedRunShellScript } from "./shellcore/transpile.js";
 import { handleLine as sharedHandleLine, runConditionalList as sharedRunConditionalList, runPipeline as sharedRunPipeline, splitBgList as sharedSplitBgList, splitConditionals as sharedSplitConditionals, splitPipe as sharedSplitPipe, looksLikeBash as sharedLooksLikeBash } from "./shellcore/runner.js";
 import { pipeText as sharedPipeText, pipeBytes as sharedPipeBytes, joinOut as sharedJoinOut, UUTILS_COMMANDS as sharedUUTILS_COMMANDS, ensureUutilsWasm as sharedEnsureUutilsWasm, runUutilsCommand as sharedRunUutilsCommand } from "./shellcore/runner.js";
 import { runSegment as sharedRunSegment, InterruptError } from "./shellcore/runner.js";
@@ -575,69 +575,7 @@ let otVars = new Map();
 // it against a FRESH sh2 runtime: script variables stay script-local,
 // like bash. Returns the exit code.
 async function runShellScript(content, opts = {}) {
-  const { args = [], argv0 = "script", runCmd = runNestedCommand } = opts;
-  const { getOtranspilerl } = await import("./otranspilerl.js");
-  const lib = await getOtranspilerl();
-  const { estreeToJs, keepVariables } = await import("./estree.js");
-  const program = JSON.parse(lib.transpile(String(content), "sh", "js"));
-  // Restore dead-stored arrays: debashl drops the `arr=(…)` assignment
-  // when the reads are bare (`arr.length`, `arr[1]`), so the A1's literal
-  // values are pre-seeded into the fresh runtime and the reads are
-  // rewritten to arrayIndex/arrayLen (keepVariables).
-  const scriptArrays = [];
-  const arrayVals = new Map();
-  try {
-    const a1 = JSON.parse(lib.shir(String(content)));
-    for (const st of a1.stmts || []) {
-      if (st && st.type === "Assign" && st.targets && st.targets[0]) {
-        const t = st.targets[0];
-        if (t.var && !(t.indices && t.indices.length)) {
-          const val = a1LiteralValue(st.expr);
-          if (Array.isArray(val)) { scriptArrays.push(t.var); arrayVals.set(t.var, val); }
-        }
-      }
-    }
-  } catch {}
-  keepVariables(program, scriptArrays);
-  const body = program.body || [];
-  const last = body[body.length - 1];
-  const lastIsExpr = last && last.type === "ExpressionStatement";
-  const bodyJs = (lastIsExpr
-    ? (body.length > 1 ? await estreeToJs({ type: "Program", body: body.slice(0, -1) }) : "")
-    : await estreeToJs({ type: "Program", body })) + "\n";
-  const lastJs = lastIsExpr
-    ? "return (" + (await estreeToJs({ type: "Program", body: [last] })).replace(/;\s*$/, "") + ");\n"
-    : "return sh2.lastExit;\n";
-  const js = bodyJs + lastJs;
-  const { createSh2Runtime } = await import("./sh2runtime.js");
-  const out = { write: (s) => { if (s) process.stdout.write(s); } };
-  const err = { write: (s) => { if (s) process.stderr.write(s); } };
-  const rt = createSh2Runtime({ fs, env, shellExec: runCmd, stdout: out, stderr: err, args, argv0 });
-  for (const [name, vals] of arrayVals) { try { rt.sh2.setArray(name, vals); } catch {} }
-  const proc = {
-    stdout: out, stderr: err, pid: 1,
-    argv: [argv0, ...args],
-    env: env || {},
-    cwd: () => (fs.cwd !== undefined ? fs.cwd : "/"),
-    exit(code) { const e = new Error("__otranspiler_exit__" + code); e.exitCode = Number(code) || 0; throw e; },
-    chdir(p) {
-      if (fs && fs.cwd !== undefined) {
-        fs.cwd = String(p).replace(/\/+$/, "") || "/";
-        try { env.PWD = fs.cwd; } catch {}
-      }
-    },
-  };
-  const fn = new Function("fs", "env", "process", "sh2", `
-    return (async () => { ${js} })();
-  `);
-  let v;
-  try {
-    v = await fn(fs, env, proc, rt.sh2);
-  } catch (e) {
-    if (e && e.exitCode !== undefined) return e.exitCode;  // `exit N`
-    throw e;
-  }
-  return v === false ? 1 : 0;
+  return sharedRunShellScript(content, opts, shellCtx);
 }
 
 async function runViaTranspiler(segmentText, stdin) {

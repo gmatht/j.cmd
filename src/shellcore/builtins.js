@@ -10,6 +10,7 @@ import { getManPage, MAN_PAGES } from "../manpages.js";
 import { formatAge } from "../fs/lscache.js";
 import { bashToJS, runBash } from "../bash2js.js";
 import { batToJS, runBat } from "../bat2js.js";
+import { InterruptError } from "./runner.js";
 
 // The interrupt sentinel both shells throw/catch around builtins.
 

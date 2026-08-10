@@ -353,3 +353,77 @@ export async function ensureOtRuntime(ctx) {
   ctx.setOtProc(otProc);
   return otRt;
 }
+
+// ─── runShellScript: transpile + run a bash SCRIPT on a fresh runtime ──
+// SHARED by both shells. A bash script (`bash script.sh`, `. file.sh`,
+// a shebang run) executes in an ISOLATED runtime — its own $@/$0/exit
+// status — deliberately NOT the persistent otRt (the script's internals
+// must not leak into the interactive shell's state). The transpiler,
+// array restore and eval are one copy here; ctx supplies the output
+// writers and the nested-command bridge.
+//   opts: { args, argv0, runCmd } — runCmd defaults to ctx.runNestedCommand
+export async function runShellScript(content, opts = {}, ctx) {
+  const { args = [], argv0 = "script", runCmd = null } = opts;
+  const { getOtranspilerl } = await import("../otranspilerl.js");
+  const lib = await getOtranspilerl();
+  const { estreeToJs, keepVariables } = await import("../estree.js");
+  const program = JSON.parse(lib.transpile(String(content), "sh", "js"));
+  // Restore dead-stored arrays: debashl drops the `arr=(…)` assignment
+  // when the reads are bare (`arr.length`, `arr[1]`), so the A1's literal
+  // values are pre-seeded into the fresh runtime and the reads are
+  // rewritten to arrayIndex/arrayLen (keepVariables).
+  const scriptArrays = [];
+  const arrayVals = new Map();
+  try {
+    const a1 = JSON.parse(lib.shir(String(content)));
+    for (const st of a1.stmts || []) {
+      if (st && st.type === "Assign" && st.targets && st.targets[0]) {
+        const t = st.targets[0];
+        if (t.var && !(t.indices && t.indices.length)) {
+          const val = a1LiteralValue(st.expr);
+          if (Array.isArray(val)) { scriptArrays.push(t.var); arrayVals.set(t.var, val); }
+        }
+      }
+    }
+  } catch {}
+  keepVariables(program, scriptArrays);
+  const body = program.body || [];
+  const last = body[body.length - 1];
+  const lastIsExpr = last && last.type === "ExpressionStatement";
+  const bodyJs = (lastIsExpr
+    ? (body.length > 1 ? await estreeToJs({ type: "Program", body: body.slice(0, -1) }) : "")
+    : await estreeToJs({ type: "Program", body })) + "\n";
+  const lastJs = lastIsExpr
+    ? "return (" + (await estreeToJs({ type: "Program", body: [last] })).replace(/;\s*$/, "") + ");\n"
+    : "return sh2.lastExit;\n";
+  const js = bodyJs + lastJs;
+  const { createSh2Runtime } = await import("../sh2runtime.js");
+  const out = { write: (s) => { if (s) ctx.stdoutWrite(s); } };
+  const err = { write: (s) => { if (s) ctx.stderrWrite(s); } };
+  const rt = createSh2Runtime({ fs, env, shellExec: runCmd || ctx.runNestedCommand, stdout: out, stderr: err, args, argv0 });
+  for (const [name, vals] of arrayVals) { try { rt.sh2.setArray(name, vals); } catch {} }
+  const proc = {
+    stdout: out, stderr: err, pid: 1,
+    argv: [argv0, ...args],
+    env: env || {},
+    cwd: () => (fs.cwd !== undefined ? fs.cwd : "/"),
+    exit(code) { const e = new Error("__otranspiler_exit__" + code); e.exitCode = Number(code) || 0; throw e; },
+    chdir(p) {
+      if (fs && fs.cwd !== undefined) {
+        fs.cwd = String(p).replace(/\/+$/, "") || "/";
+        try { env.PWD = fs.cwd; } catch {}
+      }
+    },
+  };
+  const fn = new Function("fs", "env", "process", "sh2", `
+    return (async () => { ${js} })();
+  `);
+  let v;
+  try {
+    v = await fn(fs, env, proc, rt.sh2);
+  } catch (e) {
+    if (e && e.exitCode !== undefined) return e.exitCode;  // `exit N`
+    throw e;
+  }
+  return v === false ? 1 : 0;
+}
