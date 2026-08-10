@@ -19,6 +19,8 @@ import { a1LiteralValue, syncOtVarsFromStore, runSourceContent as sharedRunSourc
 import { handleLine as sharedHandleLine, runConditionalList as sharedRunConditionalList, runPipeline as sharedRunPipeline, splitBgList as sharedSplitBgList, splitConditionals as sharedSplitConditionals, splitPipe as sharedSplitPipe, looksLikeBash as sharedLooksLikeBash } from "./shellcore/runner.js";
 import { pipeText as sharedPipeText, pipeBytes as sharedPipeBytes, joinOut as sharedJoinOut, UUTILS_COMMANDS as sharedUUTILS_COMMANDS, ensureUutilsWasm as sharedEnsureUutilsWasm, runUutilsCommand as sharedRunUutilsCommand } from "./shellcore/runner.js";
 import { runSegment as sharedRunSegment, InterruptError, runPythonCmd as sharedRunPythonCmd } from "./shellcore/runner.js";
+import { globExpandTokens as sharedGlobExpandTokens } from "./shellcore/glob.js";
+import { runReplLine as sharedRunReplLine } from "./shellcore/repl.js";
 
 // pipe/uutils helpers — SHARED (shellcore/runner.js)
 const pipeText = (d) => sharedPipeText(d);
@@ -439,6 +441,7 @@ const shellCtx = {
   setOtRt: (r) => { otRt = r; },
   setOtProc: (p) => { otProc = p; },
   // runSegment ctx (the SHARED command executor)
+  globExpand: (tokens) => sharedGlobExpandTokens(tokens),
   interceptCommand: interceptCompilers,
   suppressOutput: () => suppressOutput,
   set stdinBuffer(v) { stdinBuffer = v; },
@@ -466,6 +469,12 @@ const shellCtx = {
   getBgJobs,
   runViaTranspiler,
   runSegment,
+  promptRepl: () => {
+    if (replState.active) {
+      rl.setPrompt(replState.mode === "perl" ? "perl> " : replState.mode === "bash" ? "bash> " : replState.mode === "cmd" ? "cmd> " : ">>> ");
+      rl.prompt();
+    }
+  },
   enterRepl: (mode) => { if (mode === "bash") enterBashRepl(); else enterCmdRepl(); },
   exit: () => process.exit(0),
   nodeEnv: typeof process !== "undefined" ? process.env : undefined,
@@ -1158,145 +1167,7 @@ function exitRepl() {
 }
 
 async function runReplLine(line) {
-  if (replState.mode === "python") {
-    const t = line.trim();
-    if (t === "exit()" || t === "quit()") { exitRepl(); return; }
-    try {
-      const { pyExec } = await import("./py.js");
-      await pyExec(line, { stdout: process.stdout, stderr: process.stderr });
-    } catch (e) {
-      process.stderr.write(`python: ${e.message}\n`);
-    }
-  } else if (replState.mode === "bash") {
-    const t = line.trim();
-    if (!t) return;
-    // exit / quit / "exit 5" leave the REPL (never reach the shell's exit)
-    if (t === "exit" || t === "quit" || t === ":q" ||
-        t.indexOf("exit ") === 0 || t.indexOf("quit ") === 0) { exitRepl(); return; }
-    try {
-      // Session replay: re-transpile and re-run every line so far plus
-      // the new one, bracketed by two echo markers (PRE before the new
-      // line, POST after). debashcl silently DROPS invalid statements
-      // (and everything after them), so if POST is missing the line was
-      // never run — we report it and leave the session untouched.
-      // Variables and functions persist because the whole session
-      // re-declares them; only the output between the markers is shown.
-      // runBash rewrites the marker echos to direct stdout writes, so
-      // the PRE marker can't clobber $? for the new line (`false` then
-      // `echo $?` must print 1, like bash).
-      replState.bashOut = "";
-      const session = replState.bashSession;
-      const pre = replState.bashMarker;
-      const post = replState.bashMarker + "_end";
-      const src = (session.length > 0 ? session.join("\n") + "\n" : "") +
-        "echo '" + pre + "'\n" + line + "\necho '" + post + "'\n";
-      const { runBash } = await import("./bash2js.js");
-      await runBash(fs, src, {
-        runCmd: runNestedCommand,
-        stdout: { write: (s) => { replState.bashOut += s; } },
-        stderr: { write: (s) => { replState.bashOut += s; } },
-        markers: [pre, post],
-      });
-      const pi = replState.bashOut.indexOf(pre);
-      const pj = replState.bashOut.lastIndexOf(post);
-      if (pi === -1 || pj === -1 || pj < pi) {
-        // POST never printed — the statement was dropped/truncated
-        process.stderr.write("bash: syntax error — the line was not run (session unchanged)\n");
-
-      } else {
-        // The PRE marker's echo appends its own newline, so the slice
-        // after it starts with "\n" — strip it, or every command's
-        // output would be preceded by a blank line (and no-output lines
-        // like `x=5` would print one).
-        const fresh = replState.bashOut.slice(pi + pre.length, pj).replace(/^\n+/, "");
-        if (fresh) process.stdout.write(fresh);
-        session.push(line);
-      }
-    } catch (e) {
-      process.stderr.write(`bash: ${(e && e.message) ? e.message : String(e)}\n`);
-    }
-  } else if (replState.mode === "cmd") {
-    const t = line.trim();
-    if (!t) return;
-    // exit / exit /b N / quit leave the REPL (never reach the shell's exit)
-    if (/^(exit|quit)\b/.test(t) || t === ":q") { exitRepl(); return; }
-    try {
-      // Session replay: re-transpile and re-run every line so far plus
-      // the new one, bracketed by two echo markers (PRE before the new
-      // line, POST after). The bat frontend REFUSES loud (unlike bash's
-      // silent drop), so if POST is missing the line never ran — we
-      // report it and leave the session untouched. Variables persist
-      // because the whole session re-declares them; only the output
-      // between the markers is shown. Batch `echo` compiles to a direct
-      // stdout write (no exec), so the PRE marker can't clobber
-      // %errorlevel% for the new line (`exit /b 5` then `echo
-      // %errorlevel%` must print 5, like cmd).
-      replState.cmdOut = "";
-      const session = replState.cmdSession;
-      const pre = replState.cmdMarker;
-      const post = replState.cmdMarker + "_end";
-      const src = (session.length > 0 ? session.join("\n") + "\n" : "") +
-        "echo " + pre + "\n" + line + "\necho " + post + "\n";
-      const { runBat } = await import("./bat2js.js");
-      await runBat(fs, src, {
-        runCmd: runNestedCommand,
-        stdout: { write: (s) => { replState.cmdOut += s; } },
-        stderr: { write: (s) => { replState.cmdOut += s; } },
-      });
-      const pi = replState.cmdOut.indexOf(pre);
-      const pj = replState.cmdOut.lastIndexOf(post);
-      if (pi === -1 || pj === -1 || pj < pi) {
-        // POST never printed — the statement was refused/truncated
-        process.stderr.write("cmd.exe: syntax error — the line was not run (session unchanged)\n");
-      } else {
-        // The PRE marker's echo appends its own newline, so the slice
-        // after it starts with "\n" — strip it, or every command's
-        // output would be preceded by a blank line (and no-output lines
-        // like `set X=5` would print one).
-        const fresh = replState.cmdOut.slice(pi + pre.length, pj).replace(/^\n+/, "");
-        if (fresh) process.stdout.write(fresh);
-        session.push(line);
-      }
-    } catch (e) {
-      process.stderr.write(`cmd.exe: ${(e && e.message) ? e.message : String(e)}\n`);
-    }
-  } else {
-    const t = line.trim();
-    if (t === "exit" || t === "quit" || t === ":q") { exitRepl(); return; }
-    try {
-      await replState.perlReady;
-      if (!replState.active) return;
-      // Session replay: re-run every line so far plus the new one, with
-      // a marker printed between the old code and the new line. `my`
-      // lexicals from earlier lines survive because they're re-declared
-      // in the same eval; only the output after the marker is shown.
-      replState.perlOut = "";
-      const session = replState.perlSession;
-      // Separate statements with ";" — a bare newline doesn't end a Perl
-      // statement (my $x=9 works as the last line of an eval but breaks
-      // when more code follows), and only successful lines join the
-      // session so an error never poisons the replay.
-      const code = (session.length > 0 ? session.join(";\n") + ";\n" : "") +
-        "print " + JSON.stringify(replState.perlMarker + "\n") + ";\n" +
-        line;
-      const res = await replState.perl.eval(code, []);
-      try { replState.perl.flush(); } catch (e) {}
-      const marker = replState.perlMarker;
-      const splitAt = replState.perlOut.lastIndexOf(marker + "\n");
-      if (splitAt !== -1) {
-        const fresh = replState.perlOut.slice(splitAt + marker.length + 1);
-        if (fresh) process.stdout.write(fresh);
-      }
-      if (res && res.success && line.trim()) session.push(line);
-      if (res && !res.success && res.error) process.stderr.write(String(res.error));
-    } catch (e) {
-      process.stderr.write(`perl: ${e.message}\n`);
-    }
-  }
-  if (replState.active) {
-    rl.setPrompt(replState.mode === "perl" ? "perl> " : replState.mode === "bash" ? "bash> " : replState.mode === "cmd" ? "cmd> " : ">>> ");
-    rl.prompt();
-  }
+  return sharedRunReplLine(line, shellCtx);
 }
 
 const rl = createInterface({

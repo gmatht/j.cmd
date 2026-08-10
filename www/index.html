@@ -907,6 +907,8 @@ import { tokenize } from "../src/shellcore/tokenize.js";
 import { a1LiteralValue, syncOtVarsFromStore, runSourceContent as sharedRunSourceContent, evalProgramOnOtRt, transpileLine as sharedTranspileLine, ensureOtRuntime as sharedEnsureOtRuntime, runShellScript as sharedRunShellScript } from "../src/shellcore/transpile.js";
 import { handleLine as sharedHandleLine, runConditionalList as sharedRunConditionalList, runPipeline as sharedRunPipeline, splitBgList as sharedSplitBgList, splitConditionals as sharedSplitConditionals, splitPipe as sharedSplitPipe, looksLikeBash as sharedLooksLikeBash } from "../src/shellcore/runner.js";
 import { runSegment as sharedRunSegment, InterruptError as SharedInterruptError, runPythonCmd as sharedRunPythonCmd } from "../src/shellcore/runner.js";
+import { globExpandTokens as sharedGlobExpandTokens } from "../src/shellcore/glob.js";
+import { runReplLine as sharedRunReplLine } from "../src/shellcore/repl.js";
 import { pipeText as sharedPipeText, pipeBytes as sharedPipeBytes, joinOut as sharedJoinOut, UUTILS_COMMANDS as sharedUUTILS_COMMANDS, ensureUutilsWasm as sharedEnsureUutilsWasm, runUutilsCommand as sharedRunUutilsCommand } from "../src/shellcore/runner.js";
 
 // pipe/uutils helpers — SHARED (src/shellcore/runner.js)
@@ -3940,7 +3942,7 @@ const shellCtx = {
   setOtProc: (p) => { otProc = p; },
   // runSegment ctx (the SHARED command executor)
   get runSegmentGlob() { return globExpandTokens; },
-  globExpand: (tokens) => globExpandTokens(tokens),
+  globExpand: (tokens) => sharedGlobExpandTokens(tokens),
   suppressOutput: () => suppressOutput,
   set stdinBuffer(v) { stdinBuffer = v; },
   set rawStdin(v) { rawStdin = v; },
@@ -3988,6 +3990,7 @@ const shellCtx = {
   getBgJobs,
   runViaTranspiler,
   runSegment,
+  promptRepl: () => { updatePrompt(); recordReplPrompt(); },
   enterRepl: (mode) => { if (mode === "bash") enterBashRepl(); else enterCmdRepl(); },
   exit: () => { write("Goodbye.\n", "info"); input.disabled = true; },
 };
@@ -4146,89 +4149,12 @@ window.shellPaneRun = async (line, opts = {}) => {
 // is passed through literally (bash's default, nullglob off), so
 // `grep foo '*.txt'` still sees the literal string when quoted.
 
-function globToRegex(pat) {
-  let re = "";
-  for (let i = 0; i < pat.length; i++) {
-    const c = pat[i];
-    if (c === "*") re += "[^/]*";            // * never crosses a /
-    else if (c === "?") re += "[^/]";
-    else if (c === "[") {
-      const end = pat.indexOf("]", i + 1);
-      if (end === -1) { re += "\\["; }
-      else {
-        let cls = pat.slice(i + 1, end);
-        if (cls.startsWith("!")) cls = "^" + cls.slice(1);  // [!a-z] = negation
-        cls = cls.replace(/\\/g, "\\\\").replace(/\]/g, "\\]");
-        re += "[" + cls + "]";
-        i = end;
-      }
-    } else {
-      re += c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    }
-  }
-  return new RegExp("^" + re + "$");
-}
 
 // Expand one pattern against the fs → sorted matching absolute paths.
 // [] when nothing matches (caller keeps the literal token).
-async function globExpand(pattern) {
-  const abs = pattern.startsWith("/");
-  const parts = pattern.replace(/^\/+/, "").split("/").filter(Boolean);
-  if (parts.length === 0) return [];
-  const results = [];
-  const walk = async (dirPath, i) => {
-    const comp = parts[i];
-    const last = i === parts.length - 1;
-    const hasGlob = /[*?[]/.test(comp);
-    // "." and ".." are navigation, not names to match
-    if (comp === ".") return walk(dirPath, i + 1);
-    if (comp === "..") {
-      const up = dirPath.replace(/\/+$/, "").replace(/\/[^\/]*$/, "") || "/";
-      return walk(up, i + 1);
-    }
-    let entries;
-    try { entries = await fs.list(dirPath); } catch { return; }
-    const re = hasGlob ? globToRegex(comp) : null;
-    for (const e of entries) {
-      const name = e.replace(/\/+$/, "");
-      // Like bash: a leading dot must be matched explicitly
-      if (hasGlob && name.startsWith(".") && !comp.startsWith(".")) continue;
-      const match = hasGlob ? re.test(name) : name === comp;
-      if (!match) continue;
-      const nextPath = dirPath === "/" ? "/" + name : dirPath + "/" + name;
-      if (last) {
-        results.push(nextPath);
-      } else {
-        // Descend into directories AND mounted zips (a .zip file that
-        // resolves to a mount — fs.list triggers the lazy zip mount).
-        try {
-          await fs.list(nextPath);
-          await walk(nextPath, i + 1);
-        } catch { /* plain file — not a directory */ }
-      }
-    }
-  };
-  if (abs) await walk("/", 0);
-  else await walk(fs.cwd === "/" ? "/" : fs.cwd, 0);
-  return results.sort();
-}
 
 // Expand every unquoted glob token in a token list (tokenize attaches
 // the parallel `_quoted` flags).
-async function globExpandTokens(tokens) {
-  const quotedFlags = tokens._quoted || [];
-  const out = [];
-  for (let i = 0; i < tokens.length; i++) {
-    const t = tokens[i];
-    if (!quotedFlags[i] && /[*?[]/.test(t)) {
-      const matches = await globExpand(t);
-      out.push(...(matches.length > 0 ? matches : [t]));
-    } else {
-      out.push(t);
-    }
-  }
-  return out;
-}
 
 // Execute one pipeline segment. `stdin` carries the previous segment's
 // stdout. Returns { ok, code, output } — `code` is the command's exit
@@ -4858,137 +4784,7 @@ function exitRepl() {
 }
 
 async function runReplLine(line) {
-  if (!replState.active) return;
-  const trimmed = line.trim();
-  if (trimmed && replState.history[replState.history.length - 1] !== trimmed) {
-    replState.history.push(trimmed);
-  }
-  replState.histIdx = replState.history.length;
-  if (replState.mode === "python") {
-    if (trimmed === "exit()" || trimmed === "quit()") { exitRepl(); return; }
-    try {
-      const { pyExec } = await import("../src/py.js");
-      await pyExec(line, { stdout, stderr });
-    } catch (e) {
-      stderr.write(`python: ${e.message}\n`);
-    }
-  } else if (replState.mode === "bash") {
-    if (trimmed === "exit" || trimmed === "quit" || trimmed === ":q" ||
-        trimmed.indexOf("exit ") === 0 || trimmed.indexOf("quit ") === 0) { exitRepl(); return; }
-    if (!trimmed) return;
-    try {
-      // Session replay: re-transpile and re-run every line so far plus
-      // the new one, with an echo marker between old and new. Variables
-      // and functions persist because the whole session re-declares
-      // them; only the output after the marker is shown. runBash
-      // rewrites the marker echos to direct stdout writes, so the PRE
-      // marker can't clobber $? for the new line (`false` then
-      // `echo $?` must print 1, like bash).
-      replState.bashOut = "";
-      const session = replState.bashSession;
-      const pre = replState.bashMarker;
-      const post = replState.bashMarker + "_end";
-      const src = (session.length > 0 ? session.join("\n") + "\n" : "") +
-        "echo '" + pre + "'\n" + line + "\necho '" + post + "'\n";
-      const { runBash } = await import("../src/bash2js.js");
-      await runBash(fs, src, {
-        runCmd: runNestedCommand,
-        stdout: { write: (s) => { replState.bashOut += s; } },
-        stderr: { write: (s) => { replState.bashOut += s; } },
-        markers: [pre, post],
-      });
-      const pi = replState.bashOut.indexOf(pre);
-      const pj = replState.bashOut.lastIndexOf(post);
-      if (pi === -1 || pj === -1 || pj < pi) {
-        // POST never printed — the statement was dropped/truncated
-        stderr.write("bash: syntax error — the line was not run (session unchanged)\n");
-      } else {
-        // The PRE marker's echo appends its own newline, so the slice
-        // after it starts with "\n" — strip it, or every command's
-        // output would be preceded by a blank line (and no-output lines
-        // like `x=5` would print one).
-        const fresh = replState.bashOut.slice(pi + pre.length, pj).replace(/^\n+/, "");
-        if (fresh) stdout.write(fresh);
-        session.push(line);
-      }
-    } catch (e) {
-      stderr.write(`bash: ${(e && e.message) ? e.message : String(e)}\n`);
-    }
-  } else if (replState.mode === "cmd") {
-    if (/^(exit|quit)\b/.test(trimmed) || trimmed === ":q") { exitRepl(); return; }
-    if (!trimmed) return;
-    try {
-      // Session replay: re-transpile and re-run every line so far plus
-      // the new one, with an echo marker between old and new. The bat
-      // frontend REFUSES loud (unlike bash's silent drop), so if POST
-      // is missing the line never ran — report it and leave the session
-      // untouched. Variables persist because the whole session
-      // re-declares them; only the output between the markers is shown.
-      // Batch `echo` compiles to a direct stdout write (no exec), so
-      // the PRE marker can't clobber %errorlevel% for the new line
-      // (`exit /b 5` then `echo %errorlevel%` must print 5, like cmd).
-      replState.cmdOut = "";
-      const session = replState.cmdSession;
-      const pre = replState.cmdMarker;
-      const post = replState.cmdMarker + "_end";
-      const src = (session.length > 0 ? session.join("\n") + "\n" : "") +
-        "echo " + pre + "\n" + line + "\necho " + post + "\n";
-      await runBat(fs, src, {
-        runCmd: runNestedCommand,
-        stdout: { write: (s) => { replState.cmdOut += s; } },
-        stderr: { write: (s) => { replState.cmdOut += s; } },
-      });
-      const pi = replState.cmdOut.indexOf(pre);
-      const pj = replState.cmdOut.lastIndexOf(post);
-      if (pi === -1 || pj === -1 || pj < pi) {
-        // POST never printed — the statement was refused/truncated
-        stderr.write("cmd.exe: syntax error — the line was not run (session unchanged)\n");
-      } else {
-        // The PRE marker's echo appends its own newline, so the slice
-        // after it starts with "\n" — strip it, or every command's
-        // output would be preceded by a blank line (and no-output lines
-        // like `set X=5` would print one).
-        const fresh = replState.cmdOut.slice(pi + pre.length, pj).replace(/^\n+/, "");
-        if (fresh) stdout.write(fresh);
-        session.push(line);
-      }
-    } catch (e) {
-      stderr.write(`cmd.exe: ${(e && e.message) ? e.message : String(e)}\n`);
-    }
-  } else {
-    if (trimmed === "exit" || trimmed === "quit" || trimmed === ":q") { exitRepl(); return; }
-    try {
-      await replState.perlReady;
-      if (!replState.active) return;  // load failed and exited
-      // Session replay: re-run every line so far plus the new one, with
-      // a marker printed between the old code and the new line. `my`
-      // lexicals from earlier lines survive because they're re-declared
-      // in the same eval; only the output after the marker is shown.
-      replState.perlOut = "";
-      const session = replState.perlSession;
-      // Separate statements with ";" — a bare newline doesn't end a Perl
-      // statement (my $x=9 works as the last line of an eval but breaks
-      // when more code follows), and only successful lines join the
-      // session so an error never poisons the replay.
-      const code = (session.length > 0 ? session.join(";\n") + ";\n" : "") +
-        "print " + JSON.stringify(replState.perlMarker + "\n") + ";\n" +
-        line;
-      const res = await replState.perl.eval(code, []);
-      try { replState.perl.flush(); } catch (e) {}
-      const marker = replState.perlMarker;
-      const splitAt = replState.perlOut.lastIndexOf(marker + "\n");
-      if (splitAt !== -1) {
-        const fresh = replState.perlOut.slice(splitAt + marker.length + 1);
-        if (fresh) stdout.write(fresh);
-      }
-      if (res && res.success && line.trim()) session.push(line);
-      if (res && !res.success && res.error) stderr.write(String(res.error));
-    } catch (e) {
-      stderr.write(`perl: ${e.message}\n`);
-    }
-  }
-  updatePrompt();
-  recordReplPrompt();
+  return sharedRunReplLine(line, shellCtx);
 }
 
 // ─── Pager (more/less) ──────────────────────────────────────────
