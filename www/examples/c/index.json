@@ -29,5 +29,7 @@
  "t28_dowhile.c",
  "t29_funcptr.c",
  "t30_goto_nested.c",
- "t31_goto_forward.c"
+ "t31_goto_forward.c",
+ "linked_list.c",
+ "my_qsort.c"
 ]

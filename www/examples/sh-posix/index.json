@@ -76,5 +76,6 @@
  "t73_str_cond.sh",
  "t74_file_test.sh",
  "t75_arith_compound.sh",
- "t76_case_alt.sh"
+ "t76_case_alt.sh",
+ "alphanumeric_compare.sh"
 ]

@@ -57,10 +57,14 @@ export class ExamplesFS {
 
   async list(path) {
     const rel = this._rel(path);
-    if (!rel) return [...this.CORPUS_DIRS];
+    if (!rel) return [...this.CORPUS_DIRS, ...this.TOP_LOOSE_FILES];
     if (this.CORPUS_DIRS.includes(rel)) return await this._corpusNames(rel);
     throw new Error("ENOTDIR: " + path);
   }
+
+  // loose files at the corpus root (not in any index.json) — completion
+  // and `ls /examples` should still find them
+  TOP_LOOSE_FILES = ["source.c"];
 
   async read(path) {
     const rel = this._rel(path);

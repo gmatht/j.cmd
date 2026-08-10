@@ -107,7 +107,19 @@ const slurp = run([
 ]);
 check("slurp2 + sink2 pipe flow", /one\ntwo\nthree\nfour/.test(slurp), slurp);
 
-// 8. the browser app module must PARSE — no duplicate declarations, no
+// 8. Tab completion — every loose example file must be listed by its
+//    corpus manifest (the ExamplesFS list is index.json-driven, so
+//    missing manifests made completion silently skip my_qsort.c etc.)
+import { fs } from "./src/fs/index.js";
+const cEntries = await fs.list("/examples/c");
+check("completion: /examples/c/my_qs → my_qsort.c",
+  cEntries.includes("my_qsort.c") && cEntries.includes("linked_list.c"), cEntries);
+const shEntries = await fs.list("/examples/sh-posix");
+check("completion: alphanumeric_compare.sh listed", shEntries.includes("alphanumeric_compare.sh"), shEntries);
+const rootEntries = await fs.list("/examples");
+check("completion: root loose files (source.c)", rootEntries.includes("source.c"), rootEntries);
+
+// 9. the browser app module must PARSE — no duplicate declarations, no
 //    dangling ctx shorthands, no stray brace/comma artifacts (all three
 //    have broken the page at runtime)
 const html = readFileSync("www/index.html", "utf8");
