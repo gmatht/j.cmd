@@ -250,3 +250,73 @@ export async function runPipeline(pipelineText, initialStdin, ctx, target = null
   }
   return exitCode;
 }
+
+// ─── pipe helpers — bytes/string conversion, capture joining ──────
+export const pipeText = (d) => (typeof d === "string" ? d : new TextDecoder().decode(d));
+export const pipeBytes = (d) => (typeof d === "string" ? new TextEncoder().encode(d) : d);
+export const joinOut = (chunks) => {
+  if (chunks.length === 0) return "";
+  if (chunks.every((c) => typeof c === "string")) return chunks.join("");
+  const parts = chunks.map(pipeBytes);
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const out = new Uint8Array(total);
+  let o = 0;
+  for (const p of parts) { out.set(p, o); o += p.length; }
+  return out;
+};
+
+// ─── real coreutils (uutils wasm) ────────────────────────────────
+// uutils.org's Rust coreutils compiled to wasm32-wasi. The multi-call
+// uutils.wasm dispatches on argv[0], so a bare command this shell doesn't
+// ship runs it with argv[0] = the command name. sed ships as its own
+// single-call wasm. ctx: { readBin(name) → bytes (node: repo file;
+// browser: fetch wasm-bin/) }.
+let uutilsWasmPromise = null;
+
+export const UUTILS_COMMANDS = new Set(["arch","b2sum","base32","base64","basename","basenc","cat","cksum","comm","cp","csplit","cut","date","dd","dir","dircolors","dirname","echo","expand","factor","fmt","fold","head","join","link","ln","ls","md5sum","mkdir","mktemp","mv","nl","nproc","numfmt","od","paste","pathchk","pr","printenv","printf","ptx","pwd","readlink","realpath","rm","rmdir","seq","sha1sum","sha224sum","sha256sum","sha384sum","sha512sum","shred","shuf","sleep","sort","split","sum","tail","tee","touch","tr","truncate","tsort","tty","uname","unexpand","uniq","unlink","vdir","wc","sed"]);
+
+export function ensureUutilsWasm(fs, readBin) {
+  uutilsWasmPromise ??= (async () => {
+    // stage wasm-bin/*.wasm into the VFS (browser auto-load does this
+    // for WASM_BIN; node stages on demand from the repo copy)
+    for (const name of ["uutils.wasm", "sed.wasm"]) {
+      const path = "/usr/bin/" + name;
+      const st = await fs.stat(path).catch(() => null);
+      if (st) continue;
+      const bytes = await readBin(name);
+      await fs.writeBlob(path, new Blob([bytes]));
+    }
+    return "/usr/bin/uutils.wasm";
+  })();
+  return uutilsWasmPromise;
+}
+
+// runUutilsCommand — the multi-call coreutils execution block shared by
+// both runSegments. Returns { result } when handled, null to fall
+// through to the normal not-found path. ctx: { wasmRunner, writeOut,
+//   stdout, stderr } (pipeText comes from this module).
+export async function runUutilsCommand(cmd, args, stdin, { outputRedirect, appendRedirect, isLast }, ctx) {
+  if (cmd.includes("/") || !UUTILS_COMMANDS.has(cmd)) return null;
+  try {
+    await ensureUutilsWasm(ctx.fs, ctx.readBin);
+    const uuPath = cmd === "sed" ? "/usr/bin/sed.wasm" : "/usr/bin/uutils.wasm";
+    await ctx.wasmRunner.run(uuPath, [cmd, ...args], stdin);
+    const uuBytes = ctx.wasmRunner.getStdoutBytes();
+    const uuErr = ctx.wasmRunner.getStderr();
+    let output = "";
+    if (outputRedirect) {
+      await ctx.writeOut(outputRedirect, uuBytes.length ? uuBytes : "", appendRedirect);
+    } else if (isLast) {
+      if (uuBytes.length) ctx.stdout.write(pipeText(uuBytes));
+    } else {
+      output = uuBytes;
+    }
+    if (uuErr) ctx.stderr.write(uuErr);
+    const uuCode = ctx.wasmRunner.getExitCode();
+    if (uuCode !== 0) {
+      ctx.stderr.write(`${cmd}: exited with code ${uuCode}\n`);
+      return { result: { ok: false, code: uuCode, output: "" } };
+    }
+    return { result: { ok: true, code: 0, output } };
+  } catch { return null; }   // fall through to the normal not-found path
+}

@@ -906,6 +906,19 @@ import { resolveCommand as shellResolve, isPrivilegedUser, customExecDenied } fr
 import { tokenize } from "../src/shellcore/tokenize.js";
 import { a1LiteralValue, syncOtVarsFromStore, runSourceContent as sharedRunSourceContent, evalProgramOnOtRt, transpileLine as sharedTranspileLine, ensureOtRuntime as sharedEnsureOtRuntime } from "../src/shellcore/transpile.js";
 import { handleLine as sharedHandleLine, runConditionalList as sharedRunConditionalList, runPipeline as sharedRunPipeline, splitBgList as sharedSplitBgList, splitConditionals as sharedSplitConditionals, splitPipe as sharedSplitPipe, looksLikeBash as sharedLooksLikeBash } from "../src/shellcore/runner.js";
+import { pipeText as sharedPipeText, pipeBytes as sharedPipeBytes, joinOut as sharedJoinOut, UUTILS_COMMANDS as sharedUUTILS_COMMANDS, ensureUutilsWasm as sharedEnsureUutilsWasm, runUutilsCommand as sharedRunUutilsCommand } from "../src/shellcore/runner.js";
+
+// pipe/uutils helpers — SHARED (src/shellcore/runner.js)
+const pipeText = (d) => sharedPipeText(d);
+const pipeBytes = (d) => sharedPipeBytes(d);
+const joinOut = (chunks) => sharedJoinOut(chunks);
+const UUTILS_COMMANDS = sharedUUTILS_COMMANDS;
+const ensureUutilsReadBin = async (name) => {
+  const resp = await fetch("wasm-bin/" + name);
+  if (!resp.ok) throw new Error("uutils wasm fetch " + resp.status);
+  return new Uint8Array(await resp.arrayBuffer());
+};
+const ensureUutilsWasm = () => sharedEnsureUutilsWasm(fs, ensureUutilsReadBin);
 
 // ─── line/pipeline runners — SHARED (src/shellcore/runner.js) ─────
 // The split helpers, conditional-list and pipeline runners are one
@@ -1116,30 +1129,6 @@ let builtinCapture = false;
 //               terminal, JS command `stdin` args)
 //   pipeBytes — string → UTF-8 bytes (binary consumers)
 //   joinOut   — joins captured write chunks, preserving binary chunks
-const pipeText = (d) => (typeof d === "string" ? d : new TextDecoder().decode(d));
-
-// ─── real coreutils (uutils wasm) ────────────────────────────────
-// uutils.org's Rust coreutils compiled to wasm32-wasi (CORS-open;
-// vendored in www/wasm-bin/). The multi-call uutils.wasm dispatches on
-// argv[0], so a bare command this shell doesn't ship runs it with
-// argv[0] = the command name. sed ships as its own single-call wasm and
-// auto-loads via the normal wasm-bin/<name>.wasm fetch.
-const UUTILS_COMMANDS = new Set(["arch","b2sum","base32","base64","basename","basenc","cat","cksum","comm","cp","csplit","cut","date","dd","dir","dircolors","dirname","echo","expand","factor","fmt","fold","head","join","link","ln","ls","md5sum","mkdir","mktemp","mv","nl","nproc","numfmt","od","paste","pathchk","pr","printenv","printf","ptx","pwd","readlink","realpath","rm","rmdir","seq","sha1sum","sha224sum","sha256sum","sha384sum","sha512sum","shred","shuf","sleep","sort","split","sum","tail","tee","touch","tr","truncate","tsort","tty","uname","unexpand","uniq","unlink","vdir","wc","sed"]);
-let uutilsWasmPromise = null;
-function ensureUutilsWasm() {
-  uutilsWasmPromise ??= (async () => {
-    for (const name of ["uutils.wasm", "sed.wasm"]) {
-      const path = "/usr/bin/" + name;
-      const st = await fs.stat(path).catch(() => null);
-      if (st) continue;
-      const resp = await fetch("wasm-bin/" + name);
-      if (!resp.ok) throw new Error("uutils wasm fetch " + resp.status);
-      await fs.writeBlob(path, await resp.blob());
-    }
-    return "/usr/bin/uutils.wasm";
-  })();
-  return uutilsWasmPromise;
-}
 const pipeBytes = (d) => (typeof d === "string" ? new TextEncoder().encode(d) : d);
 const joinOut = (chunks) => {
   if (chunks.length === 0) return "";
@@ -4456,28 +4445,9 @@ async function runSegment(segmentText, stdin, isLast, target = null) {
     // ship natively runs the multi-call uutils.wasm with argv[0] = the
     // command name (printf, sed, tr, cut, seq, sort, uniq, …).
     if (!cmd.includes("/") && UUTILS_COMMANDS.has(cmd)) {
-      try {
-        await ensureUutilsWasm();
-        const uuPath = cmd === "sed" ? "/usr/bin/sed.wasm" : "/usr/bin/uutils.wasm";
-        await wasmRunner.run(uuPath, [cmd, ...args], stdin);
-        const uuCode = wasmRunner.getExitCode();
-        const uuOut = wasmRunner.getStdout();
-        const uuBytes = wasmRunner.getStdoutBytes();
-        const uuErr = wasmRunner.getStderr();
-        if (outputRedirect) {
-          await writeOut(outputRedirect, uuBytes.length ? uuBytes : "", appendRedirect);
-        } else if (isLast) {
-          if (uuOut) stdout.write(uuOut);
-        } else {
-          output = uuBytes;
-        }
-        if (uuErr) stderr.write(uuErr);
-        if (uuCode !== 0) {
-          stderr.write(`${cmd}: exited with code ${uuCode}\n`);
-          return { ok: false, code: uuCode, output: "" };
-        }
-        return { ok: true, code: 0, output };
-      } catch (e) { /* fall through to the normal not-found path */ }
+      const uu = await sharedRunUutilsCommand(cmd, args, stdin, { outputRedirect, appendRedirect, isLast },
+        { fs, readBin: ensureUutilsReadBin, wasmRunner, writeOut, stdout, stderr });
+      if (uu) return uu.result;
     }
     const hints = {
       "nano": "edit", "emacs": "edit",
