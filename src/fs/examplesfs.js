@@ -67,4 +67,34 @@ export class ExamplesFS {
     if (!rel) throw new Error("EISDIR: " + path);
     return await (await this._source())(rel);
   }
+
+  // stat — a file is anything the loader can read (corpus index.json
+  // names, plus loose files like source.c); everything else is a dir.
+  // Without this the OverlayFS fell back to a type-less default and
+  // `ls <file>` printed nothing (the ls builtin needs st.type === "file").
+  async stat(path) {
+    const rel = this._rel(path);
+    if (!rel) return { type: "dir", size: 0, mtime: 0 };
+    const [head, ...rest] = rel.split("/");
+    if (rest.length === 0) {
+      if (this.CORPUS_DIRS.includes(rel)) return { type: "dir", size: 0, mtime: 0 };
+      try { await (await this._source())(rel); return { type: "file", size: 0, mtime: 0 }; }
+      catch { throw new Error("ENOENT: " + path); }
+    }
+    // a file inside a corpus dir — named in its index.json, or loadable
+    const sub = rest.join("/");
+    const names = await this._corpusNames(head);
+    if (names.includes(sub)) return { type: "file", size: 0, mtime: 0 };
+    try { await (await this._source())(rel); return { type: "file", size: 0, mtime: 0 }; }
+    catch { throw new Error("ENOENT: " + path); }
+  }
+
+  // statSync — the runtime's SYNC ls (sourced C function bodies) uses it
+  statSync(path) {
+    const rel = this._rel(path);
+    if (!rel) return { type: "dir", size: 0, mtime: 0 };
+    const [head, ...rest] = rel.split("/");
+    if (rest.length === 0 && this.CORPUS_DIRS.includes(rel)) return { type: "dir", size: 0, mtime: 0 };
+    return { type: "file", size: 0, mtime: 0 };
+  }
 }

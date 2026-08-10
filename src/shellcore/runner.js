@@ -135,7 +135,11 @@ export function looksLikeBash(text) {
   // named `a` because the tokenizer splits on whitespace)
   if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(unquoted)) return true;
   if (/\b(for|while|until|if|case|select|function)\b/.test(unquoted)) return true;
-  if (/[;{}]/.test(unquoted)) return true;                 // `;` separator, `{ … }` group
+  // `{a,b}` comma-brace expansion is NOT bash-only syntax — the native
+  // tokenizer's brace+glob pass handles it (`ls {x,y}.c` should stay
+  // native so the real ls runs, not the transpiler's sync-builtin stub).
+  const noBrace = unquoted.replace(/\{[^{}]*,[^{}]*\}/g, "");
+  if (/[;{}]/.test(noBrace)) return true;                 // `;` separator, `{ … }` group
   if (/\$\(|\[\[/.test(unquoted)) return true;          // $(…) / [[ ]]
   if (/\[[^\]]*\]/.test(unquoted)) return true;           // [ … ] test
   return /\$\{/.test(unquoted);

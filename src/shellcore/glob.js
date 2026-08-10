@@ -69,17 +69,36 @@ export async function globExpand(pattern) {
   return results.sort();
 }
 
+// Expand every unquoted glob token in a token list (tokenize attaches
+// the parallel `_quoted` flags). Comma-brace expansion ({a,b}.c → a.c
+// b.c) runs first, then the glob pass.
 export async function globExpandTokens(tokens) {
   const quotedFlags = tokens._quoted || [];
   const out = [];
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i];
-    if (!quotedFlags[i] && /[*?[]/.test(t)) {
-      const matches = await globExpand(t);
-      out.push(...(matches.length > 0 ? matches : [t]));
-    } else {
-      out.push(t);
+    const expanded = quotedFlags[i] ? [t] : braceExpandToken(t);
+    for (const e of expanded) {
+      if (!quotedFlags[i] && /[*?[]/.test(e)) {
+        const matches = await globExpand(e);
+        out.push(...(matches.length > 0 ? matches : [e]));
+      } else {
+        out.push(e);
+      }
     }
+  }
+  return out;
+}
+
+// bash brace expansion `pre{a,b,c}post` → `preapost prebpost precpost`
+// (comma form; ${...} and { cmd; } blocks are untouched).
+export function braceExpandToken(token) {
+  const m = /^(.*?)\{([^{}]*,[^{}]*)\}(.*)$/.exec(token);
+  if (!m) return [token];
+  const [, pre, list, post] = m;
+  const out = [];
+  for (const item of list.split(",")) {
+    for (const e of braceExpandToken(pre + item + post)) out.push(e);
   }
   return out;
 }

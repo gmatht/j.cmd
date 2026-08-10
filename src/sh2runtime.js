@@ -1052,7 +1052,10 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       // date / pwd / true / false) — everything else needs the async
       // shellExec bridge and refuses loudly.
       builtin(name, argsArr) {
-        const a = (argsArr || []).map(String);
+        // flatten nested arrays — the debashl renders brace expansion
+        // ({a,b}.c) as [["a.c","b.c"]] and a nested array must become
+        // separate args, not one "a.c,b.c" string
+        const a = flattenArgs(argsArr || []);
         switch (name) {
           case "echo": return a.join(" ") + "\n";
           case "printf": {

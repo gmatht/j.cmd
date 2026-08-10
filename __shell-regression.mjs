@@ -81,7 +81,19 @@ const g = run([
 ]);
 check("glob expansion (CLI)", /a\.txt/.test(g) && !/\*\.txt/.test(g), g);
 
-// 6. the browser app module must PARSE — no duplicate declarations, no
+// 6. brace expansion + ls <file> (regressions: braces went through the
+//    transpiler's sync-builtin stub, and ExamplesFS had no stat so
+//    `ls <file>` on /examples printed nothing)
+const br2 = run([
+  "echo {a,b,c}",
+  "ls /examples/c/{linked_list,my_qsort}.c",
+  "ls /examples/c/my_qsort.c",
+]);
+check("brace expansion", /a b c/.test(br2), br2);
+check("brace-expanded ls lists both files", /linked_list\.c/.test(br2) && /my_qsort\.c/.test(br2), br2);
+check("ls <file> on /examples prints the name", /^my_qsort\.c/m.test(br2), br2);
+
+// 7. the browser app module must PARSE — no duplicate declarations, no
 //    dangling ctx shorthands, no stray brace/comma artifacts (all three
 //    have broken the page at runtime)
 const html = readFileSync("www/index.html", "utf8");
