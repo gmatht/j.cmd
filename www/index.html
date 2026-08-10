@@ -3872,6 +3872,7 @@ const shellCtx = {
   get stdin() { return stdinBuffer; },
   get isTTY() { return true; },
   fs,
+  shellExec: runNestedCommand,
   runNestedCommand,
   resolveCommand: (name) => shellResolve(shellCtx, name),
   get builtins() { return builtins; },

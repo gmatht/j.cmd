@@ -346,7 +346,7 @@ export async function ensureOtRuntime(ctx) {
     cwd() { return (fs.cwd !== undefined ? fs.cwd : "/") || "/"; },
   };
   const otRt = createSh2Runtime({
-    fs, env, shellExec: ctx.shellExec,
+    fs, env, shellExec: ctx.shellExec || ctx.runNestedCommand,
     stdout: out, stderr: err, args: [], argv0: "sh",
   });
   ctx.setOtRt(otRt);
