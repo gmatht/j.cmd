@@ -1,12 +1,43 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta http-equiv="refresh" content="0; url=./www/">
-<title>j.cmd — A JavaScript Command Line OS</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%92%BB%3C/text%3E%3C/svg%3E">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>j.cmd — JavaScript Command Line OS</title>
+<style>
+  body { background:#1a1a2e; color:#e0e0e0; font-family: 'Cascadia Code','Fira Code',monospace; margin:0; padding:48px 24px; display:flex; flex-direction:column; align-items:center; }
+  h1 { font-size:24px; color:#7ec8e3; margin:0 0 8px; }
+  p  { color:#8b949e; font-size:14px; margin:4px 0; text-align:center; }
+  a  { color:#7ec8e3; }
+  .panel { background:#0d1117; border:1px solid #21262d; border-radius:8px; padding:20px 28px; margin-top:24px; max-width:560px; }
+  .panel h2 { font-size:15px; color:#e0e0e0; margin:0 0 12px; }
+  .panel ul { margin:0; padding-left:20px; }
+  .panel li { margin:6px 0; font-size:14px; }
+  .spin { display:inline-block; width:14px; height:14px; border:2px solid #7ec8e3; border-top-color:transparent; border-radius:50%; animation:sp 1s linear infinite; vertical-align:-2px; margin-right:8px; }
+  @keyframes sp { to { transform:rotate(360deg); } }
+</style>
+<script>
+  // Redirect to the live shell; the tagged-version links below are the
+  // fallback if it ever doesn't load.
+  setTimeout(function(){ location.replace("./www/"); }, 2000);
+</script>
 </head>
-<body style="background:#0d1117;color:#e0e0e0;font-family:monospace;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
-<p>j.cmd — redirecting to the shell… <a href="./www/" style="color:#7ec8e3">open it now</a></p>
+<body>
+  <h1>j.cmd</h1>
+  <p><span class="spin"></span>Loading the JavaScript Command Line OS&hellip;</p>
+  <p>If it doesn't appear in a moment, the page above never loaded — use a tagged version instead:</p>
+  <div class="panel">
+    <h2>Tagged versions of j.cmd</h2>
+    <ul>
+      <li><a href="https://ca.dansted.org/j.cmd/versions/v0.2.1/www/">v0.2.1</a> — transform correctness fixes</li>
+      <li><a href="https://ca.dansted.org/j.cmd/versions/v0.2.0/www/">v0.2.0</a> — debashc replaced with otranspiler</li>
+      <li><a href="https://ca.dansted.org/j.cmd/versions/v0.1.2/www/">v0.1.2</a> — last version before otranspiler</li>
+      <li><a href="https://ca.dansted.org/j.cmd/versions/v0.1.1/www/">v0.1.1</a> — first release with a bug report tool</li>
+      <li><a href="https://ca.dansted.org/j.cmd/versions/v0.1.0/www/">v0.1.0</a> — the rebrand checkpoint</li>
+      <li><a href="https://github.com/gmatht/j.cmd/tags">all versions</a> — source of every tag</li>
+      <li><a href="https://github.com/gmatht/j.cmd/releases">releases</a></li>
+    </ul>
+  </div>
+  <p style="margin-top:16px">Live shell: <a href="./www/">./www/</a></p>
 </body>
 </html>
