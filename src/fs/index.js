@@ -664,7 +664,7 @@ class VirtualFS {
     syncWrite(this._getBackend("/home/examples/source.c"), "/examples/source.c",
       `/* ── examples/source.c — C-flavoured constants (sourced by jtsh) ──\n` +
       `   source examples/source.c\n` +
-      `   The variables become \$vars in the shell; the three C functions\n` +
+      `   The variables become $vars in the shell; the three C functions\n` +
       `   become callable shell functions (the c frontend emits the pointer\n` +
       `   walks). Sourcing prints how to use them. This file is also a\n` +
       `   valid little C translation unit — compile it with tcc/cc. */\n` +
@@ -678,8 +678,8 @@ class VirtualFS {
       `/* ── more C flavour: arithmetic + char* strings ── */\n` +
       `int FULL_W = 80 * 2;             /* width * 2 */\n` +
       `int CUBE   = 80 * 80 * 80;       /* width * width * width */\n` +
-      `char *BANNER = "c-sourced";\n` +
-      `char *GREETING = "hello from C";\n` +
+      `char *BANNER = \"c-sourced\";\n` +
+      `char *GREETING = \"hello from C\";\n` +
       `int RETRIES = 5 + 3;             /* MAX_RETRIES + GRACE */\n` +
       `int AREA   = 80 * 24;            /* width * height */\n` +
       `\n` +
@@ -705,7 +705,7 @@ class VirtualFS {
       `\n` +
       `/* a pointer WRITE: fill the first n ints through the pointer — the\n` +
       `   writes land in the caller's shell array (C call-by-reference):\n` +
-      `     fill \"$(addr a)\" 3; echo \"a=($a)\"    -> a=(0 10 20) */\n` +
+      `     fill \"$(addr a)\" 3; echo \"a=(\${a[@]})\"    -> a=(0 10 20) */\n` +
       `int fill(int *p, int n) {\n` +
       `    int i = 0;\n` +
       `    while (i < n) {\n` +
@@ -715,14 +715,10 @@ class VirtualFS {
       `    return 0;\n` +
       `}\n` +
       `\n` +
-      `/* a READ+WRITE walk: selection-sort the first n ints in place —
-` +
-      `   the swaps land in the caller's shell array (call-by-reference):
-` +
-      `     a=(10 30 20)
-` +
-      `     sort_ints \"$(addr a)\" 3; echo \"a=($a)\"    -> a=(10 20 30) */
-` +
+      `/* a READ+WRITE walk: selection-sort the first n ints in place —\n` +
+      `   the swaps land in the caller's shell array (call-by-reference):\n` +
+      `     a=(10 30 20)\n` +
+      `     sort_ints \"$(addr a)\" 3; echo \"a=(\${a[@]})\"    -> a=(10 20 30) */\n` +
       `int sort_ints(int *a, int n) {\n` +
       `    int i, j, t;\n` +
       `    for (i = 0; i < n - 1; i = i + 1) {\n` +
@@ -741,21 +737,22 @@ class VirtualFS {
       `   now callable shell functions (a pointer is a NAME, so the array\n` +
       `   name works directly; addr prints the \\u0001mem handle form). */\n` +
       `int main() {\n` +
-      `  printf("source.c — C constants + pointer-walk functions (sourced into this shell)\\n");\n` +
-      `  printf("\\n");\n` +
-      `  printf("  the constants are now shell variables: \$MAX_RETRIES \$APP_ID \$width \$height\\n");\n` +
-      `  printf("  \$GRACE \$FULL_W \$CUBE \$BANNER \$GREETING \$RETRIES \$AREA\\n");\n` +
-      `  printf("\\n");\n` +
-      `  printf("  sum_first NAME N  — sum the first N ints of the array NAME; the C\\n");\n` +
-      `  printf("    return value lands in \$?:\\n");\n` +
-      `  printf("    a=(10 20 30); sum_first \\\"$(addr a)\\\" 3; echo \$?    -> 60\\n");\n` +
-      `  printf("    (a pointer is a NAME — sum_first a 3 works too; addr prints the handle)\\n");\n` +
-      `  printf("\\n");\n` +
-      `  printf("  fill NAME N       — write 0..N-1 through the pointer (call-by-reference):\\n");\n` +
-      `  printf("    fill a 3; echo \\\"a=(\$a)\\\"    -> a=(0 10 20)\\n");\n` +
-      `  printf("\\n");\n` +
-      `  printf("  sort_ints NAME N  — selection-sort the first N ints in place:\\n");\n` +
-      `  printf("    b=(10 30 20); sort_ints b 3; echo \\\"b=(\$b)\\\"    -> b=(10 20 30)\\n");\n` +
+      `  printf(\"source.c — C constants + pointer-walk functions (sourced into this shell)\\n\");\n` +
+      `  printf(\"\\n\");\n` +
+      `  printf(\"  the constants are now shell variables: $MAX_RETRIES $APP_ID $width $height\\n\");\n` +
+      `  printf(\"  $GRACE $FULL_W $CUBE $BANNER $GREETING $RETRIES $AREA\\n\");\n` +
+      `  printf(\"\\n\");\n` +
+      `  printf(\"  sum_first NAME N  — sum the first N ints of the array NAME; the C\\n\");\n` +
+      `  printf(\"    return value lands in $?:\\n\");\n` +
+      `  printf(\"    a=(10 20 30); sum_first \\\"$(addr a)\\\" 3; echo $?    -> 60\\n\");\n` +
+      `  printf(\"    (a pointer is a NAME — sum_first a 3 works too; addr prints the handle)\\n\");\n` +
+      `  printf(\"    (echo \${a[@]} shows the WHOLE array — a bare $a is element 0)\\n\");\n` +
+      `  printf(\"\\n\");\n` +
+      `  printf(\"  fill NAME N       — write 0..N-1 through the pointer (call-by-reference):\\n\");\n` +
+      `  printf(\"    fill a 3; echo \\\"a=(\${a[@]})\\\"    -> a=(0 10 20)\\n\");\n` +
+      `  printf(\"\\n\");\n` +
+      `  printf(\"  sort_ints NAME N  — selection-sort the first N ints in place:\\n\");\n` +
+      `  printf(\"    b=(10 30 20); sort_ints b 3; echo \\\"b=(\${b[@]})\\\"    -> b=(10 20 30)\\n\");\n` +
       `  return 0;\n` +
       `}\n`);
             syncWrite(this._getBackend("/home/examples/source.bat"), "/examples/source.bat",

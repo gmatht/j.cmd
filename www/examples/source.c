@@ -41,7 +41,7 @@ int sum_first(int *s, int n) {
 
 /* a pointer WRITE: fill the first n ints through the pointer — the
    writes land in the caller's shell array (C call-by-reference):
-     fill "$(addr a)" 3; echo "a=($a)"    -> a=(0 10 20) */
+     fill "$(addr a)" 3; echo "a=(${a[@]})"    -> a=(0 10 20) */
 int fill(int *p, int n) {
     int i = 0;
     while (i < n) {
@@ -54,7 +54,7 @@ int fill(int *p, int n) {
 /* a READ+WRITE walk: selection-sort the first n ints in place —
    the swaps land in the caller's shell array (call-by-reference):
      a=(10 30 20)
-     sort_ints "$(addr a)" 3; echo "a=($a)"    -> a=(10 20 30) */
+     sort_ints "$(addr a)" 3; echo "a=(${a[@]})"    -> a=(10 20 30) */
 int sort_ints(int *a, int n) {
     int i, j, t;
     for (i = 0; i < n - 1; i = i + 1) {
@@ -82,12 +82,12 @@ int main() {
   printf("    return value lands in $?:\n");
   printf("    a=(10 20 30); sum_first \"$(addr a)\" 3; echo $?    -> 60\n");
   printf("    (a pointer is a NAME — sum_first a 3 works too; addr prints the handle)\n");
+  printf("    (echo ${a[@]} shows the WHOLE array — a bare $a is element 0)\n");
   printf("\n");
   printf("  fill NAME N       — write 0..N-1 through the pointer (call-by-reference):\n");
-  printf("    fill a 3; echo \"a=($a)\"    -> a=(0 10 20)\n");
+  printf("    fill a 3; echo \"a=(${a[@]})\"    -> a=(0 10 20)\n");
   printf("\n");
   printf("  sort_ints NAME N  — selection-sort the first N ints in place:\n");
-  printf("    b=(10 30 20); sort_ints b 3; echo \"b=($b)\"    -> b=(10 20 30)\n");
+  printf("    b=(10 30 20); sort_ints b 3; echo \"b=(${b[@]})\"    -> b=(10 20 30)\n");
   return 0;
 }
-
