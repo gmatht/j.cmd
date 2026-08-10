@@ -705,7 +705,8 @@ class VirtualFS {
       `\n` +
       `/* a pointer WRITE: fill the first n ints through the pointer — the\n` +
       `   writes land in the caller's shell array (C call-by-reference):\n` +
-      `     fill \"$(addr a)\" 3; echo \"a=(\${a[@]})\"    -> a=(0 10 20) */\n` +
+      `     a=(0 0 0); fill a 3; echo \"a=(\${a[@]})\"    -> a=(0 10 20)\n` +
+      `   (fill OVERWRITES 0..N-1, so any seed of length N gives the same) */\n` +
       `int fill(int *p, int n) {\n` +
       `    int i = 0;\n` +
       `    while (i < n) {\n` +
@@ -749,7 +750,8 @@ class VirtualFS {
       `  printf(\"    (echo \${a[@]} shows the WHOLE array — a bare $a is element 0)\\n\");\n` +
       `  printf(\"\\n\");\n` +
       `  printf(\"  fill NAME N       — write 0..N-1 through the pointer (call-by-reference):\\n\");\n` +
-      `  printf(\"    fill a 3; echo \\\"a=(\${a[@]})\\\"    -> a=(0 10 20)\\n\");\n` +
+      `  printf(\"    a=(0 0 0); fill a 3; echo \\\"a=(\${a[@]})\\\"    -> a=(0 10 20)\\n\");\n` +
+      `  printf(\"    (fill OVERWRITES 0..N-1 — the result is seed-independent)\\n\");\n` +
       `  printf(\"\\n\");\n` +
       `  printf(\"  sort_ints NAME N  — selection-sort the first N ints in place:\\n\");\n` +
       `  printf(\"    b=(10 30 20); sort_ints b 3; echo \\\"b=(\${b[@]})\\\"    -> b=(10 20 30)\\n\");\n` +

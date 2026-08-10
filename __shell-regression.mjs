@@ -47,12 +47,14 @@ check("sum_first C return in $?", /sum=60/.test(fn), fn);
 // 3. MISSING WRITES: a C function's store writes must be visible to a
 //    SAME-LINE echo (regression: `$a` compiled against the seed's native
 //    `let a = [...]` instead of the store → stale "10 20 30")
+// fill OVERWRITES elements 0..N-1, so the seed must not matter — start
+// from zeros to prove the 0/10/20 come from fill itself (independent).
 const w1 = run([
   "source /home/examples/source.c >/dev/null",
-  "a=(10 20 30)",
+  "a=(0 0 0)",
   'fill a 3; echo "a=(${a[@]})"',
 ]);
-check("fill one-liner write visible", /a=\(0 10 20\)/.test(w1), w1);
+check("fill one-liner write visible (seed-independent)", /a=\(0 10 20\)/.test(w1), w1);
 
 const w2 = run([
   "source /home/examples/source.c >/dev/null",

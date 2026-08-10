@@ -41,7 +41,8 @@ int sum_first(int *s, int n) {
 
 /* a pointer WRITE: fill the first n ints through the pointer — the
    writes land in the caller's shell array (C call-by-reference):
-     fill "$(addr a)" 3; echo "a=(${a[@]})"    -> a=(0 10 20) */
+     a=(0 0 0); fill a 3; echo "a=(${a[@]})"    -> a=(0 10 20)
+   (fill OVERWRITES 0..N-1, so any seed of length N gives the same) */
 int fill(int *p, int n) {
     int i = 0;
     while (i < n) {
@@ -85,7 +86,8 @@ int main() {
   printf("    (echo ${a[@]} shows the WHOLE array — a bare $a is element 0)\n");
   printf("\n");
   printf("  fill NAME N       — write 0..N-1 through the pointer (call-by-reference):\n");
-  printf("    fill a 3; echo \"a=(${a[@]})\"    -> a=(0 10 20)\n");
+  printf("    a=(0 0 0); fill a 3; echo \"a=(${a[@]})\"    -> a=(0 10 20)\n");
+  printf("    (fill OVERWRITES 0..N-1 — the result is seed-independent)\n");
   printf("\n");
   printf("  sort_ints NAME N  — selection-sort the first N ints in place:\n");
   printf("    b=(10 30 20); sort_ints b 3; echo \"b=(${b[@]})\"    -> b=(10 20 30)\n");
