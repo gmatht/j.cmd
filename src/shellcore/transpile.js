@@ -4,7 +4,7 @@
 // execution state the line handlers weave through — but these helpers
 // are pure / state-passed, so there is one implementation.
 import { fs } from "../fs/index.js";
-import { env, isReadonly } from "../env.js";
+import { env, isReadonly, getShellStatus, setShellStatus, getPositional, setPositional, getArgv0 } from "../env.js";
 
 export function a1LiteralValue(expr) {
   if (!expr) return undefined;
@@ -150,4 +150,121 @@ export async function runSourceContent(content, lang, srcArgs, ctx) {
     }
   } catch {}
   return await ctx.evalProgram(program, lineAssigned, srcArgs);
+}
+
+// ─── evalProgramOnOtRt: eval generated JS on the persistent runtime ──
+// The eval + state-harvest block both shells duplicated (the CLI's
+// runEstreeProgram tail and the browser's evalOnOtRt were ~90 lines of
+// the same code). Shared here; the shell passes a ctx with the state
+// accessors: { ensureOtRuntime, getOtRt, getOtVars, stdinBuffer, otProc }.
+//
+// opts: { lineAssigned, lineCaptured, sourcePositional, positional }
+//   sourcePositional — a sourced script's own $@ (restore the caller's
+//     afterwards); positional — a plain line's $1..$9 (else the caller's).
+export async function evalProgramOnOtRt(js, opts, ctx) {
+  const { lineAssigned = new Set(), lineCaptured = new Set(), sourcePositional = null, positional = null } = opts || {};
+  await ctx.ensureOtRuntime();
+  const otRt = typeof ctx.getOtRt === "function" ? ctx.getOtRt() : ctx.otRt;
+  const otVars = typeof ctx.getOtVars === "function" ? ctx.getOtVars() : ctx.otVars;
+  const fn = new Function("fs", "env", "process", "sh2", `
+    return (async () => { ${js} })();
+  `);
+  // pre-seed the runtime store so native-store reads (sh2.vars.x,
+  // sh2.arrayIndex / sh2.arrayLen) see the persistent state. Arrays go
+  // through sh2.setArray — `sh2.vars.a = …` would stringify them.
+  // preseedVars records what we planted, so the post-eval diff can tell
+  // a line's OWN write (value changed) from untouched pre-seed state.
+  const preseedVars = new Map();
+  for (const [k, v] of otVars) {
+    try {
+      if (Array.isArray(v)) { otRt.sh2.setArray(k, v); preseedVars.set(k, v); }
+      else { otRt.sh2.vars[k] = v; preseedVars.set(k, String(v)); }
+    } catch {}
+  }
+  try { otRt.sh2.lastExit = getShellStatus(); } catch {}   // native $? → transpiled
+  try { otRt.sh2.stdin = ctx.stdinBuffer() || ""; } catch {}   // pipe input → read_line()
+  const savedPositional = getPositional();                  // the caller's $1..$9
+  const savedArgv0 = getArgv0();                            // the caller's $0
+  try {
+    if (sourcePositional) { otRt.sh2.positional = sourcePositional.args; otRt.sh2.argv0 = sourcePositional.argv0; }
+    else if (positional && positional.length) { otRt.sh2.positional = positional; }
+    else { otRt.sh2.positional = savedPositional; otRt.sh2.argv0 = savedArgv0; }
+  } catch {}
+  let v;
+  let exitCode = null;
+  const beforeGlobals = new Set(Object.keys(globalThis));
+  const beforeRtVars = new Set(Object.keys(otRt.sh2.vars));
+  try {
+    v = await fn(fs, env, ctx.otProc(), otRt.sh2);
+  } catch (e) {
+    if (e && e.exitCode !== undefined) exitCode = e.exitCode;  // `exit N`
+    else throw e;
+  }
+  // Introspection: harvest the variables this line set. Bare assignments
+  // (`x = 5`) became implicit globals (sloppy function scope); the
+  // `sh2.vars.* = …` writes went into the runtime's map. Strings,
+  // numbers and arrays are shell data — functions and other objects
+  // (the emitter's `__fn_*` closures) are skipped and dropped, keeping
+  // the page global scope clean.
+  const keepable = (val) => typeof val === "string" || typeof val === "number" || Array.isArray(val);
+  const sameValue = (a, b) => {
+    if (Array.isArray(a) && Array.isArray(b)) {
+      return a.length === b.length && a.every((x, i) => String(x) === String(b[i]));
+    }
+    return String(a) === String(b);
+  };
+  // runtime store first: it holds the line's OWN writes (sh2.setVar /
+  // sh2.setArray — the scalar re-assignment of an array name lands here,
+  // not on globalThis). Skip untouched state: a pre-seeded name this
+  // line didn't assign, OR whose value is still exactly the pre-seed
+  // (the line's write went elsewhere — a bare `x = …` lands on
+  // globalThis, which the next loop captures).
+  for (const k of Object.keys(otRt.sh2.vars)) {
+    const val = otRt.sh2.vars[k];
+    if (!keepable(val) || k.startsWith("__")) continue;
+    if (beforeRtVars.has(k) && !lineAssigned.has(k)) continue;
+    if (preseedVars.has(k) && sameValue(preseedVars.get(k), val)) continue;
+    if (isReadonly(k)) continue;   // setVar refuses these anyway
+    otVars.set(k, Array.isArray(val) ? val : String(val));
+    lineCaptured.add(k);
+  }
+  // globalThis last: bare assignments land here — but so does the seed's
+  // own `a = [...]` leftover, which is STALE when the line re-assigned
+  // via setVar/setArray or a literal. Names already captured this line
+  // are not overridden; everything else is harvested and cleaned up.
+  for (const k of Object.keys(globalThis)) {
+    if (beforeGlobals.has(k)) continue;
+    const val = globalThis[k];
+    if (!lineCaptured.has(k) && keepable(val) && !k.startsWith("__")) {
+      otVars.set(k, Array.isArray(val) ? val : String(val));
+      lineCaptured.add(k);
+    }
+    try { delete globalThis[k]; } catch {}   // ALWAYS clean up — even when the A1
+                                             // already captured the value, the
+                                             // global must not linger (it would
+                                             // shadow the next line's re-assign)
+  }
+  // mirror the persistent state into the shell's env so NATIVE lines
+  // (`echo $a` without bash syntax) see transpiled variables too — the
+  // native tokenizer expands $NAME from the shared env object. Readonly
+  // names are skipped (never overwrite them).
+  for (const [k, v] of otVars) {
+    if (isReadonly(k)) continue;
+    try { env[k] = Array.isArray(v) ? v.join(" ") : String(v); } catch {}
+  }
+  // positional: a sourced script's $@ is its own (restore the caller's);
+  // a plain transpiled line round-trips native → runtime → native so
+  // `set --` still lands.
+  try { setPositional(sourcePositional ? savedPositional : otRt.sh2.positional,
+                     sourcePositional ? savedArgv0 : otRt.sh2.argv0); } catch {}
+  if (exitCode !== null) { setShellStatus(exitCode); return exitCode; }  // `exit N`
+  // The estree convention: each statement's value is the command's
+  // success flag (true/false) — assignments carry their value but exit 0.
+  // A bare C-function call (`sum_first "$(addr a)" 3`) runs through
+  // sh2.exec, whose boolean masks the C return value — the runtime
+  // already records it as sh2.lastExit (`return 60` → 60), so a failing
+  // (non-zero) call reports the C return as $?, like the docs say.
+  const exitVal = v === false ? (Number(otRt.sh2.lastExit) || 1) : 0;
+  setShellStatus(exitVal);   // transpiled $? → native
+  return exitVal;
 }

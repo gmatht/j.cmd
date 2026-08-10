@@ -15,7 +15,7 @@ import { createInterface } from "readline";
 import { createShellCore } from "./shellcore/index.js";
 import { resolveCommand as shellResolve, isPrivilegedUser, customExecDenied } from "./shellcore/resolve.js";
 import { tokenize } from "./shellcore/tokenize.js";
-import { a1LiteralValue, syncOtVarsFromStore, runSourceContent as sharedRunSourceContent } from "./shellcore/transpile.js";
+import { a1LiteralValue, syncOtVarsFromStore, runSourceContent as sharedRunSourceContent, evalProgramOnOtRt } from "./shellcore/transpile.js";
 import { fs } from "./fs/index.js";
 import { formatAge } from "./fs/lscache.js";
 import { WasmRunner } from "./wasm.js";
@@ -415,6 +415,8 @@ const shellCtx = {
     return new Uint8Array(await readFile(new URL("../www/wasm-bin/otranspiler-busybox.wasm", import.meta.url)));
   },
   evalProgram: (program, lineAssigned, srcArgs) => runEstreeProgram(program, lineAssigned, srcArgs),
+  stdinBuffer: () => stdinBuffer,
+  otProc: () => otProc,
   wasmRunner,
   goCmd,
   isPrivilegedUser,
@@ -705,11 +707,10 @@ async function runViaTranspiler(segmentText, stdin) {
 }
 
 async function runEstreeProgram(program, lineAssigned, srcArgs) {
-  const lineCaptured = new Set();   // names a VALUE was captured for this run
-  const { estreeToJs, keepVariables } = await import("./estree.js");
   // KEEP_VARIABLES: route known array state through the persistent
   // runtime store (bare `a[1]`/`a.length` reads → arrayIndex/arrayLen;
-  // `let a = […]` declarations also sync to sh2.vars).
+  // `let a = [...]` declarations also sync to sh2.vars).
+  const { estreeToJs, keepVariables } = await import("./estree.js");
   keepVariables(program, [...otVars].filter(([, v]) => Array.isArray(v)).map(([k]) => k));
   // The estree convention: each statement's value is the command's
   // success flag (true/false). Make the LAST statement's value the exit
@@ -717,113 +718,21 @@ async function runEstreeProgram(program, lineAssigned, srcArgs) {
   const body = program.body || [];
   const last = body[body.length - 1];
   // ExpressionStatement → its value is the success flag; control-flow
-  // statements (for/while/if/…) carry the exit code in sh2.lastExit.
+  // statements (for/while/if/...) carry the exit code in sh2.lastExit.
   const lastIsExpr = last && last.type === "ExpressionStatement";
   // When the last statement is an ExpressionStatement it is wrapped in
-  // `return (…)` below — emitting the full body here too would run it
-  // TWICE (debashing a single `echo hi` into one statement used to
-  // print twice). bodyJs carries everything BEFORE the last statement.
+  // `return (...)`, emitting the full body here too would run it TWICE
+  // (debashing a single `echo hi` into one statement used to print
+  // twice). bodyJs carries everything BEFORE the last statement.
   const bodyJs = (lastIsExpr
-    ? (body.length > 1
-        ? await estreeToJs({ type: "Program", body: body.slice(0, -1) })
-        : "")
+    ? (body.length > 1 ? await estreeToJs({ type: "Program", body: body.slice(0, -1) }) : "")
     : await estreeToJs({ type: "Program", body })) + "\n";
   const lastJs = lastIsExpr
     ? "return (" + (await estreeToJs({ type: "Program", body: [last] })).replace(/;\s*$/, "") + ");\n"
     : "return sh2.lastExit;\n";
   const js = bodyJs + lastJs;
-  await ensureOtRuntime();  const fn = new Function("fs", "env", "process", "sh2", `
-    return (async () => { ${js} })();
-  `);
-  // pre-seed the runtime store so native-store reads (sh2.vars.x,
-  // sh2.arrayIndex / sh2.arrayLen) see the persistent state. Arrays go
-  // through sh2.setArray — `sh2.vars.a = …` would stringify them.
-  // preseedVars records what we planted, so the post-eval diff can tell
-  // a line's OWN write (value changed) from untouched pre-seed state.
-  const preseedVars = new Map();
-  for (const [k, v] of otVars) {
-    try {
-      if (Array.isArray(v)) { otRt.sh2.setArray(k, v); preseedVars.set(k, v); }
-      else { otRt.sh2.vars[k] = v; preseedVars.set(k, String(v)); }
-    } catch {}
-  }
-  try { otRt.sh2.lastExit = getShellStatus(); } catch {}   // native $? → transpiled
-  try { otRt.sh2.stdin = stdinBuffer || ""; } catch {}   // pipe input → read_line()
-  try { otRt.sh2.positional = (srcArgs && srcArgs.length ? srcArgs : getPositional()); } catch {}   // $1..$9
-  try { otRt.sh2.argv0 = getArgv0(); } catch {}             // native $0 → transpiled
-  let v;
-  let exitCode = null;
-  const beforeGlobals = new Set(Object.keys(globalThis));
-  const beforeRtVars = new Set(Object.keys(otRt.sh2.vars));
-  try {
-    v = await fn(fs, env, otProc, otRt.sh2);
-  } catch (e) {
-    if (e && e.exitCode !== undefined) exitCode = e.exitCode;  // `exit N`
-    else throw e;
-  }
-  // Introspection: harvest the variables this line set. Bare assignments
-  // (`x = 5`) became implicit globals (sloppy function scope); the
-  // `sh2.vars.* = …` writes went into the runtime's map. Strings,
-  // numbers and arrays are shell data — functions and other objects
-  // (the emitter's `__fn_*` closures) are skipped and dropped, keeping
-  // the page global scope clean.
-  const keepable = (val) => typeof val === "string" || typeof val === "number" || Array.isArray(val);
-  // runtime store first: it holds the line's OWN writes (sh2.setVar /
-  // sh2.setArray — the scalar re-assignment of an array name lands here,
-  // not on globalThis). Skip untouched state: a pre-seeded name this
-  // line didn't assign, OR whose value is still exactly the pre-seed
-  // (the line's write went elsewhere — a bare `x = …` lands on
-  // globalThis, which the next loop captures).
-  const sameValue = (a, b) => {
-    if (Array.isArray(a) && Array.isArray(b)) {
-      return a.length === b.length && a.every((x, i) => String(x) === String(b[i]));
-    }
-    return String(a) === String(b);
-  };
-  for (const k of Object.keys(otRt.sh2.vars)) {
-    const val = otRt.sh2.vars[k];
-    if (!keepable(val) || k.startsWith("__")) continue;
-    if (beforeRtVars.has(k) && !lineAssigned.has(k)) continue;
-    if (preseedVars.has(k) && sameValue(preseedVars.get(k), val)) continue;
-    if (isReadonly(k)) continue;   // setVar refuses these anyway
-    otVars.set(k, Array.isArray(val) ? val : String(val));
-    lineCaptured.add(k);
-  }
-  // globalThis last: bare assignments land here — but so does the seed's
-  // own `a = [...]` leftover, which is STALE when the line re-assigned
-  // via setVar/setArray or a literal. Names already captured this line
-  // are not overridden; everything else is harvested and cleaned up.
-  for (const k of Object.keys(globalThis)) {
-    if (beforeGlobals.has(k)) continue;
-    const val = globalThis[k];
-    if (!lineCaptured.has(k) && keepable(val) && !k.startsWith("__")) {
-      otVars.set(k, Array.isArray(val) ? val : String(val));
-      lineCaptured.add(k);
-    }
-    try { delete globalThis[k]; } catch {}   // ALWAYS clean up — even when the A1
-                                             // already captured the value, the
-                                             // global must not linger (it would
-                                             // shadow the next line's re-assign)
-  }
-  // mirror the persistent state into the shell's env so NATIVE lines
-  // (`echo $a` without bash syntax) see transpiled variables too — the
-  // native tokenizer expands $NAME from the shared env object. Readonly
-  // names and positionals are synced separately (never overwrite them).
-  for (const [k, v] of otVars) {
-    if (isReadonly(k)) continue;
-    try { env[k] = Array.isArray(v) ? v.join(" ") : String(v); } catch {}
-  }
-  try { setPositional(otRt.sh2.positional, otRt.sh2.argv0); } catch {}   // transpiled set -- → native
-  if (exitCode !== null) { setShellStatus(exitCode); return exitCode; }  // `exit N`
-  // The estree convention: each statement's value is the command's
-  // success flag (true/false) — assignments carry their value but exit 0.
-  // A bare C-function call (`sum_first "$(addr a)" 3`) runs through
-  // sh2.exec, whose boolean masks the C return value — the runtime
-  // already records it as sh2.lastExit (`return 60` → 60), so a failing
-  // (non-zero) call reports the C return as $?, like the user docs say.
-  const exitVal = v === false ? (Number(otRt.sh2.lastExit) || 1) : 0;
-  setShellStatus(exitVal);   // transpiled $? → native
-  return exitVal;
+  // eval + harvest + exit-code mapping — the SHARED shellcore helper
+  return evalProgramOnOtRt(js, { lineAssigned, positional: srcArgs }, shellCtx);
 }
 
 
@@ -1724,9 +1633,6 @@ async function runConditionalList(text, initialStdin) {
       try {
         exitCode = await runViaTranspiler(parts[i].text, initialStdin);
       } catch (e) {
-        // The library refused (outside its subset) or the shape needs the
-        // sync bridge — fall back to the normal pipeline, which reports
-        // the not-found / literal exactly as before.
         exitCode = await runPipeline(parts[i].text, initialStdin);
       }
       setShellStatus(exitCode);   // $? reflects every command, native or transpiled
