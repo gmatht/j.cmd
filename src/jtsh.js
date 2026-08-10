@@ -1481,7 +1481,7 @@ async function runSegment(segmentText, stdin, isLast) {
         return { ok: true, code: 0, output: "" };
       } catch {}
     }
-    process.stderr.write(`${cmd}: error: ${e.message} (${resolved.path})\n`);
+    process.stderr.write(`${cmd}: error: ${e.message} (${resolved.path})\n${e.stack}\n`);
     procfs.finish(pid, 1);
     return { ok: false, code: 1, output: "" };
   } finally {

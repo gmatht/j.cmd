@@ -5044,7 +5044,7 @@ async function runSegment(segmentText, stdin, isLast, target = null) {
         return { ok: true, code: 0, output: "" };
       } catch {}
     }
-    stderr.write(`${cmd}: error: ${e.message} (${resolved.path})\n`);
+    stderr.write(`${cmd}: error: ${e.message} (${resolved.path})\n${e.stack}\n`);
     return { ok: false, code: 1, output: "" };
   }
   } finally {

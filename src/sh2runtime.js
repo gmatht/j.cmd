@@ -810,7 +810,6 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     return idx === 0 ? getVar(m[1]) : getVar(m[1] + "[" + idx + "]");
   }
   function memStore1(h, v) {
-    if (process.env.SH2_DEBUG_MEM) process.stderr.write(`[memStore1] h=${JSON.stringify(h)} v=${v}\n`);
     const m = /^\u0001mem:([^:]*):(-?\d+)$/.exec(String(h));
     if (!m) return;
     const idx = Number(m[2]);
