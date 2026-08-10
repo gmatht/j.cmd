@@ -16,6 +16,19 @@ import { createShellCore } from "./shellcore/index.js";
 import { resolveCommand as shellResolve, isPrivilegedUser, customExecDenied } from "./shellcore/resolve.js";
 import { tokenize } from "./shellcore/tokenize.js";
 import { a1LiteralValue, syncOtVarsFromStore, runSourceContent as sharedRunSourceContent, evalProgramOnOtRt, transpileLine as sharedTranspileLine, ensureOtRuntime as sharedEnsureOtRuntime } from "./shellcore/transpile.js";
+import { handleLine as sharedHandleLine, runConditionalList as sharedRunConditionalList, runPipeline as sharedRunPipeline, splitBgList as sharedSplitBgList, splitConditionals as sharedSplitConditionals, splitPipe as sharedSplitPipe, looksLikeBash as sharedLooksLikeBash } from "./shellcore/runner.js";
+
+// ─── line/pipeline runners — SHARED (shellcore/runner.js) ─────────
+// The split helpers, conditional-list and pipeline runners are one
+// implementation; runSegment stays per-shell (it weaves procfs, jobs
+// and the output targets) and comes through shellCtx.
+const handleLine = (line, initialStdin) => sharedHandleLine(line, initialStdin, shellCtx);
+const runConditionalList = (text, initialStdin) => sharedRunConditionalList(text, initialStdin, shellCtx);
+const runPipeline = (pipelineText, initialStdin = "") => sharedRunPipeline(pipelineText, initialStdin, shellCtx);
+const splitBgList = (line) => sharedSplitBgList(line);
+const splitConditionals = (line) => sharedSplitConditionals(line);
+const splitPipe = (line) => sharedSplitPipe(line);
+const looksLikeBash = (text) => sharedLooksLikeBash(text);
 import { fs } from "./fs/index.js";
 import { formatAge } from "./fs/lscache.js";
 import { WasmRunner } from "./wasm.js";
@@ -375,6 +388,7 @@ const builtins = {
 const shellCtx = {
   stdout: process.stdout,
   stderr: process.stderr,
+  write: (s) => process.stdout.write(s),
   get stdin() { return stdinBuffer; },
   get isTTY() { return Boolean(process.stdin.isTTY); },
   runNestedCommand,
@@ -429,6 +443,8 @@ const shellCtx = {
   goCmd,
   isPrivilegedUser,
   getBgJobs,
+  runViaTranspiler,
+  runSegment,
   enterRepl: (mode) => { if (mode === "bash") enterBashRepl(); else enterCmdRepl(); },
   exit: () => process.exit(0),
   nodeEnv: typeof process !== "undefined" ? process.env : undefined,
@@ -475,36 +491,6 @@ const resolveCommand = (name) => shellResolve(shellCtx, name);
 
 // Split a line into pipeline segments on `|`, respecting quotes and
 // backslash escapes (a \| outside quotes is a literal pipe char).
-function splitPipe(line) {
-  const segments = [];
-  let cur = "";
-  let inSingle = false;
-  let inDouble = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (inSingle) {
-      if (ch === "'") inSingle = false;
-      cur += ch;
-      continue;
-    }
-    if (inDouble) {
-      if (ch === '"') inDouble = false;
-      cur += ch;
-      continue;
-    }
-    if (ch === "\\") {
-      cur += ch;
-      if (i + 1 < line.length) { cur += line[i + 1]; i++; }
-      continue;
-    }
-    if (ch === "'") { inSingle = true; cur += ch; continue; }
-    if (ch === '"') { inDouble = true; cur += ch; continue; }
-    if (ch === "|") { segments.push(cur); cur = ""; continue; }
-    cur += ch;
-  }
-  segments.push(cur);
-  return segments;
-}
 
 // Execute one pipeline segment. `stdin` carries the previous segment's
 // stdout. Returns { ok, output } — `output` is the captured stdout that
@@ -521,21 +507,6 @@ function splitPipe(line) {
 
 // Does the line carry bash syntax jtsh's tokenizer doesn't handle?
 // (Quoted text is ignored — `echo 'a;b'` is one argument, not bash.)
-function looksLikeBash(text) {
-  // strip ONLY single quotes — double quotes are not inert: ${…} /
-  // $(…) inside them is real bash (`echo "${a[1]}"` must route to the
-  // transpiler, while `echo 'a;b'` is one literal argument)
-  const unquoted = String(text).replace(/'(?:[^'\\]|\\.)*'/g, "");
-  // a leading `name=value` (no space before `=`) is an assignment, not a
-  // command — bash always parses it that way (`a = 5` stays a command
-  // named `a` because the tokenizer splits on whitespace)
-  if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(unquoted)) return true;
-  if (/\b(for|while|until|if|case|select|function)\b/.test(unquoted)) return true;
-  if (/[;{}]/.test(unquoted)) return true;                 // `;` separator, `{ … }` group
-  if (/\$\(|\[\[/.test(unquoted)) return true;          // $(…) / [[ ]]
-  if (/\[[^\]]*\]/.test(unquoted)) return true;           // [ … ] test
-  return /\$\{/.test(unquoted);
-}
 
 // Transpile a bash line with otranspilerl and execute the generated JS.
 // Returns the exit code; throws when the library refuses or the shape
@@ -1241,46 +1212,6 @@ async function runSegment(segmentText, stdin, isLast) {
 // ampersand, not an operator). Returns { text, op } parts where `op`
 // is the operator preceding the part ('&&' or '||'), or null for the
 // first part. A lone `&` is handled by splitBgList before this runs.
-function splitConditionals(line) {
-  const parts = [];
-  let cur = "";
-  let op = null;
-  let inSingle = false;
-  let inDouble = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (inSingle) {
-      if (ch === "'") inSingle = false;
-      cur += ch;
-      continue;
-    }
-    if (inDouble) {
-      if (ch === '"') inDouble = false;
-      cur += ch;
-      continue;
-    }
-    if (ch === "\\") {
-      cur += ch;
-      if (i + 1 < line.length) { cur += line[i + 1]; i++; }
-      continue;
-    }
-    if (ch === "'") { inSingle = true; cur += ch; continue; }
-    if (ch === '"') { inDouble = true; cur += ch; continue; }
-    if ((ch === "&" || ch === "|") && line[i + 1] === ch) {
-      parts.push({ text: cur, op });
-      cur = "";
-      op = ch + ch;
-      i++;
-      continue;
-    }
-    if (ch === "&") {
-      throw new Error("syntax error near unexpected token '&'");
-    }
-    cur += ch;
-  }
-  parts.push({ text: cur, op });
-  return parts;
-}
 
 // Run one pipeline (`|`-separated commands), feeding each command's
 // stdout to the next command's stdin. Returns the pipeline's exit
@@ -1342,22 +1273,6 @@ async function runPythonCmd(args, stdin, isLast, outputRedirect, appendRedirect)
   return { ok: code === 0, code, output };
 }
 
-async function runPipeline(pipelineText, initialStdin = "") {
-  const segments = splitPipe(pipelineText);
-  let stdin = initialStdin;
-  let exitCode = 0;
-  for (let i = 0; i < segments.length; i++) {
-    if (!segments[i].trim()) {
-      process.stderr.write(`jtsh: syntax error near unexpected token '|'\n`);
-      return 2;
-    }
-    const result = await runSegment(segments[i], stdin, i === segments.length - 1);
-    if (!result.ok) return result.code ?? 1;
-    stdin = result.output;
-    exitCode = result.code ?? 0;
-  }
-  return exitCode;
-}
 
 // Run a nested command line from generated JS (pipelines and command
 // substitution inside a `bash` script) through the shell itself, and
@@ -1452,143 +1367,10 @@ function getBgJobs() {
 // stays inside a segment (handled by splitConditionals later). Returns
 // { text, bg } parts: bg=true when the segment was terminated by `&`,
 // meaning it runs as a background job (`cmd & cmd2` → cmd bg, cmd2 fg).
-function splitBgList(line) {
-  const parts = [];
-  let cur = "";
-  let bg = false;
-  let inSingle = false;
-  let inDouble = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (inSingle) {
-      if (ch === "'") inSingle = false;
-      cur += ch;
-      continue;
-    }
-    if (inDouble) {
-      if (ch === '"') inDouble = false;
-      cur += ch;
-      continue;
-    }
-    if (ch === "\\") {
-      cur += ch;
-      if (i + 1 < line.length) { cur += line[i + 1]; i++; }
-      continue;
-    }
-    if (ch === "'") { inSingle = true; cur += ch; continue; }
-    if (ch === '"') { inDouble = true; cur += ch; continue; }
-    if (ch === "&") {
-      if (line[i + 1] === "&") { cur += "&&"; i++; continue; }  // conditional op
-      parts.push({ text: cur, bg: true });
-      cur = "";
-      continue;
-    }
-    cur += ch;
-  }
-  // A line ending in `&` leaves cur empty after the split — don't push
-  // a phantom trailing segment (`cmd &` has no command after the &).
-  if (cur !== "" || parts.length === 0) parts.push({ text: cur, bg });
-  return parts;
-}
 
-async function handleLine(line, initialStdin) {
-  const trimmed = line.trim();
-  if (!trimmed) return;
-
-  // Split on `&` first — each `&`-terminated segment runs as a
-  // background job, everything else runs in the foreground. Segments
-  // themselves are conditional lists (`&&` / `||`) of pipelines.
-  let segments;
-  try {
-    segments = splitBgList(trimmed);
-  } catch (e) {
-    process.stderr.write(`jtsh: ${e.message}\n`);
-    return;
-  }
-  for (const seg of segments) {
-    if (!seg.text.trim()) {
-      process.stderr.write(`jtsh: syntax error near unexpected token '&'\n`);
-      return;
-    }
-    // Validate a background segment's conditional structure now, so a
-    // broken `sleep 1 && &` fails at the prompt instead of launching a
-    // job that dies silently.
-    if (seg.bg) {
-      let cond;
-      try {
-        cond = splitConditionals(seg.text);
-      } catch (e) {
-        process.stderr.write(`jtsh: ${e.message}\n`);
-        return;
-      }
-      const bad = cond.find((p) => !p.text.trim());
-      if (bad) {
-        const token = bad.op || "newline";
-        process.stderr.write(`jtsh: syntax error near unexpected token '${token}'\n`);
-        return;
-      }
-    }
-  }
-
-  let exitCode = 0;
-  for (const seg of segments) {
-    if (seg.bg) {
-      const job = getBgJobs().launch(seg.text);
-      setLastBgPid(job.pid);   // $! — last background job's pid
-      process.stdout.write(`[${job.id}] ${job.pid}\n`);
-    } else {
-      exitCode = await runConditionalList(seg.text, initialStdin);
-    }
-  }
-  return exitCode;
-}
 
 // Run one conditional list (`&&` / `||`-joined pipelines) — the
 // foreground part of a line, or the body of a background job.
-async function runConditionalList(text, initialStdin) {
-  let parts;
-  try {
-    parts = splitConditionals(text);
-  } catch (e) {
-    process.stderr.write(`jtsh: ${e.message}\n`);
-    return 2;
-  }
-  // An empty segment means the segment started with an operator, ended
-  // with one, or had two operators in a row (`&& echo hi`, `echo hi &&`,
-  // `a && || b`) — all syntax errors.
-  for (let i = 0; i < parts.length; i++) {
-    if (!parts[i].text.trim()) {
-      const nextOp = i + 1 < parts.length ? parts[i + 1].op : null;
-      const token = nextOp ? `'${nextOp}'` : "newline";
-      process.stderr.write(`jtsh: syntax error near unexpected token ${token}\n`);
-      return 2;
-    }
-  }
-
-  let exitCode = 0;
-  for (let i = 0; i < parts.length; i++) {
-    if (i > 0) {
-      if (parts[i].op === "&&" && exitCode !== 0) continue;
-      if (parts[i].op === "||" && exitCode === 0) continue;
-    }
-    // Bash-only syntax (statement separators, for/if keywords, $(…)…)
-    // routes through the otranspilerl fallback BEFORE the tokenizer —
-    // jtsh's own parser doesn't understand it natively.
-    if (hasOption("x")) process.stderr.write(`+ ${parts[i].text}\n`);   // set -x
-    if (looksLikeBash(parts[i].text)) {
-      try {
-        exitCode = await runViaTranspiler(parts[i].text, initialStdin);
-      } catch (e) {
-        exitCode = await runPipeline(parts[i].text, initialStdin);
-      }
-      setShellStatus(exitCode);   // $? reflects every command, native or transpiled
-      continue;
-    }
-    exitCode = await runPipeline(parts[i].text, initialStdin);
-    setShellStatus(exitCode);
-  }
-  return exitCode;
-}
 
 // ─── Startup config (~/.jtshrc) ─────────────────────────────
 // Like a Unix shell's rc file (.bashrc / .zshrc), $HOME/.jtshrc
