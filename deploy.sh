@@ -74,6 +74,31 @@ if [ "$SKIP_TESTS" != true ]; then
   echo "  ${#files[@]} example .c files parse"
 fi
 
+# ── gate 4: the browser app must PARSE (module-scope duplicates and stray
+# brace/comma artifacts from automated edits have broken the page twice) ──
+if [ "$SKIP_TESTS" != true ]; then
+  python3 - <<'PY' || { echo "✗ www/index.html module fails to parse — refusing to deploy" >&2; exit 1; }
+import re, collections, sys
+html = open("www/index.html").read()
+blocks = re.findall(r"<script[^>]*>(.*?)</script>", html, re.S)
+big = max(blocks, key=len)
+open("/tmp/deploy-app-check.js", "w").write(big)
+decls = re.findall(r"^(?:export )?(?:const|let|var|function|async function|class)\s+([A-Za-z_$][\w$]*)", big, re.M)
+dups = {k: v for k, v in collections.Counter(decls).items() if v > 1}
+if dups:
+    print("module-scope duplicates:", dups); sys.exit(1)
+if re.search(r",\s*,|\}\s*\},\s*\},|\}\s*\}\s*\},\s*\{", big):
+    print("stray brace/comma artifact"); sys.exit(1)
+PY
+  if node --check /tmp/deploy-app-check.js > /tmp/deploy-app-check.log 2>&1; then
+    echo "  www/index.html module parses"
+  else
+    echo "✗ www/index.html module syntax error — refusing to deploy" >&2
+    head -3 /tmp/deploy-app-check.log >&2
+    exit 1
+  fi
+fi
+
 # ── deploy ──────────────────────────────────────────────────────────
 echo "── deploy ──"
 SHA=$(git rev-parse HEAD)
