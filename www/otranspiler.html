@@ -373,7 +373,16 @@ function backendGrade(lang) {
   if (s.total === 0) return { cls: "green", label: s.name + " — the contract itself, 100%" };
   const pct = s.pass / s.total;
   const cls = pct >= 0.9 ? "green" : pct > 0.5 ? "yellow" : "red";
-  return { cls, label: s.name + " " + Math.round(pct * 100) + "% (" + s.pass + "/" + s.total + ")" + (s.note ? " — " + s.note : "") };
+  let label = s.name + " " + Math.round(pct * 100) + "% (" + s.pass + "/" + s.total + ")" + (s.note ? " — " + s.note : "");
+  // cross-product triage: how many FRONTEND-corpus examples pass this backend
+  if (GATE && GATE.triage && GATE.triage.backends) {
+    const be = TRIAGE_BACKEND[lang] || lang;
+    const t = GATE.triage.backends[be];
+    if (t && t.total > 0) {
+      label += " · triage " + t.pass + "/" + t.total + " frontend examples";
+    }
+  }
+  return { cls, label };
 }
 
 // ── frontend→js gate (source pills) ───────────────────────────────
@@ -414,8 +423,13 @@ function frontendGrade(lang) {
 //               non-sh corpora when the target is js.
 // Each sidebar example button is coloured 🟢 (passes on the
 // currently selected backend) / 🔴 (fails) / ⚪ (no cached gate).
-let GATE = null;              // { backends:{…}, frontends:{ dir: {total,pass,results} } }
+let GATE = null;              // { backends:{…}, frontends:{ dir: {total,pass,results} }, triage:{…} }
 const GATE_SETS = {};         // backend → { pass:Set, corpus:Set }
+// cross-product triage (sh2loop harness/triage.sh): frontend corpus × backend.
+// The GUI's target keys (pl/py/rs) differ from the triage backend names
+// (perl/python/rust) — map them. Triage verdict per (dir, example, backend):
+// PASS | PASS-RENDER | FAIL-FRONTEND(-EMIT) | FAIL-BACKEND | SKIP-REFUSE.
+const TRIAGE_BACKEND = { pl: "perl", py: "python", rs: "rust" }; // identity otherwise
 // corpus dir → the backend-gate relative path prefix (sh-source
 // corpora only — the frontend corpora are gated per-file instead).
 const GATE_DIR_PREFIX = {
@@ -463,6 +477,21 @@ function gateStatus(dir, name) {
     const v = f && f.results && f.results[name];
     if (v === "PASS") return { cls: "gate-green", label: "passes the " + srcLang + " frontend gate (→ js render + run)" };
     if (v === "FAIL") return { cls: "gate-red", label: "fails the " + srcLang + " frontend gate (→ js render + run)" };
+  }
+  // 3) the CROSS-PRODUCT triage (frontend corpus × every backend): the
+  //    selected target's verdict for this example — PASS → green,
+  //    FAIL-BACKEND/FAIL-FRONTEND → red, render-only / refusal → yellow.
+  if (GATE && GATE.triage && GATE.triage.frontends && GATE.triage.frontends[dir]) {
+    const t = GATE.triage.frontends[dir][name];
+    if (t) {
+      const be = TRIAGE_BACKEND[tgtLang] || tgtLang;
+      const v = t[be];
+      if (v === "PASS") return { cls: "gate-green", label: "passes the " + tgtLang + " cross-product gate (" + srcLang + " A1 → " + tgtLang + " render + run)" };
+      if (v === "FAIL-BACKEND") return { cls: "gate-red", label: "fails the " + tgtLang + " cross-product gate (estree matches native; " + tgtLang + " differs)" };
+      if (v === "FAIL-FRONTEND" || v === "FAIL-FRONTEND-EMIT") return { cls: "gate-red", label: "the " + srcLang + " A1 fails the cross-product gate" };
+      if (v === "PASS-RENDER") return { cls: "gate-yellow", label: tgtLang + " renders the A1 (execution needs the sh2 " + tgtLang + " runtime)" };
+      if (v === "SKIP-REFUSE") return { cls: "gate-yellow", label: tgtLang + " refuses the construct (documented REFUSE > GUESS)" };
+    }
   }
   return null;                         // no cached gate for this example
 }

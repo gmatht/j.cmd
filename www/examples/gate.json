@@ -3454,8 +3454,8 @@
 "total": 66
 },
 "py": {
-"fail": 4,
-"pass": 66,
+"fail": 3,
+"pass": 67,
 "results": {
 "t01_literal.py": "PASS",
 "t01_print.py": "PASS",
@@ -3509,7 +3509,7 @@
 "t49_empty_check.py": "PASS",
 "t50_file_test.py": "PASS",
 "t51_arith_loop.py": "PASS",
-"t52_full_prog.py": "FAIL",
+"t52_full_prog.py": "PASS",
 "t53_param_default.py": "PASS",
 "t54_str_subst.py": "PASS",
 "t55_array_elem.py": "PASS",
@@ -3533,15 +3533,15 @@
 "total": 71
 },
 "sh-posix": {
-"fail": 2,
-"pass": 76,
+"fail": 1,
+"pass": 77,
 "results": {
 "t01_echo.sh": "PASS",
 "t01_literal.sh": "PASS",
 "t02_assign_str.sh": "PASS",
 "t02_control.sh": "PASS",
 "t03_assign_num.sh": "PASS",
-"t03_pipeline.sh": "FAIL",
+"t03_pipeline.sh": "PASS",
 "t04_params.sh": "PASS",
 "t04_print_var.sh": "PASS",
 "t05_env_read.sh": "PASS",
@@ -3702,6 +3702,1071 @@
 "total": 75
 }
 },
-"generated": "2026-08-09T07:10:42+00:00",
-"source": "/home/llm/sh2loop"
+"generated": "2026-08-10T14:00:19+00:00",
+"source": "/home/llm/sh2loop",
+"triage": {
+"backends": {
+"c": {
+"fail": 10,
+"pass": 82,
+"total": 92
+},
+"go": {
+"fail": 7,
+"pass": 85,
+"total": 92
+},
+"java": {
+"fail": 10,
+"pass": 26,
+"total": 92
+},
+"js": {
+"fail": 10,
+"pass": 82,
+"total": 92
+},
+"perl": {
+"fail": 28,
+"pass": 57,
+"total": 92
+},
+"python": {
+"fail": 10,
+"pass": 82,
+"total": 92
+},
+"rust": {
+"fail": 7,
+"pass": 85,
+"total": 92
+},
+"sh": {
+"fail": 58,
+"pass": 34,
+"total": 92
+},
+"zig": {
+"fail": 7,
+"pass": 85,
+"total": 92
+}
+},
+"frontends": {
+"c": {
+"t01_hello.cc": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "PASS",
+"zig": "PASS-RENDER"
+},
+"t01_printf.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "PASS",
+"zig": "PASS-RENDER"
+},
+"t02_assign.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "PASS",
+"zig": "PASS-RENDER"
+},
+"t02_bool.cc": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "PASS",
+"zig": "PASS-RENDER"
+},
+"t03_arith.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t03_new_delete.cc": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "FAIL-BACKEND",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t04_comment.cc": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t04_if_else.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "PASS",
+"zig": "PASS-RENDER"
+},
+"t05_arith_loop.cc": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t05_while.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t06_for.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t06_struct.cc": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t07_cmp.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "FAIL-BACKEND",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "PASS",
+"zig": "PASS-RENDER"
+},
+"t07_template_refuse.cc": {
+"c": "FAIL-FRONTEND-EMIT",
+"go": "FAIL-FRONTEND-EMIT",
+"java": "FAIL-FRONTEND-EMIT",
+"js": "FAIL-FRONTEND-EMIT",
+"perl": "FAIL-FRONTEND-EMIT",
+"python": "FAIL-FRONTEND-EMIT",
+"rust": "FAIL-FRONTEND-EMIT",
+"sh": "FAIL-FRONTEND-EMIT",
+"zig": "FAIL-FRONTEND-EMIT"
+},
+"t08_class_refuse.cc": {
+"c": "FAIL-FRONTEND-EMIT",
+"go": "FAIL-FRONTEND-EMIT",
+"java": "FAIL-FRONTEND-EMIT",
+"js": "FAIL-FRONTEND-EMIT",
+"perl": "FAIL-FRONTEND-EMIT",
+"python": "FAIL-FRONTEND-EMIT",
+"rust": "FAIL-FRONTEND-EMIT",
+"sh": "FAIL-FRONTEND-EMIT",
+"zig": "FAIL-FRONTEND-EMIT"
+},
+"t08_pointer.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "PASS",
+"zig": "PASS-RENDER"
+},
+"t09_pointer_alias.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "PASS",
+"zig": "PASS-RENDER"
+},
+"t09_std_refuse.cc": {
+"c": "FAIL-FRONTEND-EMIT",
+"go": "FAIL-FRONTEND-EMIT",
+"java": "FAIL-FRONTEND-EMIT",
+"js": "FAIL-FRONTEND-EMIT",
+"perl": "FAIL-FRONTEND-EMIT",
+"python": "FAIL-FRONTEND-EMIT",
+"rust": "FAIL-FRONTEND-EMIT",
+"sh": "FAIL-FRONTEND-EMIT",
+"zig": "FAIL-FRONTEND-EMIT"
+},
+"t10_ref_refuse.cc": {
+"c": "FAIL-FRONTEND-EMIT",
+"go": "FAIL-FRONTEND-EMIT",
+"java": "FAIL-FRONTEND-EMIT",
+"js": "FAIL-FRONTEND-EMIT",
+"perl": "FAIL-FRONTEND-EMIT",
+"python": "FAIL-FRONTEND-EMIT",
+"rust": "FAIL-FRONTEND-EMIT",
+"sh": "FAIL-FRONTEND-EMIT",
+"zig": "FAIL-FRONTEND-EMIT"
+},
+"t10_string_pointer.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "FAIL-BACKEND",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "PASS",
+"zig": "PASS-RENDER"
+},
+"t11_array_pointer.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "PASS",
+"zig": "PASS-RENDER"
+},
+"t11_auto_refuse.cc": {
+"c": "FAIL-FRONTEND-EMIT",
+"go": "FAIL-FRONTEND-EMIT",
+"java": "FAIL-FRONTEND-EMIT",
+"js": "FAIL-FRONTEND-EMIT",
+"perl": "FAIL-FRONTEND-EMIT",
+"python": "FAIL-FRONTEND-EMIT",
+"rust": "FAIL-FRONTEND-EMIT",
+"sh": "FAIL-FRONTEND-EMIT",
+"zig": "FAIL-FRONTEND-EMIT"
+},
+"t12_exception_refuse.cc": {
+"c": "FAIL-FRONTEND-EMIT",
+"go": "FAIL-FRONTEND-EMIT",
+"java": "FAIL-FRONTEND-EMIT",
+"js": "FAIL-FRONTEND-EMIT",
+"perl": "FAIL-FRONTEND-EMIT",
+"python": "FAIL-FRONTEND-EMIT",
+"rust": "FAIL-FRONTEND-EMIT",
+"sh": "FAIL-FRONTEND-EMIT",
+"zig": "FAIL-FRONTEND-EMIT"
+},
+"t12_scalar_alias.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "PASS",
+"zig": "PASS-RENDER"
+},
+"t13_newvar_refuse.cc": {
+"c": "FAIL-FRONTEND-EMIT",
+"go": "FAIL-FRONTEND-EMIT",
+"java": "FAIL-FRONTEND-EMIT",
+"js": "FAIL-FRONTEND-EMIT",
+"perl": "FAIL-FRONTEND-EMIT",
+"python": "FAIL-FRONTEND-EMIT",
+"rust": "FAIL-FRONTEND-EMIT",
+"sh": "FAIL-FRONTEND-EMIT",
+"zig": "FAIL-FRONTEND-EMIT"
+},
+"t13_strlen.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "PASS",
+"zig": "PASS-RENDER"
+},
+"t14_atoi.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t15_for_arith.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t16_strcmp.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "PASS",
+"zig": "PASS-RENDER"
+},
+"t17_func_call.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "PASS",
+"zig": "PASS-RENDER"
+},
+"t18_mixed_format.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "PASS",
+"zig": "PASS-RENDER"
+},
+"t19_malloc.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "SKIP-REFUSE",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t20_switch.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "PASS",
+"zig": "PASS-RENDER"
+},
+"t21_stdlib_more.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t22_struct.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t23_float.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "SKIP-REFUSE",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t24_define.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "PASS",
+"zig": "PASS-RENDER"
+},
+"t25_break_continue.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t26_varargs.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "PASS",
+"zig": "PASS-RENDER"
+},
+"t27_goto.c": {
+"c": "FAIL-BACKEND",
+"go": "PASS-RENDER",
+"java": "FAIL-BACKEND",
+"js": "FAIL-BACKEND",
+"perl": "FAIL-BACKEND",
+"python": "FAIL-BACKEND",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t28_dowhile.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t29_funcptr.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "PASS",
+"zig": "PASS-RENDER"
+},
+"t30_goto_nested.c": {
+"c": "FAIL-BACKEND",
+"go": "PASS-RENDER",
+"java": "FAIL-BACKEND",
+"js": "FAIL-BACKEND",
+"perl": "FAIL-BACKEND",
+"python": "FAIL-BACKEND",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t31_goto_forward.c": {
+"c": "FAIL-BACKEND",
+"go": "PASS-RENDER",
+"java": "FAIL-BACKEND",
+"js": "FAIL-BACKEND",
+"perl": "FAIL-BACKEND",
+"python": "FAIL-BACKEND",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t32_divmod.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "FAIL-BACKEND",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "PASS",
+"zig": "PASS-RENDER"
+},
+"t33_logic.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "SKIP-REFUSE",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "PASS",
+"zig": "PASS-RENDER"
+},
+"t34_elseif.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "PASS",
+"zig": "PASS-RENDER"
+},
+"t35_while_break.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t36_dowhile_break.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t37_for_countdown.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t38_for_ever.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t39_strlen_var.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "PASS",
+"zig": "PASS-RENDER"
+},
+"t40_sizes.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t41_gcd.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t42_escapes.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "PASS",
+"zig": "PASS-RENDER"
+},
+"t43_percent.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "FAIL-BACKEND",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "PASS",
+"zig": "PASS-RENDER"
+},
+"t44_nested_loops.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t45_array_iter.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t46_factorial.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t47_digit_sum.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t48_fib.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t49_prime.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "PASS",
+"zig": "PASS-RENDER"
+},
+"t50_minmax.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "PASS",
+"zig": "PASS-RENDER"
+},
+"t51_swap.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "PASS",
+"zig": "PASS-RENDER"
+},
+"t52_switch_many.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "PASS",
+"zig": "PASS-RENDER"
+},
+"t53_negative.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t54_clamp_abs.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t55_multi_fn.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "PASS",
+"zig": "PASS-RENDER"
+},
+"t56_string_iter.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "FAIL-BACKEND",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t57_cmp_value.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t58_func_runtime.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "FAIL-BACKEND",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t59_multi_decl.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "PASS",
+"zig": "PASS-RENDER"
+},
+"t60_compound_ops.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t61_prefix_inc.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t62_char_lit.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "FAIL-BACKEND",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "PASS",
+"zig": "PASS-RENDER"
+},
+"t63_bitwise.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "FAIL-BACKEND",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t64_bitwise_cond.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "SKIP-REFUSE",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t65_ternary.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "SKIP-REFUSE",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t66_array_write_loop.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "FAIL-BACKEND",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t67_heap_dyn.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "SKIP-REFUSE",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t68_switch_dynamic.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "FAIL-BACKEND",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t69_ptr_walk.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "SKIP-REFUSE",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t70_ptr_walk_store.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "FAIL-BACKEND",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t71_multi_out.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "FAIL-BACKEND",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t72_multi_out_mix.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "FAIL-BACKEND",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t73_arith_calls.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "FAIL-BACKEND",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t74_switch_fallthrough.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "PASS",
+"zig": "PASS-RENDER"
+},
+"t75_cond_reads.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "FAIL-BACKEND",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t76_prefix_expr.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "FAIL-BACKEND",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t77_multichar.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "PASS",
+"zig": "PASS-RENDER"
+},
+"t78_readwrite_out.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "SKIP-REFUSE",
+"js": "PASS-RENDER",
+"perl": "FAIL-BACKEND",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+},
+"t79_switch_midbreak.c": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "PASS",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "FAIL-BACKEND",
+"zig": "PASS-RENDER"
+}
+}
+}
+}
 }
