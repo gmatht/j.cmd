@@ -155,13 +155,17 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
 
   async function pipeline(fns) {
     const prev = mode;
-    const buf = { out: "", stdin: "" };
+    const buf = { out: "", stdin: "", stdinPos: 0 };
     mode = { type: "pipe", buf };
     try {
       for (const fn of fns) {
         buf.stdin = buf.out;  // previous stage's output becomes this stdin
         buf.out = "";
-        await fn();
+        const r = await fn();
+        // a sync builtin stage (sh2.builtin — echo/printf) RETURNS its
+        // output rather than writing the mode buffer — feed it through,
+        // the same as pipelineSync does
+        if (typeof r === "string" && r) buf.out += r;
       }
     } finally {
       mode = prev;
@@ -177,9 +181,29 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     const prev = mode;
     const buf = { out: "" };
     mode = { type: "capture", buf };
+    // Native writes bypass the mode buffer: the estree emitter's
+    // native-echo lowering (echo/printf inside a sink-eligible function
+    // compile to `process.stdout.write(...)` directly — see the
+    // NATIVE_ECHO_FNS analysis) does not consult `mode`. The generated
+    // code's `process.stdout` IS this same `stdout` object (the otRt
+    // shim shares it), so wrapping its write during the capture routes
+    // those native writes into the buffer too — a comparator defined in
+    // one program and captured in another (`cmp_call` → sh2.capture)
+    // lands its echoed -1/0/1 here instead of the terminal.
+    const stdoutObj = stdout;
+    const origWrite = stdoutObj && typeof stdoutObj.write === "function" ? stdoutObj.write : null;
+    let inCapture = true;
+    if (origWrite) {
+      stdoutObj.write = (s) => {
+        if (inCapture) { buf.out += String(s); return true; }
+        return origWrite(s);
+      };
+    }
     try {
       await fn();
     } finally {
+      inCapture = false;
+      if (origWrite) stdoutObj.write = origWrite;
       mode = prev;
     }
     return buf.out.replace(/\n+$/, "");  // command substitution strips trailing newlines
@@ -345,8 +369,11 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     if (op === "=~") { try { return new RegExp(String(b)).test(String(a)); } catch { return false; } }
     if (op === "-nt" || op === "-ot") return false;  // no mtime comparison — keep simple
     const na = Number(a), nb = Number(b);
-    if (op === "<") return na < nb;
-    if (op === ">") return na > nb;
+    // bash `[[ a < b ]]` / `[[ a > b ]]` are LEXICOGRAPHIC string
+    // comparisons (`[[ 5 < 10 ]]` is false — "5" > "1"); the numeric
+    // orderings are -lt/-le/-gt/-ge.
+    if (op === "<") return String(a) < String(b);
+    if (op === ">") return String(a) > String(b);
     if (op === "-eq") return na === nb;
     if (op === "-ne") return na !== nb;
     if (op === "-lt") return na < nb;
@@ -468,9 +495,79 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     if (vars.has(name)) return "1";
     return "0";
   }
+  // ${arr[@]} / "${arr[@]}" — the full element list. The estree
+  // emitter's native echo lowering calls `sh2.arrayItems(name)` and
+  // wraps the result (`[items].flat().join(" ")`), so an array returns
+  // the elements, a set scalar the value, an unset name "" (which the
+  // wrap flattens/joins to the same empty string bash yields).
+  function arrayItems(name) {
+    const v = vars.get(name);
+    if (Array.isArray(v)) return v.map(String);
+    if (vars.has(name) && v !== undefined) return String(v);
+    return "";
+  }
+  // strcmp(a, b) — the C strcmp bridge (the c frontend's runtime-arg
+  // strcmp): the sign of the lexicographic comparison (-1/0/1), like C.
+  function strcmp(a, b) {
+    const sa = String(a ?? ""), sb = String(b ?? "");
+    return sa < sb ? -1 : sa > sb ? 1 : 0;
+  }
   // ${arr[@]} spreads / slice results — the emitter wraps them in join
   function join(v) {
     return Array.isArray(v) ? v.join(" ") : String(v);
+  }
+
+  // ─── stdin line cursor (the c frontend's read_line bridge) ───────
+  // The shell seeds `sh2.stdin` with the current command's pipe input
+  // before each transpiled program runs; readLine() pulls the next line
+  // ("" at EOF). A C `read_line()` lowers to this call, so a sourced C
+  // program can slurp its stdin without a bash `read` builtin.
+  let stdinData = "";
+  let stdinPos = 0;
+  let stdinAtEOF = false;
+  function readLine() {
+    // a C function as a PIPELINE STAGE: consume the pipe's stdin (the
+    // previous stage's captured stdout — the `printf … | slurp2` idiom)
+    if (mode.type === "pipe" && mode.buf && typeof mode.buf.stdin === "string" && mode.buf.stdin.length) {
+      const s = mode.buf.stdin;
+      const pos = mode.buf.stdinPos || 0;
+      if (pos < s.length) {
+        const nl = s.indexOf("\n", pos);
+        let line;
+        if (nl === -1) { line = s.slice(pos); mode.buf.stdinPos = s.length; }
+        else { line = s.slice(pos, nl); mode.buf.stdinPos = nl + 1; }
+        if (line.endsWith("\r")) line = line.slice(0, -1);
+        return line;
+      }
+    }
+    if (stdinPos >= stdinData.length) {
+      stdinAtEOF = true;
+      return "";
+    }
+    stdinAtEOF = false;
+    const nl = stdinData.indexOf("\n", stdinPos);
+    let line;
+    if (nl === -1) {
+      line = stdinData.slice(stdinPos);
+      stdinPos = stdinData.length;
+    } else {
+      line = stdinData.slice(stdinPos, nl);
+      stdinPos = nl + 1;
+    }
+    if (line.endsWith("\r")) line = line.slice(0, -1);   // CRLF input
+    return line;
+  }
+  // getline(&buf, &size, stdin) — the c frontend's standard-API bridge:
+  // reads the next line into the variable `name`, returns its length (the
+  // ssize_t getline contract), or -1 at EOF (the buffer is left empty).
+  function getLine(name) {
+    const line = readLine();
+    if (stdinAtEOF) {
+      setVar(name, "");
+      return -1;
+    }
+    setVar(name, line);
+    return line.length;
   }
 
   // ─── compound assignment: a+=2, x+=s, a*=3, a<<=1 ... ────────
@@ -693,12 +790,30 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
   function memLoad1(h) {
     const m = /^\u0001mem:([^:]*):(-?\d+)$/.exec(String(h));
     if (!m) return "";
-    return getVar(m[1]);
+    // slice-1 handle: the offset is an ELEMENT index — 0 is the var
+    // itself (or its first element), n reads the n-th element of a
+    // shell array (`name[n]` — the runtime's array-key convention).
+    const idx = Number(m[2]);
+    return idx === 0 ? getVar(m[1]) : getVar(m[1] + "[" + idx + "]");
   }
   function memStore1(h, v) {
     const m = /^\u0001mem:([^:]*):(-?\d+)$/.exec(String(h));
     if (!m) return;
-    setVar(m[1], String(v ?? ""));
+    const idx = Number(m[2]);
+    const name = m[1];
+    const val = String(v ?? "");
+    if (idx !== 0) { setVar(name + "[" + idx + "]", val); return; }
+    // index 0: write the element if the var is an array (keep the
+    // array), otherwise the var itself
+    if (Array.isArray(vars.get(name))) setVar(name + "[0]", val);
+    else setVar(name, val);
+  }
+  // memAdvance(h, delta) — a C pointer increment: return the handle for
+  // the element `delta` positions further on (`p + 1` / `p++`).
+  function memAdvance(h, delta) {
+    const m = /^\u0001mem:([^:]*):(-?\d+)$/.exec(String(h));
+    if (!m) return String(h);
+    return "\u0001mem:" + m[1] + ":" + (Number(m[2]) + (Number(delta) || 0));
   }
   const memArena = {};
   let memSeq = 0;
@@ -751,8 +866,15 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       exec, pipeline, capture, captureSync, pipelineSync, captureWords, redirect, test,
       forLoop, whileLoop, whileLoopSync, caseMatch, define, brace, param, arith, fparith,
       guard, and, or, arithEval,
-      setArray, setArrayAppend, arrayIndex, arrayLen, join,
-      memAddrOf: memAddrOf, memLoad, memStore, memAlloc, memElemSize, memFree,
+      setArray, setArrayAppend, arrayIndex, arrayLen, arrayItems, join,
+      strcmp,
+      readLine,
+      // sh2.stdin — the shell seeds the current pipe input before each
+      // transpiled program; the c frontend's read_line() consumes it.
+      set stdin(v) { stdinData = String(v ?? ""); stdinPos = 0; stdinAtEOF = false; },
+      get stdin() { return stdinData; },
+      getLine,
+      memAddrOf: memAddrOf, memLoad, memStore, memAlloc, memElemSize, memFree, memAdvance,
       assign,
       "break": breakLoop, "continue": continueLoop,
       idiv, imod, not, setLastExit,
@@ -901,7 +1023,16 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
         const a = (argsArr || []).map(String);
         switch (name) {
           case "echo": return a.join(" ") + "\n";
-          case "printf": return a.join(" ") + "\n";
+          case "printf": {
+            // the bash printf builtin: interpret \n \t \r \\ escapes
+            // (the emitter passes format strings with literal backslashes)
+            let out = "";
+            for (const s of a) {
+              out += s.replace(/\\n/g, "\n").replace(/\\t/g, "\t")
+                .replace(/\\r/g, "\r").replace(/\\\\/g, "\\");
+            }
+            return out;
+          }
           case "true": return "";
           case "false": return "";
           case "date": return new Date().toString() + "\n";

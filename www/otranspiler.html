@@ -330,9 +330,9 @@ import { getOtranspilerl } from "../src/otranspilerl.js";
 import { estreeToJs } from "../src/estree.js";
 import { GoRunner } from "../src/go.js";
 import { WasmRunner } from "../src/wasm.js";
-import { ensureBusyboxWasm, busyboxA1 } from "../src/busybox.js";
+import { ensureBusyboxWasm, busyboxA1, BUSYBOX_VERSION } from "../src/busybox.js";
 import { pyExec } from "../src/py.js";
-import { LANGS, getExamples } from "./otranspiler-examples.js?v=7";  // v=7: added bat frontend (bump on example changes)
+import { LANGS, getExamples } from "./otranspiler-examples.js?v=11";  // v=7: added bat frontend (bump on example changes)
 
 // ─── state ──────────────────────────────────────────────────────
 let srcLang = "sh";
@@ -661,9 +661,16 @@ async function transpile(source, srcLang, tgt) {
   }
   if (tgt === "js") {
     // the js backend emits an ESTree AST — render it through astring,
-    // and build the source↔generated line map from the A1's stmt_lines
-    const { estreeToJsMapped } = await import("../src/estree.js");
+    // and build the source↔generated line map from the A1's stmt_lines.
+    // keepVariables (same pass the shell's runEstreeProgram applies):
+    // self-collects the program's setArray calls and emits a STORE SYNC
+    // (`a = [...]; sh2.setArray("a", a)`), so array reads (arrayIndex /
+    // the c frontend's void* base) see the values — without it the
+    // read-only-array native-lift leaves the store empty and output is
+    // blank.
+    const { estreeToJsMapped, keepVariables } = await import("../src/estree.js");
     const estree = JSON.parse(text);
+    keepVariables(estree, []);
     const r = await estreeToJsMapped(estree, (a1 && a1.stmt_lines) || [], (a1 && a1.stmts) || []);
     return { text: r.js, map: r.map };
   }
@@ -703,7 +710,7 @@ async function runJs(jsCode) {
   let out = "", err = "";
   const outS = { write: (s) => { if (s) out += String(s); } };
   const { createSh2Runtime } = await import("../src/sh2runtime.js");
-  const rt = createSh2Runtime({ fs, env, shellExec: async () => 0, stdout: outS, stderr: outS, args: [], argv0: "sh" });
+  const rt = createSh2Runtime({ fs, env, shellExec: async () => ({ out: "", err: "", code: 0 }), stdout: outS, stderr: outS, args: [], argv0: "sh" });
   const proc = {
     stdout: outS, stderr: outS, pid: 1, argv: ["otranspiler"], env: env || {},
     cwd: () => (fs.cwd !== undefined ? fs.cwd : "/") || "/",
@@ -1091,7 +1098,7 @@ function setSearch(q) {
 async function getCorpus(dir) {
   if (corpusCache[dir]) return corpusCache[dir];
   corpusCache[dir] = (async () => {
-    const resp = await fetch(new URL("examples/" + dir + "/index.json", import.meta.url));
+    const resp = await fetch(new URL("examples/" + dir + "/index.json?v=" + BUSYBOX_VERSION, import.meta.url));
     if (!resp.ok) throw new Error("corpus manifest not found (" + resp.status + ")");
     return await resp.json();
   })();
@@ -1223,7 +1230,7 @@ function renderCorpusList(dir, names) {
       btn.disabled = true;
       btn.textContent = "… " + name;
       try {
-        const resp = await fetch(new URL("examples/" + dir + "/" + name, import.meta.url));
+        const resp = await fetch(new URL("examples/" + dir + "/" + name + "?v=" + BUSYBOX_VERSION, import.meta.url));
         if (!resp.ok) throw new Error("fetch " + resp.status);
         loadExample({ name, desc: dir + " corpus example", code: await resp.text() });
       } catch (e) {
@@ -1290,12 +1297,21 @@ async function applyUrlState() {
   if (p.has("code") && p.get("code")) {
     $("input").value = p.get("code");     // a custom edited source wins
     currentExample = p.get("example") || null;
-    if (autoUpdate) execute();            // restore the shared URL → actually run it
+    // SECURITY: a URL-supplied source must NOT auto-transpile-and-run —
+    // a link with #code=… would otherwise be a drive-by execution
+    // vector. Show it for review; the user presses the run button.
+    showStatus("shared source loaded — review it, then press Run", "info");
     return;
   }
   const exName = p.get("example");
   if (exName) {
-    const ex = getExamples(srcLang).find((e) => e.name === exName);
+    // curated match, tolerating the corpus-style FILE name ("my_qsort.c"
+    // → the curated "my_qsort", "linked_list.c" → "linked-list",
+    // "alphanumeric_compare.sh" → "alphanumeric-compare") — a shared URL
+    // from before a sample was promoted to a curated example still loads.
+    const base = exName.replace(/\.[a-z]+$/, "").replace(/_/g, "-");
+    const ex = getExamples(srcLang).find((e) => e.name === exName)
+      || getExamples(srcLang).find((e) => e.name === base);
     if (ex) {
       loadExample(ex);
       return;
@@ -1303,7 +1319,7 @@ async function applyUrlState() {
     // a corpus example (any frontend testdata dir) reloads by name
     for (const { dir } of (CORPUS_DIRS[srcLang] || [])) {
       try {
-        const resp = await fetch(new URL("examples/" + dir + "/" + exName, import.meta.url));
+        const resp = await fetch(new URL("examples/" + dir + "/" + exName + "?v=" + BUSYBOX_VERSION, import.meta.url));
         if (resp.ok) {
           loadExample({ name: exName, desc: dir + " corpus example", code: await resp.text() });
           return;

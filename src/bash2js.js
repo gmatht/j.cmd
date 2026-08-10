@@ -58,6 +58,9 @@ export function buildSh2LibFacade(fs) {
     lex: (src) => getSh2Lib().then((l) => l.lex(src)),
     version: () => getSh2Lib().then((l) => l.version()),
     bashToJs: async (src) => (await bashToJS(fs, src)).js,
+    // Windows batch → JS: the bat2js pipeline (busybox's bat-sh-go
+    // frontend → A1 shIR → otranspilerl estree → JS against sh2.*).
+    batToJs: async (src) => (await import("./bat2js.js")).batToJS(fs, src).then((r) => r.js),
     // the unified otranspilerl library (src/otranspilerl.js):
     //   shir(src) → A1 shIR JSON       (the debashl core, full bash)
     //   transpile(src, s, t) → target  (sh/shir sources, in-process)
@@ -67,6 +70,31 @@ export function buildSh2LibFacade(fs) {
     transpile: async (src, s, t) => (await getOtranspilerl()).transpile(String(src), s, t),
     render: async (a1, t) => (await getOtranspilerl()).render(String(a1), t),
     estreeToJs: async (estree) => estreeToJs(estree),
+    // the unified frontend (src/busybox.js) — the SAME artifact the
+    // otranspiler GUI uses: the shipped prebuilt
+    // www/wasm-bin/otranspiler-busybox.wasm, staged into the VFS and
+    // run by GoRunner (built with the in-browser Go toolchain only if
+    // the prebuilt is ever missing). busyboxA1(src, lang) → A1 shIR
+    // JSON for go/py/c/pl/zsh/fish sources.
+    busyboxA1: async (src, lang) => {
+      const { ensureBusyboxWasm, busyboxA1 } = await import("./busybox.js");
+      const { GoRunner } = await import("./go.js");
+      const goRunner = new GoRunner(fs, { baseUrl: "www/" });  // www/ in node CLI (page-relative in the browser)
+      const fetchBytes = async () => {
+        if (typeof process !== "undefined" && process.versions && process.versions.node) {
+          const { readFile } = await import("node:fs/promises");
+          return new Uint8Array(await readFile(process.cwd() + "/www/wasm-bin/otranspiler-busybox.wasm"));
+        }
+        const { BUSYBOX_VERSION } = await import("./busybox.js");
+        const resp = await fetch("wasm-bin/otranspiler-busybox.wasm?v=" + BUSYBOX_VERSION);
+        if (!resp.ok) throw new Error("prebuilt busybox fetch " + resp.status);
+        return new Uint8Array(await resp.arrayBuffer());
+      };
+      const wasmPath = await ensureBusyboxWasm(fs, {
+        goRunner, fetchBytes, onLog: (m) => console.log(m),
+      });
+      return busyboxA1(String(src), lang, { fs, wasmPath, goRunner });
+    },
   };
 }
 
@@ -79,7 +107,7 @@ export function buildSh2LibFacade(fs) {
 //
 // The generated JS runs with the `sh2.*` runtime (createSh2Runtime)
 // in scope. `scriptArgs` become $1..$9/$@/$#.
-export async function runBash(fs, source, { stdout, stderr, runCmd, args = [], argv0 = "bash", markers = [] } = {}) {
+export async function runBash(fs, source, { stdout, stderr, runCmd, args = [], argv0 = "bash", markers = [], stdin } = {}) {
   let { js } = await bashToJS(fs, source);
   // Marker echos (the REPL's `echo '<marker>'` line brackets) are
   // rewritten to direct stdout writes. Running them through exec would
@@ -98,6 +126,9 @@ export async function runBash(fs, source, { stdout, stderr, runCmd, args = [], a
   const err = stderr || { write: (s) => out.write(s) };
   const { createSh2Runtime } = await import("./sh2runtime.js");
   const rt = createSh2Runtime({ fs, env, shellExec: runCmd, stdout: out, stderr: err, args, argv0 });
+  // pipe input → the transpiled code's read_line/getline bridge (the c
+  // frontend's sh2.stdin cursor)
+  if (stdin !== undefined) { try { rt.sh2.stdin = stdin; } catch {} }
   const fn = new Function("args", "fs", "env", "stdout", "stderr", "__runCmd", "sh2", `
     return (async () => {
       ${js}

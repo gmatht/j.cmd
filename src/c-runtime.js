@@ -17,7 +17,7 @@ export class CExit extends Error {
   constructor(code) { super("exit(" + code + ")"); this.name = "CExit"; this.code = code; }
 }
 
-export function createCRuntime({ getMem, memory, out, err }) {
+export function createCRuntime({ getMem, memory, out, err, table }) {
   const enc = new TextEncoder();
   const dec = new TextDecoder();
 
@@ -104,7 +104,67 @@ export function createCRuntime({ getMem, memory, out, err }) {
     return out.length;
   }
 
+  // ─── qsort/bsearch: callbacks through the module's function table ──
+  // C function pointers are table indices. The guest passes the compar
+  // as `l extern $cmp` (lowered to its table index by qbe2wasm); the
+  // table export (__indirect_function_table) resolves it back to code.
+  // `table()` is a lazy accessor — the wasm runner fills it after
+  // instantiation (the same memRef pattern as memory).
+  const callFnPtr = (fnPtr, ...args) => {
+    const tbl = table ? table() : null;
+    if (!tbl) throw new Error("env: function pointer call but no function table");
+    const fn = tbl.get(Ptr(fnPtr));
+    if (typeof fn !== "function") throw new Error(`env: bad function pointer ${Ptr(fnPtr)}`);
+    // QBE 'l' (i64) args need BigInt; wasm32 compar functions take
+    // plain numbers — try BigInt first, fall back on the TypeError.
+    try { return Number(fn(...args.map((a) => BigInt(a)))); }
+    catch (e1) {
+      if (process.env.QSORT_DEBUG) err("QSortDbg bigint call failed: " + e1.message + " args=" + JSON.stringify(args.map(String)) + "\n");
+      try { return Number(fn(...args.map((a) => Number(a)))); }
+      catch (e2) { if (process.env.QSORT_DEBUG) err("QSortDbg number call failed: " + e2.message + "\n"); throw e2; }
+    }
+  };
+
   return {
+    "$qsort": (base, nmemb, size, compar) => {
+      base = Ptr(base); nmemb = Ptr(nmemb); size = Ptr(size); compar = Ptr(compar);
+      if (nmemb <= 1 || size <= 0) return;
+      const m8 = () => u8();
+      const elem = (i) => base + i * size;
+      const cmp = (i, j) => callFnPtr(compar, elem(i), elem(j));
+      const swap = (i, j) => {
+        if (i === j) return;
+        const m = m8();
+        const a = elem(i), b = elem(j);
+        for (let k = 0; k < size; k++) { const t = m[a + k]; m[a + k] = m[b + k]; m[b + k] = t; }
+      };
+      const stack = [[0, nmemb - 1]];   // iterative — no deep recursion
+      while (stack.length) {
+        const [lo, hi] = stack.pop();
+        if (lo >= hi) continue;
+        let i = lo;
+        for (let j = lo; j < hi; j++) {
+          if (cmp(j, hi) <= 0) { swap(i, j); i++; }
+        }
+        swap(i, hi);
+        stack.push([lo, i - 1], [i + 1, hi]);
+      }
+    },
+    "$bsearch": (key, base, nmemb, size, compar) => {
+      base = Ptr(base); nmemb = Ptr(nmemb); size = Ptr(size); compar = Ptr(compar);
+      if (nmemb <= 0 || size <= 0) return 0;
+      const elem = (i) => base + i * size;
+      let lo = 0, hi = nmemb;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        const c = callFnPtr(compar, Ptr(key), elem(mid));   // (key, element)
+        if (c < 0) lo = mid + 1;
+        else if (c > 0) hi = mid;
+        else return elem(mid);
+      }
+      return 0;
+    },
+
     "$printf": (fmt, ...args) => doPrintf(Ptr(fmt), args, out),
     "$puts": (p) => { out(readStr(p) + "\n"); return 0; },
     "$freopen": (name, mode, stream) => stream,  // reopen a stream — sandbox: keep it

@@ -96,6 +96,80 @@ an unprivileged session run custom code would hand it the keys to escalate.
 Wasm auto-loading is also gated (unprivileged users never auto-load, and
 couldn't write to `/usr/bin` anyway).
 
+## Pointer handles — what a pointer is, and why it is not data
+
+Compiled C (via the c-sh-go frontend) manipulates heap data through the shell
+runtime. Pointers are **out of band** — they are *variable bindings*, not
+self-describing strings:
+
+- A heap pointer's value is a generated **name** (`__heap_<random-token>`); the
+  runtime's heap registry maps the name to its arena, size and layout tag. The
+  value has **no pointer grammar** — it is just a name, and the registry decides
+  what it means.
+- The type is on the **variable**, not the value: the frontend's symbol table
+  (`structPtrVars`) specializes every `p->…` at compile time, and at runtime a
+  deref validates the name against the registry and the expected tag.
+- Arrays already work this way (`void *base` = the array's NAME).
+- A **legacy** embedded format (`\u0001mem:<size>…`) is still parsed for
+  persisted handles (backward compatibility) but is no longer issued for new
+  allocations.
+
+Why out of band:
+
+| Threat | What it means | Defense |
+|---|---|---|
+| **Forgery** | Crafting a "pointer" | Impossible by construction — there is no value grammar to craft; a name must resolve in the registry (a random token, ~2⁻⁶⁴ to guess) |
+| **Accidental collision** | A data file whose bytes look like a pointer | It is just text — only a pointer-typed VARIABLE holding a *registered* name dereferences |
+| **Type confusion** | A valid pointer used as the wrong structure | The registry's tag vs the variable's expected tag → `""` |
+| **Cross-context disclosure** | Arenas persist across sourced files and `su` switches | Registry cleared/partitioned on `su`, matching the custom-code gate |
+
+Things to internalize:
+
+- **Pointers are issued by the runtime; user-constructed handle strings are
+  unsupported and must never be relied upon.** This is a declared contract.
+- **Pointer values are bearer tokens, not capabilities-with-revocation.**
+  Whoever is given a name can use it; a leaked name stays usable. The per-`su`
+  registry clearing limits cross-user reuse.
+- **The out-of-band model is not self-contained**: a heap name means nothing
+  outside the runtime (it cannot travel through files or the network). That is
+  the deliberate trade for making pointers unforgeable.
+
+Design and hardening status live in `docs/plan-tagged-pointers.md`; the
+implementation milestones are M1–M6 there.
+
+## URL-driven input — the only untrusted thing that reaches the page
+
+The page's URL (`?cwd=`, `#prefill=`, `#try=`, and the GUI's `#code=`/
+`#lang=`/`#example=`) is the one input an attacker controls with a link. It is
+hardened to the following contract:
+
+**A URL may fill a line — never press Enter.** No URL payload auto-executes:
+
+- `#prefill=<cmd>` — pre-fills the command line for review; only the user's
+  Enter runs it.
+- `#try={…}` (shell) and `#code=…` (GUI) — were auto-runners (a drive-by
+  execution vector: a link could embed `rm -rf /` or exfiltrate VFS files);
+  both now load/pre-fill for review, and the user's Run/Enter is the only
+  execution trigger.
+- `?cwd=` — resolves and validates the path inside the VFS (`..` is clamped,
+  missing paths fall back); it changes the directory, it never runs anything.
+- `#lang=`/`#example=`/`#target=` (GUI) — resolve only to the page's own
+  curated/corpus files (trusted, page-owned) or to user action.
+
+Additional hardening at the boundary:
+
+- **Control characters (including `%01` → `\u0001`) are stripped** from
+  URL-derived strings before use — a crafted handle marker cannot be smuggled
+  into a command line via the URL.
+- **No HTML injection**: URL-derived text is rendered via `textContent`.
+- The source `#try` writes are name-sanitized (`[^A-Za-z0-9_.-]` → `_`) into
+  the sandboxed `/home/examples/` VFS path.
+
+What remains *cooperative*: a malicious link can pre-fill a command line or
+a source that *looks* benign, and the user presses Enter — the same model as
+a share link in any shell. The page's own code and the browser console can
+always bypass these layers, as everywhere in this document.
+
 ## LLM keys and secrets (the `llm` command)
 
 The `llm` command reads its key from `$LLM_API_KEY` or `~/.config/llm.key`
@@ -167,5 +241,11 @@ machine and the commands that touch it.
 - [ ] Restrict/rotate provider keys; prefer domain/spend restrictions.
 - [ ] Keep unprivileged-user and custom-code gates enabled — they are the
       defense against a compromised or malicious command inside the shell.
+- [ ] Preserve the URL contract: no `#try=`/`#code=`/`#prefill=` payload may
+      auto-execute — only pre-fill for review. A regression here re-opens the
+      drive-by execution vector.
+- [ ] If pointer handles are ever exposed to untrusted input paths (files,
+      network, other users), ship the capability-token + tag validation from
+      `docs/plan-tagged-pointers.md` before relying on handle safety.
 - [ ] Remember: the page's own code and the browser console can always bypass
       the in-page layers — that is the price of a single-page app.

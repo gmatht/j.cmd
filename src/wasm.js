@@ -122,6 +122,59 @@ export class WasmRunner {
     this.cache.delete(path);
   }
 
+  // ─── import signatures (the JS API exposes kinds, not types) ────
+  // QBE 'l' (i64) returns — pointer/unsigned-long libc functions in
+  // cproc output — must be answered with BigInt at the JS↔wasm boundary;
+  // tcc output imports the same names with i32 returns (Number). Parse
+  // the module's type + import sections so the runner can wrap each
+  // env.* function to return what THIS module's import expects.
+  static importTypesOf(bytes) {
+    const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    const u = (p) => {
+      let r = 0, s = 0;
+      for (;;) {
+        const x = b[p[0]++];
+        r |= (x & 0x7f) << s;
+        if (!(x & 0x80)) return r >>> 0;
+        s += 7;
+      }
+    };
+    const name = (p) => {
+      const n = u(p);
+      const s = new TextDecoder().decode(b.subarray(p[0], p[0] + n));
+      p[0] += n;
+      return s;
+    };
+    const types = [];   // type index → { params, ret }
+    const out = new Map();
+    let p = 8;          // magic + version
+    while (p < b.length) {
+      const id = b[p++];
+      const q = { 0: p };
+      const size = u(q);   // advances q past the size uleb
+      const end = q[0] + size;   // q[0] = first payload byte
+      if (id === 1) {          // type section
+        const n = u(q);
+        for (let i = 0; i < n; i++) {
+          if (b[q[0]++] !== 0x60) break;
+          const np = u(q), params = [];
+          for (let k = 0; k < np; k++) params.push(b[q[0]++]);
+          const nr = u(q), rets = [];
+          for (let k = 0; k < nr; k++) rets.push(b[q[0]++]);
+          types.push({ params, ret: rets[0] ?? 0x40 });
+        }
+      } else if (id === 2) {   // import section
+        const n = u(q);
+        for (let i = 0; i < n; i++) {
+          const mod = name(q), field = name(q), kind = b[q[0]++];
+          if (kind === 0) { const ti = u(q); out.set(mod + "\u0000" + field, types[ti]); }
+        }
+      }
+      p = end;
+    }
+    return out;   // "module\0name" → { params, ret }
+  }
+
   // ─── Run a wasm32-wasi binary ─────────────────────────────
 
   async run(path, args, stdin = "") {
@@ -136,17 +189,21 @@ export class WasmRunner {
     this._stdCustomOut = "";
     this._exitCode = 0;
 
-    let module = this.cache.get(path);
-    if (!module) {
+    let cached = this.cache.get(path);
+    if (!cached) {
       const blob = await this.vfs.readBlob(path);
-      module = await WebAssembly.compile(await blob.arrayBuffer());
-      this.cache.set(path, module);
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      cached = { module: await WebAssembly.compile(bytes), types: WasmRunner.importTypesOf(bytes) };
+      this.cache.set(path, cached);
     }
+    const module = cached.module;
 
     // Holder so custom-import closures can reach the instance memory
     // once it exists (the closures only run after instantiation).
     const memRef = { memory: null };
-    const custom = this._buildCustomImports(module, memRef);
+    const tabRef = { table: null };   // same pattern for the fn table
+    const { custom, rawEnv } = this._buildCustomImports(module, memRef, tabRef, cached.types);
+    this._rawEnv = rawEnv;
     // wasmer-wasi's instantiate traps with "unreachable" when a custom
     // import module (env/…) has more functions than the wasm
     // actually imports — so trim each custom module to exactly the
@@ -170,6 +227,7 @@ export class WasmRunner {
     if (!hasWasi) {
       const instance = await WebAssembly.instantiate(module, custom);
       if (instance.exports.memory) memRef.memory = instance.exports.memory;
+      if (instance.exports.__indirect_function_table) tabRef.table = instance.exports.__indirect_function_table;
       try {
         // qbe2wasm compiles export the QBE symbol verbatim ($main);
         // some compilers export main.
@@ -205,6 +263,7 @@ export class WasmRunner {
         wasi_snapshot_preview1: this._wasiShim(),
       });
       if (instance.exports.memory) memRef.memory = instance.exports.memory;
+      if (instance.exports.__indirect_function_table) tabRef.table = instance.exports.__indirect_function_table;
       try {
         if (instance.exports._start) {
           instance.exports._start();
@@ -296,6 +355,7 @@ export class WasmRunner {
     if (instance.exports.memory) {
       memRef.memory = instance.exports.memory;
     }
+    if (instance.exports.__indirect_function_table) tabRef.table = instance.exports.__indirect_function_table;
 
     if (instance.exports._start) {
       this._exitCode = wasi.start(instance);
@@ -340,14 +400,17 @@ export class WasmRunner {
   // is returned so the same instance can serve repeated calls.
   async instantiateLibrary(path) {
     await this._ensureInit();
-    let module = this.cache.get(path);
-    if (!module) {
+    let cached = this.cache.get(path);
+    if (!cached) {
       const blob = await this.vfs.readBlob(path);
-      module = await WebAssembly.compile(await blob.arrayBuffer());
-      this.cache.set(path, module);
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      cached = { module: await WebAssembly.compile(bytes), types: WasmRunner.importTypesOf(bytes) };
+      this.cache.set(path, cached);
     }
+    const module = cached.module;
     const memRef = { memory: null };
-    const custom = this._buildCustomImports(module, memRef);
+    const tabRef = { table: null };
+    const { custom, rawEnv } = this._buildCustomImports(module, memRef, tabRef, cached.types);
     const needsWasi = WebAssembly.Module.imports(module)
       .some((i) => i.module === "wasi_snapshot_preview1");
     const instance = await WebAssembly.instantiate(module, {
@@ -355,16 +418,20 @@ export class WasmRunner {
       ...custom,
     });
     if (instance.exports.memory) memRef.memory = instance.exports.memory;
+    if (instance.exports.__indirect_function_table) tabRef.table = instance.exports.__indirect_function_table;
     // The marshalling allocator: when the module imports env, reuse its
     // own runtime (the same heap it allocates from); otherwise a
     // standalone one over the same memory — its $malloc bumps from the
     // END of the current memory, clear of the module's stack/data.
-    let envRt = custom.env;
+    // NB: wasmcall marshalling wants Number pointers, so use the RAW
+    // runtime (the wasm instance got the BigInt-wrapped copy).
+    let envRt = rawEnv;
     if (!envRt) {
       const { createCRuntime } = await import("./c-runtime.js");
       envRt = createCRuntime({
         getMem: () => new Uint8Array(memRef.memory.buffer),
         memory: () => memRef.memory,
+        table: () => (tabRef ? tabRef.table : null),
         out: () => {},
         err: () => {},
       });
@@ -628,7 +695,7 @@ export class WasmRunner {
     return out;
   }
 
-  _buildCustomImports(module, memRef) {
+  _buildCustomImports(module, memRef, tabRef, importTypes) {
     const enc = new TextEncoder();
     const dec = new TextDecoder();
     const runner = this;
@@ -636,10 +703,13 @@ export class WasmRunner {
     const custom = {
       // Runtime for cproc → qbe2wasm-compiled C programs: extern calls
       // become env.* imports. printf/puts output to the terminal, the
-      // heap is a bump allocator above the stack zone.
+      // heap is a bump allocator above the stack zone. The function
+      // table (when the module uses function pointers) is resolved
+      // lazily after instantiation, like the memory.
       "env": createCRuntime({
         getMem: () => new Uint8Array(memRef.memory.buffer),
         memory: () => memRef.memory,
+        table: () => (tabRef ? tabRef.table : null),
         out: (t) => { runner._stdCustomOut += t; },
         err: (t) => { runner._stderr += t; },
       }),
@@ -669,7 +739,28 @@ export class WasmRunner {
     for (const [mod, funcs] of Object.entries(custom)) {
       if (needed.has(mod)) filtered[mod] = funcs;
     }
-    return filtered;
+    // i64-returning imports (QBE 'l' — pointer/unsigned-long libc fns)
+    // must hand back BigInt at the wasm boundary; i32 ones a Number.
+    // Wrap only what THIS module imports, and keep the raw runtime for
+    // JS-side callers (wasmcall marshalling wants Number pointers).
+    const rawEnv = custom.env;
+    if (rawEnv && importTypes) {
+      const wrapped = {};
+      for (const fnName of Object.keys(rawEnv)) {
+        const sig = importTypes.get("env\u0000" + fnName);
+        if (sig && sig.ret === 0x7e) {   // i64 return
+          const orig = rawEnv[fnName];
+          wrapped[fnName] = (...args) => {
+            const r = orig(...args);
+            return typeof r === "bigint" ? r : BigInt(r);
+          };
+        } else {
+          wrapped[fnName] = rawEnv[fnName];
+        }
+      }
+      filtered.env = wrapped;
+    }
+    return { custom: filtered, rawEnv };
   }
 
   _dirname(path) {

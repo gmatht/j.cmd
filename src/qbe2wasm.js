@@ -144,7 +144,12 @@ function parseIr(text) {
     module.data.push({ name, items });
   }
 
-  function parseStmt(first) {
+  const parseStmt = (first) => {
+    // A value operand that is a FUNCTION symbol arrives as two tokens,
+    // `extern $f` (e.g. `call extern $qsort(..., l extern $cmp)` or
+    // `storel extern $inc, %.1`). Collapse them into one `extern$f`
+    // marker so every value position sees a single operand.
+    const readValue = () => { let t = next(); if (t === "extern") t = "extern" + next(); return t; };
     if (first.startsWith("%")) {
       const tmp = first;
       expect("=");
@@ -159,7 +164,7 @@ function parseIr(text) {
           next();
           while (peek() !== ")") {
             if (peek() === "," || peek() === "...") { next(); continue; }
-            const at = next(), av = next();
+            const at = next(), av = readValue();
             args.push({ type: at, value: av });
             if (peek() === ",") next();
           }
@@ -172,7 +177,7 @@ function parseIr(text) {
       while (pos < tokens.length && tokLine[pos] === line0) {
         const t = peek();
         if (t === "," || t === "(" || t === ")") { next(); continue; }
-        if (t === "extern") { next(); args.push("extern"); continue; }
+        if (t === "extern") { next(); args.push("extern" + next()); continue; }
         if (t.startsWith("%") || t.startsWith("@") || t.startsWith("$") ||
             /^-?\d+$/.test(t) || /^0x/.test(t) || FLOAT_RE.test(t) || /^-?\d*\.\d/.test(t)) {
           args.push(next());
@@ -190,7 +195,7 @@ function parseIr(text) {
         next();
         while (peek() !== ")") {
           if (peek() === "," || peek() === "...") { next(); continue; }
-          const at = next(), av = next();
+          const at = next(), av = readValue();
           args.push({ type: at, value: av });
           if (peek() === ",") next();
         }
@@ -200,14 +205,14 @@ function parseIr(text) {
     }
     if (first === "storew" || first === "storel" || first === "storeb" || first === "storeh" ||
         first === "stores" || first === "stored") {
-      const v = next(); expect(",");
+      const v = readValue(); expect(",");
       const p = next();
       return { kind: "store", op: first, value: v, ptr: p };
     }
     if (first === "ret") {
       const v = peek();
-      if (v !== undefined && (v.startsWith("%") || /^-?\d+$/.test(v) || /^0x/.test(v) || FLOAT_RE.test(v) || v.startsWith("$"))) {
-        return { kind: "ret", value: next() };
+      if (v !== undefined && (v.startsWith("%") || /^-?\d+$/.test(v) || /^0x/.test(v) || FLOAT_RE.test(v) || v.startsWith("$") || v === "extern")) {
+        return { kind: "ret", value: readValue() };
       }
       return { kind: "ret", value: null };
     }
@@ -438,6 +443,18 @@ function genFunction(fn, mod) {
       emit(OP.f64_const, ...b);
       return;
     }
+    if (op.startsWith("extern$")) {
+      // a FUNCTION symbol operand (parser collapsed `extern $f`): its
+      // value is the index of $f in the module's function table.
+      const ti = mod.funcTableIdx.get(op.slice(6));
+      if (ti === undefined) throw new Error(`qbe: undefined function symbol ${op}`);
+      if (wasm64) emit(OP.i64_const, sleb(BigInt(ti)));
+      else {
+        emit(OP.i32_const, uleb(ti));
+        if (expect === I64) emit(OP.i64_extend_i32_u);
+      }
+      return;
+    }
     if (op.startsWith("$")) {
       const off = mod.dataOffset.get(op);
       if (off === undefined) throw new Error(`qbe: undefined data symbol ${op}`);
@@ -521,9 +538,18 @@ function genFunction(fn, mod) {
   const emitStmt = (st) => {
     if (st.kind === "op" && st.op === "call") {
       for (const a of st.args) pushOperand(a.value, wasmOf(a.type));
-      const fi = mod.funcIdx.get(st.fname);
-      if (fi === undefined) throw new Error(`qbe: unknown function ${st.fname}`);
-      emit(OP.call, uleb(fi));
+      if (st.fname.startsWith("%")) {
+        // indirect call through a function pointer: the temp holds the
+        // table index of the target. call_indirect needs a type that
+        // matches the target's signature (sigOf dedupes by signature).
+        const ti = mod.sigOf(st.args.map((a) => ({ type: a.type })), st.type);
+        pushOperand(st.fname, I32);
+        emit(0x11, uleb(ti), uleb(0));   // call_indirect <typeidx> <tableidx=0>
+      } else {
+        const fi = mod.funcIdx.get(st.fname);
+        if (fi === undefined) throw new Error(`qbe: unknown function ${st.fname}`);
+        emit(OP.call, uleb(fi));
+      }
       if (st.tmp) emit(OP.local_set, uleb(localIdx.get(st.tmp)));
       return;
     }
@@ -940,6 +966,22 @@ export function qbe2wasm(irText, { importBase = "env", wasm64 = false } = {}) {
     }
     return typeIdx.get(key);
   };
+  mod.sigOf = sigOf;   // genFunction lowers indirect calls through it
+
+  // Function pointers: does the IR carry `extern $f` operands or
+  // indirect `call %t`? If so, every defined function goes into a
+  // funcref table (exported under the wasm-ld name) and the operands
+  // lower to its indices.
+  let usesFnPtrs = false;
+  for (const fn of mod.funcs) for (const b of fn.blocks) for (const st of b.stmts) {
+    if (st.kind === "op" && st.op === "call" && st.fname.startsWith("%")) { usesFnPtrs = true; break; }
+    if (st.kind === "op" && st.args.some((a) => String(a.value).startsWith("extern$"))) { usesFnPtrs = true; break; }
+    if (st.kind === "store" && String(st.value).startsWith("extern$")) { usesFnPtrs = true; break; }
+  }
+  if (usesFnPtrs) {
+    const tableFuncs = mod.funcs.map((f) => f.name);
+    mod.funcTableIdx = new Map(tableFuncs.map((n, i) => [n, i]));
+  }
 
   const defined = new Set(mod.funcs.map((f) => f.name));
   const imports = [];
@@ -997,6 +1039,11 @@ export function qbe2wasm(irText, { importBase = "env", wasm64 = false } = {}) {
     )));
   }
   sec(3, functions.map((f) => uleb(f.ti)));
+  if (usesFnPtrs) {
+    // table (funcref, min = #functions) so call_indirect + the host's
+    // $qsort/$bsearch can resolve function pointers to code.
+    sec(4, [bytes(0x70, 0x00, ...uleb(mod.funcs.length))]);
+  }
   const pages = Math.max(1, Math.ceil((mod.stackSize + 65536) / 65536));
   if (wasm64) {
     // (memory i64 N): limits flags 0x04, min as u64
@@ -1009,7 +1056,13 @@ export function qbe2wasm(irText, { importBase = "env", wasm64 = false } = {}) {
   const exports = [];
   for (const fn of mod.funcs) if (fn.exported) exports.push([fn.name, 0x00, finalIdx.get(fn.name)]);
   exports.push(["memory", 0x02, 0]);
+  if (usesFnPtrs) exports.push(["__indirect_function_table", 0x01, 0]);
   if (exports.length) sec(7, exports.map(([name, kind, idx]) => bytes(...vec(strBytes(name)), kind, ...uleb(idx))));
+  if (usesFnPtrs) {
+    // elem segment: table[0..n) = every defined function, in definition
+    // order (the indices `extern $f` operands lower to).
+    sec(9, [bytes(0x00, 0x41, 0x00, 0x0b, ...vec(mod.funcs.map((f) => uleb(finalIdx.get(f.name)))))]);
+  }
   sec(10, functions.map((f) => f.body));
   if (dataBytes.length) {
     const offExpr = wasm64 ? bytes(0x42, 0x00, 0x0b) : bytes(0x41, 0x00, 0x0b);

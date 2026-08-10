@@ -58,7 +58,36 @@ printf '%s\\n' "$text" | grep -P '\\bapple\\b'
 # PCRE-only: negative lookbehind + -o (only-matching) → grep_p
 printf '%s\\n' "$text" | grep -oP '(?<![:-])\\b\\w+'
 ` },
-  ],
+    { name: "alphanumeric-compare", desc: "a bash comparator (-1/0/1 echo protocol) — drives the qsort builtin and C function-pointer comparators: source it, then qsort a alphanumeric_compare / source my_qsort.c",
+      code: `# alphanumeric_compare.sh — a bash COMPARATOR for sorting words.
+#
+# THE PROTOCOL (C qsort convention): the function is called with two
+# words as $1 and $2, and must ECHO a signed number to stdout:
+#   -1  $1 sorts before $2
+#    0  equal
+#    1  $1 sorts after $2
+# Nothing else — the caller captures the echo, it must not reach the
+# terminal (that is why the verdicts go to stdout via echo, and the
+# caller runs the function under command substitution / capture).
+#
+# WHO USES IT:
+#   * the \`qsort\` builtin:
+#       a=(pear apple fig banana)
+#       qsort a alphanumeric_compare; echo "\${a[@]}"   → apple banana fig pear
+#   * C code sourced through the c-sh-go frontend — my_qsort.c calls
+#     the comparator by name via its cmp_call bridge:
+#       source /examples/sh-posix/alphanumeric_compare.sh
+#       source /examples/c/my_qsort.c                  → apple banana fig pear
+#
+# [[ $1 < $2 ]] is the LEXICOGRAPHIC (alphabetical) comparison — the
+# same ordering C's strcmp uses for ASCII text. Swap the two verdicts
+# (or flip the operators) to sort descending instead:
+#   reverse_compare() { if [[ "$1" > "$2" ]]; then echo -1;
+#                       elif [[ "$1" < "$2" ]]; then echo 1;
+#                       else echo 0; fi }
+alphanumeric_compare() { if [[ "$1" < "$2" ]]; then echo -1;
+                         elif [[ "$1" > "$2" ]]; then echo 1;
+                         else echo 0; fi }` },  ],
 
   zsh: [
     { name: "hello", desc: "Hello world (echo)", code: 'name="world"\necho "hello $name"\n' },
@@ -196,7 +225,216 @@ int main(void) {
     return 0;
 }
 ` },
-  ],
+    { name: "my_qsort", desc: "C bubble sort whose comparator is a BASH function — a real function-pointer parameter ((*cmp)(a, b); the pointer VALUE is the comparator's NAME). The isolated run shows the unsorted array (no bash comparator here); in j.cmd: source /examples/sh-posix/alphanumeric_compare.sh first.",
+      code: `// my_qsort.c — a C sort whose comparator is a BASH function.
+//
+// The signature mirrors libc qsort:
+//     void qsort(void *base, size_t nitems, size_t size,
+//                int (*compar)(const void *, const void *))
+// mapped onto the c-sh-go transpiler's world, where the runtime store is
+// UNTYPED (every value is a string) and a POINTER is a NAME:
+//   * void *base     — the array's variable name (arrays decay to their
+//                      name at the call site: \`my_qsort(a, 4, cmp)\`).
+//                      \`void\` is the ANY verdict — base[j] just reads
+//                      the word at index j and hands it to the
+//                      comparator, no cast, no deref (the "cast" is
+//                      implicit: there are no types at runtime).
+//   * size_t nitems  — \`int nitems\` here (size_t needs typedefs).
+//   * size_t size    — dropped: store elements are single untyped words.
+//   * compar         — a real C function-pointer parameter; the call
+//                      \`(*cmp)(a, b)\` is the comparator bridge — it
+//                      dispatches to whatever bash function the caller
+//                      passed (the pointer VALUE is the function's NAME,
+//                      a string) and captures its echoed -1/0/1 verdict,
+//                      the C qsort comparator protocol.
+//
+// HOW TO RUN (in j.cmd — the transpiled path, NOT \`cc\`):
+//   source /examples/sh-posix/alphanumeric_compare.sh   # the comparator
+//   source /examples/c/my_qsort.c                       # defines + runs
+//   → apple banana fig pear
+//
+//   # swap any protocol-compatible bash comparator — descending:
+//   reverse_compare() { if [[ "$1" > "$2" ]]; then echo -1;
+//                       elif [[ "$1" < "$2" ]]; then echo 1;
+//                       else echo 0; fi }
+//   a=(pear apple fig banana); my_qsort a 4 reverse_compare; echo "\${a[@]}"
+//
+// NOTE: the function-pointer call is a TRANSPILER bridge — this file does not compile
+// with \`cc\` (cproc); it runs through \`source\`, which parses C with the
+// c-sh-go frontend and executes the generated JS in the shell runtime.
+#include <stdio.h>
+
+int my_qsort(void *base, int nitems, int (*cmp)(const void *, const void *)) {
+  int i;
+  int j;
+  i = 0;
+  while (i < nitems - 1) {
+    j = 0;
+    while (j < nitems - 1 - i) {
+      if ((*cmp)(base[j], base[j + 1]) > 0) {
+        char *t = base[j];
+        base[j] = base[j + 1];
+        base[j + 1] = t;
+      }
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  return 0;
+}
+
+int main() {
+  char *a[4] = {"pear", "apple", "fig", "banana"};
+  my_qsort(a, 4, "alphanumeric_compare");
+  int k;
+  for (k = 0; k < 4; k++) {
+    printf("%s ", a[k]);
+  }
+  printf("\\n");
+  printf("\\n");
+  printf("usage: this sort ran with the bash comparator alphanumeric_compare — swap it freely:\\n");
+  printf("  reverse_compare() { if [[ \\"$1\\" > \\"$2\\" ]]; then echo -1; elif [[ \\"$1\\" < \\"$2\\" ]]; then echo 1; else echo 0; fi }\\n");
+  printf("  a=(pear apple fig banana); my_qsort a 4 reverse_compare; echo \\"\${a[@]}\\"\\n");
+  return 0;
+}` },
+    { name: "linked-list", desc: "getline(&b,&n,stdin) → malloc'd linked list (struct Node, p->next) → slurp2 returns the list HANDLE to bash, sink2 takes the pointer back. Sourcing prints usage; in j.cmd: linkedlist=$(printf 'three\ntwo\none\n' | slurp2); sink2 $linkedlist",
+      code: `// linked_list.c — a C linked-list generator + sink, driven by bash.
+//
+// THE C SIDE
+//   struct Node { char *word; struct Node *next; } — a real heap-linked
+//   list. \`p->member\` reads/writes the runtime mem arena at the member's
+//   byte offset (malloc(sizeof(struct Node)) → 16 bytes: word at 0,
+//   next at 8). NULL is the empty string; \`while (list != 0)\` is the
+//   pointer-non-null test.
+//
+//   gen_line(word) — the GENERATOR: prepends one node (LIFO — the list
+//   ends up in reverse input order).
+//   sink()          — the SINK: drains the list head-to-tail, printing
+//   each word. Prepend + head-to-tail = REVERSED input.
+//   slurp()         — reads stdin LINES with the STANDARD getline(&b,
+//   &bufsize, stdin) (lowered to the runtime getLine bridge: fills b,
+//   returns the count, -1 at EOF) and feeds gen_line.
+//   main()          — slurp + sink: reads stdin, reverses it, prints.
+//
+// THE BASH SIDE (the demo): bash combines the two over a pipe — the
+// generator slurps stdin, the sink emits the reversed lines:
+//
+//   printf 'three\\ntwo\\none\\n' | source /examples/c/linked_list.c
+//   → one
+//     two
+//     three
+//
+//   # or build the list a word at a time and sink it later:
+//   source /examples/c/linked_list.c
+//   for w in alpha beta gamma; do gen_line "$w"; done
+//   sink            → gamma beta alpha
+//
+//   # the IDIOMATIC form: capture slurp2's output (the head's mem handle
+//   # — an opaque string; the pointer IS a name) into a bash variable and
+//   # pass the pointer back in:
+//   linkedlist=$(printf 'three\\ntwo\\none\\n' | slurp2)   # slurp2 reads the pipe, prints the handle
+//   sink2 $linkedlist      → one two three
+//   # (slurp2 also leaves the handle in the $last global, so a direct
+//   # \`printf … | slurp2\` followed by \`sink2 "$last"\` works too)
+//
+// NOTE: this exercises the c-sh-go TRANSPILER (struct pointers, the
+// \`->\` member lowering, getline) — it does not compile with \`cc\`.
+#include <stdio.h>
+
+struct Node { char *word; struct Node *next; };
+
+struct Node *list = 0;
+struct Node *last = 0;   // slurp2 also leaves the fresh head here — bash can read $last
+
+int gen_line(char *word) {
+  struct Node *n = malloc(sizeof(struct Node));
+  n->word = word;
+  n->next = list;
+  list = n;
+  return 0;
+}
+
+int sink() {
+  while (list != 0) {
+    printf("%s\\n", list->word);
+    list = list->next;
+  }
+  return 0;
+}
+
+int slurp() {
+  char *b;
+  unsigned long bufsize = 0;
+  int characters;
+  characters = getline(&b, &bufsize, stdin);
+  while (characters != -1) {
+    gen_line(b);
+    characters = getline(&b, &bufsize, stdin);
+  }
+  return 0;
+}
+
+// slurp2 — like slurp, but builds the list in a LOCAL head and RETURNS
+// the list to bash: \`printf "%s" head\` prints the head node's mem handle
+// (an opaque string — bash holds it in a variable; a pointer IS a name).
+//   p=$(slurp2)      # slurp2 reads stdin, prints the head handle
+//   sink2 "$p"       # the same list, drained from the pointer
+int slurp2() {
+  struct Node *head = 0;
+  char *b;
+  unsigned long bufsize = 0;
+  int characters;
+  characters = getline(&b, &bufsize, stdin);
+  while (characters != -1) {
+    struct Node *n = malloc(sizeof(struct Node));
+    n->word = b;
+    n->next = head;
+    head = n;
+    characters = getline(&b, &bufsize, stdin);
+  }
+  last = head;
+  printf("%s", head);
+  return 0;
+}
+
+// sink2 — drains a list passed in BY POINTER (the handle bash holds):
+//   sink2 "$p"
+int sink2(struct Node *head) {
+  struct Node *p = head;
+  while (p != 0) {
+    printf("%s\\n", p->word);
+    p = p->next;
+  }
+  return 0;
+}
+
+int main() {
+  char *b;
+  unsigned long bufsize = 0;
+  int characters;
+  characters = getline(&b, &bufsize, stdin);
+  if (characters < 0) {
+    printf("linked_list.c — a C linked-list generator + sink (sourced into this shell)\\n");
+    printf("\\n");
+    printf("  pipe stdin through it — reverses the lines:\\n");
+    printf("    printf 'three\\ntwo\\none\\n' | source /examples/c/linked_list.c\\n");
+    printf("\\n");
+    printf("  hold the list in a bash VARIABLE (the head's mem handle) and pass the pointer back:\\n");
+    printf("    linkedlist=$(printf 'four\\nthree\\ntwo\\none\\n' | slurp2); sink2 $linkedlist\\n");
+    printf("\\n");
+    printf("  or build it a word at a time and sink later:\\n");
+    printf("    for w in alpha beta gamma; do gen_line \\"$w\\"; done; sink\\n");
+  } else {
+    gen_line(b);
+    characters = getline(&b, &bufsize, stdin);
+    while (characters >= 0) {
+      gen_line(b);
+      characters = getline(&b, &bufsize, stdin);
+    }
+    sink();
+  }
+  return 0;
+}` },  ],
 
   pl: [
     { name: "hello", desc: "Hello world", code: 'my $name = "world";\nprint "hello $name\\n";\n' },

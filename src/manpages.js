@@ -28,7 +28,7 @@ export const MAN_ALIASES = {
   vim: "vi", nano: "edit", emacs: "edit",
   less: "cat", more: "cat", cls: "clear", dir: "ls",
   ll: "ls", la: "ls", q: "exit", quit: "exit", "?": "help",
-  umount: "unmount", sh: "bash", chdir: "cd",
+  umount: "unmount", sh: "bash", chdir: "cd", cmd: "cmd.exe",
 };
 
 // One-line descriptions used by the man index (`man` with no args)
@@ -61,6 +61,8 @@ const SHORT = {
   bug: "file a bug report as a GitHub issue (with terminal context)",
   bash2js: "transpile bash to JavaScript (debashcl ESTree)",
   bash: "run bash commands: transpile to JS and execute",
+  "cmd.exe": "run Windows batch by transpiling it to JS (bat2js)",
+  cmd: "alias for cmd.exe (run Windows batch by transpiling it to JS)",
   which: "show the path (or builtin) the shell would run",
   help: "shell help and overview",
   vi: "vi-style editor (CodeMirror vim keymap)",
@@ -486,6 +488,7 @@ OPTIONS
      -c, --count             Print only the count of matches.
      -l, --files-with-matches  Print only file names with matches.
      -r, -R, --recursive     Search directories recursively.
+     -o, --only-matching     Print only the matched parts of lines.
      -e PAT, --regexp PAT    Add a pattern (repeatable; OR-combined).
      --                      Treat everything after as file names.
      -h, --help              Show this page.
@@ -496,6 +499,7 @@ EXAMPLES
      grep -rn "mount" /home
      grep -c "^#" ~/.jtshrc        count comment lines in config
      grep -l wasm /bin/*.js
+     echo food | grep -o foo         prints only the matches: "foo"
 
 SEE ALSO
      find, cat, head
@@ -785,6 +789,49 @@ EXAMPLES
 
 SEE ALSO
      bash (transpile and execute)
+`,
+  "cmd.exe": `NAME
+     cmd.exe — run Windows batch by transpiling it to JavaScript
+
+SYNOPSIS
+     cmd.exe 'SCRIPT'
+     cmd.exe /c 'SCRIPT'
+     cmd.exe FILE.bat
+     cat FILE.bat | cmd.exe
+
+DESCRIPTION
+     cmd.exe is a Windows cmd shell front-end over the bat2js
+     pipeline: batch source → A1 shIR (the bat-sh-go frontend,
+     merged into the busybox wasm) → ESTree (otranspilerl) → JS
+     (sh2.* runtime) → executed in the shell. Variables, set /a
+     arithmetic, if/for/goto, call :label subroutines, exit /b,
+     redirects and '&' statement separators work; batch builtins
+     map onto the shell's POSIX tools (type→cat, copy→cp, del→rm,
+     dir→ls, …). %var% is case-insensitive, %1..%9/%* are the
+     positional args, %errorlevel% reads the shell's $?.
+
+     Deliberately NOT supported (the frontend refuses loudly):
+     pipes |, delayed expansion !var!, setlocal/endlocal, shift,
+     pause, start, set /p, call other.bat, for /f with skip=/eol=
+     or token sets not starting at 1. See the frontend's v1 subset
+     (frontends/bat-sh-go/FRONTEND.md).
+
+OPTIONS
+     /c 'SCRIPT'   Run the inline script, then exit (real cmd's /c).
+     /k 'SCRIPT'   Run the inline script, then enter the REPL.
+     -f FILE       Run a batch file from the virtual FS.
+     --js          Print the generated JS only (bat2js mode).
+     -h, --help    Show this page.
+
+EXAMPLES
+     cmd.exe 'echo hello world'
+     cmd.exe /c 'set /a N=2+3 & echo %N%'
+     cmd.exe 'for %%v in (a b c) do echo item %%v'
+     cmd.exe -f script.bat
+     cmd.exe            (interactive REPL; exit or Ctrl-D to leave)
+
+SEE ALSO
+     bash (transpile and execute), otranspiler (any source → any target)
 `,
   bash: `NAME
      bash — run bash commands by transpiling them to JS

@@ -901,6 +901,7 @@ import { env, expandRef, setShellStatus, getShellStatus, setLastBgPid,
 import { watToWasm } from "../src/wabt-loader.js";
 import { qbe2wasm } from "../src/qbe2wasm.js";
 import { bashToJS, runBash, buildSh2LibFacade } from "../src/bash2js.js";
+import { batToJS, runBat } from "../src/bat2js.js";
 import { createSh2Runtime } from "../src/sh2runtime.js";
 import { getOtranspilerl } from "../src/otranspilerl.js";
 import { estreeToJs, keepVariables } from "../src/estree.js";
@@ -1240,7 +1241,7 @@ function write(text, cls = "out", opts = {}) {
 // The prompt string for the current mode (shell / REPL / pager).
 function getPromptStr() {
   if (pagerState.active) return "";       // pager draws its own marker
-  if (replState.active) return replState.mode === "perl" ? "perl> " : replState.mode === "bash" ? "bash> " : ">>> ";
+  if (replState.active) return replState.mode === "perl" ? "perl> " : replState.mode === "bash" ? "bash> " : replState.mode === "cmd" ? "cmd> " : ">>> ";
   const user = env.USER && env.USER !== "jtsh" ? env.USER : "jtsh";
   return `${user}:${fs.view ? fs.view(fs.cwd) : fs.cwd}$ `;
 }
@@ -2581,7 +2582,10 @@ const CPROC_DECLS =
   `void *memset(void*, int, unsigned long);\n` +
   `int memcmp(const void*, const void*, unsigned long);\n` +
   `void exit(int);\n` +
-  `void abort(void);\n`;
+  `void abort(void);\n` +
+  `typedef int (*qsort_cmp)(const void*, const void*);\n` +
+  `void qsort(void*, unsigned long, unsigned long, qsort_cmp);\n` +
+  `void *bsearch(const void*, const void*, unsigned long, unsigned long, qsort_cmp);\n`;
 
 function preprocessCproc(src) {
   // Strip preprocessor lines; the shell supplies the libc declarations
@@ -3422,6 +3426,14 @@ const builtins = {
   },
 
   async find(args) {
+    // TWO finds under one name, dispatched on the first argument's shape:
+    //   find UTF8_STRING…          → the directory search below
+    //   find \u0001mem:… …         → a sourced C find() over a pointer tree
+    if (String(args[0] ?? "").includes("\u0001mem:") &&
+        otRt && otRt.sh2 && otRt.sh2.functions && otRt.sh2.functions.has("find")) {
+      const v = await otRt.sh2.fnCall("find", args);
+      return (v === false ? 1 : (v === true || v === undefined ? 0 : Number(v) || 0));
+    }
     // find [path...] [expression]
     //   -name PATTERN    match basename, * and ? wildcards (repeatable, AND)
     //   -iname PATTERN   case-insensitive -name
@@ -3921,6 +3933,14 @@ Loops, conditionals, variables, arithmetic and pipes work:
         runCmd: runNestedCommand,
         args: scriptArgs,
         argv0: args[0] && !args[0].startsWith("-") ? args[0] : "bash",
+        stdin: stdinBuffer || "",
+      },).then(async (code) => {
+        // C functions sourced earlier live in the persistent otRt (the
+        // fresh runBash runtime dispatches to it natively) — give the
+        // otRt the pipe input too, so their getline/read_line bridge
+        // sees this command's stdin.
+        if (otRt && otRt.sh2) { try { otRt.sh2.stdin = stdinBuffer || ""; } catch {} }
+        return code;
       });
     } catch (e) {
       if (e instanceof InterruptError) throw e;
@@ -3989,6 +4009,15 @@ Extra args become the script's $1… (the caller's are restored).
           goRunner, goCmd, fetchBytes, onLog: (m) => stderr.write(m + "\n"),
         });
         a1 = await busyboxA1(String(content), lang, { fs, wasmPath, goRunner });
+  // the otranspilerl renderer panics on Goto/Label ("unreachable") —
+  // refuse loudly up front (REFUSE > GUESS) instead of crashing
+  if (a1 && Array.isArray(a1.stmts)) {
+    for (const st of a1.stmts) {
+      if (st && (st.type === "Goto" || st.type === "Label")) {
+        throw new Error("goto/labels are not supported by the jtsh renderer yet (the debashc verify pipeline can render them)");
+      }
+    }
+  }
         program = JSON.parse(lib.render(JSON.stringify(a1), "js"));
       }
     } catch (e) {
@@ -4036,6 +4065,107 @@ Extra args become the script's $1… (the caller's are restored).
       stderr.write(`source: ${file}: ${e.message}\n`);
       return 1;
     }
+  },
+
+  async qsort(args) {
+    // qsort ARRAY COMPARFN — sort a shell array IN PLACE using a bash
+    // function as the comparator (C qsort convention: the function is
+    // called as COMPARFN "$a" "$b" and must echo a signed number —
+    // -1/0/1 — to stdout). No wasm needed: the shell arrays and the
+    // function table both live in the JS runtime, so this is pure
+    // interlanguage interop between bash data and bash functions.
+    //   a=(pear apple fig banana)
+    //   alphabetic_compare() { if [[ "$1" < "$2" ]]; then echo -1
+    //                          elif [[ "$1" > "$2" ]]; then echo 1
+    //                          else echo 0; fi }
+    //   qsort a alphabetic_compare; echo "${a[@]}"  → apple banana fig pear
+    const help = () => stdout.write(
+      `qsort ARRAY COMPARFN — sort a shell array in place using a bash function
+` +
+      `  as the comparator (C qsort convention). COMPARFN is called with two
+` +
+      `  elements as $1/$2 and must ECHO a signed number (-1/0/1) to stdout.
+` +
+      `
+  a=(pear apple fig banana)
+` +
+      `  alphabetic_compare() { if [[ "$1" < "$2" ]]; then echo -1; \\
+` +
+      `                           elif [[ "$1" > "$2" ]]; then echo 1; \\
+` +
+      `                           else echo 0; fi }
+` +
+      `  qsort a alphabetic_compare; echo "\${a[@]}"
+`
+    );
+    if (!args.length || args[0] === "-h" || args[0] === "--help") { help(); return 0; }
+    const name = args[0], compar = args[1];
+    if (!compar) { stderr.write("qsort: usage: qsort ARRAY COMPARFN\n"); return 2; }
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+      stderr.write(`qsort: '${name}': not a valid variable name\n`);
+      return 2;
+    }
+    await ensureOtRuntime();
+    const sh2 = otRt.sh2;
+    if (!sh2.functions || !sh2.functions.has(compar)) {
+      stderr.write(`qsort: no function '${compar}' (define it first: ${compar}() { … })\n`);
+      return 1;
+    }
+    const arr = sh2.vars[name];
+    if (!Array.isArray(arr)) {
+      stderr.write(`qsort: '${name}' is not an array\n`);
+      return 1;
+    }
+    // The comparator is a real bash function. Its body may emit through
+    // either the sh2.exec path or the native-direct process shim, so a
+    // plain sh2.capture (mode-aware only) would miss one of them — swap
+    // the write targets themselves around the call and read the chunks
+    // back. Non-numeric output is treated as "equal" (0) — the C qsort
+    // convention.
+    const captureOut = async (fn) => {
+      const chunks = [];
+      const targets = [];
+      if (typeof stdout !== "undefined" && stdout && typeof stdout.write === "function") targets.push(stdout);
+      if (typeof process !== "undefined" && process.stdout && typeof process.stdout.write === "function") targets.push(process.stdout);
+      const saved = targets.map((t) => t.write);
+      for (const t of targets) t.write = (s) => { if (s) chunks.push(s); return true; };
+      try { await fn(); } finally { targets.forEach((t, i) => { t.write = saved[i]; }); }
+      return chunks.join("");
+    };
+    const cmp = async (a, b) => {
+      const out = await captureOut(() => sh2.fnCall(compar, [a, b]));
+      const n = Number(String(out ?? "").trim());
+      return Number.isFinite(n) ? n : 0;
+    };
+    // async quicksort (Lomuto partition, last element pivot) — the
+    // compar must be awaited, so JS's sync Array.sort can't drive it.
+    const qs = async (lo, hi) => {
+      if (lo >= hi) return;
+      const pivot = arr[hi];
+      let i = lo;
+      for (let j = lo; j < hi; j++) {
+        if ((await cmp(arr[j], pivot)) <= 0) {
+          const t = arr[i]; arr[i] = arr[j]; arr[j] = t;
+          i++;
+        }
+      }
+      arr[hi] = arr[i]; arr[i] = pivot;
+      await qs(lo, i - 1);
+      await qs(i + 1, hi);
+    };
+    try {
+      await qs(0, arr.length - 1);
+    } catch (e) {
+      stderr.write(`qsort: ${compar}: ${e.message}\n`);
+      return 1;
+    }
+    sh2.setArray(name, arr);
+    // The next transpiled line re-seeds the runtime from otVars/env —
+    // plant the SORTED array as the persistent state, or the stale
+    // pre-sort copy would clobber this write-back.
+    otVars.set(name, arr);
+    try { env[name] = arr.join(" "); } catch {}
+    return 0;
   },
 
   async addr(args) {
@@ -4253,6 +4383,8 @@ Extra args become the script's $1… (the caller's are restored).
     bash2js         Transpile bash to JavaScript (debashcl ESTree)
     bash            Run bash commands: transpile to JS and execute
                     (bash 'echo hi' · bash script.sh · cat s.sh | bash)
+    cmd.exe         Run Windows batch: transpile to JS and execute (bat2js)
+                    (cmd.exe 'echo hi' · cmd.exe /c 'echo hi' · x.bat | cmd.exe)
     man [cmd]       Manual page for a command (man alone: index;
                     man -k <word>: search pages, like apropos)
     bug            File a bug report as a GitHub issue (terminal context +
@@ -5170,6 +5302,138 @@ Extra args become the script's $1… (the caller's are restored).
     return 0;
   },
 
+  async cmdExe(args) {
+    // cmd.exe — run Windows batch by transpiling it to JS (bat2js).
+    // The whole pipeline runs in the browser:
+    //   .bat → A1 shIR (busybox's bat-sh-go frontend) → ESTree
+    //   (otranspilerl) → JS (estree.js, sh2.* runtime) → executed
+    // Usage mirrors `bash`, plus real cmd's /c and /k switches:
+    //   cmd.exe 'echo hello'        transpile + execute inline batch
+    //   cmd.exe /c 'echo hi'        run and exit (real cmd's /c)
+    //   cmd.exe /k 'echo hi'        run then keep going (REPL)
+    //   cmd.exe -f script.bat       execute a batch file from the VFS
+    //   cmd.exe script.bat          execute a batch file (existing file)
+    //   cat script.bat | cmd.exe    execute from a pipe
+    //   cmd.exe --js 'echo hi'      print the generated JS (bat2js mode)
+    //   cmd.exe                     interactive REPL (state persists per line)
+    if (args[0] === "-h" || args[0] === "--help") {
+      stdout.write(`cmd.exe — run Windows batch by transpiling it to JS
+
+Usage:
+  cmd.exe 'echo hello world'  transpile + execute inline batch
+  cmd.exe /c 'echo hi'        same as inline, then exit (real cmd's /c)
+  cmd.exe /k 'echo hi'        run, then keep going (interactive REPL)
+  cmd.exe -f script.bat       execute a batch file from the virtual FS
+  cmd.exe script.bat          execute a batch file (existing file wins)
+  cat script.bat | cmd.exe    execute from a pipe
+  cmd.exe --js 'echo hi'      print the generated JS only (bat2js mode)
+  cmd.exe                     interactive REPL (state persists per line)
+
+Pipeline:  .bat → A1 shIR (bat-sh-go frontend) → ESTree (otranspilerl)
+           → JS (sh2.* runtime) → executed
+Batch builtins map onto the shell's POSIX tools (type→cat, copy→cp,
+del→rm, dir→ls, …); %var% is case-insensitive and %errorlevel% reads
+the shell's $?. Unsupported batch (pipes, delayed expansion !var!,
+setlocal, call other.bat, …) refuses loudly — see the frontend's v1 subset.
+`);
+      return 0;
+    }
+    let source = null;
+    let toJsOnly = false;
+    let keepOpen = false;   // /k — run the source, then enter the REPL
+    let scriptArgs = [];    // %1..%9 for the batch script
+    let argv0 = "cmd.exe";
+    const pos = [];
+    let i = 0;
+    for (; i < args.length; i++) {
+      const a = args[i];
+      if (a === "/c" || a === "-c") {
+        source = args.slice(i + 1).join(" ");
+        i = args.length;
+        break;
+      }
+      if (a === "/k" || a === "-k") {
+        source = args.slice(i + 1).join(" ");
+        keepOpen = true;
+        i = args.length;
+        break;
+      }
+      if (a === "--js" || a === "--to-js") { toJsOnly = true; continue; }
+      if (a === "-f" || a === "--file") {
+        const file = args[++i];
+        if (!file) { stderr.write("cmd.exe: -f needs a file name\n"); return 2; }
+        try {
+          source = await fs.read(file);
+        } catch (e) {
+          stderr.write(`cmd.exe: ${file}: ${e.message}\n`);
+          return 1;
+        }
+        argv0 = file;
+        continue;
+      }
+      pos.push(a);
+    }
+    if (source === null) {
+      if (pos.length === 0) {
+        if (stdinBuffer) {
+          source = stdinBuffer; // piped in
+        } else {
+          // bare `cmd.exe` with no pipe → an interactive REPL
+          enterCmdRepl();
+          return 0;
+        }
+      } else {
+        // A first-arg file name runs the batch file from the VFS
+        // (`cmd.exe x.bat a b` — %1=a %2=b); anything else is inline
+        // batch source (`cmd.exe 'echo hi'`). A word that looks like a
+        // script path but doesn't exist is an error; multi-word source
+        // is always treated as inline batch.
+        const file = pos[0];
+        let fileSource = null;
+        try {
+          fileSource = await fs.read(file);
+        } catch {
+          // not a file — fall through to inline source
+        }
+        const looksLikePath = !/\s/.test(file) && (file.includes("/") || /\.(bat|cmd)$/i.test(file));
+        if (fileSource !== null) {
+          source = fileSource;
+          scriptArgs = pos.slice(1);
+          argv0 = file;
+        } else if (looksLikePath) {
+          stderr.write(`cmd.exe: ${file}: No such file or directory\n`);
+          return 1;
+        } else {
+          source = pos.join(" ");
+        }
+      }
+    } else if (pos.length > 0) {
+      // `-f FILE a b` — the trailing words are the script's %1..%9
+      scriptArgs = pos;
+    }
+    try {
+      if (toJsOnly) {
+        const { js } = await batToJS(fs, source);
+        stdout.write(js);
+        if (keepOpen) enterCmdRepl();
+        return 0;
+      }
+      const code = await runBat(fs, source, {
+        stdout,
+        stderr,
+        runCmd: runNestedCommand,
+        args: scriptArgs,
+        argv0,
+      });
+      if (keepOpen) enterCmdRepl();
+      return code;
+    } catch (e) {
+      if (e instanceof InterruptError) throw e;
+      stderr.write(`cmd.exe: ${e.message}\n`);
+      return 1;
+    }
+  },
+
   async exit(args) {
     write("Goodbye.\n", "info");
     input.disabled = true;
@@ -5179,6 +5443,10 @@ Extra args become the script's $1… (the caller's are restored).
 
 // `.` is bash's dot-command — the same builtin as `source`.
 builtins["."] = builtins.source;
+// cmd.exe (and its `cmd` alias) run Windows batch via the bat2js
+// pipeline — batch → A1 shIR → estree → JS against the sh2.* runtime.
+builtins["cmd.exe"] = builtins.cmdExe;
+builtins["cmd"] = builtins.cmdExe;
 
 // ─── Command Resolution ─────────────────────────────────────────
 
@@ -5305,6 +5573,10 @@ async function resolveCommandExact(name) {
       type: "builtin",
       fn: async (args) => {
         const v = await otRt.sh2.fnCall(name, args);
+        // the function may have mutated the runtime store (an in-place
+        // sort/fill) — harvest it back so the next transpiled line's
+        // seed sees the LIVE values, not a stale otVars snapshot.
+        syncOtVarsFromStore();
         return (v === false ? 1 : (v === true || v === undefined ? 0 : Number(v) || 0));
       },
     };
@@ -6631,6 +6903,24 @@ async function runJsSourceContent(content, srcArgs) {
 // runtime's map — both are diffed against a before-snapshot.
 let otVars = new Map();
 
+// Sync the persistent runtime's store back into otVars after a NATIVE
+// command mutated it (e.g. a function dispatched via findCommand sorting
+// an array in place). The transpiled-line SEED replays otVars before
+// every runViaTranspiler program — a stale snapshot would clobber the
+// live store (my_qsort's in-place sort would be erased by the next
+// transpiled line's `a=(...)` seed). Same keepable/readonly rules as the
+// evalOnOtRt harvest.
+function syncOtVarsFromStore() {
+  if (!otRt || !otRt.sh2 || !otRt.sh2.vars) return;
+  const keepable = (val) => typeof val === "string" || typeof val === "number" || Array.isArray(val);
+  for (const k of Object.keys(otRt.sh2.vars)) {
+    const val = otRt.sh2.vars[k];
+    if (!keepable(val) || k.startsWith("__")) continue;
+    if (isReadonly(k)) continue;
+    otVars.set(k, Array.isArray(val) ? val : String(val));
+  }
+}
+
 // The A1 contract's Assign expr → literal value, or undefined when
 // computed (Str → string; a "…" with no interpolations (the shIR
 // lowers `name="world"` to Interpolate{parts:[lit]}) → the literal;
@@ -6801,6 +7091,7 @@ async function evalOnOtRt(js, { lineAssigned = new Set(), lineCaptured = new Set
     } catch {}
   }
   try { otRt.sh2.lastExit = getShellStatus(); } catch {}   // native $? → transpiled
+  try { otRt.sh2.stdin = stdinBuffer || ""; } catch {}   // pipe input → read_line()
   const savedPositional = getPositional();                  // the caller's $1..$9
   const savedArgv0 = getArgv0();                            // the caller's $0
   try {
@@ -7171,6 +7462,9 @@ const replState = {
   bashSession: [],   // accumulated bash lines, replayed per line (state persists)
   bashOut: "",
   bashMarker: "",
+  cmdSession: [],    // accumulated batch lines, replayed per line (cmd.exe REPL)
+  cmdOut: "",
+  cmdMarker: "",
   history: [],       // per-session REPL history (Up/Down)
   histIdx: 0,
 };
@@ -7236,6 +7530,20 @@ function enterBashRepl() {
     Math.floor(Math.random() * 1e9) + "__";
 }
 
+function enterCmdRepl() {
+  spinnerStop();  // modal mode takes over the prompt slot
+  replState.active = true;
+  replState.mode = "cmd";
+  replState.history = [];
+  replState.histIdx = 0;
+  stdout.write("cmd.exe REPL — Windows batch, transpiled to JS (bat-sh-go → A1 → estree). State persists per line · exit or Ctrl-D to leave\n");
+  updatePrompt();
+  recordReplPrompt();
+  replState.cmdSession = [];
+  replState.cmdMarker = "__cmd_repl_" + Date.now() + "_" +
+    Math.floor(Math.random() * 1e9) + "__";
+}
+
 function exitRepl() {
   if (!replState.active) return;
   const mode = replState.mode;
@@ -7246,7 +7554,7 @@ function exitRepl() {
   replState.mode = null;
   replState.perl = null;
   replState.perlReady = null;
-  const label = mode === "perl" ? "Perl" : mode === "bash" ? "Bash" : "Python";
+  const label = mode === "perl" ? "Perl" : mode === "bash" ? "Bash" : mode === "cmd" ? "cmd.exe" : "Python";
   stdout.write(`\nLeaving ${label} REPL.\n`);
   updatePrompt();
   writeShellPrompt();
@@ -7308,6 +7616,47 @@ async function runReplLine(line) {
       }
     } catch (e) {
       stderr.write(`bash: ${(e && e.message) ? e.message : String(e)}\n`);
+    }
+  } else if (replState.mode === "cmd") {
+    if (/^(exit|quit)\b/.test(trimmed) || trimmed === ":q") { exitRepl(); return; }
+    if (!trimmed) return;
+    try {
+      // Session replay: re-transpile and re-run every line so far plus
+      // the new one, with an echo marker between old and new. The bat
+      // frontend REFUSES loud (unlike bash's silent drop), so if POST
+      // is missing the line never ran — report it and leave the session
+      // untouched. Variables persist because the whole session
+      // re-declares them; only the output between the markers is shown.
+      // Batch `echo` compiles to a direct stdout write (no exec), so
+      // the PRE marker can't clobber %errorlevel% for the new line
+      // (`exit /b 5` then `echo %errorlevel%` must print 5, like cmd).
+      replState.cmdOut = "";
+      const session = replState.cmdSession;
+      const pre = replState.cmdMarker;
+      const post = replState.cmdMarker + "_end";
+      const src = (session.length > 0 ? session.join("\n") + "\n" : "") +
+        "echo " + pre + "\n" + line + "\necho " + post + "\n";
+      await runBat(fs, src, {
+        runCmd: runNestedCommand,
+        stdout: { write: (s) => { replState.cmdOut += s; } },
+        stderr: { write: (s) => { replState.cmdOut += s; } },
+      });
+      const pi = replState.cmdOut.indexOf(pre);
+      const pj = replState.cmdOut.lastIndexOf(post);
+      if (pi === -1 || pj === -1 || pj < pi) {
+        // POST never printed — the statement was refused/truncated
+        stderr.write("cmd.exe: syntax error — the line was not run (session unchanged)\n");
+      } else {
+        // The PRE marker's echo appends its own newline, so the slice
+        // after it starts with "\n" — strip it, or every command's
+        // output would be preceded by a blank line (and no-output lines
+        // like `set X=5` would print one).
+        const fresh = replState.cmdOut.slice(pi + pre.length, pj).replace(/^\n+/, "");
+        if (fresh) stdout.write(fresh);
+        session.push(line);
+      }
+    } catch (e) {
+      stderr.write(`cmd.exe: ${(e && e.message) ? e.message : String(e)}\n`);
     }
   } else {
     if (trimmed === "exit" || trimmed === "quit" || trimmed === ":q") { exitRepl(); return; }
@@ -7475,7 +7824,9 @@ function updateStatusBar() {
       ? "Perl REPL · exit or Ctrl-D to leave"
       : replState.mode === "bash"
         ? "bash REPL · exit or Ctrl-D to leave"
-        : "Python REPL · exit() or Ctrl-D to leave";
+        : replState.mode === "cmd"
+          ? "cmd.exe REPL · exit or Ctrl-D to leave"
+          : "Python REPL · exit() or Ctrl-D to leave";
     return;
   }
 
@@ -8797,6 +9148,8 @@ document.addEventListener("click", (e) => {
   write("          asciinema rec demo.cast · stop · play — record sessions\n", "info");
   write("          cp file /pc — download · cp /pc/file — upload\n", "info");
   write("          /big/ — IndexedDB storage (no 5MB limit)\n\n", "info");
+  write("          for f in /home/examples/source.{bat,c,fish,sh,zsh}; do . $f; done — source all sample types\n", "info");
+  write("          cmd.exe — run Windows batch scripts (bat-sh-go transpiler)\n", "info");
   write("          echo $HOME · $PATH · $USER — environment variables\n\n", "info");
   write("Most importantly, if you notice a bug, quickly report it with the \x1b[31mbug\x1b[0m command.\n\n", "info");
   welcomeText = null;  // banner done — writes go back to the terminal
@@ -8889,15 +9242,14 @@ document.addEventListener("click", (e) => {
   // #try=… — the otranspiler GUI's "Try in j.cmd" entry point. The
   // payload is { src, lang, target, name? }: write the source to
   // /home/examples/<name>.<ext> (extension-driven source detection),
-  // then run the pipeline — transpile to <target> (output extension
-  // drives the target, no --target), compile and run where j.cmd has a
-  // runtime/compiler for that target.
+  // then PRE-FILL the pipeline command for review — never auto-run.
   //
-  // SECURITY: auto-running a URL-supplied pipeline is a drive-by
+  // SECURITY: AUTO-RUNNING a URL-supplied pipeline would be a drive-by
   // execution vector (a link could embed rm -rf /, or exfiltrate the
-  // user's files) — even for a toy web OS. The GUI normally opens the
-  // #prefill variant below (review + Enter) instead; #try remains only
-  // for the explicit "run it" case.
+  // user's files) — the page must not execute code the URL asks for
+  // without the user's explicit Enter. The GUI itself already opens
+  // #prefill (review + Enter) instead; #try is kept functional as a
+  // prefill-only form of the same thing.
   // Build the j.cmd pipeline for a "try" — transpile <src> to <target>
   // (the output file's extension drives the target), then compile + run
   // where this shell has a runtime/compiler for that target.
@@ -8919,14 +9271,20 @@ document.addEventListener("click", (e) => {
   const tryParam = new URLSearchParams(bootHash).get("try");
   if (tryParam) {
     try {
-      const t = JSON.parse(tryParam);
+      const t = JSON.parse(stripCtl(tryParam));   // control chars (incl. %01) stripped
       const ext = { sh: "sh", zsh: "zsh", fish: "fish", go: "go", py: "py", c: "c", pl: "pl" }[t.lang] || "sh";
       const name = (t.name || "try").replace(/[^A-Za-z0-9_.-]/g, "_") + "." + ext;
       try { await fs.write("/home/examples/.directory", ""); } catch {}
       const srcPath = "/home/examples/" + name;
       await fs.write(srcPath, String(t.src || ""));
       const cmd = buildTryCommand(srcPath, t.target || "sh");
-      await handleLine(cmd);
+      // PRE-FILL the pipeline for review — the user's Enter is the only
+      // thing that runs it (a URL alone must never execute code).
+      currentLine = cmd;
+      cursorPos = currentLine.length;
+      recordLineRedraw();
+      renderInput();
+      input.focus();
       // NB: the URL is left untouched — it only changes once the user
       // does something (cd, a command with ?cwd=, …).
     } catch (e) {
@@ -8943,10 +9301,16 @@ document.addEventListener("click", (e) => {
   // #prefill=<cmd> — the share-link format: the value IS the command
   // line (URL-encoded). The shell pre-fills it for review — never
   // auto-runs — and a refresh re-fills it (the point of a share link).
-  const prefillParam = new URLSearchParams(bootHash).get("prefill");
-  if (prefillParam) {
+  // URL-derived strings must not carry control characters: a crafted
+  // %01 (\u0001 — the pointer-handle marker) could smuggle a forged
+  // `\u0001mem:…` handle into a command line. Shared command lines never
+  // legitimately need control chars — strip them at the boundary.
+  const stripCtl = (s) => String(s ?? "").replace(/[\u0000-\u001f\u007f]/g, "");
+  const prefillParam = URLSearchParams ? new URLSearchParams(bootHash).get("prefill") : null;
+  if (prefillParam !== null) {
+    const clean = stripCtl(prefillParam);
     try {
-      currentLine = prefillParam;
+      currentLine = clean;
       cursorPos = currentLine.length;
       recordLineRedraw();
       renderInput();       // draw the pre-filled line (recordLineRedraw only records)
