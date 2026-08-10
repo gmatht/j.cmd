@@ -4385,6 +4385,7 @@ Extra args become the script's $1… (the caller's are restored).
                     (bash 'echo hi' · bash script.sh · cat s.sh | bash)
     cmd.exe         Run Windows batch: transpile to JS and execute (bat2js)
                     (cmd.exe 'echo hi' · cmd.exe /c 'echo hi' · x.bat | cmd.exe)
+    which <cmd>...  Show the path (or builtin) the shell would run
     man [cmd]       Manual page for a command (man alone: index;
                     man -k <word>: search pages, like apropos)
     bug            File a bug report as a GitHub issue (terminal context +
@@ -5432,6 +5433,34 @@ setlocal, call other.bat, …) refuses loudly — see the frontend's v1 subset.
       stderr.write(`cmd.exe: ${e.message}\n`);
       return 1;
     }
+  },
+
+  async which(args) {
+    // which cmd... — print the path (or builtin) the shell would run
+    // for each command name, like POSIX `which`. Lookup is the same as
+    // command resolution (wasm binary → builtin → sourced function →
+    // .js/.mjs/.wasm files in $PATH), including case folding.
+    if (args.length === 0) {
+      stderr.write("which: missing operand\n");
+      return 2;
+    }
+    let missing = false;
+    for (const name of args) {
+      const resolved = await resolveCommand(name);
+      if (!resolved) {
+        missing = true;
+        stderr.write(`which: no ${name} in (${env.PATH})\n`);
+        continue;
+      }
+      if (resolved.type === "builtin") {
+        stdout.write(`${name}: shell builtin\n`);
+      } else if (resolved.type === "badpath") {
+        stdout.write(`${resolved.path} (not executable: ${resolved.err})\n`);
+      } else {
+        stdout.write(resolved.path + "\n");
+      }
+    }
+    return missing ? 1 : 0;
   },
 
   async exit(args) {
