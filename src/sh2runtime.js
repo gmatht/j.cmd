@@ -810,6 +810,7 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     return idx === 0 ? getVar(m[1]) : getVar(m[1] + "[" + idx + "]");
   }
   function memStore1(h, v) {
+    if (process.env.SH2_DEBUG_MEM) process.stderr.write(`[memStore1] h=${JSON.stringify(h)} v=${v}\n`);
     const m = /^\u0001mem:([^:]*):(-?\d+)$/.exec(String(h));
     if (!m) return;
     const idx = Number(m[2]);
@@ -824,6 +825,7 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
   // memAdvance(h, delta) — a C pointer increment: return the handle for
   // the element `delta` positions further on (`p + 1` / `p++`).
   function memAdvance(h, delta) {
+    if (!/^\u0001mem:/.test(String(h))) h = memAddrOf(h);
     const m = /^\u0001mem:([^:]*):(-?\d+)$/.exec(String(h));
     if (!m) return String(h);
     return "\u0001mem:" + m[1] + ":" + (Number(m[2]) + (Number(delta) || 0));
@@ -857,12 +859,17 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     return { arr, size: Math.max(1, Number(m[2]) || 1) };
   }
   function memLoad(h, offset, type) {
+    // a bare variable name is a handle for its own element 0 (a pointer
+    // IS a name — `sum_first a 3` and `sum_first "$(addr a)" 3` both
+    // walk the array `a`)
+    if (!/^\u0001mem:/.test(String(h))) h = memAddrOf(h);
     const a = memArenaOf(h);
     if (!a) return memLoad1(h);
     const i = (Number(offset) || 0) * memElemSize(type);
     return i >= 0 && i < a.arr.length ? String(a.arr[i]) : "";
   }
   function memStore(h, offset, type, v) {
+    if (!/^\u0001mem:/.test(String(h))) h = memAddrOf(h);
     const a = memArenaOf(h);
     if (!a) return memStore1(h, v);
     const i = (Number(offset) || 0) * memElemSize(type);

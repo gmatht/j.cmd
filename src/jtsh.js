@@ -2700,6 +2700,15 @@ function syncOtVarsFromStore() {
     if (isReadonly(k)) continue;
     otVars.set(k, Array.isArray(val) ? val : String(val));
   }
+  // mirror into the shell's env too — a NATIVE line after the call
+  // (`echo "a=($a)"`) expands $NAME from env, which the transpiled
+  // runEstreeProgram mirror normally refreshes; a native fnCall
+  // dispatch (findCommand → sh2.fnCall) must do the same or it sees
+  // the stale pre-call value.
+  for (const [k, v] of otVars) {
+    if (isReadonly(k)) continue;
+    try { env[k] = Array.isArray(v) ? v.join(" ") : String(v); } catch {}
+  }
 }
 
 // The A1 contract's Assign expr → literal value, or undefined when
