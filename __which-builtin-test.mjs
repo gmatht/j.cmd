@@ -3,10 +3,10 @@
 import { readFileSync } from "fs";
 import { fs } from "./src/fs/index.js";
 
-const html = readFileSync("www/index.html", "utf8");
-const m = html.match(/async which\(args\) \{[\s\S]*?\n  \},\n\n  async exit/);
-if (!m) { console.error("FAIL: could not extract which builtin"); process.exit(1); }
-const src = "(" + m[0].replace(/^async which\(args\)/, "async (args) =>").replace(/\n  \},\n\n  async exit$/, "\n}") + ")";
+const html = readFileSync("src/shellcore/builtins.js", "utf8");
+const m = html.match(/async which\(ctx, args\) \{[\s\S]*?\n  \},\n\n  async whoami/);
+if (!m) { console.error("FAIL: could not extract which builtin from shellcore"); process.exit(1); }
+const src = "(" + m[0].replace(/^async which\(ctx, args\)/, "async (ctx, args) =>").replace(/\n  \},\n\n  async whoami$/, "\n}") + ")";
 
 const stdout = { _buf: "", write(s) { this._buf += s; } };
 const stderr = { _buf: "", write(s) { this._buf += s; } };
@@ -24,7 +24,7 @@ const resolveCommand = async (name) => {
 globalThis.stdout = stdout; globalThis.stderr = stderr;
 globalThis.env = env;
 globalThis.resolveCommand = resolveCommand;
-
+const shellCtx = { stdout, stderr, env, findCommand: resolveCommand };
 const which = eval(src);
 let failures = 0;
 const check = (label, got, want) => {
@@ -34,29 +34,29 @@ const check = (label, got, want) => {
 };
 
 stdout._buf = ""; stderr._buf = "";
-let code = await which(["ls"]);
+let code = await which(shellCtx, ["ls"]);
 check("builtin", stdout._buf, "ls: shell builtin\n");
 check("builtin exit", code, 0);
 
 stdout._buf = ""; stderr._buf = "";
-code = await which(["grep"]);
+code = await which(shellCtx, ["grep"]);
 check("wasm path", stdout._buf, "/bin/grep.wasm\n");
 
 stdout._buf = ""; stderr._buf = "";
-code = await which(["edit", "hello"]);
+code = await which(shellCtx, ["edit", "hello"]);
 check("jsfile + sh", stdout._buf, "/bin/edit.js\n/home/hello.sh\n");
 
 stdout._buf = ""; stderr._buf = "";
-code = await which(["dir"]);
+code = await which(shellCtx, ["dir"]);
 check("badpath annotated", stdout._buf, "/tmp/dir (not executable: Is a directory)\n");
 
 stdout._buf = ""; stderr._buf = "";
-code = await which(["cmd"]);
+code = await which(shellCtx, ["cmd"]);
 check("missing stderr", stderr._buf, "which: no cmd in (/bin:/usr/bin)\n");
 check("missing exit", code, 1);
 
 stdout._buf = ""; stderr._buf = "";
-code = await which([]);
+code = await which(shellCtx, []);
 check("no args", stderr._buf, "which: missing operand\n");
 check("no args exit", code, 2);
 
