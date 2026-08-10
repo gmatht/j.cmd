@@ -1595,8 +1595,15 @@ func lex(src string) ([]tok, error) {
 				i += 3
 				continue
 			}
+			switch three {
+			case "<<=", ">>=":
+				out = append(out, tok{"op", three, line})
+				i += 3
+				continue
+			}
 			switch two {
-			case "==", "!=", "<=", ">=", "&&", "||", "+=", "-=", "++", "--", "->":
+			case "==", "!=", "<=", ">=", "&&", "||", "+=", "-=", "++", "--", "->",
+				"<<", ">>", "*=", "/=", "%=", "&=", "|=", "^=":
 				out = append(out, tok{"op", two, line})
 				i += 2
 				continue
