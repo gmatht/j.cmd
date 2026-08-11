@@ -108,14 +108,20 @@ PY
 fi
 
 # ── deploy ──────────────────────────────────────────────────────────
+# Targets: ca.dansted.org's PUBLIC host (racknerd, 72.11.150.147 — where
+# the DNS points and the user actually loads the site) + the eu origin
+# (81.4.105.17) as backup, + gh-pages (auto via the push).
 echo "── deploy ──"
 SHA=$(git rev-parse HEAD)
 git push origin main
 echo "commit: $SHA built: $(date -u +%Y-%m-%dT%H:%M:%SZ)" > version.txt
-rsync -az --delete www/ us:/var/www/html/j.cmd/www/
-rsync -az --delete src/ us:/var/www/html/j.cmd/src/
 cp www-landing.html index.html
-rsync -az index.html version.txt us:/var/www/html/j.cmd/
-ssh us "curl -s -o /dev/null -w 'origin:  %{http_code}\n' http://localhost/j.cmd/version.txt"
+for HOST in root@72.11.150.147 us; do
+  rsync -az --delete www/ "$HOST:/var/www/html/j.cmd/www/"
+  rsync -az --delete src/ "$HOST:/var/www/html/j.cmd/src/"
+  rsync -az index.html version.txt "$HOST:/var/www/html/j.cmd/"
+done
+ssh -o ConnectTimeout=8 root@72.11.150.147 "curl -s -o /dev/null -w 'public: %{http_code}\n' http://localhost/j.cmd/version.txt"
+ssh -o ConnectTimeout=8 us "curl -s -o /dev/null -w 'origin:  %{http_code}\n' http://localhost/j.cmd/version.txt"
 curl -s -o /dev/null -w "gh-pages: %{http_code}\n" https://gmatht.github.io/j.cmd/www/version.txt
 echo "✓ deployed $(git rev-parse --short HEAD)"
