@@ -63,12 +63,34 @@ export function createCRuntime({ getMem, memory, out, err, table }) {
     return p;
   }
 
-  // ─── printf: %d %i %u %x %X %c %s %f %ld %zu %% ─────────────
+  // ─── printf: %d %i %u %x %X %o %c %s %f %g %e %p %ld %zu %% ──────
   function fmtInt(v, base, pad, upper) {
     const digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
     let s = v.toString(base);
     while (s.length < pad) s = "0" + s;
     return upper ? s : s;
+  }
+  // pad a signed integer string: C puts the zero-padding AFTER the sign
+  function padNum(s, width, zero) {
+    if (s.length >= width) return s;
+    const neg = s[0] === "-";
+    const body = neg ? s.slice(1) : s;
+    const padCh = zero ? "0" : " ";
+    const p = padCh.repeat(Math.max(0, width - s.length));
+    return (neg ? "-" : "") + (zero ? p + body : p + s);
+  }
+  function fmtF(v, prec) {
+    // %f always prints the precision (default 6) — never strips zeros
+    return v.toFixed(prec < 0 ? 6 : prec);
+  }
+  function fmtG(v, prec) {
+    // C %g: %f-like but strips trailing zeros (exponent form when the
+    // exponent is < -4 or >= precision — simplified to the strip)
+    if (v === 0) return "0";
+    const p = prec < 0 ? 6 : (prec === 0 ? 1 : prec);
+    let s = v.toPrecision(p);
+    s = s.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+    return s;
   }
   function doPrintf(fmtPtr, args, to) {
     const fmt = readStr(fmtPtr);
@@ -77,25 +99,55 @@ export function createCRuntime({ getMem, memory, out, err, table }) {
       const ch = fmt[i];
       if (ch !== "%") { out += ch; continue; }
       i++;
-      let conv = fmt[i];
-      // length modifiers we ignore (l, ll, z, h)
-      while (conv === "l" || conv === "h" || conv === "z" || conv === "j") conv = fmt[++i];
+      // flags: -, +, space, 0, #
+      let zero = false, left = false;
+      for (;;) {
+        const f = fmt[i];
+        if (f === "0") zero = true;
+        else if (f === "-") left = true;
+        else if (f === "+" || f === " " || f === "#") { /* ignored */ }
+        else break;
+        i++;
+      }
+      // width
+      let width = 0;
+      while (fmt[i] >= "0" && fmt[i] <= "9") width = width * 10 + (fmt.charCodeAt(i++) - 48);
+      // precision
+      let prec = -1;
+      if (fmt[i] === ".") { i++; prec = 0; while (fmt[i] >= "0" && fmt[i] <= "9") prec = prec * 10 + (fmt.charCodeAt(i++) - 48); }
+      // length modifiers we ignore (l, ll, z, h, j, t, L)
+      while (fmt[i] === "l" || fmt[i] === "h" || fmt[i] === "z" || fmt[i] === "j" || fmt[i] === "t" || fmt[i] === "L") i++;
+      const conv = fmt[i];
       if (conv === undefined) break;
       const arg = () => args[ai++];
+      const wid = (s) => left ? s.padEnd(width) : padNum(s, width, zero);
       switch (conv) {
         case "%": out += "%"; break;
-        case "d": case "i": out += String(arg()); break;
-        case "u": out += String(arg() >>> 0); break;
-        case "x": out += fmtInt(arg() >>> 0, 16, 0, false); break;
-        case "X": out += fmtInt(arg() >>> 0, 16, 0, true); break;
-        case "o": out += fmtInt(arg() >>> 0, 8, 0, false); break;
+        case "d": case "i": {
+          let v = arg();
+          if (typeof v === "bigint") v = Number(v);
+          out += wid(String(v)); break;
+        }
+        case "u": out += wid(String(arg() >>> 0)); break;
+        case "x": out += wid(fmtInt(arg() >>> 0, 16, 0, false)); break;
+        case "X": out += wid(fmtInt(arg() >>> 0, 16, 0, true)); break;
+        case "o": out += wid(fmtInt(arg() >>> 0, 8, 0, false)); break;
         case "c": out += String.fromCharCode(arg()); break;
         case "s": {
           const p = arg();
-          out += p ? readStr(p) : "(null)";
+          let s = p ? readStr(p) : "(null)";
+          if (prec >= 0) s = s.slice(0, prec);
+          out += wid(s);
           break;
         }
-        case "f": out += arg().toFixed(6).replace(/\.?0+$/, ""); break;
+        case "f": {
+          let v = arg(); if (typeof v === "bigint") v = Number(v);
+          out += wid(fmtF(v, prec)); break;
+        }
+        case "g": case "G": {
+          let v = arg(); if (typeof v === "bigint") v = Number(v);
+          out += wid(fmtG(v, prec)); break;
+        }
         case "p": out += "0x" + fmtInt(arg() >>> 0, 16, 0, false); break;
         default: out += "%" + conv;
       }
