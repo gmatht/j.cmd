@@ -5,7 +5,7 @@
 // directly — both the CLI (src/jtsh.js) and the browser shell
 // (www/index.html) consume the same src/ modules.
 import { fs } from "../fs/index.js";
-import { env, setPositional } from "../env.js";
+import { env, setPositional, setOption } from "../env.js";
 import { getManPage, MAN_PAGES } from "../manpages.js";
 import { formatAge } from "../fs/lscache.js";
 import { bashToJS, runBash } from "../bash2js.js";
@@ -269,6 +269,23 @@ and run it as a command.
   },
 
   async cat(ctx, args) {
+    // in a pointer directory, `cat member` reads the scalar member's
+    // value (nodeData); `cat dir` refuses like real cat; absolute paths
+    // and unknown members fall through to the real fs.
+    if (ctx.ptrCwd && args.length) {
+      let hadPtrError = false;
+      const rest = [];
+      for (const file of args) {
+        if (String(file).startsWith("/")) { rest.push(file); continue; }
+        const res = builtins.ptrResolve(ctx, file);
+        if (!res) { rest.push(file); continue; }
+        if (res.isDir) { ctx.stderr.write(`cat: ${file}: is a directory\n`); hadPtrError = true; continue; }
+        ctx.stdout.write(String(res.value) + "\n");
+      }
+      if (rest.length === 0) return hadPtrError ? 1 : 0;
+      args = rest;
+      if (hadPtrError) { /* still read the fs args below */ }
+    }
     if (args.length === 0) {
       // No files — read from stdin (pipe input). Write the raw pipe
       // data so binary streams (gzip/zstd output) pass through bytes.
@@ -306,6 +323,78 @@ and run it as a command.
   
   },
 
+  // ptrPwd(ctx) — the virtual path of the pointer-cwd stack (a box
+  // root plus the pointer members we descended into).
+  ptrPwd(ctx) {
+    if (!ctx.ptrCwd) return "";
+    return ctx.ptrCwd.stack.map((s) => s.name).join("/");
+  },
+
+  // ptrBox(ctx) — the box at the top of the pointer-cwd stack (null
+  // when not in a pointer).
+  ptrBox(ctx) {
+    if (!ctx.ptrCwd || !ctx.ptrCwd.stack.length) return null;
+    return ctx.ptrCwd.stack[ctx.ptrCwd.stack.length - 1].box;
+  },
+
+  // ptrResolve(ctx, path) — resolve a path relative to the pointer
+  // cwd WITHOUT changing it (ls/find/cat): "." = the current box,
+  // "member/member/…" descends through pointer members via nodeChild.
+  // Returns { box, name, index, value, isDir, dirBox }: the resolved
+  // box, the final component's member (or null for "."), whether it is
+  // a directory (box) or a file (scalar), and the box to list when a
+  // directory. Null when any component is missing or a mid-path
+  // component is a scalar.
+  ptrResolve(ctx, path) {
+    const sh2 = ctx.otRt && ctx.otRt.sh2;
+    if (!ctx.ptrCwd || !sh2 || !sh2.ptrMembers) return null;
+    let box = builtins.ptrBox(ctx);
+    const parts = String(path).split("/").filter((p) => p !== "" && p !== ".");
+    if (parts.length === 0) return { box, name: null, index: -1, value: null, isDir: true, dirBox: box };
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      const members = sh2.ptrMembers(box);
+      const m = members.find((x) => x.name === part);
+      if (!m) return null;
+      const val = sh2.nodeChild(box, m.index);
+      const vb = sh2.memBoxOf(val);
+      if (i === parts.length - 1) {
+        return { box, name: m.name, index: m.index, value: val, isDir: !!vb, dirBox: vb };
+      }
+      if (!vb) return null;   // a scalar mid-path is not a directory
+      box = vb;
+    }
+    return null;
+  },
+
+  // ptrExec(ctx, args, path) — `find . -exec CMD ARGS '{}' ;` over a
+  // pointer: run CMD with every `{}` replaced by the matched member
+  // path, through the shell's own command runner (so a ptr-aware grep
+  // resolves the path against the pointer). The command's stdout is
+  // forwarded to find's stdout, like real -exec.
+  ptrExec(ctx, args, path) {
+    if (typeof ctx.runNestedCommand !== "function") {
+      ctx.stderr.write("find: -exec needs the shell command runner\n");
+      return Promise.resolve();
+    }
+    const q = (w) => /^[A-Za-z0-9_@%+=:,./-]+$/.test(String(w)) ? String(w) : `'${String(w).replace(/'/g, `'\''`)}'`;
+    const cmdline = args.map((a) => (a === "{}" ? path : q(a))).join(" ");
+    return Promise.resolve(ctx.runNestedCommand(cmdline, "")).then((r) => {
+      if (r && r.out) ctx.stdout.write(r.out);
+      if (r && r.err) ctx.stderr.write(r.err);
+    }).catch((e) => {
+      ctx.stderr.write(`find: -exec: ${e && e.message ? e.message : e}\n`);
+    });
+  },
+
+  // ptrLeave(ctx) — exit pointer mode, restoring the saved fs cwd.
+  ptrLeave(ctx) {
+    if (!ctx.ptrCwd) return;
+    if (ctx.ptrCwd.savedFsCwd !== undefined) fs.cwd = ctx.ptrCwd.savedFsCwd;
+    if (ctx.ptrCwd.savedPWD !== undefined) env.PWD = ctx.ptrCwd.savedPWD;
+    ctx.ptrCwd = null;
+  },
+
   async cd(ctx, args) {
     let dir = args[0] || env.HOME;
     if (dir === "-") {
@@ -315,6 +404,66 @@ and run it as a command.
         return 1;
       }
       dir = env.OLDPWD;
+    }
+    const sh2 = ctx.otRt && ctx.otRt.sh2;
+    const isPtrTarget = String(dir).includes("\u0001mem:") ||
+      (dir && typeof dir === "object" && Array.isArray(dir.arena));
+    // an absolute path (or another pointer) while inside a pointer —
+    // leave pointer mode and cd normally
+    if (ctx.ptrCwd && (isPtrTarget || String(dir).startsWith("/") || String(dir) === "~")) {
+      builtins.ptrLeave(ctx);
+    }
+    if (isPtrTarget) {
+      // cd $ptr — enter the structure as a directory (the layout
+      // registry's members are its children)
+      const box = sh2 && sh2.memBoxOf ? sh2.memBoxOf(dir) : null;
+      if (!box || !box.tag) {
+        ctx.stderr.write(`cd: ${dir}: not a live pointer\n`);
+        return 1;
+      }
+      if (!ctx.ptrCwd) {
+        ctx.ptrCwd = { stack: [], savedFsCwd: fs.cwd, savedPWD: env.PWD };
+      }
+      ctx.ptrCwd.stack = [{ box, name: String(box) }];
+      env.PWD = String(box);
+      return 0;
+    }
+    if (ctx.ptrCwd) {
+      if (dir === "..") {
+        if (ctx.ptrCwd.stack.length > 1) {
+          ctx.ptrCwd.stack.pop();
+          env.PWD = builtins.ptrPwd(ctx);
+        } else {
+          builtins.ptrLeave(ctx);
+        }
+        return 0;
+      }
+      // cd MEMBER/MEMBER/… — descend through pointer members (a box is
+      // a directory; a scalar is not)
+      const parts = String(dir).split("/").filter(Boolean);
+      for (const part of parts) {
+        if (part === "..") {
+          if (ctx.ptrCwd.stack.length > 1) ctx.ptrCwd.stack.pop();
+          else { builtins.ptrLeave(ctx); return 0; }
+          continue;
+        }
+        const cur = builtins.ptrBox(ctx);
+        const members = (sh2 && sh2.ptrMembers ? sh2.ptrMembers(cur) : []);
+        const m = members.find((x) => x.name === part);
+        if (!m) {
+          ctx.stderr.write(`cd: ${part}: no such member\n`);
+          return 1;
+        }
+        const val = sh2.nodeChild(cur, m.index);
+        const valBox = sh2.memBoxOf(val);
+        if (!valBox) {
+          ctx.stderr.write(`cd: ${part}: not a pointer member (a scalar)\n`);
+          return 1;
+        }
+        ctx.ptrCwd.stack.push({ box: valBox, name: part });
+      }
+      env.PWD = builtins.ptrPwd(ctx);
+      return 0;
     }
     try {
       await fs.list(dir);
@@ -529,7 +678,8 @@ and run it as a command.
     const namePatterns = [];      // { re } — all must match (AND)
     const types = new Set();
     let maxDepth = Infinity, minDepth = 0;
-    let print = true;
+    let print = true, printExplicit = false;
+    let execCmd = null;   // find . -exec CMD ARGS '{}' ;
 
     // Remote mounts would require crawling the network; refuse that and
     // only match them when a specific file is named.
@@ -580,6 +730,19 @@ and run it as a command.
         else minDepth = n;
       } else if (a === "-print") {
         print = true;
+        printExplicit = true;
+      } else if (a === "-exec") {
+        // find . -exec CMD ARGS '{}' ; — run CMD per match with {}
+        // replaced by the matched path. `;` or `+` terminates; also
+        // accept end-of-args (the line splitter may strip the `;`).
+        const cmdArgs = [];
+        i++;
+        while (i < args.length && args[i] !== ";" && args[i] !== "+") cmdArgs.push(args[i++]);
+        if (cmdArgs.length === 0) {
+          ctx.stderr.write(`find: missing argument to '-exec'\n`);
+          return 1;
+        }
+        execCmd = { args: cmdArgs };
       } else if (a === "--") {
         // Everything after -- is a start path
         for (const rest of args.slice(i + 1)) paths.push(rest);
@@ -606,6 +769,56 @@ and run it as a command.
     };
 
     let skippedRemote = false;
+
+    if (execCmd && !printExplicit) print = false;   // -exec suppresses the default print
+
+    // ── the POINTER walk: `find .` inside a cd'd-into pointer. The
+    // layout registry turns the structure into a tree: pointer members
+    // are directories (recursed via nodeChild), scalar members are
+    // files (NULL — "" / "0" — is skipped). Paths print relative to the
+    // pointer root with the find "./" convention.
+    if (ctx.ptrCwd && !paths.some((p) => String(p).startsWith("/"))) {
+      const sh2 = ctx.otRt && ctx.otRt.sh2;
+      const seen = new Set();
+      let hadError = false;
+      const walkPtr = async (box, path, depth) => {
+        const members = (sh2 && sh2.ptrMembers ? sh2.ptrMembers(box) : []);
+        for (const m of members) {
+          const val = sh2.nodeChild(box, m.index);
+          const vb = sh2.memBoxOf(val);
+          if (vb) {
+            const full = path + "/" + m.name;
+            if (matched(m.name, "d", depth + 1) && print) ctx.stdout.write(full + "/\n");
+            if (depth + 1 < maxDepth && !seen.has(String(vb))) {
+              seen.add(String(vb));
+              await walkPtr(vb, full, depth + 1);
+            }
+          } else {
+            // scalar member — skip the NULL sentinel ("0" / "")
+            if (String(val) === "" || String(val) === "0") continue;
+            const full = path + "/" + m.name;
+            if (matched(m.name, "f", depth + 1)) {
+              if (print) ctx.stdout.write(full + "\n");
+              if (execCmd) await builtins.ptrExec(ctx, execCmd.args, full);
+            }
+          }
+        }
+      };
+      for (const path of paths) {
+        // resolve the start point relative to the pointer cwd
+        const res = builtins.ptrResolve(ctx, path);
+        if (!res) { ctx.stderr.write(`find: ${path}: no such member\n`); hadError = true; continue; }
+        const base = path === "." ? "." : "./" + res.name;
+        if (!res.isDir) {
+          if (matched(res.name, "f", 0) && print) ctx.stdout.write(base + "\n");
+          continue;
+        }
+        if (matched(path === "." ? "." : res.name, "d", 0) && print) ctx.stdout.write(base + (path === "." ? "/" : "/") + "\n");
+        seen.add(String(res.dirBox));
+        await walkPtr(res.dirBox, base, 0);
+      }
+      return hadError ? 1 : 0;
+    }
 
     // Recursive walk. `dir` is a resolved absolute path; `depth` is the
     // depth of `dir` itself (start points are depth 0).
@@ -669,6 +882,17 @@ and run it as a command.
   
   },
 
+  async rg(ctx, args) {
+    // ripgrep-ish: recursive by default. Forward to grep; with no FILE
+    // argument, search the current directory (the pointer root inside a
+    // pointer, the fs cwd otherwise). `rg .` searches everything.
+    // the first non-flag arg is the pattern; anything after it is a
+    // FILE. With no FILE, rg searches the current directory recursively.
+    const nonFlag = args.filter((a) => !String(a).startsWith("-"));
+    const hasFile = nonFlag.length > 1;
+    return builtins.grep(ctx, ["-r", ...args, ...(hasFile ? [] : ["."])]);
+  },
+
   async go(ctx, args) {
     // go run main.go [args…] — the REAL Go toolchain (cmd/compile +
     // cmd/link, cross-compiled to GOOS=js GOARCH=wasm) running in the
@@ -682,10 +906,10 @@ and run it as a command.
     // With no FILE arguments, searches stdin (pipe input).
     let ignoreCase = false, lineNumber = false, invert = false;
     let count = false, filesWithMatches = false, recursive = false;
-    let onlyMatching = false;
+    let onlyMatching = false, labelNever = false, labelAlways = false;
     let pattern = null, patternExplicit = false;
     const patterns = [];
-    const files = [];
+    let files = [];
     let optsDone = false;
 
     const shortFlags = {
@@ -709,6 +933,8 @@ and run it as a command.
       else if (!optsDone && (a === "-l" || a === "--files-with-matches")) filesWithMatches = true;
       else if (!optsDone && (a === "-r" || a === "-R" || a === "--recursive")) recursive = true;
       else if (!optsDone && (a === "-o" || a === "--only-matching")) onlyMatching = true;
+      else if (!optsDone && (a === "-h" || a === "--no-filename")) labelNever = true;
+      else if (!optsDone && (a === "-H" || a === "--with-filename")) labelAlways = true;
       else if (!optsDone && (a === "-e" || a === "--regexp")) {
         if (i + 1 >= args.length) {
           ctx.stderr.write(`grep: option requires an argument -- '${a}'\n`);
@@ -759,7 +985,7 @@ and run it as a command.
     const REMOTE = ["/http/", "/github/", "/mount/github/", "/gitlab/", "/mount/gitlab/", "/git/", "/mount/git/"];
     const isRemote = (p) => REMOTE.some(pre => p === pre.slice(0, -1) || p.startsWith(pre));
 
-    const showLabel = files.length > 1 || recursive;
+    let showLabel = (files.length > 1 || recursive || labelAlways) && !labelNever;
 
     const processContent = (content, label) => {
       const lines = content.split("\n");
@@ -798,6 +1024,55 @@ and run it as a command.
       }
       return hits.length;
     };
+
+    // ── inside a pointer: search the structure's scalar members. A
+    // directory arg ("." or a pointer member) walks the subtree; a
+    // scalar member is searched directly. Labels are the member paths
+    // (suppressed by -h, forced by -H).
+    if (ctx.ptrCwd && files.some((f) => !String(f).startsWith("/"))) {
+      const sh2 = ctx.otRt && ctx.otRt.sh2;
+      let hadError = false;
+      let anyHits = 0;
+      const seen = new Set();   // boxes already visited — a cycle must not loop
+      const searchBox = async (box, path) => {
+        const members = (sh2 && sh2.ptrMembers ? sh2.ptrMembers(box) : []);
+        for (const m of members) {
+          const val = sh2.nodeChild(box, m.index);
+          const vb = sh2.memBoxOf(val);
+          const full = path + "/" + m.name;
+          if (vb) {
+            if (!seen.has(String(vb))) { seen.add(String(vb)); await searchBox(vb, full); }
+            continue;
+          }
+          if (String(val) === "" || String(val) === "0") continue;
+          anyHits += processContent(String(val), full);
+        }
+      };
+      const fsFiles = [];
+      let sawDir = false;
+      for (const file of files) {
+        if (String(file).startsWith("/")) { fsFiles.push(file); continue; }
+        const res = builtins.ptrResolve(ctx, file);
+        if (!res) { hadError = true; ctx.stderr.write(`grep: ${file}: no such member\n`); continue; }
+        if (!res.isDir) {
+          if (String(res.value) === "" || String(res.value) === "0") continue;
+          anyHits += processContent(String(res.value), file === "." ? "" : String(file));
+          continue;
+        }
+        sawDir = true;
+        if (!labelNever) showLabel = true;   // multi-member hits get paths
+        const start = file === "." ? "." : "./" + res.name;
+        seen.add(String(res.dirBox));
+        await searchBox(res.dirBox, start);
+      }
+      // a directory search spans multiple members — label the hits
+      // (unless -h suppresses it)
+      if (sawDir && !labelNever) {
+        // force the label on by reusing processContent's showLabel path
+      }
+      files = fsFiles;
+      if (files.length === 0) return (hadError ? 2 : (anyHits > 0 ? 0 : 1));
+    }
 
     if (files.length === 0) {
       const hits = processContent(ctx.stdin, "(standard input)");
@@ -1067,6 +1342,30 @@ Write new commands by creating .js files in /bin/.
       }
     }
     if (dirs.length === 0) dirs.push(".");
+    // in a pointer directory, list the layout-registry members (pointer
+    // members get the dir marker, scalar members are files; NULL
+    // sentinels are hidden)
+    if (ctx.ptrCwd && dirs.every((d) => !String(d).startsWith("/"))) {
+      const sh2 = ctx.otRt && ctx.otRt.sh2;
+      let hadError = false;
+      for (const dir of dirs) {
+        const res = builtins.ptrResolve(ctx, dir);
+        if (!res) { ctx.stderr.write(`ls: ${dir}: no such member\n`); hadError = true; continue; }
+        if (!res.isDir) {
+          if (String(res.value) === "" || String(res.value) === "0") continue;  // NULL sentinel
+          ctx.stdout.write(res.name + "\n");
+          continue;
+        }
+        const members = (sh2 && sh2.ptrMembers ? sh2.ptrMembers(res.dirBox) : []);
+        for (const m of members) {
+          const val = sh2.nodeChild(res.dirBox, m.index);
+          const vb = sh2.memBoxOf(val);
+          if (!vb && (String(val) === "" || String(val) === "0")) continue;
+          ctx.stdout.write(m.name + (vb ? "/" : "") + (long ? "\t" : "") + "\n");
+        }
+      }
+      return hadError ? 1 : 0;
+    }
     let hadError = false;
     for (const dir of dirs) {
       try {
@@ -1301,6 +1600,10 @@ Example:
   },
 
   async pwd(ctx, args) {
+    if (ctx.ptrCwd) {
+      ctx.stdout.write((fs.view ? fs.view(env.PWD) : env.PWD) + "\n");
+      return 0;
+    }
     ctx.stdout.write((fs.view ? fs.view(fs.cwd) : fs.cwd) + "\n");
     return 0;
   
@@ -1448,8 +1751,21 @@ Example:
       ctx.stderr.write("rm: missing operand\n");
       return 2;
     }
+    // tolerate -r/--recursive (the VFS has no subdirectories to recurse
+    // into — materialized /bin commands are plain files) and -f (ignore
+    // missing files), so `rm -r /bin/mimecroft.sh` works like real rm
+    const files = [];
+    let force = false;
+    for (const a of args) {
+      if (a === "-r" || a === "-R" || a === "--recursive") continue;
+      if (a === "-f" || a === "--force") { force = true; continue; }
+      if (a.startsWith("--")) continue;
+      files.push(a);
+    }
+    if (files.length === 0) return 0;
     let hadError = false;
-    for (const file of args) {
+    for (const file of files) {
+      if (force) { try { await fs.remove(file); continue; } catch { continue; } }
       try {
         // stat follows symlinks, so a dangling link (target missing)
         // looks nonexistent — but rm should still unlink the link

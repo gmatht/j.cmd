@@ -278,6 +278,1085 @@ export function lowerNativeArrays(program) {
   return program;
 }
 
+// ── lowerPureFunctions: pull await-free helpers out of the shell ──
+//
+// `sh2.define("f", async () => { … })` with an AWAIT-FREE body is a
+// pure integer helper (lat_hash / smooth_w / clamp in the texture
+// generators): every call pays the async exec dispatch (function-table
+// lookup, scriptArgs save/restore, argument stringifying, a Promise)
+// and every math step pays a store round-trip
+// (`sh2.setVar("V", sh2.arithEval(() => Number(sh2.getVar("V")) || 0 …))`).
+// The pass converts the helper to a NATIVE function:
+//
+//   • the leading `sh2.setVar("V", sh2.getVar("N"))` param copies become
+//     real parameters
+//   • every other store var the body touches becomes a native local
+//     (initialised from the store — faithful to the unset "" default);
+//     a var READ OUTSIDE the function is synced back at the end
+//   • `sh2.setVar("V", sh2.arithEval(() => EXPR))` → `V = EXPR`,
+//     `sh2.getVar("V")` → `V`, `"$V"` test operands → `${V}`
+//     interpolations, `(Number(V) || 0)` guards on non-param locals → `V`
+//   • call sites `await sh2.exec("f", [args])` → `f(args)`
+//
+// A `sh2.define("f", () => f(sh2.getVar("1"), …))` adapter keeps the
+// shell dispatch working for any call site the pass didn't rewrite.
+// Guards: the body must be await-free, the positional protocol must be
+// a clean prefix, and no store var of the function may be written by
+// another function mid-flight (a var written outside AND read inside is
+// captured by the store init; a var written inside AND read outside is
+// synced at the end — both faithful).
+
+export function lowerPureFunctions(program) {
+  if (!program || program.type !== "Program") return program;
+  const body = program.body || [];
+
+  // 1. locate `sh2.define("name", arrow)` registrations
+  const defs = []; // { stmt, name, arrow, idx }
+  for (let i = 0; i < body.length; i++) {
+    const st = body[i];
+    if (!st || st.type !== "ExpressionStatement" || !st.expression) continue;
+    const e = st.expression;
+    if (e.type !== "CallExpression" || !e.callee || e.callee.type !== "MemberExpression" ||
+        !e.callee.object || e.callee.object.type !== "Identifier" || e.callee.object.name !== "sh2" ||
+        !e.callee.property || e.callee.property.type !== "Identifier" || e.callee.property.name !== "define" ||
+        !e.arguments || e.arguments.length !== 2 || e.arguments[0].type !== "Literal" ||
+        e.arguments[1].type !== "ArrowFunctionExpression") continue;
+    defs.push({ stmt: st, name: String(e.arguments[0].value), arrow: e.arguments[1], idx: i });
+  }
+  if (!defs.length) return program;
+
+  const isCall = (n, obj, fn) =>
+    n && n.type === "CallExpression" && n.callee && n.callee.type === "MemberExpression" &&
+    n.callee.object && n.callee.object.type === "Identifier" && n.callee.object.name === obj &&
+    n.callee.property && n.callee.property.type === "Identifier" && n.callee.property.name === fn;
+  const litStr = (n) => (n && n.type === "Literal" && typeof n.value === "string" ? n.value : null);
+
+  // 2. pure candidates: await-free body + positional-param prefix
+  const lowered = new Set(); // fn names we convert
+  const plan = [];          // { name, params, locals, syncs, body }
+  for (const d of defs) {
+    const block = d.arrow.body;
+    if (!block || block.type !== "BlockStatement" || !Array.isArray(block.body)) continue;
+    if (hasAwait(block)) continue; // not pure
+    // leading positional copies: sh2.setVar("V", sh2.getVar("N"))
+    const params = [];
+    let i = 0;
+    while (i < block.body.length) {
+      const st = block.body[i];
+      if (!st || st.type !== "ExpressionStatement" || !st.expression) break;
+      const e = st.expression;
+      if (!isCall(e, "sh2", "setVar") || !e.arguments || e.arguments.length !== 2) break;
+      const nm = litStr(e.arguments[0]);
+      if (!nm || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(nm)) break;
+      const rhs = e.arguments[1];
+      if (!isCall(rhs, "sh2", "getVar") || !rhs.arguments || rhs.arguments.length !== 1) break;
+      const pos = litStr(rhs.arguments[0]);
+      if (!pos || !/^[1-9]$/.test(pos)) break;
+      if (params.some((p) => p.name === nm)) break;
+      params.push({ name: nm, n: Number(pos) });
+      i++;
+    }
+    if (!params.length) continue;
+    // positions must be 1..n in order (drop the copies we consumed)
+    params.sort((a, b) => a.n - b.n);
+    let contiguous = true;
+    params.forEach((p, k) => { if (p.n !== k + 1) contiguous = false; });
+    if (!contiguous) continue;
+    const paramSet = new Set(params.map((p) => p.name));
+    const rest = block.body.slice(i);
+    if (!rest.length) continue;
+    // positional reads BEYOND the copied params (e.g. draw_rect uses
+    // $5..$7 directly) — synthesize params so the direct call still
+    // delivers them (scriptArgs is not set for direct calls)
+    const maxN = Math.max(...params.map((p) => p.n), 0);
+    const scanPos = (node) => {
+      if (!node || typeof node !== "object") return;
+      if (Array.isArray(node)) { for (const x of node) scanPos(x); return; }
+      if (isCall(node, "sh2", "getVar") && node.arguments && node.arguments[0] &&
+          node.arguments[0].type === "Literal" && /^[1-9]$/.test(String(node.arguments[0].value))) {
+        const n = Number(node.arguments[0].value);
+        if (n > maxN && !params.some((pp) => pp.n === n)) params.push({ name: `_p${n}`, n, synthetic: true });
+      }
+      for (const k of Object.keys(node)) if (k !== "loc") scanPos(node[k]);
+    };
+    scanPos(rest);
+    params.sort((a, b) => a.n - b.n);
+    for (const pp of params) paramSet.add(pp.name);
+
+    // store vars the body touches: getVar/setVar exact names + $name tokens
+    const touched = new Set();
+    const written = new Set();
+    const scanBody = (node) => {
+      if (!node || typeof node !== "object") return;
+      if (Array.isArray(node)) { for (const x of node) scanBody(x); return; }
+      if (isCall(node, "sh2", "getVar") || isCall(node, "sh2", "setVar")) {
+        const s = litStr(node.arguments && node.arguments[0]);
+        if (s && /^[A-Za-z_][A-Za-z0-9_]*$/.test(s)) touched.add(s);
+        if (isCall(node, "sh2", "setVar") && s && /^[A-Za-z_][A-Za-z0-9_]*$/.test(s)) written.add(s);
+      }
+      if (node.type === "Literal" && typeof node.value === "string") {
+        for (const m of String(node.value).matchAll(/\$([A-Za-z_][A-Za-z0-9_]*)/g)) touched.add(m[1]);
+      }
+      if (node.type === "TemplateLiteral") {
+        for (const q of node.quasis || []) {
+          const t = q.value && (q.value.cooked != null ? q.value.cooked : q.value.raw);
+          if (t == null) continue;
+          for (const m of String(t).matchAll(/\$([A-Za-z_][A-Za-z0-9_]*)/g)) touched.add(m[1]);
+        }
+      }
+      for (const k of Object.keys(node)) {
+        if (k === "loc" || k === "parent") continue;
+        scanBody(node[k]);
+      }
+    };
+    scanBody(rest);
+    // drop the param names (their body refs become the params)
+    for (const p of params) { touched.delete(p.name); written.delete(p.name); }
+    // the outside-refs scan must also see the PARAMS — the original
+    // param copies wrote the store, and other functions may read them
+    // back after the call (start_anim's ax0..ay1 are read by render_frame)
+    const allVars = new Set(touched);
+    for (const pp of params) allVars.add(pp.name);
+
+    // which touched vars are referenced OUTSIDE this function's body?
+    const refsOutside = new Map(); // name → true
+    const scanProg = (node) => {
+      if (!node || typeof node !== "object") return;
+      if (Array.isArray(node)) { for (const x of node) scanProg(x); return; }
+      if (node === d.arrow) return; // skip the function's own body entirely
+      if (isCall(node, "sh2", "getVar") || isCall(node, "sh2", "setVar")) {
+        const s = litStr(node.arguments && node.arguments[0]);
+        if (s && allVars.has(s)) refsOutside.set(s, true);
+      }
+      if (node.type === "Literal" && typeof node.value === "string") {
+        for (const m of String(node.value).matchAll(/\$([A-Za-z_][A-Za-z0-9_]*)/g)) {
+          if (allVars.has(m[1])) refsOutside.set(m[1], true);
+        }
+      }
+      if (node.type === "TemplateLiteral") {
+        for (const q of node.quasis || []) {
+          const t = q.value && (q.value.cooked != null ? q.value.cooked : q.value.raw);
+          if (t == null) continue;
+          for (const m of String(t).matchAll(/\$([A-Za-z_][A-Za-z0-9_]*)/g)) {
+            if (allVars.has(m[1])) refsOutside.set(m[1], true);
+          }
+        }
+      }
+      for (const k of Object.keys(node)) {
+        if (k === "loc" || k === "parent") continue;
+        scanProg(node[k]);
+      }
+    };
+    scanProg(program);
+    // a var WRITTEN inside and read outside → sync at the end; a param
+    // read outside too (the store protocol needs the final value back)
+    const syncs = [...touched].filter((v) => written.has(v) && refsOutside.has(v));
+    for (const pp of params) if (refsOutside.has(pp.name)) syncs.push(pp.name);
+
+    lowered.add(d.name);
+    plan.push({ def: d, name: d.name, params, paramSet, touched, written, syncs, rest });
+  }
+  if (!plan.length) return program;
+
+  // 3. rewrite body + build the native function + adapter
+  const rewriteBody = makeBodyRewriter();
+  const newBody = [];
+  for (const st of body) {
+    const p = plan.find((x) => x.def.stmt === st);
+    if (!p) { newBody.push(st); continue; }
+    const stmts = rewriteBody(p.rest, p);
+    // the final syncs
+    for (const v of p.syncs) {
+      stmts.push(isCallStmt("setVar", v));
+    }
+    const locals = [...p.touched].sort(); // every touched var is a local (store-init); syncs also write back
+    const fnDecl = {
+      type: "FunctionDeclaration",
+      id: { type: "Identifier", name: p.name },
+      params: p.params.map((pp) => ({ type: "Identifier", name: pp.name })),
+      body: {
+        type: "BlockStatement",
+        body: [
+          ...(locals.length ? [{ type: "VariableDeclaration", kind: "let", declarations: locals.map((v) => ({
+            type: "VariableDeclarator", id: { type: "Identifier", name: v },
+            init: { type: "CallExpression", callee: { type: "MemberExpression", computed: false, optional: false, object: { type: "Identifier", name: "sh2" }, property: { type: "Identifier", name: "getVar" } }, arguments: [{ type: "Literal", value: v, raw: null }], optional: false },
+          })) }] : []),
+          ...stmts,
+        ],
+      },
+      generator: false,
+      expression: false,
+      async: false,
+    };
+    const adapter = {
+      type: "ArrowFunctionExpression",
+      params: [],
+      body: {
+        type: "CallExpression",
+        callee: { type: "Identifier", name: p.name },
+        arguments: p.params.map((pp) => ({
+          type: "CallExpression", callee: { type: "MemberExpression", computed: false, optional: false, object: { type: "Identifier", name: "sh2" }, property: { type: "Identifier", name: "getVar" } },
+          arguments: [{ type: "Literal", value: String(pp.n), raw: null }], optional: false,
+        })),
+        optional: false,
+      },
+      expression: true,
+      async: false,
+    };
+    const define = {
+      type: "ExpressionStatement",
+      expression: {
+        type: "CallExpression",
+        callee: { type: "MemberExpression", computed: false, optional: false, object: { type: "Identifier", name: "sh2" }, property: { type: "Identifier", name: "define" } },
+        arguments: [{ type: "Literal", value: p.name, raw: null }, adapter],
+        optional: false,
+      },
+    };
+    newBody.push(fnDecl, Object.assign(define, { _sh2Adapter: true }));
+  }
+  program.body = newBody;
+
+  // 4. rewrite call sites: await sh2.exec("f", [args]) → f(args)
+  const rewriteCalls = (node) => {
+    if (!node || typeof node !== "object") return node;
+    if (Array.isArray(node)) return node.map(rewriteCalls);
+    if (node.type === "ExpressionStatement" && node.expression) {
+      // unwrap a top-level sh2.guard(...) wrapper
+      let e = node.expression;
+      if (isCall(e, "sh2", "guard") && e.arguments && e.arguments.length === 1) e = e.arguments[0];
+      if (e && e.type === "AwaitExpression") {
+        const inner = rewriteCalls(e);
+        if (inner && inner.type === "CallExpression" && inner.callee && inner.callee.type === "Identifier" &&
+            lowered.has(inner.callee.name)) {
+          return { type: "ExpressionStatement", expression: inner }; // drop the await — lowered fns are sync
+        }
+        return { type: "ExpressionStatement", expression: inner };
+      }
+      const out = { type: "ExpressionStatement", expression: rewriteCalls(node.expression) };
+      return out;
+    }
+    if (node.type === "AwaitExpression" && node.argument && node.argument.type === "CallExpression" &&
+        isCall(node.argument, "sh2", "exec") && node.argument.arguments && node.argument.arguments[0] &&
+        node.argument.arguments[0].type === "Literal" && lowered.has(String(node.argument.arguments[0].value))) {
+      const args = node.argument.arguments[1] && node.argument.arguments[1].type === "ArrayExpression"
+        ? node.argument.arguments[1].elements : [];
+      const fname = String(node.argument.arguments[0].value);
+      return {
+        type: "CallExpression",
+        callee: { type: "Identifier", name: fname },
+        arguments: args.map((a) => rewriteCalls(a)),
+        optional: false,
+      };
+    }
+    const out = {};
+    for (const k of Object.keys(node)) out[k] = rewriteCalls(node[k]);
+    return out;
+  };
+  program.body = program.body.map(rewriteCalls);
+  return program;
+}
+
+const isCallStmt = (fn, name) => ({
+  type: "ExpressionStatement",
+  expression: {
+    type: "CallExpression",
+    callee: { type: "MemberExpression", computed: false, optional: false, object: { type: "Identifier", name: "sh2" }, property: { type: "Identifier", name: fn } },
+    arguments: [{ type: "Literal", value: name, raw: null }, { type: "Identifier", name }],
+    optional: false,
+  },
+});
+
+// the body store→native rewriter for the lowered function
+function makeBodyRewriter() {
+  const isCall = (n, obj, fn) =>
+    n && n.type === "CallExpression" && n.callee && n.callee.type === "MemberExpression" &&
+    n.callee.object && n.callee.object.type === "Identifier" && n.callee.object.name === obj &&
+    n.callee.property && n.callee.property.type === "Identifier" && n.callee.property.name === fn;
+  const litStr = (n) => (n && n.type === "Literal" && typeof n.value === "string" ? n.value : null);
+  const inSet = (p, v) => p.touched.has(v) || p.paramSet.has(v);
+
+  const splitVars = (text, p) => {
+    const re = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)(?![A-Za-z0-9_])/g;
+    const segs = []; let last = 0, m;
+    while ((m = re.exec(text))) {
+      const nm = m[1] || m[2];
+      if (!inSet(p, nm)) continue;
+      if (m.index > last) segs.push({ text: text.slice(last, m.index) });
+      segs.push({ text: "", expr: nm });
+      last = m.index + m[0].length;
+    }
+    if (last < text.length) segs.push({ text: text.slice(last) });
+    return segs;
+  };
+  const toTemplate = (segs) => {
+    const quasis = [], expressions = [];
+    for (let i = 0; i < segs.length; i++) {
+      const seg = segs[i];
+      quasis.push({ type: "TemplateElement", value: { raw: toRaw(seg.text), cooked: seg.text }, tail: false });
+      if (seg.expr) expressions.push({ type: "Identifier", name: seg.expr });
+    }
+    if (quasis.length) quasis[quasis.length - 1].tail = true;
+    if (expressions.length >= quasis.length) {
+      quasis.unshift({ type: "TemplateElement", value: { raw: "", cooked: "" }, tail: false });
+    }
+    if (expressions.length >= quasis.length) {
+      quasis.push({ type: "TemplateElement", value: { raw: "", cooked: "" }, tail: true });
+    }
+    if (quasis.length) quasis[quasis.length - 1].tail = true;
+    return { type: "TemplateLiteral", quasis, expressions };
+  };
+
+  const expr = (node, p) => {
+    if (!node || typeof node !== "object") return node;
+    if (Array.isArray(node)) return node.map((n) => expr(n, p));
+    // (Number(sh2.getVar("V")) || 0) — peel for non-param locals (V is a
+    // number there; params may hold arbitrary arg strings, keep the guard)
+    if (node.type === "LogicalExpression" && (node.operator === "||" || node.operator === "??")) {
+      const l = node.left;
+      if (l && l.type === "CallExpression" && l.callee && l.callee.type === "Identifier" && l.callee.name === "Number" &&
+          l.arguments && l.arguments.length === 1 && isCall(l.arguments[0], "sh2", "getVar")) {
+        const nm = litStr(l.arguments[0].arguments && l.arguments[0].arguments[0]);
+        if (nm && p.touched.has(nm) && !p.paramSet.has(nm) &&
+            node.right && node.right.type === "Literal" && (node.right.value === 0 || node.right.value === "0")) {
+          return { type: "Identifier", name: nm };
+        }
+      }
+    }
+    if (isCall(node, "sh2", "getVar") && node.arguments && node.arguments[0]) {
+      const nm = litStr(node.arguments[0]);
+      if (nm && inSet(p, nm)) return { type: "Identifier", name: nm };
+      // a positional read beyond the copied params (draw_rect's $5..$7) —
+      // the synthesized param delivers it under a direct call
+      if (nm && /^[1-9]$/.test(nm)) {
+        const prm = p.params.find((pp) => pp.n === Number(nm));
+        if (prm) return { type: "Identifier", name: prm.name };
+      }
+    }
+    // sh2.param("", "V") — a plain store read of a promoted var → the local
+    if (isCall(node, "sh2", "param") && node.arguments && node.arguments.length >= 2 &&
+        node.arguments[0] && node.arguments[0].type === "Literal" && node.arguments[0].value === "" &&
+        node.arguments[1] && node.arguments[1].type === "Literal" &&
+        typeof node.arguments[1].value === "string" && inSet(p, node.arguments[1].value)) {
+      return { type: "Identifier", name: node.arguments[1].value };
+    }
+    if (isCall(node, "sh2", "setVar") && node.arguments && node.arguments.length === 2 && node.arguments[0]) {
+      const nm = litStr(node.arguments[0]);
+      if (nm && inSet(p, nm)) {
+        // sh2.setVar("V", sh2.arithEval(() => EXPR)) → V = EXPR
+        const rhs = node.arguments[1];
+        if (isCall(rhs, "sh2", "arithEval") && rhs.arguments && rhs.arguments[0]) {
+          const arrow = rhs.arguments[0];
+          let body2 = arrow && arrow.type === "ArrowFunctionExpression" ? (arrow.expression ? arrow.body :
+            (arrow.body && arrow.body.type === "BlockStatement" && arrow.body.body.length === 1 && arrow.body.body[0].type === "ReturnStatement" ? arrow.body.body[0].argument : null)) : null;
+          if (body2) {
+            return { type: "AssignmentExpression", operator: "=", left: { type: "Identifier", name: nm }, right: expr(body2, p) };
+          }
+        }
+        return { type: "AssignmentExpression", operator: "=", left: { type: "Identifier", name: nm }, right: expr(rhs, p) };
+      }
+    }
+    if (node.type === "Literal" && typeof node.value === "string") {
+      const segs = splitVars(String(node.value), p);
+      // a lone `$V` token (e.g. arrayIndex's "$gi" arg) is still an
+      // interpolation — the template is just `\`${V}\``
+      if (segs.length > 1 || (segs.length === 1 && segs[0].expr)) return toTemplate(segs);
+      return node;
+    }
+    if (node.type === "TemplateLiteral") {
+      let any = false;
+      for (const q of node.quasis || []) {
+        const t = q.value && (q.value.cooked != null ? q.value.cooked : q.value.raw);
+        if (t == null) continue;
+        const segs = splitVars(String(t), p);
+        if (segs.length > 1 || (segs.length === 1 && segs[0].expr)) any = true;
+      }
+      if (any) {
+        const outQ = [], outE = [];
+        for (let i = 0; i < node.quasis.length; i++) {
+          const q = node.quasis[i];
+          const t = (q.value && q.value.cooked != null ? q.value.cooked : q.value.raw) || "";
+          for (const seg of splitVars(String(t), p)) {
+            outQ.push({ type: "TemplateElement", value: { raw: toRaw(seg.text), cooked: seg.text }, tail: false });
+            if (seg.expr) outE.push({ type: "Identifier", name: seg.expr });
+          }
+          if (i < node.expressions.length) outE.push(expr(node.expressions[i], p));
+        }
+        if (outE.length >= outQ.length) outQ.unshift({ type: "TemplateElement", value: { raw: "", cooked: "" }, tail: false });
+        if (outE.length >= outQ.length) outQ.push({ type: "TemplateElement", value: { raw: "", cooked: "" }, tail: true });
+        if (outQ.length) outQ[outQ.length - 1].tail = true;
+        return { type: "TemplateLiteral", quasis: outQ, expressions: outE };
+      }
+      const out = { ...node };
+      out.expressions = (node.expressions || []).map((x) => expr(x, p));
+      return out;
+    }
+    const out = {};
+    for (const k of Object.keys(node)) out[k] = expr(node[k], p);
+    return out;
+  };
+
+  return (stmts, p) => stmts.map((s) => {
+    if (s && s.type === "ExpressionStatement" && s.expression) {
+      const e = s.expression;
+      if (isCall(e, "sh2", "setVar") && e.arguments && e.arguments.length === 2 && e.arguments[0]) {
+        const nm = litStr(e.arguments[0]);
+        if (nm && inSet(p, nm)) {
+          return { type: "ExpressionStatement", expression: expr(e, p) };
+        }
+      }
+    }
+    return expr(s, p);
+  });
+}
+
+// ── nativeForLoops: recover native `for` from counter while-loops ──
+//
+// Every bash `while` lowers to `await sh2.whileLoop(async () => COND,
+// async () => { … })`. When the loop is a plain counter loop —
+//
+//   V = INIT;
+//   await sh2.whileLoop(async () => COND(V), async () => { …; V = V + K; });
+//
+// — the runtime indirection is dead weight: the condition and counter
+// are already NATIVE bindings (the emitter hoisted the arithmetic out
+// of the store), so each iteration pays two async-closure allocations,
+// a promise round-trip and a maybeYield check for a loop a native `for`
+// runs in one stack frame. This pass recovers the `for` (mimecroft's
+// render_frame/gen_maze/minimap/draw_char loops — ~16 of them).
+//
+// Guards (conservative — the transform never changes observable order):
+//   • the init must be a plain `V = INIT` immediately before the loop
+//   • the loop's LAST body statement must be the counter update
+//     (V = V + K / V = V - K / V += K / V -= K) — in both forms the
+//     update runs exactly once, after the rest of the body
+//   • no other statement in the body may write V (a for-update would
+//     clobber an interleaved write; body-side writes must stay)
+//   • no sh2.break()/sh2.continue() anywhere in the body (the bare
+//     LoopSignal would ESCAPE the native for and hit the wrong handler;
+//     sh2.return/ReturnSignal is fine — it propagates identically)
+//   • the condition must be sync (no await) — the runtime cond closure
+//     is not needed
+//   • the body must contain an await (an all-sync native loop would
+//     never hit maybeYield; loops that await exec/capture yield
+//     naturally)
+//
+// V keeps its post-loop value in the outer scope (the for reuses the
+// EXISTING binding — no `let` shadow), identical to the while form.
+
+export function nativeForLoops(program) {
+  const queue = [program.body];
+  while (queue.length) {
+    const stmts = queue.shift();
+    for (let i = 0; i < stmts.length; i++) {
+      let conv = null;
+      if (i >= 1) {
+        conv = tryConvert(stmts, i) || tryConvertStoreCounter(stmts, i, program) || tryConvertWhile(stmts, i);
+      }
+      if (conv) {
+        // remove the init statement (if any — a let declaration is kept
+        // when it declares other names), then replace the loop with the
+        // for (+ store sync). Between statements stay in place; the for's
+        // init clause runs V = INIT at the loop start, order-identical.
+        if (conv.initIdx >= 0) stmts.splice(conv.initIdx, 1);
+        const loopIdx = i - (conv.initIdx >= 0 && conv.initIdx < i ? 1 : 0);
+        stmts.splice(loopIdx, 1, ...conv.stmts);
+        walk(conv.stmts[0], (n) => {
+          if ((n.type === "BlockStatement" || n.type === "Program") && Array.isArray(n.body)) queue.push(n.body);
+        });
+        i -= 1;
+        continue;
+      }
+      // collect nested statement lists for later (each exactly once)
+      walk(stmts[i], (n) => {
+        if ((n.type === "BlockStatement" || n.type === "Program") && Array.isArray(n.body)) queue.push(n.body);
+      });
+    }
+  }
+  return program;
+}
+
+const isSh2WhileLoop = (n) =>
+  n && n.type === "CallExpression" && n.callee && n.callee.type === "MemberExpression" &&
+  n.callee.object && n.callee.object.type === "Identifier" && n.callee.object.name === "sh2" &&
+  n.callee.property && n.callee.property.type === "Identifier" && n.callee.property.name === "whileLoop";
+
+// The whileLoop statement: `[sh2.guard(] await sh2.whileLoop(condArrow,
+// bodyArrow) [)]` (or the bare call — top-level statements carry a
+// sh2.guard wrapper, loop-body statements don't). Returns { cond, body }
+// or null. The cond may be an `await sh2.and/or(...)` chain of sync
+// leaves — flattened to a native &&/|| here (short-circuit is identical).
+function whileLoopParts(stmt) {
+  if (!stmt || stmt.type !== "ExpressionStatement" || !stmt.expression) return null;
+  let call = null;
+  let e = stmt.expression;
+  if (e.type === "CallExpression" && e.callee && e.callee.type === "MemberExpression" &&
+      e.callee.object && e.callee.object.type === "Identifier" && e.callee.object.name === "sh2" &&
+      e.callee.property && e.callee.property.type === "Identifier" && e.callee.property.name === "guard" &&
+      e.arguments && e.arguments.length === 1) e = e.arguments[0];
+  if (e.type === "AwaitExpression") call = e.argument;
+  else call = e;
+  if (!isSh2WhileLoop(call) || !call.arguments || call.arguments.length !== 2) return null;
+  const [condArrow, bodyArrow] = call.arguments;
+  if (!condArrow || condArrow.type !== "ArrowFunctionExpression" || !bodyArrow || bodyArrow.type !== "ArrowFunctionExpression") return null;
+  let cond = null;
+  if (condArrow.expression) cond = condArrow.body;
+  else if (condArrow.body.type === "BlockStatement" && condArrow.body.body.length === 1 &&
+           condArrow.body.body[0].type === "ReturnStatement") cond = condArrow.body.body[0].argument;
+  if (!cond) return null;
+  const flat = flattenAndOr(cond);
+  if (flat) cond = flat;
+  else if (hasAwait(cond)) return null;   // async condition — keep runtime loop
+  const body = bodyArrow.body;
+  if (!body || body.type !== "BlockStatement" || !Array.isArray(body.body) || body.body.length === 0) return null;
+  return { cond, body: body.body };
+}
+
+// ── flattenAndOr: `await sh2.and(f1, f2)` / `await sh2.or(f1, f2)` with
+//    SYNC leaf arrows → a native `&&` / `||` expression. The runtime and()
+//    returns `!!(await a()) && !!(await b())` — for boolean leaves the
+//    !! is a no-op and short-circuiting is identical, so the native form
+//    is equivalent and drops per-check async closures.
+function flattenAndOr(node) {
+  if (!node || node.type !== "AwaitExpression") return null;
+  const call = node.argument;
+  if (!call || call.type !== "CallExpression" || !call.callee || call.callee.type !== "MemberExpression" ||
+      !call.callee.object || call.callee.object.type !== "Identifier" || call.callee.object.name !== "sh2" ||
+      !call.callee.property || call.callee.property.type !== "Identifier" ||
+      (call.callee.property.name !== "and" && call.callee.property.name !== "or")) return null;
+  const op = call.callee.property.name === "and" ? "&&" : "||";
+  const leaves = [];
+  for (const a of call.arguments || []) {
+    if (!a || a.type !== "ArrowFunctionExpression") return null;
+    let e = a.expression ? a.body :
+      (a.body && a.body.type === "BlockStatement" && a.body.body.length === 1 &&
+       a.body.body[0].type === "ReturnStatement" ? a.body.body[0].argument : null);
+    if (!e) return null;
+    if (e.type === "AwaitExpression") {
+      const sub = flattenAndOr(e);
+      if (!sub) return null;
+      leaves.push(sub);
+    } else {
+      if (hasAwait(e)) return null;
+      leaves.push(e);
+    }
+  }
+  if (!leaves.length) return null;
+  let out = leaves[0];
+  for (let i = 1; i < leaves.length; i++) {
+    out = { type: "LogicalExpression", operator: op, left: out, right: leaves[i] };
+  }
+  return out;
+}
+
+// `V = RHS` (init, any RHS — evaluated once before the first check in
+// both forms, so it is order-identical) or the counter update
+// `V = V + K / V = V - K / V += K / V -= K` (must reference V).
+function counterExpr(stmt, name, { update }) {
+  if (!stmt || stmt.type !== "ExpressionStatement" || !stmt.expression) return null;
+  const e = stmt.expression;
+  if (e.type !== "AssignmentExpression" || e.left.type !== "Identifier" || e.left.name !== name) return null;
+  if (update) {
+    if (e.operator === "+=" || e.operator === "-=") return e;
+    if (e.operator === "=" && e.right.type === "BinaryExpression" &&
+        (e.right.operator === "+" || e.right.operator === "-") &&
+        e.right.left.type === "Identifier" && e.right.left.name === name) return e;
+    return null;
+  }
+  return e;
+}
+
+// Does any node in `root` assign/declare `name`?
+function writesName(root, name) {
+  let found = false;
+  walk(root, (n) => {
+    if (found) return;
+    if ((n.type === "AssignmentExpression" || n.type === "UpdateExpression") &&
+        n.left && n.left.type === "Identifier" && n.left.name === name) found = true;
+    if (n.type === "VariableDeclarator" && n.id && n.id.type === "Identifier" && n.id.name === name) found = true;
+  });
+  return found;
+}
+
+function hasLoopSignal(root) {
+  let found = false;
+  walk(root, (n) => {
+    if (found || !n || n.type !== "CallExpression" || !n.callee || n.callee.type !== "MemberExpression") return;
+    if (n.callee.object && n.callee.object.type === "Identifier" && n.callee.object.name === "sh2" &&
+        n.callee.property && n.callee.property.type === "Identifier" &&
+        (n.callee.property.name === "break" || n.callee.property.name === "continue")) found = true;
+  });
+  return found;
+}
+
+// local hasAwait (lower.js is imported by estree.js — no circular import)
+function hasAwait(node) {
+  if (!node || typeof node !== "object") return false;
+  if (Array.isArray(node)) return node.some(hasAwait);
+  if (node.type === "AwaitExpression") return true;
+  for (const k of Object.keys(node)) if (k !== "loc" && hasAwait(node[k])) return true;
+  return false;
+}
+
+// ── tryConvert: recover a native `for` for a NATIVE-counter while loop ──
+//
+//   V = INIT;                (or `let V = INIT, W = …` at top level —
+//   …between stmts…             mergeInitAssignments folded the real value in;
+//   await sh2.whileLoop(…);     between stmts must not touch V, and when
+//                               they exist INIT must be a literal)
+//
+// The init may sit a few statements before the loop (e.g. `sm_tries = 0`
+// after `sm_placed = 0`); those between statements stay where they are —
+// the for's init clause runs V = INIT at the loop start, which is
+// unobservable when they don't touch V and INIT is pure.
+// Returns { stmts, initIdx } or null.
+function tryConvert(stmts, i) {
+  const loop = whileLoopParts(stmts[i]);
+  if (!loop) return null;
+  // scan back for candidate inits (assignments and let declarators)
+  const candidates = []; // { name, init, idx, keepDecl }
+  for (let k = i - 1; k >= 0 && k >= i - 10; k--) {
+    const st = stmts[k];
+    if (st.type === "ExpressionStatement" && st.expression &&
+        st.expression.type === "AssignmentExpression" && st.expression.operator === "=" &&
+        st.expression.left.type === "Identifier") {
+      candidates.push({ name: st.expression.left.name, init: st.expression, idx: k, keepDecl: false });
+      continue;
+    }
+    if (st.type === "VariableDeclaration" && st.kind === "let" && st.declarations) {
+      for (const d of st.declarations) {
+        if (d.id && d.id.type === "Identifier" && d.init) {
+          candidates.push({
+            name: d.id.name,
+            init: { type: "AssignmentExpression", operator: "=", left: { type: "Identifier", name: d.id.name }, right: d.init },
+            idx: k,
+            keepDecl: true,
+          });
+        }
+      }
+      continue;
+    }
+    // a non-init statement: a candidate found further back is only valid
+    // if statements between don't touch it — checked per candidate below.
+  }
+  const body = loop.body;
+  for (const cand of candidates) {
+    // statements between the init and the loop must not touch the counter
+    let betweenTouches = false;
+    for (let k = cand.idx + 1; k < i && !betweenTouches; k++) {
+      if (touchesName(stmts[k], cand.name)) betweenTouches = true;
+    }
+    if (betweenTouches) continue;
+    // non-adjacent init: moving its evaluation into the for-init must be
+    // unobservable — require a literal RHS (no side effects to relocate)
+    if (cand.idx !== i - 1) {
+      const r = cand.init.right;
+      if (!r || r.type !== "Literal") continue;
+    }
+    const lastStmt = body[body.length - 1];
+    const update = counterExpr(lastStmt, cand.name, { update: true });
+    if (!update) continue;
+    // no other body statement (and no condition) may write the counter
+    if (writesName({ type: "BlockStatement", body: body.slice(0, -1) }, cand.name)) continue;
+    if (writesName(loop.cond, cand.name)) continue;
+    // break/continue would escape a native for
+    if (hasLoopSignal(body)) continue;
+    // keep pure (await-free) loops on whileLoop — they need maybeYield
+    if (!hasAwait(body)) continue;
+    const forNode = {
+      type: "ForStatement",
+      init: cand.init,
+      test: loop.cond,
+      update: update,
+      body: { type: "BlockStatement", body: body.slice(0, -1) },
+    };
+    // remove the init statement (the let declaration is kept — it may
+    // declare other names), replace the loop with the for
+    const out = [forNode];
+    const initIdx = cand.keepDecl ? -1 : cand.idx;
+    return { stmts: out, initIdx };
+  }
+  return null;
+}
+
+// ── tryConvertStoreCounter: recover a native `for` for a STORE-counter
+//    while loop (the mime_at / can_step / update_mimes shape):
+//
+//   sh2.setVar("V", INIT);
+//   await sh2.whileLoop(async () => sh2.test("…$V…"), async () => {
+//     … sh2.getVar("V") / sh2.arrayIndex("a", "$V") / setVar("a[$V]", …) …
+//     sh2.setVar("V", sh2.arithEval(() => (Number(sh2.getVar("V")) || 0) + 1));
+//   });
+//
+// The counter is promoted to the EXISTING native binding (the for reuses
+// it, so the post-loop value is identical to the while form) and every
+// in-loop store reference is rewritten to the native binding: getVar →
+// identifier, `"$V"` operands in test strings / arrayIndex / param / setVar
+// names → `${V}` interpolations or direct identifiers. A store sync
+// (`sh2.setVar("V", V)`) after the loop keeps the store truthful.
+//
+// Guards: the counter must have NO store references anywhere outside the
+// loop pair (whole-program count check) and no native identifier reads
+// outside it either; no other body statement may write the store counter;
+// no break/continue; body must await.
+// Returns { stmts, initIdx } or null.
+function tryConvertStoreCounter(stmts, i, program) {
+  const loop = whileLoopParts(stmts[i]);
+  if (!loop) return null;
+  // find the counter's `sh2.setVar("V", INIT)` init — adjacent, or a few
+  // statements back when nothing between touches V and INIT is a literal
+  let initStmt = null, initE = null;
+  for (let k = i - 1; k >= 0 && k >= i - 10; k--) {
+    const st = stmts[k];
+    let e = st && st.type === "ExpressionStatement" && st.expression ? st.expression : null;
+    if (e && e.type === "CallExpression" && e.callee && e.callee.type === "MemberExpression" &&
+        e.callee.object && e.callee.object.type === "Identifier" && e.callee.object.name === "sh2" &&
+        e.callee.property && e.callee.property.type === "Identifier" && e.callee.property.name === "guard" &&
+        e.arguments && e.arguments.length === 1) e = e.arguments[0]; // top-level sh2.guard wrapper
+    if (e && e.type === "CallExpression" && e.callee && e.callee.type === "MemberExpression" &&
+        e.callee.object && e.callee.object.type === "Identifier" && e.callee.object.name === "sh2" &&
+        e.callee.property && e.callee.property.type === "Identifier" && e.callee.property.name === "setVar" &&
+        e.arguments && e.arguments[0] && e.arguments[0].type === "Literal" &&
+        typeof e.arguments[0].value === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(e.arguments[0].value)) {
+      initStmt = st; initE = e;
+      // statements between must not touch the counter; non-adjacent init
+      // must be a literal (moving its evaluation is unobservable)
+      let betweenTouches = false;
+      for (let j = k + 1; j < i && !betweenTouches; j++) {
+        if (touchesName(stmts[j], e.arguments[0].value)) betweenTouches = true;
+      }
+      if (betweenTouches) return null;
+      if (k !== i - 1) {
+        const v = e.arguments[1];
+        if (!v || v.type !== "Literal") return null;
+      }
+      break;
+    }
+  }
+  if (!initStmt || !initE) return null;
+  const initIdx = stmts.indexOf(initStmt);
+  if (initIdx < 0) return null;
+  const name = initE.arguments[0].value;
+  const body = loop.body;
+  const lastStmt = body[body.length - 1];
+  const update = storeIncrement(lastStmt, name);
+  if (!update) return null;
+  // no other body statement may write the store counter (setVar("V", …))
+  if (writesStoreName({ type: "BlockStatement", body: body.slice(0, -1) }, name)) return null;
+  if (writesStoreName(loop.cond, name)) return null;
+  if (hasLoopSignal(body)) return null;
+  if (!hasAwait(body)) return null;
+  // store references to the counter OUTSIDE the loop pair are only safe
+  // when they live in the loop's OWN function (same-function statements
+  // run before/after the loop — the trailing sync keeps the store
+  // truthful; refs in OTHER functions could execute DURING the loop and
+  // see a stale store)
+  if (storeRefsInOtherFunctions(program, name, initStmt, stmts[i])) return null;
+  // no native identifier read/write of the name outside the pair either
+  if (nativeUsesOutside(program, name, initStmt, stmts[i])) return null;
+  // build the for: init = V = Number(INIT) (numeric literal kept as-is),
+  // cond/body rewritten to the native binding, increment as the update
+  const cond = rewriteCounterRefs(loop.cond, name);
+  const newBody = body.slice(0, -1).map((s) => rewriteCounterRefs(s, name));
+  const initVal = initE.arguments[1];
+  const numeric = initVal && initVal.type === "Literal" && /^-?\d+$/.test(String(initVal.value));
+  const forNode = {
+    type: "ForStatement",
+    init: {
+      type: "AssignmentExpression", operator: "=",
+      left: { type: "Identifier", name },
+      right: numeric
+        ? { type: "Literal", value: Number(initVal.value), raw: null }
+        : { type: "CallExpression", callee: { type: "Identifier", name: "Number" }, arguments: [initVal], optional: false },
+    },
+    test: cond,
+    update,
+    body: { type: "BlockStatement", body: newBody },
+  };
+  const sync = {
+    type: "ExpressionStatement",
+    expression: {
+      type: "CallExpression",
+      callee: { type: "MemberExpression", computed: false, optional: false, object: { type: "Identifier", name: "sh2" }, property: { type: "Identifier", name: "setVar" } },
+      arguments: [{ type: "Literal", value: name, raw: null }, { type: "Identifier", name }],
+      optional: false,
+    },
+  };
+  return { stmts: [forNode, sync], initIdx };
+}
+
+// Does a statement subtree reference (read OR write) the name — as a
+// native identifier or a store string (`sh2.getVar("n")`, `"$n"` tokens)?
+function touchesName(root, name) {
+  let found = false;
+  walk(root, (n) => {
+    if (found) return;
+    if (n.type === "Identifier" && n.name === name) { found = true; return; }
+    if (n.type === "Literal" && typeof n.value === "string") {
+      if (n.value === name || new RegExp("\\$\\{" + name + "\\}|\\$" + name + "(?![A-Za-z0-9_])").test(n.value)) found = true;
+      return;
+    }
+    if (n.type === "TemplateLiteral") {
+      for (const q of n.quasis || []) {
+        const t = q.value && (q.value.cooked != null ? q.value.cooked : q.value.raw);
+        if (t != null && new RegExp("\\$\\{" + name + "\\}|\\$" + name + "(?![A-Za-z0-9_])").test(String(t))) found = true;
+      }
+    }
+  });
+  return found;
+}
+
+// store-string mentions of `name` in OTHER functions than the loop's own
+// (which could run while the loop is executing, when the store is stale
+// — the trailing sync only fixes post-loop reads in the same function).
+function storeRefsInOtherFunctions(program, name, initStmt, loopStmt) {
+  // find the loop pair's enclosing function
+  let loopFn = null;
+  (function find(node, fn) {
+    if (loopFn !== null || !node || typeof node !== "object") return;
+    if (Array.isArray(node)) { for (const x of node) find(x, fn); return; }
+    const next = node.type === "FunctionDeclaration" || node.type === "FunctionExpression" ||
+                 node.type === "ArrowFunctionExpression" ? node : fn;
+    if (node === loopStmt) { loopFn = fn; return; }
+    for (const k of Object.keys(node)) if (k !== "loc" && k !== "parent") find(node[k], next);
+  })(program, null);
+  let dangerous = false;
+  const site = (n) => {
+    if (n.type === "Literal" && typeof n.value === "string") {
+      return String(n.value) === name ||
+        new RegExp("\\$\\{" + name + "\\}|\\$" + name + "(?![A-Za-z0-9_])").test(String(n.value));
+    }
+    if (n.type === "TemplateLiteral") {
+      for (const q of n.quasis || []) {
+        const t = q.value && (q.value.cooked != null ? q.value.cooked : q.value.raw);
+        if (t != null && new RegExp("\\$\\{" + name + "\\}|\\$" + name + "(?![A-Za-z0-9_])").test(String(t))) return true;
+      }
+    }
+    return false;
+  };
+  const visit = (node, fn) => {
+    if (dangerous || !node || typeof node !== "object") return;
+    if (Array.isArray(node)) { for (const x of node) visit(x, fn); return; }
+    if (node === initStmt || node === loopStmt) return;
+    const next = node.type === "FunctionDeclaration" || node.type === "FunctionExpression" ||
+                 node.type === "ArrowFunctionExpression" ? node : fn;
+    if (site(node) && fn !== loopFn) { dangerous = true; return; }
+    for (const k of Object.keys(node)) if (k !== "loc" && k !== "parent") visit(node[k], next);
+  };
+  visit(program, null);
+  return dangerous;
+}
+
+// Any `sh2.setVar("V", …)` write to the store counter (array writes like
+// `setVar("a[$V]", …)` are NOT counter writes — they touch the array).
+function writesStoreName(root, name) {
+  let found = false;
+  walk(root, (n) => {
+    if (found) return;
+    if (n.type === "CallExpression" && n.callee && n.callee.type === "MemberExpression" &&
+        n.callee.object && n.callee.object.type === "Identifier" && n.callee.object.name === "sh2" &&
+        n.callee.property && n.callee.property.type === "Identifier" && n.callee.property.name === "setVar" &&
+        n.arguments && n.arguments[0] && n.arguments[0].type === "Literal" && n.arguments[0].value === name) found = true;
+  });
+  return found;
+}
+
+// Does the program use `name` as a native identifier outside the loop
+// pair (reads, writes, params — anything but the hoisted declaration)?
+// VariableDeclarator ids (the hoisted `let V = 0`) and object keys are
+// not references.
+function nativeUsesOutside(program, name, initStmt, loopStmt) {
+  let found = false;
+  const walkProg = (node) => {
+    if (found || !node || typeof node !== "object") return;
+    if (Array.isArray(node)) { for (const x of node) walkProg(x); return; }
+    if (node === initStmt || node === loopStmt) return;
+    if (node.type === "Identifier" && node.name === name) { found = true; return; }
+    for (const k of Object.keys(node)) {
+      if (k === "loc" || k === "parent") continue;
+      if (k === "id" && node.type === "VariableDeclarator") continue; // the hoisted declaration
+      if (k === "key" && node.type === "Property") continue;          // object keys aren't refs
+      walkProg(node[k]);
+    }
+  };
+  walkProg(program);
+  return found;
+}
+
+// ── tryConvertWhile: recover a native `while` from ANY sync-cond loop ──
+//
+// The for-recoveries above need an induction variable; a loop that only
+// runs the runtime dispatch — `await sh2.whileLoop(async () => COND,
+// async () => { … })` — with a SYNC condition and an awaiting body is
+// exactly a native `while (COND) { … }`. The runtime wrapper adds only a
+// try/catch for break/continue and a maybeYield call; both are preserved
+// by the guards:
+//
+//   • no sh2.break()/sh2.continue() in the body (a bare LoopSignal
+//     would ESCAPE the native while and hit the wrong handler;
+//     sh2.return/ReturnSignal propagates identically)
+//   • the body must contain an await (an all-sync native loop would
+//     never hit maybeYield — a huge pure loop could freeze the thread;
+//     awaiting bodies yield at every exec/capture/sleep)
+//
+// Everything else — conditional increments, shared counter names across
+// functions, non-last updates, store counters — only blocks the *for*
+// recovery, not the loop dispatch, so those loops convert here.
+function tryConvertWhile(stmts, i) {
+  const loop = whileLoopParts(stmts[i]);
+  if (!loop) return null;
+  const body = loop.body;
+  if (hasLoopSignal(body)) return null;
+  if (!hasAwait(body)) return null;
+  return {
+    stmts: [{ type: "WhileStatement", test: loop.cond, body: { type: "BlockStatement", body } }],
+    initIdx: -1,
+  };
+}
+
+// `sh2.setVar("V", sh2.arithEval(() => (Number(sh2.getVar("V")) || 0) + K))`
+// (or `- K`, without the ||-0 wrap) → the native update `V = V + K`.
+// Returns the AssignmentExpression or null.
+function storeIncrement(stmt, name) {
+  if (!stmt || stmt.type !== "ExpressionStatement" || !stmt.expression) return null;
+  const e = stmt.expression;
+  if (e.type !== "CallExpression" || !e.callee || e.callee.type !== "MemberExpression" ||
+      !e.callee.object || e.callee.object.type !== "Identifier" || e.callee.object.name !== "sh2" ||
+      !e.callee.property || e.callee.property.type !== "Identifier" || e.callee.property.name !== "setVar" ||
+      !e.arguments || !e.arguments[0] || e.arguments[0].type !== "Literal" || e.arguments[0].value !== name) return null;
+  const rhs = e.arguments[1];
+  if (!rhs || rhs.type !== "CallExpression" || !rhs.callee || rhs.callee.type !== "MemberExpression" ||
+      !rhs.callee.object || rhs.callee.object.type !== "Identifier" || rhs.callee.object.name !== "sh2" ||
+      !rhs.callee.property || rhs.callee.property.type !== "Identifier" || rhs.callee.property.name !== "arithEval" ||
+      !rhs.arguments || !rhs.arguments[0]) return null;
+  const arrow = rhs.arguments[0];
+  const body = arrow && arrow.type === "ArrowFunctionExpression" ? (arrow.expression ? arrow.body : null) : null;
+  if (!body || body.type !== "BinaryExpression" || (body.operator !== "+" && body.operator !== "-")) return null;
+  // peel Number(x) and (x ?? 0) wrappers off the left operand
+  // the emitter's `(Number(sh2.getVar("V")) || 0)` / `?? 0` guard — peel
+  // it (the counter is a native number by then, so `|| 0` is a no-op)
+  const peel = (x) => {
+    if (x && x.type === "CallExpression" && x.callee && x.callee.type === "Identifier" && x.callee.name === "Number" &&
+        x.arguments && x.arguments.length === 1) return peel(x.arguments[0]);
+    if (x && x.type === "LogicalExpression" && (x.operator === "??" || x.operator === "||")) {
+      const l = peel(x.left);
+      if (x.right && x.right.type === "Literal" && (x.right.value === 0 || x.right.value === "0")) return l;
+    }
+    return x;
+  };
+  const isVarRead = (x) => x && x.type === "CallExpression" && x.callee && x.callee.type === "MemberExpression" &&
+    x.callee.object && x.callee.object.type === "Identifier" && x.callee.object.name === "sh2" &&
+    x.callee.property && x.callee.property.type === "Identifier" && x.callee.property.name === "getVar" &&
+    x.arguments && x.arguments[0] && x.arguments[0].type === "Literal" && x.arguments[0].value === name;
+  if (!isVarRead(peel(body.left))) return null;
+  return {
+    type: "AssignmentExpression", operator: "=",
+    left: { type: "Identifier", name },
+    right: { type: "BinaryExpression", operator: body.operator, left: { type: "Identifier", name }, right: rewriteCounterRefs(body.right, name) },
+  };
+}
+
+// ── rewriteCounterRefs: rewrite store references to the counter `name`
+//    inside a node to the native binding. Handles getVar("V") → V,
+//    exact `"$V"` args of arrayIndex/arrayLen/param → the identifier, and
+//    `$V`/`${V}` tokens inside string args (test strings, setVar/param
+//    names like "a[$V]") → `${V}` interpolations in a template literal.
+function rewriteCounterRefs(node, name) {
+  if (!node || typeof node !== "object") return node;
+  if (Array.isArray(node)) return node.map((n) => rewriteCounterRefs(n, name));
+  if (node.type === "CallExpression" && node.callee && node.callee.type === "MemberExpression" &&
+      node.callee.object && node.callee.object.type === "Identifier" && node.callee.object.name === "sh2" &&
+      node.callee.property && node.callee.property.type === "Identifier" &&
+      node.callee.property.name === "getVar" && node.arguments && node.arguments[0] &&
+      node.arguments[0].type === "Literal" && node.arguments[0].value === name) {
+    return { type: "Identifier", name };
+  }
+  if (node.type === "CallExpression" && node.callee && node.callee.type === "MemberExpression" &&
+      node.callee.object && node.callee.object.type === "Identifier" && node.callee.object.name === "sh2" &&
+      node.callee.property && node.callee.property.type === "Identifier" &&
+      (node.callee.property.name === "arrayIndex" || node.callee.property.name === "arrayLen" || node.callee.property.name === "param")) {
+    const out = { ...node };
+    out.arguments = (node.arguments || []).map((a) =>
+      a && a.type === "Literal" && a.value === "$" + name
+        ? { type: "Identifier", name }
+        : rewriteCounterRefs(a, name));
+    return out;
+  }
+  if (node.type === "Literal" && typeof node.value === "string" && String(node.value).includes("$" + name)) {
+    return interpolateString(node, name);
+  }
+  if (node.type === "TemplateLiteral") {
+    let any = false;
+    for (const q of node.quasis || []) {
+      const t = q.value && (q.value.cooked != null ? q.value.cooked : q.value.raw);
+      if (t != null && String(t).includes("$" + name)) any = true;
+    }
+    if (any) return interpolateTemplate(node, name);
+  }
+  const out = {};
+  for (const k of Object.keys(node)) out[k] = rewriteCounterRefs(node[k], name);
+  return out;
+}
+
+function splitOnVar(text, name) {
+  const re = new RegExp("\\$\\{" + name + "\\}|\\$" + name + "(?![A-Za-z0-9_])", "g");
+  const segs = [];
+  let last = 0, m;
+  while ((m = re.exec(text))) {
+    if (m.index > last) segs.push({ text: text.slice(last, m.index) });
+    segs.push({ text: "", expr: name });
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) segs.push({ text: text.slice(last) });
+  return segs;
+}
+
+function toRaw(s) {
+  return String(s).replace(/\\/g, "\\\\").replace(/`/g, "\\`").replace(/\$\{/g, "\\${");
+}
+
+function templateFromSegments(segments) {
+  const quasis = [], expressions = [];
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    quasis.push({ type: "TemplateElement", value: { raw: toRaw(seg.text), cooked: seg.text }, tail: i === segments.length - 1 });
+    if (seg.expr) expressions.push({ type: "Identifier", name: seg.expr });
+  }
+  return { type: "TemplateLiteral", quasis, expressions };
+}
+
+function interpolateString(node, name) {
+  const segs = splitOnVar(String(node.value), name);
+  if (segs.length === 1) return node;
+  return templateFromSegments(segs);
+}
+
+function interpolateTemplate(node, name) {
+  const outQuasis = [], outExprs = [];
+  const n = node.quasis.length;
+  for (let i = 0; i < n; i++) {
+    const q = node.quasis[i];
+    const text = (q.value && q.value.cooked != null ? q.value.cooked : q.value.raw) || "";
+    for (const seg of splitOnVar(String(text), name)) {
+      // splitOnVar's expr segments carry no text — the `$name` token is
+      // replaced by the expression alone; text segments become quasis
+      if (seg.expr) outExprs.push({ type: "Identifier", name: seg.expr });
+      else outQuasis.push({ type: "TemplateElement", value: { raw: toRaw(seg.text), cooked: seg.text }, tail: false });
+    }
+    if (i < node.expressions.length) outExprs.push(node.expressions[i]);
+  }
+  // a template literal must have exactly expressions.length + 1 quasis,
+  // starting and ending with one (pad with empty quasis when the text
+  // began or ended with a $name token)
+  if (outExprs.length >= outQuasis.length) {
+    outQuasis.unshift({ type: "TemplateElement", value: { raw: "", cooked: "" }, tail: false });
+  }
+  if (outExprs.length >= outQuasis.length) {
+    outQuasis.push({ type: "TemplateElement", value: { raw: "", cooked: "" }, tail: true });
+  }
+  if (outQuasis.length) outQuasis[outQuasis.length - 1].tail = true;
+  return { type: "TemplateLiteral", quasis: outQuasis, expressions: outExprs };
+}
+
 // ── hoistLoopLastExit: pull constant `sh2.lastExit = N` out of loops ──
 //
 // Every command statement renders as `(cmd?, sh2.lastExit = N, flag)` —

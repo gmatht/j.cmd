@@ -11,6 +11,23 @@
 
 import { isReadonly } from "./env.js";
 
+// ── Ctrl+C / interrupt support ──────────────────────────────────
+// The shell can't hard-kill an in-flight async script, but transpiled
+// loops call sh2.test() every iteration — so the shell registers an
+// interrupt hook per runtime and test() throws as soon as the flag is
+// set, aborting the loop (and the whole script) instead of letting it
+// burn CPU in the background after Ctrl+C abandons the outer promise.
+const interruptHooks = new Set();
+export function registerInterruptHook(fn) {
+  interruptHooks.add(fn);
+  return () => interruptHooks.delete(fn);
+}
+export function fireInterruptHooks() {
+  for (const fn of [...interruptHooks]) {
+    try { fn(); } catch {}
+  }
+}
+
 // Quote a word for a command line (the shell's tokenizer round-trips it).
 function quoteWord(w) {
   const s = String(w);
@@ -19,11 +36,15 @@ function quoteWord(w) {
 }
 
 // Glob pattern (case pattern) → RegExp source.
+// Glob pattern (case pattern) → RegExp source. Bash globs match ANY
+// character — including newlines — so `*`/`?` lower to [\s\S] (a plain
+// `.` would stop at \n and a `case` on a multi-line value like
+// /dev/webgl/state would never match).
 function globToRegExp(pattern) {
   let out = "";
   for (const ch of String(pattern)) {
-    if (ch === "*") out += ".*";
-    else if (ch === "?") out += ".";
+    if (ch === "*") out += "[\\s\\S]*";
+    else if (ch === "?") out += "[\\s\\S]";
     else out += ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
   return new RegExp("^" + out + "$");
@@ -31,6 +52,8 @@ function globToRegExp(pattern) {
 
 export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = [], argv0 = "bash" }) {
   const vars = new Map();      // script-local variables (not exported)
+  let interrupted = false;     // Ctrl+C from the shell — test() throws when set
+  registerInterruptHook(() => { interrupted = true; });
   const fns = new Map();       // function definitions
   let scriptArgs = [...args];
   let lastStatus = 0;
@@ -92,7 +115,11 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       lastStatus = 1;
       return;
     }
-    const val = value === undefined || value === null ? "" : String(value);
+    // a BOXED pointer survives setVar as-is (String(box) would mangle
+    // it to "[object Object]" — shell variables can hold boxes; the
+    // shell-boundary text seams stay one-way).
+    const isBox = value && typeof value === "object" && Array.isArray(value.arena);
+    const val = value === undefined || value === null ? "" : isBox ? value : String(value);
     // "arr[$i]" — array element assignment (the compiler passes the
     // index unexpanded)
     const b = s.lastIndexOf("[");
@@ -109,7 +136,7 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       const existing = vars.get(arrName);
       if (Array.isArray(existing) && Number.isFinite(idx)) {
         const list = existing.slice();
-        list[idx] = val;
+        list[idx] = isBox ? value : val;
         vars.set(arrName, list);
         return;
       }
@@ -119,10 +146,13 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
   }
 
   async function exec(name, argsArr) {
+    // Ctrl+C aborts even command-based loop conditions (`while true`
+    // transpiles to exec("true"), not test()).
+    if (interrupted) throw new Error("interrupted by Ctrl+C");
     // User-defined function shadows commands, like in bash.
     if (fns.has(name)) {
       const prevArgs = scriptArgs;
-      scriptArgs = (argsArr || []).map(String);
+      scriptArgs = (argsArr || []).map((v) => (v && typeof v === "object" && Array.isArray(v.arena)) ? v : String(v));
       try {
         const ret = await fns.get(name)();
         // `return N` sets the function's exit status (the transpiler
@@ -131,6 +161,9 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
         if (typeof ret === "string" || typeof ret === "number") {
           lastStatus = Number(ret);
         }
+      } catch (e) {
+        if (e instanceof ReturnSignal) lastStatus = Number(e.value);
+        else throw e;
       } finally {
         scriptArgs = prevArgs;
       }
@@ -302,6 +335,10 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
   // debashl calls this without await, so it must be synchronous —
   // file tests use statSync (local mounts only).
   function test(expr) {
+    // Ctrl+C while a transpiled loop is spinning: abort it (the throw
+    // escapes the try below — a swallowed false would just end the
+    // loop and let the script limp on).
+    if (interrupted) throw new Error("interrupted by Ctrl+C");
     try {
       // `${name+x}` — the "defined" marker (batch `if defined NAME`:
       // true even when set-but-empty, false when unset). The bracket
@@ -391,8 +428,12 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
   }
 
   function applyUnary(op, v) {
-    if (op === "-z") return String(v).length === 0;
-    if (op === "-n") return String(v).length > 0;
+    // the C NULL sentinel: a heap-pointer variable holds the string
+    // "0" at the tail of a chain (the frontend seeds `p = 0`), so the
+    // -n/-z pointer truthiness treats "0" as NULL (a live box is a
+    // non-empty object/envelope, never the literal "0").
+    if (op === "-z") { const sv = String(v); return sv.length === 0 || sv === "0"; }
+    if (op === "-n") { const sv = String(v); return sv.length > 0 && sv !== "0"; }
     // File tests — statSync is available for local mounts; remote paths
     // report false (can't stat synchronously).
     let st = null;
@@ -450,12 +491,23 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
   }
 
   async function forLoop(items, fn) {
-    for (const it of items || []) {
+    // The debashc lexer splits a for-in word on a `source.` basename
+    // (the `source` KEYWORD): `/home/examples/source.bat` arrives as
+    // ["/home/examples/", "source.bat"]. Re-join when the first part
+    // ends with "/" (a path prefix) — the loop variable must be the
+    // WHOLE path. Other word lists (`a b c`) pass through untouched.
+    const list = items || [];
+    const joined = (list.length > 1 && typeof list[0] === "string" && list[0].endsWith("/"))
+      ? [list[0] + list.slice(1).map(String).join("")]
+      : list;
+    for (const it of joined) {
+      if (interrupted) throw new Error("interrupted by Ctrl+C");
       try {
         await fn(it);
       } catch (e) {
         if (e instanceof LoopSignal && e.kind === "break") break;
         if (e instanceof LoopSignal && e.kind === "continue") continue;
+        if (e instanceof ReturnSignal) throw e;
         throw e;
       }
       await maybeYield();
@@ -621,8 +673,24 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       this.kind = kind;
     }
   }
+  // ReturnSignal — a C `return V` inside a loop body (the transpiled
+  // body is an arrow; a plain `return` would only exit the arrow and
+  // the loop would spin forever). The estree pass rewrites in-loop
+  // returns to `throw new sh2.ReturnSignal(V)`; the loop rethrows and
+  // the fnCall/exec dispatch unwraps it back into the function's value.
+  class ReturnSignal extends Error {
+    constructor(value) {
+      super("function return");
+      this.value = value;
+    }
+  }
   function breakLoop() { throw new LoopSignal("break"); }
   function continueLoop() { throw new LoopSignal("continue"); }
+  // `return N` inside a loop body — the estree emitter lowers it to
+  // sh2.return(N): the arrow body can't `return` (it would only exit
+  // the arrow and the loop would spin), so it throws a ReturnSignal
+  // that whileLoop rethrows and exec unwraps as the function's value.
+  function returnSignal(v) { throw new ReturnSignal(v); }
 
   // bash integer division / modulo (guarding /0 → 0)
   function idiv(a, b) { const n = Number(b); return n === 0 ? 0 : Math.trunc(Number(a) / n); }
@@ -636,6 +704,7 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
 
   async function whileLoop(cond, body) {
     while (await cond()) {
+      if (interrupted) throw new Error("interrupted by Ctrl+C");
       try {
         await body();
       } catch (e) {
@@ -652,11 +721,13 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
   // per-iteration promises. Same break/continue LoopSignal contract.
   function whileLoopSync(cond, body) {
     while (cond()) {
+      if (interrupted) throw new Error("interrupted by Ctrl+C");
       try {
         body();
       } catch (e) {
         if (e instanceof LoopSignal && e.kind === "break") break;
         if (e instanceof LoopSignal && e.kind === "continue") continue;
+        if (e instanceof ReturnSignal) throw e;
         throw e;
       }
     }
@@ -785,6 +856,13 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       case "slice": {
         const start = Number(expandOperand(String(rest[0]))) || 0;
         const len = rest.length > 1 ? Number(expandOperand(String(rest[1]))) : undefined;
+        // an ARRAY variable — slice the elements (`${a[@]:s:l}`); a lone
+        // element coerces to a string (the C `a[k]` read path).
+        const raw = vars.has(name) ? vars.get(name) : (env && env[name] !== undefined ? env[name] : "");
+        if (Array.isArray(raw)) {
+          const elems = len === undefined ? raw.slice(start) : raw.slice(start, start + len);
+          return elems.length === 1 ? String(elems[0]) : elems;
+        }
         return len === undefined ? String(val).slice(start) : String(val).slice(start, start + len);
       }
       default: return val;
@@ -821,9 +899,13 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     if (Array.isArray(vars.get(name))) setVar(name + "[0]", val);
     else setVar(name, val);
   }
-  // memAdvance(h, delta) — a C pointer increment: return the handle for
-  // the element `delta` positions further on (`p + 1` / `p++`).
+  // memAdvance(h, delta) — a C pointer increment: return the pointer for
+  // the element `delta` positions further on (`p + 1` / `p++`). A BOX
+  // advances its element offset; an envelope re-encodes with the new
+  // offset (the read-compat path).
   function memAdvance(h, delta) {
+    const b = memBoxOf(h);
+    if (b) return { ...b, off: (Number(b.off) || 0) + (Number(delta) || 0) };
     if (!/^\u0001mem:/.test(String(h))) h = memAddrOf(h);
     const m = /^\u0001mem:([^:]*):(-?\d+)$/.exec(String(h));
     if (!m) return String(h);
@@ -831,11 +913,27 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
   }
   const memArena = {};
   let memSeq = 0;
-  function memAlloc(size) {
-    const id = ++memSeq;
+  function memAlloc(size, tag) {
     const n = Math.max(0, Math.floor(Number(size) || 0));
-    memArena[id] = new Array(n).fill(0);
-    return `\u0001mem:${id}:${n}`;
+    const box = { arena: new Array(n).fill(0), size: n, tag: tag || null, off: 0, __id: ++memSeq };
+    // the text seam (printf "%s", echo, $(…), env): a box serializes to
+    // its legacy envelope `mem:<id>:<off>` — READ-ONLY compat; a
+    // string is never the live pointer (memLoad re-resolves the id).
+    box.toString = () => "\u0001mem:" + box.__id + ":" + (Number(box.off) || 0);
+    memArena[box.__id] = box;
+    return box;
+  }
+  // memBoxOf(h) — the box a pointer refers to: a BOX itself, or an
+  // envelope (`\u0001mem:<id>:<off>`) whose numeric id maps into the
+  // allocation registry. Named-var handles (slice 1) return null.
+  function memBoxOf(h) {
+    if (h && typeof h === "object" && Array.isArray(h.arena)) return h;
+    const m = /^\u0001mem:([^:]+):(-?\d+)$/.exec(String(h));
+    if (m && /^\d+$/.test(m[1])) {
+      const box = memArena[Number(m[1])];
+      if (box) return { ...box, off: Number(m[2]) || 0 };
+    }
+    return null;
   }
   function memElemSize(type) {
     if (typeof type === "number") return Math.max(1, Math.floor(type));
@@ -848,36 +946,90 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     };
     return sizes[t] ?? 1;
   }
-  function memArenaOf(h) {
-    const m = /^\u0001mem:([^:]+):(-?\d+)$/.exec(String(h));
-    if (!m) return null;
-    const id = m[1];
-    if (!/^\d+$/.test(id)) return null;      // slice-1 named-var handle
-    const arr = memArena[Number(id)];
-    if (!arr) return null;                    // freed / never allocated
-    return { arr, size: Math.max(1, Number(m[2]) || 1) };
-  }
   function memLoad(h, offset, type) {
+    const b = memBoxOf(h);
+    if (b) {
+      // boxed heap pointer — DIRECT arena access: the byte index is
+      // (box.off + element) * elemSize (the frontend passes the element
+      // index; the struct-member lowering passes the byte offset with
+      // elemSize "char" = 1). No parse, no registry lookup on the hot
+      // path — the box already IS the allocation.
+      const i = ((Number(b.off) || 0) + (Number(offset) || 0)) * memElemSize(type);
+      // the cell may hold a scalar (string/number) OR another BOX (the
+      // `p->next` chain) — return it as-is; a box stays a box.
+      return i >= 0 && i < b.arena.length ? b.arena[i] : "";
+    }
     // a bare variable name is a handle for its own element 0 (a pointer
     // IS a name — `sum_first a 3` and `sum_first "$(addr a)" 3` both
-    // walk the array `a`)
+    // walk the array `a`); a slice-1 envelope reads the store element.
     if (!/^\u0001mem:/.test(String(h))) h = memAddrOf(h);
-    const a = memArenaOf(h);
-    if (!a) return memLoad1(h);
-    const i = (Number(offset) || 0) * memElemSize(type);
-    return i >= 0 && i < a.arr.length ? String(a.arr[i]) : "";
+    return memLoad1(h);
   }
   function memStore(h, offset, type, v) {
+    const b = memBoxOf(h);
+    if (b) {
+      const i = ((Number(b.off) || 0) + (Number(offset) || 0)) * memElemSize(type);
+      if (i >= 0 && i < b.arena.length) b.arena[i] = (v && typeof v === "object") ? v : String(v ?? "");
+      return;
+    }
     if (!/^\u0001mem:/.test(String(h))) h = memAddrOf(h);
-    const a = memArenaOf(h);
-    if (!a) return memStore1(h, v);
-    const i = (Number(offset) || 0) * memElemSize(type);
-    if (i >= 0 && i < a.arr.length) a.arr[i] = String(v ?? "");
+    memStore1(h, v);
   }
   function memFree(h) {
-    const m = /^\u0001mem:([^:]+):(-?\d+)$/.exec(String(h));
-    if (!m || !/^\d+$/.test(m[1])) return;
-    delete memArena[Number(m[1])];
+    const b = memBoxOf(h);
+    if (b && b.__id && /^\d+$/.test(String(b.__id))) delete memArena[Number(b.__id)];
+    else {
+      const m = /^\u0001mem:([^:]+):(-?\d+)$/.exec(String(h));
+      if (m && /^\d+$/.test(m[1])) delete memArena[Number(m[1])];
+    }
+  }
+  // ─── the layout registry (registerStruct / nodeChild / nodeData) ───
+  // registerStruct("Node-<hash>", [["word",0,"char"],["next",8,"ptr"]])
+  // — the c-sh-go frontend emits it at source time for each `struct Tag`
+  // it sees. `nodeChild(p, k)` / `nodeData(p, k)` resolve the tag →
+  // layout → member (byte offset, elemSize), then read the member cell:
+  // the generic-walker building blocks. Untagged allocations return "".
+  const structLayouts = new Map();
+  function registerStruct(tag, members) {
+    structLayouts.set(String(tag), (members || []).map((m) => ({
+      name: String(m[0]), offset: Number(m[1]) || 0, type: String(m[2] || "char"),
+    })));
+  }
+  function nodeChild(p, k) {
+    const b = memBoxOf(p);
+    if (!b || !b.tag) return "";
+    const layout = structLayouts.get(String(b.tag));
+    const m = layout && layout[Number(k)];
+    if (!m) return "";
+    const i = ((Number(b.off) || 0) + m.offset);
+    return i >= 0 && i < b.arena.length ? b.arena[i] : "";
+  }
+  function nodeData(p, k) {
+    const b = memBoxOf(p);
+    if (!b || !b.tag) return "";
+    const layout = structLayouts.get(String(b.tag));
+    const m = layout && layout[Number(k)];
+    if (!m) return "";
+    const i = ((Number(b.off) || 0) + m.offset);
+    return i >= 0 && i < b.arena.length ? String(b.arena[i]) : "";
+  }
+  // a pointer's type tag — the frontend marks allocations with
+  // memAlloc(size, "Tag-<hash>") when the C source has registerStruct.
+  function ptrTag(p) {
+    const b = memBoxOf(p);
+    return b && b.tag ? String(b.tag) : "";
+  }
+  // ptrMembers(p) — the layout-registry member table of a tagged box:
+  // [{ name, type, index }] — the ptrfs "directory listing". The shell
+  // resolves each member's VALUE via nodeChild (box → directory,
+  // scalar → file), so a pointer IS a tiny filesystem: cd into it,
+  // find/ls walk it generically.
+  function ptrMembers(p) {
+    const b = memBoxOf(p);
+    if (!b || !b.tag) return [];
+    const layout = structLayouts.get(String(b.tag));
+    if (!layout) return [];
+    return layout.map((m, i) => ({ name: m.name, type: m.type, index: i }));
   }
 
   return {
@@ -893,9 +1045,12 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       set stdin(v) { stdinData = String(v ?? ""); stdinPos = 0; stdinAtEOF = false; },
       get stdin() { return stdinData; },
       getLine,
-      memAddrOf: memAddrOf, memLoad, memStore, memAlloc, memElemSize, memFree, memAdvance,
+      getLineD: getLine,
+      memAddrOf: memAddrOf, memLoad, memStore, memAlloc, memElemSize, memFree, memAdvance, memBoxOf,
+      registerStruct, nodeChild, nodeData, ptrTag, ptrMembers,
       assign,
-      "break": breakLoop, "continue": continueLoop,
+      "break": breakLoop, "continue": continueLoop, "return": returnSignal,
+      ReturnSignal,
       idiv, imod, not, setLastExit,
       getVar, setVar,
       // the otranspilerl estree backend reads/writes sh2.lastExit
@@ -973,6 +1128,14 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
           };
         },
         writeFile: async (p, data) => { await fs.write(p, String(data ?? "")); },
+        // `>> file` (the otranspilerl estree lowers append redirects to
+        // this): read the existing content and write it back with the
+        // new data appended.
+        appendFile: async (p, data) => {
+          let existing = "";
+          try { existing = String(await fs.read(p) ?? ""); } catch {}
+          await fs.write(p, existing + String(data ?? ""));
+        },
         readFile: async (p) => { const b = await fs.read(p).catch(() => ""); return typeof b === "string" ? b : new TextDecoder().decode(b); },
         readdir: async (p) => { try { return await fs.list(p); } catch { return []; } },
         mkdir: async (p) => { await fs.write(p + "/.directory", ""); },
@@ -1144,8 +1307,8 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
               if (op === "-e") r = !!st;
               else if (op === "-f") r = !!(st && st.type === "file");
               else r = !!(st && st.type === "dir");
-            } else if (op === "-n") r = operand.length > 0;
-            else if (op === "-z") r = operand.length === 0;
+            } else if (op === "-n") r = operand.length > 0 && operand !== "0";
+            else if (op === "-z") r = operand.length === 0 || operand === "0";
             else {
               // `${name+x}` — the "defined" marker (batch `if defined NAME`;
               // true even when the var is set-but-empty, false when unset)
@@ -1187,12 +1350,13 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
         const fn = fns.get(name);
         if (typeof fn !== "function") throw new Error("sh2.fnCall: no function '" + name + "'");
         const prev = scriptArgs;
-        scriptArgs = (argsArr || []).map(String);
+        scriptArgs = (argsArr || []).map((v) => (v && typeof v === "object" && Array.isArray(v.arena)) ? v : String(v));
         let r;
         try {
           r = fn();
         } catch (e) {
           scriptArgs = prev;
+          if (e instanceof ReturnSignal) return e.value;
           throw e;
         }
         if (r && typeof r.then === "function") {
@@ -1211,12 +1375,13 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       callDirect(name, fn, argsArr) {
         if (typeof fn !== "function") throw new Error("sh2.callDirect: no function '" + name + "'");
         const prev = scriptArgs;
-        scriptArgs = (argsArr || []).map(String);
+        scriptArgs = (argsArr || []).map((v) => (v && typeof v === "object" && Array.isArray(v.arena)) ? v : String(v));
         let r;
         try {
           r = fn();
         } catch (e) {
           scriptArgs = prev;
+          if (e instanceof ReturnSignal) return e.value;
           throw e;
         }
         if (r && typeof r.then === "function") {

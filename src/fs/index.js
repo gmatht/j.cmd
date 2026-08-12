@@ -139,6 +139,60 @@ class RootFS {
   }
 }
 
+// ─── CacheControlFS: the /cache VFS purge surface ─────────────────
+// `rm -r /cache` (or /cache/examples, /cache/bin, /cache/overlay)
+// clears the VFS-side caches — the fetched-example cache, the
+// materialized-command decisions, and the local overlay changes — so
+// the next access re-fetches/re-materializes fresh. This clears the
+// VFS caches, NOT the browser HTTP cache (serve.py's no-store headers
+// handle that).
+class CacheControlFS {
+  constructor(hooks) { this._hooks = hooks || {}; }
+  LAYERS = ["examples", "bin", "overlay"];
+  DESCR = {
+    examples: "fetched /examples content + overlay changes — rm -r /cache/examples to clear",
+    bin: "materialized command decisions (/bin) — rm -r /cache/bin to re-fetch templates",
+    overlay: "local overlay writes/tombstones — rm -r /cache/overlay to restore served content",
+  };
+  _layer(path) {
+    return String(path).split("/").filter(Boolean)[0] || "";
+  }
+  async list(path) {
+    const layer = this._layer(path);
+    if (!layer) return [...this.LAYERS];
+    return this.LAYERS.includes(layer) ? ["refresh"] : [];
+  }
+  async read(path) {
+    const parts = String(path).split("/").filter(Boolean);
+    const layer = parts[0] || "";
+    const isRefresh = parts[1] === "refresh";
+    if (layer && this.DESCR[layer]) {
+      return (isRefresh ? "refresh: " : "") + this.DESCR[layer] + "\n";
+    }
+    return [
+      "/cache — VFS purge surface; `rm -r /cache` clears the examples,",
+      "bin and overlay caches (each layer holds a `refresh` marker to",
+      "clear individually). This is the VFS cache, not the browser one.",
+    ].join("\n") + "\n";
+  }
+  async remove(path) {
+    const layer = this._layer(path);
+    const all = !layer;
+    const fire = (k) => { if (this._hooks[k]) this._hooks[k](); };
+    if (all || layer === "examples") fire("examples");
+    if (all || layer === "bin") fire("bin");
+    if (all || layer === "overlay") fire("overlay");
+    return true;
+  }
+  async stat(path) {
+    const parts = String(path).split("/").filter(Boolean);
+    if (parts.length <= 1) return { type: "dir", size: 0 };   // /cache and the layers
+    return { type: "file", size: 0 };                          // the refresh marker
+  }
+  async exists() { return true; }
+  async write() { throw new Error("EROFS: /cache is a purge surface"); }
+}
+
 // ─── Synchronous wrapper for LocalStorageFS writes during init ──
 
 function syncWrite(backend, path, content) {
@@ -241,6 +295,23 @@ class OverlayFS {
     this.files.delete(path);
     if (typeof localStorage !== "undefined") {
       try { localStorage.removeItem(this.prefix + path); } catch {}
+    }
+  }
+
+  // drop every overlay change/tombstone — the mount returns to the
+  // pristine served/backend content (the `/cache` purge does this so a
+  // file masked by a stray `rm` comes back)
+  clearOverlay() {
+    this.files.clear();
+    if (typeof localStorage !== "undefined") {
+      const drop = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith(this.prefix)) drop.push(key);
+      }
+      for (const k of drop) {
+        try { localStorage.removeItem(k); } catch {}
+      }
     }
   }
 
@@ -443,11 +514,14 @@ class VirtualFS {
     this.mount(hasLocalStorage ? "localStorage" : "ram", "/home",
       hasLocalStorage ? new LocalStorageFS("home") : new RamFS());
     // /bin — the shell's binaries. JavaScript is the binary format, so
-    // user/system .js commands live here (persistent). /commands is kept
-    // as an alias mount so old paths and existing files keep working.
-    const commands = hasLocalStorage ? new LocalStorageFS("bin") : new RamFS();
-    this.mount(hasLocalStorage ? "localStorage" : "ram", "/bin", commands);
-    this.mount(hasLocalStorage ? "localStorage" : "ram", "/commands", commands);
+    // .js/.sh commands live here. RAMFS: materialized command templates
+    // refresh from www/bin on every page load — a persistent /bin once
+    // held stale copies in localStorage that shadowed redeployed
+    // templates (the mimecroft saga). User-installed tools live in
+    // /home (persistent); /commands stays an alias for old paths.
+    const commands = new RamFS();
+    this.mount("ram", "/bin", commands);
+    this.mount("ram", "/commands", commands);
     // /usr/bin — real WASM binaries (wasmer install, auto-load). RamFS:
     // python.wasm etc. would blow the ~5MB localStorage quota, and they
     // re-download from the local server on boot anyway.
@@ -470,7 +544,23 @@ class VirtualFS {
     this.mount("docs", "/docs", new OverlayFS(new DocsFS(), "docs", "fs:ovl:docs:"));
     // The example corpus (sh2perl + sample files), readable like /bin —
     // read-only; the otranspiler "try" references corpus files here.
-    this.mount("examples", "/examples", new OverlayFS(new ExamplesFS(), "examples", "fs:ovl:examples:"));
+    const examplesOv = new OverlayFS(new ExamplesFS(), "examples", "fs:ovl:examples:");
+    this.mount("examples", "/examples", examplesOv);
+    // /cache — the VFS purge surface (`rm -r /cache` refreshes fetched
+    // examples, staged commands, and overlay tombstones without touching
+    // the browser HTTP cache)
+    this.mount("cache", "/cache", new CacheControlFS({
+      examples: () => {
+        examplesOv.backend.clearCache();
+        examplesOv.clearOverlay();
+      },
+      bin: () => import("../binsync.js").then((m) => m.clearBinCache()),
+      overlay: () => {
+        for (const m of this.mounts) {
+          if (m.backend instanceof OverlayFS) m.backend.clearOverlay();
+        }
+      },
+    }));
     this.mount("download", "/pc", new DownloadFS());
     // /proc/ — process info + browser stats. ProcFS keeps a registry of
     // every command jtsh runs (procfs.start/finish) and generates the

@@ -44,6 +44,14 @@ export class ExamplesFS {
   // plus textures (the pseudorandom block-texture generators).
   CORPUS_DIRS = ["sh2perl", "go", "fish", "zsh", "py", "pl", "c", "bat", "sh-posix", "textures"];
 
+  // drop the in-memory corpus/loader caches — the next read re-fetches
+  // from the server (the `/cache` purge calls this so `rm -r /cache`
+  // refreshes /examples)
+  clearCache() {
+    this._corpus = null;
+    this._loader = null;
+  }
+
   async _corpusNames(dir) {
     const d = dir || "sh2perl";
     if (this._corpus && this._corpus[d]) return this._corpus[d];

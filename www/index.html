@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<meta http-equiv="Cache-Control" content="no-store" />
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
 <title>j.cmd — A JavaScript Command Line OS</title>
@@ -1234,7 +1235,9 @@ function getPromptStr() {
   if (pagerState.active) return "";       // pager draws its own marker
   if (replState.active) return replState.mode === "perl" ? "perl> " : replState.mode === "bash" ? "bash> " : replState.mode === "cmd" ? "cmd> " : ">>> ";
   const user = env.USER && env.USER !== "jtsh" ? env.USER : "jtsh";
-  return `${user}:${fs.view ? fs.view(fs.cwd) : fs.cwd}$ `;
+  // inside a pointer (cd $ptr), the prompt shows the handle chain
+  const pwd = (env.PWD || "").includes("\u0001mem:") ? env.PWD : (fs.view ? fs.view(fs.cwd) : fs.cwd);
+  return `${user}:${pwd}$ `;
 }
 
 // Redraw the inline input line: prompt + typed text + blinking cursor.
@@ -1523,6 +1526,9 @@ function writeShellPrompt() {
 // unrelated query parameters are preserved. Uses window.history
 // explicitly — `history` here is the shell's command-history array.
 function syncCwdUrl() {
+  // inside a pointer the "cwd" is a runtime-local handle — keep the
+  // real fs cwd in the URL (a refresh must land on the filesystem)
+  if ((env.PWD || "").includes("\u0001mem:")) return;
   const cwd = fs.view ? fs.view(fs.cwd) : fs.cwd;
   const params = new URLSearchParams(location.search);
   params.set("cwd", cwd);
@@ -3900,13 +3906,23 @@ const shellCtx = {
     if (binPath) {
       const denied = customExecDenied(binPath);
       if (denied) return denied;
-      return { type: "file", path: binPath };
+      return { type: binPath.endsWith(".sh") ? "sh" : "file", path: binPath };
     }
     return null;
   },
   ensureOtRuntime,
   get otRt() { return otRt; },
   runSourceContent: (content, lang, srcArgs) => sharedRunSourceContent(content, lang, srcArgs, shellCtx),
+  // .sh command execution — the debashcl engine (same as `bash file.sh`)
+  runBashScript: (content, opts = {}) =>
+    runBash(fs, content, {
+      stdout: shellCtx.stdout,
+      stderr: shellCtx.stderr,
+      runCmd: shellCtx.runNestedCommand,
+      args: opts.args || [],
+      argv0: opts.argv0 || "bash",
+      stdin: stdinBuffer || "",
+    }),
   // state/backend accessors the shared runSourceContent weaves through
   getOtVars: () => otVars,
   goRunner,
@@ -4571,6 +4587,15 @@ async function complete(line, cursorPos) {
   } else if (isFirstWord) {
     // Command completion (first word is the command, like a real shell)
     matches.push(...Object.keys(builtins).filter(name => name.startsWith(prefix)));
+    // sourced C/bash functions live in the persistent runtime's table
+    try {
+      const sh2 = shellCtx.otRt && shellCtx.otRt.sh2;
+      if (sh2 && sh2.functions) {
+        for (const name of sh2.functions.keys()) {
+          if (name.startsWith(prefix)) matches.push(name);
+        }
+      }
+    } catch {}
 
     // Search command paths: /bin (.js commands) and /usr/bin (.wasm)
     for (const dir of ["/bin", "/usr/bin"]) {

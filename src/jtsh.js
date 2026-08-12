@@ -71,7 +71,7 @@ import { env, expandRef, setShellStatus, getShellStatus, setLastBgPid,
          markReadonly, isReadonly, listReadonly } from "./env.js";
 import { procfs } from "./fs/procfs.js";
 import { bashToJS, runBash, buildSh2LibFacade } from "./bash2js.js";
-import { createSh2Runtime } from "./sh2runtime.js";
+import { createSh2Runtime, fireInterruptHooks } from "./sh2runtime.js";
 import { createJobScheduler, createBgJobs } from "./jobs.js";
 import { getManPage, manIndex, searchManPages, MAN_PAGES } from "./manpages.js";
 import { GoRunner, createGoCommand } from "./go.js";
@@ -194,6 +194,10 @@ async function runInterruptible(promise) {
   let rejectFn = null;
   interruptSignal = () => {
     if (rejectFn) rejectFn(new InterruptError());
+    // abort in-flight transpiled loops too (their sh2.test throws on
+    // the flag) — otherwise the abandoned async script keeps burning
+    // CPU in the background until it settles.
+    try { fireInterruptHooks(); } catch {}
     for (const cb of interruptCallbacks) { try { cb(); } catch {} }
     interruptCallbacks = [];
   };
@@ -402,7 +406,7 @@ const shellCtx = {
     // (perl, lua, tar, zip, mail, …). Only bare names are auto-loaded.
     if (!name.includes("/")) {
       const p = await materializeBinCommand(name);
-      if (p) { const denied = customExecDenied(p); if (denied) return denied; return { type: "file", path: p }; }
+      if (p) { const denied = customExecDenied(p); if (denied) return denied; return { type: p.endsWith(".sh") ? "sh" : "file", path: p }; }
     }
     // a wasm binary from wasm-bin/ (the CLI has no server — node fetches
     // the same URL the browser does; falls through when offline)
@@ -424,6 +428,16 @@ const shellCtx = {
   get otRt() { return otRt; },
   syncOtVarsFromStore: () => syncOtVarsFromStore(otRt, otVars),
   runSourceContent: (content, lang, srcArgs) => sharedRunSourceContent(content, lang, srcArgs, shellCtx),
+  // .sh command execution — the debashcl engine (same as `bash file.sh`)
+  runBashScript: (content, opts = {}) =>
+    runBash(fs, content, {
+      stdout: shellCtx.stdout,
+      stderr: shellCtx.stderr,
+      runCmd: shellCtx.runNestedCommand,
+      args: opts.args || [],
+      argv0: opts.argv0 || "bash",
+      stdin: shellCtx.stdin !== undefined ? shellCtx.stdin : "",
+    }),
   // a .js source file IS generated JS — the shared eval+harvest helper
   // runs it on the persistent runtime (the file's own $@ = srcArgs)
   runJsSourceContent: (content, srcArgs) => evalProgramOnOtRt(content, { positional: srcArgs }, shellCtx),
@@ -1043,10 +1057,20 @@ function tabComplete(line, callback) {
     return;
   }
 
-  // Command completion: builtins + executables on $PATH
+  // Command completion: builtins + sourced functions + $PATH
   const matches = Object.keys(builtins)
     .filter((name) => name.startsWith(word))
     .map((name) => line.slice(0, wordStart) + name);
+  // sourced C/bash functions live in the persistent runtime's table —
+  // `print_f<Tab>` after sourcing a C file completes to print_fwd
+  try {
+    const sh2 = shellCtx.otRt && shellCtx.otRt.sh2;
+    if (sh2 && sh2.functions) {
+      for (const name of sh2.functions.keys()) {
+        if (name.startsWith(word)) matches.push(line.slice(0, wordStart) + name);
+      }
+    }
+  } catch {}
   (async () => {
     try {
       for (const dir of env.PATH.split(":").filter(Boolean)) {
@@ -1078,7 +1102,9 @@ const suState = { prev: null };  // previous user context, for `su jtsh`
 // Prompt shows the current user — su'd users appear as nobody:/home/nobody$
 function shellPrompt() {
   const user = env.USER && env.USER !== "jtsh" ? env.USER : "jtsh";
-  return `${user}:${fs.view ? fs.view(fs.cwd) : fs.cwd}$ `;
+  // inside a pointer (cd $ptr), the prompt shows the handle chain
+  const pwd = (env.PWD || "").includes("\u0001mem:") ? env.PWD : (fs.view ? fs.view(fs.cwd) : fs.cwd);
+  return `${user}:${pwd}$ `;
 }
 
 function enterPythonRepl() {

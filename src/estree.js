@@ -61,6 +61,163 @@ function stripProcessEnv(node) {
   return out;
 }
 
+// ─── awaitSyncFnCalls: the otranspilerl estree backend emits the
+// PROVABLY-SYNC fnCall form (`sh2.fnCall(...)` with no await) when it
+// believes the target function is await-free. A C body containing a
+// capture/whileLoop IS async, so the un-awaited call returns a pending
+// promise and the caller's subsequent statements run BEFORE the callee
+// (the demo for-loop prints the pre-sort array). Await every sh2.fnCall
+// that isn't already inside an AwaitExpression — a no-op on a sync
+// value, a correct sequencing fix on a promise.
+// ─── unwrapStoreString: the C frontend's assign lowering wraps every
+// rhs store read in `String(sh2.vars.x)` — a BOXED pointer (the plan's
+// `{arena, off, tag}` value) would stringify to "[object Object]".
+// Rewrite `String(sh2.vars.x)` → `sh2.vars.x` (the read value itself):
+// scalars keep working (the runtime getVar already returns strings),
+// boxes survive the assignment. The shell env fallback chain
+// `?? (sh2.env.x ?? "")` is preserved.
+function unwrapStoreString(node) {
+  if (!node || typeof node !== "object") return node;
+  if (Array.isArray(node)) return node.map(unwrapStoreString);
+  if (node.type === "CallExpression" && node.callee && node.callee.type === "Identifier" &&
+      node.callee.name === "String" && node.arguments && node.arguments.length === 1) {
+    const a = node.arguments[0];
+    const isStoreRead = (x) => x && x.type === "MemberExpression" && !x.computed &&
+      x.object && x.object.type === "MemberExpression" && !x.object.computed &&
+      x.object.object && x.object.object.type === "Identifier" && x.object.object.name === "sh2" &&
+      x.object.property && x.object.property.type === "Identifier" && x.object.property.name === "vars" &&
+      x.property && x.property.type === "Identifier";
+    if (a && a.type === "LogicalExpression" && a.operator === "??" && isStoreRead(a.left)) {
+      return unwrapStoreString(a);
+    }
+  }
+  const out = {};
+  for (const k of Object.keys(node)) out[k] = unwrapStoreString(node[k]);
+  return out;
+}
+
+// ─── nullSentinel: a C pointer NULL check renders as `String(p) !== ""`
+// (the structPtrCond lowering), but a chain tail stores the literal
+// "0" (the frontend seeds `p = 0`), so the comparison must treat "0"
+// as NULL too: `String(p) !== "" && String(p) !== "0"` / the "==" twin.
+function nullSentinel(node) {
+  if (!node || typeof node !== "object") return node;
+  if (Array.isArray(node)) return node.map(nullSentinel);
+  if (node.type === "BinaryExpression" && (node.operator === "!==" || node.operator === "==") &&
+      node.right && node.right.type === "Literal" && node.right.value === "" &&
+      node.left && node.left.type === "CallExpression" && node.left.callee &&
+      node.left.callee.type === "Identifier" && node.left.callee.name === "String") {
+    const isNe = node.operator === "!==";
+    const mk = (v) => ({ type: "BinaryExpression", operator: node.operator,
+      left: nullSentinel(node.left), right: v === "" ? node.right : { type: "Literal", value: "0", raw: null } });
+    return {
+      type: "LogicalExpression", operator: isNe ? "&&" : "||",
+      left: mk(""), right: mk("0"),
+    };
+  }
+  const out = {};
+  for (const k of Object.keys(node)) out[k] = nullSentinel(node[k]);
+  return out;
+}
+
+// ─── returnInLoop: a C `return V` inside a while/for loop body. The
+// renderer lowers the loop to `sh2.whileLoopSync(cond, () => { … })` —
+// the body is an ARROW, so a plain `return` only exits the arrow and
+// the loop spins forever (an infinite loop + OOM). Rewrite in-loop
+// returns to `throw new sh2.ReturnSignal(V)`; the runtime loop rethrows
+// and the fnCall/exec dispatch unwraps it as the function's value.
+function returnInLoop(node, inLoop) {
+  if (!node || typeof node !== "object") return node;
+  if (Array.isArray(node)) return node.map((n) => returnInLoop(n, inLoop));
+  if (node.type === "ReturnStatement" && inLoop && node.argument) {
+    return {
+      type: "ThrowStatement",
+      argument: {
+        type: "NewExpression",
+        callee: { type: "MemberExpression", computed: false, optional: false,
+          object: { type: "Identifier", name: "sh2" }, property: { type: "Identifier", name: "ReturnSignal" } },
+        arguments: [returnInLoop(node.argument, false)],
+      },
+    };
+  }
+  if (node.type === "CallExpression" && node.callee && node.callee.type === "MemberExpression" &&
+      node.callee.object && node.callee.object.type === "Identifier" && node.callee.object.name === "sh2" &&
+      node.callee.property && node.callee.property.type === "Identifier" &&
+      (node.callee.property.name === "whileLoop" || node.callee.property.name === "whileLoopSync" || node.callee.property.name === "forLoop") &&
+      node.arguments && node.arguments.length > 1) {
+    const out = { ...node };
+    out.arguments = node.arguments.map((a, i) => returnInLoop(a, i === 1));
+    return out;
+  }
+  const out = {};
+  for (const k of Object.keys(node)) out[k] = returnInLoop(node[k], inLoop);
+  return out;
+}
+
+// does a node subtree contain any AwaitExpression?
+function hasAwait(node) {
+  if (!node || typeof node !== "object") return false;
+  if (Array.isArray(node)) return node.some(hasAwait);
+  if (node.type === "AwaitExpression") return true;
+  for (const k of Object.keys(node)) if (hasAwait(node[k])) return true;
+  return false;
+}
+
+// A function whose body contains an AwaitExpression must be `async` (a
+// non-async function with `await` inside is a SyntaxError). awaitSyncFnCalls
+// injects awaits into functions the frontend marked sync — fix the flag.
+function markAsyncOnAwait(node) {
+  if (!node || typeof node !== "object") return node;
+  if (Array.isArray(node)) return node.map(markAsyncOnAwait);
+  if ((node.type === "ArrowFunctionExpression" || node.type === "FunctionExpression" || node.type === "FunctionDeclaration") && node.body) {
+    if (hasAwait(node.body)) node.async = true;
+  }
+  for (const k of Object.keys(node)) markAsyncOnAwait(node[k]);
+  return node;
+}
+
+function awaitSyncFnCalls(node, inAwait) {
+  if (!node || typeof node !== "object") return node;
+  if (Array.isArray(node)) return node.map((n) => awaitSyncFnCalls(n, false));
+  if (node.type === "AwaitExpression") {
+    return { ...node, argument: awaitSyncFnCalls(node.argument, true) };
+  }
+  if (node.type === "CallExpression" && node.callee && node.callee.type === "MemberExpression" &&
+      node.callee.object && node.callee.object.type === "Identifier" && node.callee.object.name === "sh2" &&
+      node.callee.property && node.callee.property.type === "Identifier" && node.callee.property.name === "builtin" &&
+      node.arguments && node.arguments[0] && node.arguments[0].type === "Literal" && node.arguments[0].value === "." &&
+      !inAwait) {
+    // the otranspilerl transpile renders `source`/`.` as the SYNC
+    // sh2.builtin (its builtin table has no "." — "command not found").
+    // Rewrite to the async exec bridge, which resolves the `.` builtin
+    // through the shell (the shared source implementation).
+    return {
+      type: "AwaitExpression",
+      argument: {
+        type: "CallExpression",
+        callee: { type: "MemberExpression", computed: false, optional: false, object: { type: "Identifier", name: "sh2" }, property: { type: "Identifier", name: "exec" } },
+        arguments: [
+          { type: "Literal", value: ".", raw: null },
+          node.arguments[1] ? awaitSyncFnCalls(node.arguments[1], false) : { type: "ArrayExpression", elements: [] },
+        ],
+        optional: false,
+      },
+    };
+  }
+  if (node.type === "CallExpression" && node.callee && node.callee.type === "MemberExpression" &&
+      node.callee.object && node.callee.object.type === "Identifier" && node.callee.object.name === "sh2" &&
+      node.callee.property && node.callee.property.type === "Identifier" && node.callee.property.name === "fnCall" &&
+      !inAwait) {
+    return {
+      type: "AwaitExpression",
+      argument: { ...node, arguments: node.arguments.map((a) => awaitSyncFnCalls(a, false)) },
+    };
+  }
+  const out = {};
+  for (const k of Object.keys(node)) out[k] = awaitSyncFnCalls(node[k], false);
+  return out;
+}
+
 // A final top-level statement that corresponds to a source statement:
 // declaration hoists (`let x = 0`) and lastExit bookkeeping carry no
 // source line — everything else maps to an A1 stmt in order.
@@ -315,7 +472,7 @@ export function normalizeFunctions(program) {
         if (!n || n.type !== "LogicalExpression" || n.operator !== "??") return null;
         const l = n.left;
         if (!l || l.type !== "MemberExpression" || !l.object || l.object.type !== "MemberExpression" ||
-            l.object.object || l.object.object.name !== "sh2" || l.object.property || l.object.property.name !== "positional" ||
+            !l.object.object || l.object.object.name !== "sh2" || !l.object.property || l.object.property.name !== "positional" ||
             !l.computed || !l.property || l.property.type !== "Literal") return null;
         return paramByPos.get(Number(l.property.value)) || null;
       };
@@ -375,7 +532,12 @@ export function normalizeFunctions(program) {
       body: fnBlock,
       generator: false,
       expression: false,
-      async: !!r.arrow.async,
+      // the bash frontend sometimes marks a function async:false even
+      // though its body awaits a runtime bridge (sh2.fnCall on another
+      // user function, sh2.capture/whileLoop) — a non-async function
+      // with `await` inside is a SyntaxError, so force async when the
+      // body actually contains an AwaitExpression.
+      async: !!r.arrow.async || hasAwait(fnBlock),
     };
     const positional = (p) => ({
       type: "MemberExpression", computed: true, optional: false,
@@ -438,9 +600,11 @@ export function normalizeFunctions(program) {
     }
   }
   if (moved.size) {
-    for (const st of newBody) {
+    for (let i = 0; i < newBody.length; i++) {
+      const st = newBody[i];
       if (st.type === "VariableDeclaration" && st.declarations) {
         st.declarations = st.declarations.filter((d) => !(d.id && d.id.type === "Identifier" && moved.has(d.id.name)));
+        if (st.declarations.length === 0) { newBody.splice(i, 1); i--; }  // all params moved → drop the empty `let ;`
       }
     }
   }
@@ -456,14 +620,30 @@ export function normalizeFunctions(program) {
 // every other A1 stmt maps to the meaningful statements, each in order).
 // Returns { js, map } where map[i] = { jsStart, jsEnd, sourceLine }.
 export async function estreeToJsMapped(program, stmtLines, a1Stmts) {
-  const { lowerNativeArrays, hoistLoopLastExit, hoistCommonLastExit, dropDeadFlags, mergeInitAssignments, pushLastExitToEnd } = await import("./lower.js");
-  const normalized = normalizeFunctions(stripProcessEnv(program));
+  const lowerMod = await import("./lower.js");
+  const { lowerNativeArrays, hoistLoopLastExit, hoistCommonLastExit, dropDeadFlags, mergeInitAssignments, pushLastExitToEnd, nativeForLoops, lowerPureFunctions } = lowerMod;
+  // awaitSyncFnCalls must run BEFORE normalizeFunctions: the sync-fnCall
+  // form (a fnCall the frontend believes is await-free) becomes an
+  // AwaitExpression here; markAsyncOnAwait then sets async on every
+  // function whose body awaits (a non-async function with `await` inside
+  // is a SyntaxError), and normalizeFunctions keeps the flag.
+  let normalized = normalizeFunctions(markAsyncOnAwait(awaitSyncFnCalls(stripProcessEnv(program), false)));
+  normalized = unwrapStoreString(normalized);
+  normalized = nullSentinel(normalized);
+  normalized = returnInLoop(normalized, false);
   const lowered = lowerNativeArrays(normalized);
   hoistLoopLastExit(lowered);
   hoistCommonLastExit(lowered);
   dropDeadFlags(lowered);
   pushLastExitToEnd(lowered);
   mergeInitAssignments(lowered);
+  // nativeForLoops is a pure optimisation (recover native `for` from
+  // counter while-loops) — a stale cached lower.js without it must not
+  // break the game, the while-loop form still works.
+  if (typeof nativeForLoops === "function") nativeForLoops(lowered);
+  else console.warn("[estree] nativeForLoops missing from lower.js (stale cache?) — skipping the for-recovery pass");
+  if (typeof lowerPureFunctions === "function") lowerPureFunctions(lowered);
+  else console.warn("[estree] lowerPureFunctions missing from lower.js (stale cache?) — skipping the pure-helper lowering");
   const { generate } = await getAstring();
   const js = generate(lowered);
 

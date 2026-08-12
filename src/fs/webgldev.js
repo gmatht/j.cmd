@@ -61,13 +61,16 @@ function makeNullGL() {
   const gl = {
     VERTEX_SHADER: 0x8b31, FRAGMENT_SHADER: 0x8b30,
     ARRAY_BUFFER: 0x8892, ELEMENT_ARRAY_BUFFER: 0x8893,
-    STATIC_DRAW: 0x88e4, COLOR_BUFFER_BIT: 0x4000,
+    STATIC_DRAW: 0x88e4, COLOR_BUFFER_BIT: 0x4000, DEPTH_BUFFER_BIT: 0x100, DEPTH_TEST: 0x0b71, LEQUAL: 0x0203,
     TRIANGLES: 0x0004, TRIANGLE_STRIP: 0x0005, TRIANGLE_FAN: 0x0006,
     POINTS: 0x0000, LINES: 0x0001, LINE_LOOP: 0x0002, LINE_STRIP: 0x0003,
     FLOAT: 0x1406, INT: 0x1404, FLOAT_VEC2: 0x8b50, FLOAT_VEC3: 0x8b51,
     FLOAT_VEC4: 0x8b52, INT_VEC2: 0x8b53, INT_VEC3: 0x8b54, INT_VEC4: 0x8b55,
     FLOAT_MAT2: 0x8b5a, FLOAT_MAT3: 0x8b5b, FLOAT_MAT4: 0x8b5c,
     UNSIGNED_BYTE: 0x1401, UNSIGNED_SHORT: 0x1403,
+    LINK_STATUS: 0x8b82,
+    ACTIVE_ATTRIBUTES: 0x8b89, ACTIVE_UNIFORMS: 0x8b86,
+    COMPILE_STATUS: 0x8b81,
     createBuffer: () => ({ id: ++counters.buffers }),
     deleteBuffer: () => {},
     bindBuffer: () => {},
@@ -82,7 +85,7 @@ function makeNullGL() {
     deleteProgram: () => {},
     attachShader: () => {},
     linkProgram: () => {},
-    getProgramParameter: () => 0,
+    getProgramParameter: (p, name) => name === 0x8b82 ? 1 : (name === 0x8b89 ? 2 : (name === 0x8b86 ? 6 : 0)),  // LINK/ATTRIBS/UNIFORMS for the null device
     getProgramInfoLog: () => "",
     useProgram: () => {},
     getUniformLocation: () => ({}),
@@ -91,7 +94,10 @@ function makeNullGL() {
     getAttribLocation: () => 0,
     enableVertexAttribArray: () => {},
     vertexAttribPointer: () => {},
-    getActiveAttrib: () => ({ name: "aPos", type: gl.FLOAT_VEC3 }),
+    getActiveAttrib: (p, i) => ({
+      name: i === 0 ? "aPosition" : "aShade",
+      type: gl.FLOAT_VEC3,
+    }),
     drawArrays: () => { counters.draws++; },
     drawElements: () => { counters.draws++; },
     clear: () => {},
@@ -121,6 +127,8 @@ export class WebGLDevice {
     this._lastCall = "";
     this._lastElementBuffer = null;  // name of last written u8/u16 buffer
     this._keys = [];                 // key queue (a game reads /dev/webgl/key)
+    this._hudRects = null;           // overlay rect list (batched /dev/webgl/hud)
+    this._hudTris = null;           // overlay triangles (T … lines)
     this._lastSwapAt = 0;            // for key-steal timeout after a game ends
     this._keyListener = null;
     this._null = false;              // headless null-device mode (no DOM)
@@ -157,6 +165,13 @@ export class WebGLDevice {
                   canvas.getContext("experimental-webgl");
       if (!ctx) throw new Error("context creation failed");
       this._gl = ctx;
+      // Depth testing: the painter's-algorithm games (mimecroft.sh) draw
+      // cubes far-to-near, but a cube right against the camera has its
+      // near face at z≈0 (huge on screen) while its far face is small —
+      // without per-pixel depth those faces overlap and the block
+      // flickers between "zoomed in" and "zoomed out". Enable depth so
+      // the GPU sorts every fragment correctly.
+      try { ctx.enable(ctx.DEPTH_TEST); ctx.depthFunc(ctx.LEQUAL); } catch {}
       this._contextName = (typeof WebGL2RenderingContext !== "undefined" &&
                            ctx instanceof WebGL2RenderingContext)
         ? "WebGL2" : "WebGL1";
@@ -334,7 +349,9 @@ export class WebGLDevice {
     if (op === "clear") {
       gl.clearColor(this._clearColor[0], this._clearColor[1],
                     this._clearColor[2], this._clearColor[3]);
-      gl.clear(gl.COLOR_BUFFER_BIT);
+      // depth too — the per-frame depth buffer must reset or fragments
+      // from the previous frame stay "nearer" and blocks vanish
+      gl.clear(gl.COLOR_BUFFER_BIT | (gl.DEPTH_BUFFER_BIT || 0x100));
       this._lastCall = raw.trim();
       return;
     }
@@ -528,6 +545,60 @@ export class WebGLDevice {
     return lines.join("\n") + "\n";
   }
 
+  // Draw the batched 2D overlay (see /dev/webgl/hud). Uses the quad
+  // buffers the game uploads (quadpos/quadshade/quadi) and the overlay
+  // shader path — one direct GL pass, no per-rect async round-trips.
+  _drawHud() {
+    const gl = this._gl;
+    if (!gl || !this._hudRects || !this._hudRects.length) return;
+    const rects = this._hudRects;
+    this._hudRects = null;
+    const program = this._linkProgram();
+    gl.useProgram(program);
+    const bind = (attr, bufName) => {
+      const entry = this._buffers.get(bufName);
+      if (!entry) return false;
+      const loc = gl.getAttribLocation(program, attr);
+      gl.bindBuffer(gl.ARRAY_BUFFER, entry.buffer);
+      gl.enableVertexAttribArray(loc);
+      gl.vertexAttribPointer(loc, 3, gl.FLOAT, false, 0, 0);
+      return true;
+    };
+    if (!bind("aPosition", "quadpos")) return;
+    bind("aShade", "quadshade");
+    const idx = this._buffers.get("quadi");
+    if (!idx) return;
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idx.buffer);
+    const loc = (n) => gl.getUniformLocation(program, n);
+    const uPos = loc("uObjPos"), uScale = loc("uScale"), uColor = loc("uBlockColor"), uOverlay = loc("uOverlay");
+    if (uOverlay) gl.uniform1f(uOverlay, 1.0);
+    const idxType = idx.type === "u8" ? gl.UNSIGNED_BYTE : gl.UNSIGNED_SHORT;
+    for (const [cx, cy, w, h, r, g, b] of rects) {
+      if (uPos) gl.uniform3f(uPos, cx, cy, 0);
+      if (uScale) gl.uniform3f(uScale, w, h, 1);
+      if (uColor) gl.uniform3f(uColor, r, g, b);
+      gl.drawElements(gl.TRIANGLES, 6, idxType, 0);
+    }
+    // triangles: T cx cy size r g b deg — a dynamic vertex buffer, rotated
+    const tris = this._hudTris || [];
+    if (tris.length) {
+      if (!this._triBuf) this._triBuf = gl.createBuffer();
+      const aLoc = gl.getAttribLocation(program, "aPosition");
+      gl.bindBuffer(gl.ARRAY_BUFFER, this._triBuf);
+      gl.enableVertexAttribArray(aLoc);
+      gl.vertexAttribPointer(aLoc, 3, gl.FLOAT, false, 0, 0);
+      for (const [cx, cy, size, r, g, b, deg] of tris) {
+        const a = deg * Math.PI / 180, c = Math.cos(a), sn = Math.sin(a);
+        const v = (vx, vy) => [cx + size * (vx * c - vy * sn), cy + size * (vx * sn + vy * c), 0];
+        const verts = new Float32Array([...v(0, 0.5), ...v(-0.5, -0.5), ...v(0.5, -0.5)]);
+        gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW);
+        if (uColor) gl.uniform3f(uColor, r, g, b);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+      }
+    }
+    this._log += `[hud] ${rects.length} rects ${tris.length} tris\n`;
+  }
+
   _frameDataURL() {
     const gl = this._ensureGL();
     gl.flush();
@@ -613,6 +684,33 @@ export class WebGLDevice {
     }
     if (parts[0] === "call") {
       this._doCall(String(content));
+      return;
+    }
+    if (parts[0] === "hud") {
+      // 2D overlay: newline-separated rects "cx cy w h r g b" (NDC).
+      // Drawn IMMEDIATELY into the back buffer, so the presented frame
+      // (world + HUD) is atomic at the next swap — one write instead of
+      // hundreds of per-quad round-trips (the HUD used to cost ~90ms
+      // of async writes and blink because it landed after the swap).
+      this._hudRects = [];
+      this._hudTris = [];
+      for (const line of String(content).split("\n")) {
+        const t = line.trim();
+        if (t.startsWith("T ")) {
+          // triangle: T cx cy size r g b deg (deg rotates the up-pointing
+          // unit triangle clockwise in NDC — the player facing marker)
+          const nums = t.slice(2).trim().split(/[\s,]+/).filter(Boolean).map(Number);
+          if (nums.length >= 7 && nums.every((n) => Number.isFinite(n))) {
+            this._hudTris.push(nums.slice(0, 7));
+          }
+        } else {
+          const nums = t.split(/[\s,]+/).filter(Boolean).map(Number);
+          if (nums.length >= 7 && nums.every((n) => Number.isFinite(n))) {
+            this._hudRects.push(nums.slice(0, 7));
+          }
+        }
+      }
+      this._drawHud();
       return;
     }
     if (parts[0] === "key") {

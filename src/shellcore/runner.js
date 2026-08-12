@@ -138,7 +138,10 @@ export function looksLikeBash(text) {
   // `{a,b}` comma-brace expansion is NOT bash-only syntax — the native
   // tokenizer's brace+glob pass handles it (`ls {x,y}.c` should stay
   // native so the real ls runs, not the transpiler's sync-builtin stub).
-  const noBrace = unquoted.replace(/\{[^{}]*,[^{}]*\}/g, "");
+  // The find -exec placeholder `{}` and its escaped terminator `\;` are
+  // also native tokens, not bash control syntax — strip them so the
+  // check only flags real `;` separators and `{ … }` command groups.
+  const noBrace = unquoted.replace(/\{[^{}]*,[^{}]*\}/g, "").replace(/\{\}/g, "").replace(/\\;/g, "");
   if (/[;{}]/.test(noBrace)) return true;                 // `;` separator, `{ … }` group
   if (/\$\(|\[\[/.test(unquoted)) return true;          // $(…) / [[ ]]
   if (/\[[^\]]*\]/.test(unquoted)) return true;           // [ … ] test
@@ -494,8 +497,9 @@ export async function runSegment(segmentText, stdin, isLast, target, ctx) {
 
   try {
     if (resolved.type === "sh") {
-      // .sh script or a #!-shebang file. bash/sh → run through the bash
-      // transpiler; any other interpreter is re-dispatched as
+      // .sh script or a #!-shebang file. bash/sh (and the shell's own
+      // `sh2perl` identity) → run through the bash transpiler; any
+      // other interpreter is re-dispatched as
       // `<interp> <script> <args>` through the normal command machinery.
       let interp = "bash";
       if (resolved.shebang) {
@@ -503,7 +507,7 @@ export async function runSegment(segmentText, stdin, isLast, target, ctx) {
         interp = words[words.length - 1].split("/").pop();
         if (interp.startsWith("-")) interp = "bash";   // `#!/bin/sh -e` style
       }
-      if (interp !== "bash" && interp !== "sh" && interp !== "dash" && interp !== "ash" && interp !== "ksh") {
+      if (interp !== "bash" && interp !== "sh" && interp !== "dash" && interp !== "ash" && interp !== "ksh" && interp !== "sh2perl") {
         const q = (w) => "'" + String(w).replace(/'/g, "'\\''") + "'";
         const quoted = [interp, q(resolved.path), ...args.map((a) => q(a))].join(" ");
         return await runSegment(quoted, stdin, isLast, target, ctx);
@@ -530,7 +534,15 @@ export async function runSegment(segmentText, stdin, isLast, target, ctx) {
       }
       let code = 1;
       try {
-        code = await ctx.runShellScript(content, { args, argv0: cmd, runCmd: ctx.runNestedCommand });
+        // The .sh command path: runBash (the debashcl engine — the SAME
+        // pipeline as `bash script.sh`) handles the full bash surface;
+        // fall back to the shared otranspilerl runShellScript when the
+        // ctx doesn't provide it.
+        if (typeof ctx.runBashScript === "function") {
+          code = await ctx.runBashScript(content, { args, argv0: cmd });
+        } else {
+          code = await ctx.runShellScript(content, { args, argv0: cmd, runCmd: ctx.runNestedCommand });
+        }
       } catch (e) {
         ctx.stderr.write(`${cmd}: ${e.message}\n`);
       } finally {

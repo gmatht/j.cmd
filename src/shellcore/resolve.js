@@ -152,6 +152,15 @@ export async function resolveCommandExact(ctx, name) {
     try {
       for (const entry of await fs.list(dir)) {
         const clean = entry.replace(/\/$/, "");
+        // .sh command files run through the bash transpiler (type "sh"
+        // — same as an explicit /path/script.sh); a bare `mimecroft`
+        // also finds `mimecroft.sh` on the path.
+        if ((clean === name || clean === name + ".sh") && clean.endsWith(".sh")) {
+          const p = dir + "/" + clean;
+          const denied = customExecDenied(p);
+          if (denied) return denied;
+          return { type: "sh", path: p };
+        }
         if (clean === name || clean === name + ".js") {
           const p = dir + "/" + clean;
           const denied = customExecDenied(p);
