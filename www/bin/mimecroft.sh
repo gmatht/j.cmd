@@ -1098,9 +1098,9 @@ draw_hud_canvas() {
   dh_a=$((fps/100+26))
   dh_b=$((fps/10%10+26))
   dh_c=$((fps%10+26))
-  draw_char $dh_a 132 1778 8 11 0.55 0.95 0.95
-  draw_char $dh_b 164 1778 8 11 0.55 0.95 0.95
-  draw_char $dh_c 196 1778 8 11 0.55 0.95 0.95
+  draw_char $dh_a 196 1778 8 11 0.55 0.95 0.95
+  draw_char $dh_b 228 1778 8 11 0.55 0.95 0.95
+  draw_char $dh_c 260 1778 8 11 0.55 0.95 0.95
   # instructions (bottom centre)
   draw_text "WASD MOVE ARROWS TURN SPACE SHOOT" 33 538 100 7 10 0.85 0.85 0.85
   echo "$ov_text" > /dev/webgl/hud
