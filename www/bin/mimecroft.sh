@@ -963,9 +963,10 @@ draw_minimap() {
         fmt_ndc $dm_cym
         dm_cys=$fv
         # display yaw (unwrapped, can be negative) so the triangle
-        # glides through the SHORT arc during a turn, mirroring the view
+        # glides through the SHORT arc during a turn, mirroring the view.
+        # Bright yellow + slightly larger than a cell so it pops.
         dm_deg=$((0 - dpyw_raw_ms / 1000))
-        ov_text="${ov_text}T $dm_cxs $dm_cys 0.036 1.0 1.0 1.0 $dm_deg
+        ov_text="${ov_text}T $dm_cxs $dm_cys 0.042 1.0 0.85 0.2 $dm_deg
 "
         dm_draw=0
       else
@@ -1092,14 +1093,14 @@ draw_hud_canvas() {
   dh_b=$((TREASURE_TOTAL%10+26))
   draw_char $dh_a 984 1840 8 11 0.60 0.75 0.95
   draw_char $dh_b 1016 1840 8 11 0.60 0.75 0.95
-  # fps counter (second line, below the score)
-  draw_text "FPS" 3 60 1800 8 11 0.55 0.95 0.95
+  # fps counter (second line, below the score — half a line lower)
+  draw_text "FPS" 3 60 1778 8 11 0.55 0.95 0.95
   dh_a=$((fps/100+26))
   dh_b=$((fps/10%10+26))
   dh_c=$((fps%10+26))
-  draw_char $dh_a 132 1800 8 11 0.55 0.95 0.95
-  draw_char $dh_b 164 1800 8 11 0.55 0.95 0.95
-  draw_char $dh_c 196 1800 8 11 0.55 0.95 0.95
+  draw_char $dh_a 132 1778 8 11 0.55 0.95 0.95
+  draw_char $dh_b 164 1778 8 11 0.55 0.95 0.95
+  draw_char $dh_c 196 1778 8 11 0.55 0.95 0.95
   # instructions (bottom centre)
   draw_text "WASD MOVE ARROWS TURN SPACE SHOOT" 33 538 100 7 10 0.85 0.85 0.85
   echo "$ov_text" > /dev/webgl/hud
@@ -1152,7 +1153,7 @@ main() {
   fi
   echo ""
   echo "╔══════════════════════════════════════════════════╗"
-  echo "║  MIMEcrofT v5 — 3D treasure hunt written in bash ║"
+  echo "║  MIMEcrofT v5.1 — 3D treasure hunt written in bash ║"
   echo "║  The filesystem is infested with evil MIMEs.     ║"
   echo "║  Recover the lost operating systems.             ║"
   echo "║  WASD move · arrows turn · SPACE shoot · q quit  ║"
