@@ -93,6 +93,7 @@ ax0=0; az0=0; ay0=0; ax1=0; az1=0; ay1=0; anim_ayd=0
 fps=0               # rendered frames/sec (measured over ~10-frame windows)
 fps_t0=0
 fps_rendered=0
+muzzle=0            # muzzle-flash lifetime (loop frames remaining)
 dpyw_raw_ms=0       # unwrapped yaw arc (can be negative) for the radar
 # triangle to take the short path while the shader uniform stays positive
 seed=20240812
@@ -373,6 +374,7 @@ compute_display() {
 
 # shoot straight ahead at eye level — a 1-D walk down the facing row
 shoot() {
+  muzzle=5
   sh_dx=${DIR_X[$yaw]}
   sh_dz=${DIR_Z[$yaw]}
   sh_i=1
@@ -836,6 +838,37 @@ draw_rect() { dr_cx=$1; dr_cy=$2; dr_w=$3; dr_h=$4
 "
 }
 
+# the viewmodel gun — a 3D-looking rectangular shape at 3/4 across the
+# screen, bottom-right, barrel pointing forwards (up-screen). Drawn as
+# layered HUD rects BEFORE the radar so the radar wins any overlap;
+# the 3 shaded faces (highlight / front / shade) read as a box receding
+# into the scene. The muzzle flash appears at the barrel tip after a shot.
+draw_gun() {
+  # receiver body
+  ov_text="${ov_text}1.500 0.350 0.260 0.140 0.24 0.26 0.30
+"
+  ov_text="${ov_text}1.500 0.430 0.260 0.016 0.32 0.34 0.38
+"
+  ov_text="${ov_text}1.500 0.280 0.260 0.016 0.15 0.16 0.18
+"
+  # barrel: front face + left highlight + right shade + muzzle cap
+  ov_text="${ov_text}1.500 0.590 0.120 0.320 0.30 0.33 0.38
+"
+  ov_text="${ov_text}1.442 0.590 0.016 0.320 0.44 0.47 0.52
+"
+  ov_text="${ov_text}1.548 0.590 0.016 0.320 0.15 0.16 0.18
+"
+  ov_text="${ov_text}1.500 0.748 0.120 0.016 0.20 0.22 0.26
+"
+  # muzzle flash — bright glow + white-hot core at the barrel tip
+  if [ "$muzzle" -gt 0 ]; then
+    ov_text="${ov_text}1.500 0.800 0.150 0.150 1.0 0.82 0.2
+"
+    ov_text="${ov_text}1.500 0.800 0.070 0.070 1.0 1.0 0.9
+"
+  fi
+}
+
 # 3×5 pixel font — flat table of 38 glyphs × 15 pixels (row-major).
 # Index: A-Z=0..25, 0-9=26..35, space=36, '/'=37
 # 3×5 pixel font — flat table of 66 glyphs × 15 pixels (row-major).
@@ -1062,6 +1095,7 @@ draw_mime_list() {
 # the whole on-canvas dashboard: score line, radar, instructions
 draw_hud_canvas() {
   ov_text=""
+  draw_gun
   draw_minimap
   draw_mime_labels
   draw_mime_list
@@ -1153,7 +1187,7 @@ main() {
   fi
   echo ""
   echo "╔══════════════════════════════════════════════════╗"
-  echo "║  MIMEcrofT v5.1 — 3D treasure hunt written in bash ║"
+  echo "║  MIMEcrofT v5.2 — 3D treasure hunt written in bash ║"
   echo "║  The filesystem is infested with evil MIMEs.     ║"
   echo "║  Recover the lost operating systems.             ║"
   echo "║  WASD move · arrows turn · SPACE shoot · q quit  ║"
@@ -1218,6 +1252,14 @@ main() {
       fi
     fi
     compute_display
+    # muzzle flash lifetime: a few loop frames of flash, then force a
+    # clear render so the flash doesn't linger frozen on a static scene
+    if [ "$muzzle" -gt 0 ]; then
+      muzzle=$((muzzle - 1))
+      if [ "$muzzle" -eq 0 ]; then
+        dirty=1
+      fi
+    fi
     mstep=$((frame % MIME_STEP))
     if [ "$MIMES_ON" -eq 1 ]; then
       if [ "$mstep" -eq 0 ]; then
