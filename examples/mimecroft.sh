@@ -86,6 +86,10 @@ mime_count=0
 frame=0
 quit=0
 sound=1
+anim=0              # 1 while an action glides the camera (~0.5s)
+anim_t=0
+anim_steps=60       # 60 frames × 8ms ≈ 0.5s per action
+ax0=0; az0=0; ay0=0; ax1=0; az1=0; ay1=0; anim_ayd=0
 seed=20240812
 
 # ─── Shared helper outputs (set by the helpers below, read by caller
@@ -301,6 +305,59 @@ try_move() { tm_a=$1; tm_b=$2
     fi
   fi
   return 1
+}
+
+# ─── action animation: each move/turn glides the camera over ~0.5s ──
+# Discrete state (px/pz/yaw) updates when the glide ENDS; render_frame
+# reads the interpolated display values (dpx/dpz/dyaw + fractional milli
+# positions) so the view eases instead of snapping.
+start_anim() { ax0=$1; az0=$2; ay0=$3; ax1=$4; az1=$5; ay1=$6
+  # shortest yaw arc across the 0↔3 seam (3→0 turns +90°, not -270°)
+  anim_ayd=$((ay1 - ay0))
+  if [ "$anim_ayd" -gt 2 ]; then anim_ayd=$((anim_ayd - 4)); fi
+  if [ "$anim_ayd" -lt -2 ]; then anim_ayd=$((anim_ayd + 4)); fi
+  anim_t=0
+  anim=1
+}
+
+try_anim_move() { ta_dx=$1; ta_dz=$2
+  ta_nx=$((px + ta_dx))
+  ta_nz=$((pz + ta_dz))
+  if [ "$ta_nx" -lt 1 ]; then return 1; fi
+  if [ "$ta_nx" -ge 15 ]; then return 1; fi
+  if [ "$ta_nz" -lt 1 ]; then return 1; fi
+  if [ "$ta_nz" -ge 15 ]; then return 1; fi
+  get_cell $ta_nx 0 $ta_nz
+  if [ "$gv" -eq "$AIR" ]; then
+    start_anim $px $pz $yaw $ta_nx $ta_nz $yaw
+    return 0
+  fi
+  return 1
+}
+
+start_turn() { tt=$1
+  ty=$(((yaw + tt) % 4))
+  start_anim $px $pz $yaw $px $pz $ty
+}
+
+# the display state the renderer uses: fractional camera position/yaw
+# (milli) plus the nearest cell + yaw for the discrete culling
+compute_display() {
+  if [ "$anim" -eq 1 ]; then
+    dpcx_ms=$((ax0 * 1000 + (ax1 - ax0) * 1000 * anim_t / anim_steps))
+    dpcz_ms=$((az0 * 1000 + (az1 - az0) * 1000 * anim_t / anim_steps))
+    dpyw_ms=$((ay0 * 90000 + anim_ayd * 90000 * anim_t / anim_steps))
+    # keep the yaw in 0..360000: a left turn's 0→-90° arc becomes a
+    # 360→270° glide (identical rotation, positive uniform input)
+    if [ "$dpyw_ms" -lt 0 ]; then dpyw_ms=$((dpyw_ms + 360000)); fi
+  else
+    dpcx_ms=$((px * 1000))
+    dpcz_ms=$((pz * 1000))
+    dpyw_ms=$((yaw * 90000))
+  fi
+  dpx=$(((dpcx_ms + 500) / 1000))
+  dpz=$(((dpcz_ms + 500) / 1000))
+  dyaw=$((((dpyw_ms + 45000) / 90000) % 4))
 }
 
 # shoot straight ahead at eye level — a 1-D walk down the facing row
@@ -601,8 +658,8 @@ try_draw() { td_a=$1; td_b=$2; td_c=$3
     fi
     return 1
   fi
-  td_ddx=$((td_a - px))
-  td_ddz=$((td_c - pz))
+  td_ddx=$((td_a - dpx))
+  td_ddz=$((td_c - dpz))
   abs $td_ddx
   td_adx=$av
   abs $td_ddz
@@ -611,23 +668,23 @@ try_draw() { td_a=$1; td_b=$2; td_c=$3
   if [ "$td_adz" -gt "$VIEW_R" ]; then return 1; fi
   td_infront=0
   td_inrow=0
-  if [ "$yaw" -eq 0 ]; then
-    if [ "$td_c" -lt "$pz" ]; then td_infront=1; fi
+  if [ "$dyaw" -eq 0 ]; then
+    if [ "$td_c" -lt "$dpz" ]; then td_infront=1; fi
     td_fov=$((td_adz + td_adz / 2 + 1))
     if [ "$td_adx" -le "$td_fov" ]; then td_inrow=1; fi
   fi
-  if [ "$yaw" -eq 1 ]; then
-    if [ "$td_a" -gt "$px" ]; then td_infront=1; fi
+  if [ "$dyaw" -eq 1 ]; then
+    if [ "$td_a" -gt "$dpx" ]; then td_infront=1; fi
     td_fov=$((td_adx + td_adx / 2 + 1))
     if [ "$td_adz" -le "$td_fov" ]; then td_inrow=1; fi
   fi
-  if [ "$yaw" -eq 2 ]; then
-    if [ "$td_c" -gt "$pz" ]; then td_infront=1; fi
+  if [ "$dyaw" -eq 2 ]; then
+    if [ "$td_c" -gt "$dpz" ]; then td_infront=1; fi
     td_fov=$((td_adz + td_adz / 2 + 1))
     if [ "$td_adx" -le "$td_fov" ]; then td_inrow=1; fi
   fi
-  if [ "$yaw" -eq 3 ]; then
-    if [ "$td_a" -lt "$px" ]; then td_infront=1; fi
+  if [ "$dyaw" -eq 3 ]; then
+    if [ "$td_a" -lt "$dpx" ]; then td_infront=1; fi
     td_fov=$((td_adx + td_adx / 2 + 1))
     if [ "$td_adz" -le "$td_fov" ]; then td_inrow=1; fi
   fi
@@ -647,8 +704,14 @@ render_frame() {
   # restore the cube bindings (the overlay HUD switches them to quad)
   echo "aPosition aPosition" > /dev/webgl/bind
   echo "aShade aShade" > /dev/webgl/bind
-  echo "$px 0 $pz" > /dev/webgl/uniform/3f/uCamPos
-  echo "${CAM_YAW[$yaw]}" > /dev/webgl/uniform/1f/uCamYaw
+  fmt_pos $dpcx_ms
+  cxs=$fv
+  fmt_pos $dpcz_ms
+  czs=$fv
+  fmt_pos $dpyw_ms
+  yws=$fv
+  echo "$cxs 0 $czs" > /dev/webgl/uniform/3f/uCamPos
+  echo "$yws" > /dev/webgl/uniform/1f/uCamYaw
   # floor + ceiling planes — the maze floor is carved air, so without
   # them the near-black clear colour shows as a void below/above
   echo "8 -0.05 8" > /dev/webgl/uniform/3f/uObjPos
@@ -659,7 +722,7 @@ render_frame() {
   echo "0.15 0.15 0.18" > /dev/webgl/uniform/3f/uBlockColor
   echo "draw elements triangles 36 0 cube" > /dev/webgl/call
   echo "1 1 1" > /dev/webgl/uniform/3f/uScale
-  if [ "$yaw" -eq 0 ]; then
+  if [ "$dyaw" -eq 0 ]; then
     rf_z=15
     while [ "$rf_z" -ge 0 ]; do
       rf_x=0
@@ -672,7 +735,7 @@ render_frame() {
       rf_z=$((rf_z - 1))
     done
   fi
-  if [ "$yaw" -eq 1 ]; then
+  if [ "$dyaw" -eq 1 ]; then
     rf_x=15
     while [ "$rf_x" -ge 0 ]; do
       rf_z=0
@@ -685,7 +748,7 @@ render_frame() {
       rf_x=$((rf_x - 1))
     done
   fi
-  if [ "$yaw" -eq 2 ]; then
+  if [ "$dyaw" -eq 2 ]; then
     rf_z=0
     while [ "$rf_z" -lt "$MAP_D" ]; do
       rf_x=0
@@ -698,7 +761,7 @@ render_frame() {
       rf_z=$((rf_z + 1))
     done
   fi
-  if [ "$yaw" -eq 3 ]; then
+  if [ "$dyaw" -eq 3 ]; then
     rf_x=0
     while [ "$rf_x" -lt "$MAP_W" ]; do
       rf_z=0
@@ -722,6 +785,18 @@ CELL_W="0.040"
 CELL_H="0.056"
 GLP_W="0.008"
 GLP_H="0.011"
+
+fmt_pos() { fp_ms=$1
+  # negative milli values are legal (left turns glide 0 → -90°) —
+  # format the magnitude and apply the sign
+  fp_neg=0
+  if [ "$fp_ms" -lt 0 ]; then fp_neg=1; fp_ms=$((0 - fp_ms)); fi
+  fp_i=$((fp_ms / 1000))
+  fp_f=$((fp_ms % 1000))
+  fp_fs=$fp_f
+  if [ "$fp_f" -lt 10 ]; then fp_fs="00$fp_f"; elif [ "$fp_f" -lt 100 ]; then fp_fs="0$fp_f"; fi
+  if [ "$fp_neg" -eq 1 ]; then fv="-$fp_i.$fp_fs"; else fv="$fp_i.$fp_fs"; fi
+}
 
 fmt3() { fp=$1
   if [ "$fp" -lt 10 ]; then fp="00$fp"; elif [ "$fp" -lt 100 ]; then fp="0$fp"; fi
@@ -867,7 +942,7 @@ draw_minimap() {
     dm_z=0
     while [ "$dm_z" -lt "$MAP_D" ]; do
       dm_draw=0
-      if [ "$dm_x" -eq "$px" ] && [ "$dm_z" -eq "$pz" ]; then
+      if [ "$dm_x" -eq "$dpx" ] && [ "$dm_z" -eq "$dpz" ]; then
         # the player is a triangle pointing the way they face (yaw 0 = up
         # on the radar = -z, the world direction the camera starts in)
         dm_cxm=$((1260 + dm_x*44))
@@ -914,12 +989,12 @@ MTN_LEN=(0 10 9 24 10)
 # project a world cell to overlay NDC (milli) — the yaw rotation is exact
 # integer sign/axis swaps, the perspective divide uses integer math
 mime_label_pos() { ml_x=$1; ml_z=$2
-  ml_dx=$((ml_x - px))
-  ml_dz=$((ml_z - pz))
-  if [ "$yaw" -eq 0 ]; then ml_rx=$ml_dx; ml_dp=$((0 - ml_dz)); fi
-  if [ "$yaw" -eq 1 ]; then ml_rx=$ml_dz; ml_dp=$ml_dx; fi
-  if [ "$yaw" -eq 2 ]; then ml_rx=$((0 - ml_dx)); ml_dp=$ml_dz; fi
-  if [ "$yaw" -eq 3 ]; then ml_rx=$((0 - ml_dz)); ml_dp=$((0 - ml_dx)); fi
+  ml_dx=$((ml_x - dpx))
+  ml_dz=$((ml_z - dpz))
+  if [ "$dyaw" -eq 0 ]; then ml_rx=$ml_dx; ml_dp=$((0 - ml_dz)); fi
+  if [ "$dyaw" -eq 1 ]; then ml_rx=$ml_dz; ml_dp=$ml_dx; fi
+  if [ "$dyaw" -eq 2 ]; then ml_rx=$((0 - ml_dx)); ml_dp=$ml_dz; fi
+  if [ "$dyaw" -eq 3 ]; then ml_rx=$((0 - ml_dz)); ml_dp=$((0 - ml_dx)); fi
   ml_ok=0
   if [ "$ml_dp" -gt 0 ]; then
     ml_cxm=$((1000 + ml_rx * 900 / ml_dp))
@@ -1056,7 +1131,7 @@ main() {
   fi
   echo ""
   echo "╔══════════════════════════════════════════════════╗"
-  echo "║  MIMEcrofT v3 — 3D treasure hunt written in bash ║"
+  echo "║  MIMEcrofT v4 — 3D treasure hunt written in bash ║"
   echo "║  The filesystem is infested with evil MIMEs.     ║"
   echo "║  Recover the lost operating systems.             ║"
   echo "║  WASD move · arrows turn · SPACE shoot · q quit  ║"
@@ -1069,44 +1144,56 @@ main() {
   dirty=1
   while [ "$quit" -eq 0 ] && [ "$hp" -gt 0 ] && [ "$found_count" -lt "$TREASURE_TOTAL" ]; do
     frame=$((frame + 1))
-    keys=$(cat /dev/webgl/key)
-    fx=${DIR_X[$yaw]}
-    fz=${DIR_Z[$yaw]}
-    bx=$((0 - fx))
-    bz=$((0 - fz))
-    case $keys in
-      *q*)
-        quit=$((1))
-        ;;
-      *space*)
-        shoot
+    # one action at a time: input is queued until the current glide ends
+    if [ "$anim" -eq 0 ]; then
+      keys=$(cat /dev/webgl/key)
+      fx=${DIR_X[$yaw]}
+      fz=${DIR_Z[$yaw]}
+      bx=$((0 - fx))
+      bz=$((0 - fz))
+      case $keys in
+        *q*)
+          quit=$((1))
+          ;;
+        *space*)
+          shoot
+          dirty=1
+          ;;
+        *ArrowLeft*)
+          start_turn 3
+          ;;
+        *ArrowRight*)
+          start_turn 1
+          ;;
+        *w*)
+          try_anim_move $fx $fz
+          ;;
+        *s*)
+          try_anim_move $bx $bz
+          ;;
+        *a*)
+          try_anim_move $fz $bx
+          ;;
+        *d*)
+          try_anim_move $bz $fx
+          ;;
+      esac
+      if [ "$anim" -eq 1 ]; then
         dirty=1
-        ;;
-      *ArrowLeft*)
-        yaw=$(((yaw + 3) % 4))
-        dirty=1
-        ;;
-      *ArrowRight*)
-        yaw=$(((yaw + 1) % 4))
-        dirty=1
-        ;;
-      *w*)
-        try_move $fx $fz
-        dirty=1
-        ;;
-      *s*)
-        try_move $bx $bz
-        dirty=1
-        ;;
-      *a*)
-        try_move $fz $bx
-        dirty=1
-        ;;
-      *d*)
-        try_move $bz $fx
-        dirty=1
-        ;;
-    esac
+      fi
+    fi
+    # advance the camera glide; snap the discrete state when it ends
+    if [ "$anim" -eq 1 ]; then
+      anim_t=$((anim_t + 1))
+      dirty=1
+      if [ "$anim_t" -ge "$anim_steps" ]; then
+        px=$ax1
+        pz=$az1
+        yaw=$ay1
+        anim=0
+      fi
+    fi
+    compute_display
     mstep=$((frame % MIME_STEP))
     if [ "$MIMES_ON" -eq 1 ]; then
       if [ "$mstep" -eq 0 ]; then
