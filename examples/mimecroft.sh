@@ -844,27 +844,27 @@ draw_rect() { dr_cx=$1; dr_cy=$2; dr_w=$3; dr_h=$4
 # the 3 shaded faces (highlight / front / shade) read as a box receding
 # into the scene. The muzzle flash appears at the barrel tip after a shot.
 draw_gun() {
-  # receiver body
-  ov_text="${ov_text}1.500 0.350 0.260 0.140 0.24 0.26 0.30
+  # receiver body (milli 1500,350 → NDC 0.5,-0.65 — 3/4 right, bottom)
+  ov_text="${ov_text}0.500 -0.650 0.260 0.140 0.24 0.26 0.30
 "
-  ov_text="${ov_text}1.500 0.430 0.260 0.016 0.32 0.34 0.38
+  ov_text="${ov_text}0.500 -0.570 0.260 0.016 0.32 0.34 0.38
 "
-  ov_text="${ov_text}1.500 0.280 0.260 0.016 0.15 0.16 0.18
+  ov_text="${ov_text}0.500 -0.720 0.260 0.016 0.15 0.16 0.18
 "
   # barrel: front face + left highlight + right shade + muzzle cap
-  ov_text="${ov_text}1.500 0.590 0.120 0.320 0.30 0.33 0.38
+  ov_text="${ov_text}0.500 -0.410 0.120 0.320 0.30 0.33 0.38
 "
-  ov_text="${ov_text}1.442 0.590 0.016 0.320 0.44 0.47 0.52
+  ov_text="${ov_text}0.442 -0.410 0.016 0.320 0.44 0.47 0.52
 "
-  ov_text="${ov_text}1.548 0.590 0.016 0.320 0.15 0.16 0.18
+  ov_text="${ov_text}0.548 -0.410 0.016 0.320 0.15 0.16 0.18
 "
-  ov_text="${ov_text}1.500 0.748 0.120 0.016 0.20 0.22 0.26
+  ov_text="${ov_text}0.500 -0.252 0.120 0.016 0.20 0.22 0.26
 "
   # muzzle flash — bright glow + white-hot core at the barrel tip
   if [ "$muzzle" -gt 0 ]; then
-    ov_text="${ov_text}1.500 0.800 0.150 0.150 1.0 0.82 0.2
+    ov_text="${ov_text}0.500 -0.200 0.150 0.150 1.0 0.82 0.2
 "
-    ov_text="${ov_text}1.500 0.800 0.070 0.070 1.0 1.0 0.9
+    ov_text="${ov_text}0.500 -0.200 0.070 0.070 1.0 1.0 0.9
 "
   fi
 }
@@ -1187,7 +1187,7 @@ main() {
   fi
   echo ""
   echo "╔══════════════════════════════════════════════════╗"
-  echo "║  MIMEcrofT v5.2 — 3D treasure hunt written in bash ║"
+  echo "║  MIMEcrofT v5.3 — 3D treasure hunt written in bash ║"
   echo "║  The filesystem is infested with evil MIMEs.     ║"
   echo "║  Recover the lost operating systems.             ║"
   echo "║  WASD move · arrows turn · SPACE shoot · q quit  ║"

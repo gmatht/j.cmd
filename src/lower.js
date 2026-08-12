@@ -278,6 +278,42 @@ export function lowerNativeArrays(program) {
   return program;
 }
 
+// ── flattenAndOrAll: lower `await sh2.and/or(…)` in EVERY position ──
+//
+// whileLoopParts flattens the runtime and/or chains only in loop
+// conditions. The same shapes also gate function purity in
+// if-conditions (`if (await sh2.and(async () => a, async () => b))` —
+// mime_at's equality tests), and an async-free function is then lowered
+// by the fixpoint (its exec calls to lowered callees become direct).
+// Rewrite every `await sh2.and(f1, …)` / `await sh2.or(f1, …)` whose
+// leaves are all sync into a native `&&` / `||` chain (short-circuit and
+// truthiness are identical; the `!!` coercion is a no-op in boolean
+// positions). Chains with an awaiting leaf are left to the runtime.
+export function flattenAndOrAll(program) {
+  if (!program || program.type !== "Program") return program;
+  const rewrite = (node) => {
+    if (!node || typeof node !== "object") return node;
+    if (Array.isArray(node)) return node.map(rewrite);
+    if (node.type === "AwaitExpression" && node.argument && node.argument.type === "CallExpression" &&
+        node.argument.callee && node.argument.callee.type === "MemberExpression" &&
+        node.argument.callee.object && node.argument.callee.object.type === "Identifier" &&
+        node.argument.callee.object.name === "sh2" &&
+        node.argument.callee.property && node.argument.callee.property.type === "Identifier" &&
+        (node.argument.callee.property.name === "and" || node.argument.callee.property.name === "or")) {
+      const flat = flattenAndOr(node);
+      if (flat) return rewrite(flat);
+    }
+    const out = {};
+    for (const k of Object.keys(node)) {
+      if (k === "loc" || k === "parent") continue;
+      out[k] = rewrite(node[k]);
+    }
+    return out;
+  };
+  program.body = program.body.map(rewrite);
+  return program;
+}
+
 // ── lowerPureFunctions: pull await-free helpers out of the shell ──
 //
 // `sh2.define("f", async () => { … })` with an AWAIT-FREE body is a
@@ -307,7 +343,22 @@ export function lowerNativeArrays(program) {
 // synced at the end — both faithful).
 
 export function lowerPureFunctions(program) {
-  if (!program || program.type !== "Program") return program;
+  // Fixpoint: a function whose only awaits are calls to ALREADY-lowered
+  // functions becomes pure once the call sites are rewritten to direct
+  // calls (get_cell awaits only map_get → round 2 lowers get_cell →
+  // try_draw's exec("get_cell") becomes a direct call). Repeat until no
+  // new functions qualify.
+  let total = 0;
+  for (let guard = 0; guard < 50; guard++) {
+    const n = lowerPureRound(program);
+    if (!n) break;
+    total += n;
+  }
+  return program;
+}
+
+function lowerPureRound(program) {
+  if (!program || program.type !== "Program") return 0;
   const body = program.body || [];
 
   // 1. locate `sh2.define("name", arrow)` registrations
@@ -323,7 +374,7 @@ export function lowerPureFunctions(program) {
         e.arguments[1].type !== "ArrowFunctionExpression") continue;
     defs.push({ stmt: st, name: String(e.arguments[0].value), arrow: e.arguments[1], idx: i });
   }
-  if (!defs.length) return program;
+  if (!defs.length) return 0;
 
   const isCall = (n, obj, fn) =>
     n && n.type === "CallExpression" && n.callee && n.callee.type === "MemberExpression" &&
@@ -338,6 +389,16 @@ export function lowerPureFunctions(program) {
     const block = d.arrow.body;
     if (!block || block.type !== "BlockStatement" || !Array.isArray(block.body)) continue;
     if (hasAwait(block)) continue; // not pure
+    // a body-level `return N` sets $? via the exec contract — the direct
+    // call must propagate it (see the wrapReturn below)
+    let hasReturn = false;
+    const scanRet = (n) => {
+      if (!n || typeof n !== "object") return;
+      if (Array.isArray(n)) { for (const x of n) scanRet(x); return; }
+      if (n.type === "ReturnStatement") hasReturn = true;
+      for (const k of Object.keys(n)) if (k !== "loc") scanRet(n[k]);
+    };
+    scanRet(block);
     // leading positional copies: sh2.setVar("V", sh2.getVar("N"))
     const params = [];
     let i = 0;
@@ -356,7 +417,6 @@ export function lowerPureFunctions(program) {
       params.push({ name: nm, n: Number(pos) });
       i++;
     }
-    if (!params.length) continue;
     // positions must be 1..n in order (drop the copies we consumed)
     params.sort((a, b) => a.n - b.n);
     let contiguous = true;
@@ -448,15 +508,36 @@ export function lowerPureFunctions(program) {
       }
     };
     scanProg(program);
+    // vars written by OTHER functions can't be promoted: the callee's
+    // store sync is the only channel a result var (fmt3's `fv`) uses, so
+    // a promoted local would go stale between calls. Promote only vars
+    // written HERE and nowhere else.
+    const elsewhere = new Set();
+    const scanWriters = (node) => {
+      if (!node || typeof node !== "object") return;
+      if (Array.isArray(node)) { for (const x of node) scanWriters(x); return; }
+      if (node === d.arrow) return; // the function's own body is excluded — everything else is elsewhere
+      if (isCall(node, "sh2", "setVar") && node.arguments && node.arguments[0] &&
+          node.arguments[0].type === "Literal" && typeof node.arguments[0].value === "string" &&
+          /^[A-Za-z_][A-Za-z0-9_]*$/.test(node.arguments[0].value)) {
+        elsewhere.add(node.arguments[0].value);
+      }
+      for (const k of Object.keys(node)) {
+        if (k === "loc" || k === "parent") continue;
+        scanWriters(node[k]);
+      }
+    };
+    scanWriters(program);
+    const promotable = new Set([...written].filter((v) => !elsewhere.has(v)));
     // a var WRITTEN inside and read outside → sync at the end; a param
     // read outside too (the store protocol needs the final value back)
-    const syncs = [...touched].filter((v) => written.has(v) && refsOutside.has(v));
+    const syncs = [...touched].filter((v) => written.has(v) && refsOutside.has(v) && !elsewhere.has(v));
     for (const pp of params) if (refsOutside.has(pp.name)) syncs.push(pp.name);
 
     lowered.add(d.name);
-    plan.push({ def: d, name: d.name, params, paramSet, touched, written, syncs, rest });
+    plan.push({ def: d, name: d.name, params, paramSet, touched, written, promotable, syncs, rest, hasReturn });
   }
-  if (!plan.length) return program;
+  if (!plan.length) return 0;
 
   // 3. rewrite body + build the native function + adapter
   const rewriteBody = makeBodyRewriter();
@@ -465,11 +546,33 @@ export function lowerPureFunctions(program) {
     const p = plan.find((x) => x.def.stmt === st);
     if (!p) { newBody.push(st); continue; }
     const stmts = rewriteBody(p.rest, p);
-    // the final syncs
-    for (const v of p.syncs) {
-      stmts.push(isCallStmt("setVar", v));
+    // the store handoff must run on EVERY exit path — insert the syncs
+    // before each `return` (a trailing `return N` would dead-code
+    // end-of-body syncs); with no returns, append at the end
+    if (p.syncs.length) {
+      const syncStmts = p.syncs.map((v) => isCallStmt("setVar", v));
+      let placed = 0;
+      const place = (list) => {
+        if (!Array.isArray(list)) return;
+        for (let i = 0; i < list.length; i++) {
+          const s = list[i];
+          if (!s || !s.type) continue;
+          if (s.type === "ReturnStatement") {
+            list.splice(i, 0, ...syncStmts);
+            placed += syncStmts.length;
+            i += syncStmts.length;
+          } else if (s.type === "IfStatement") {
+            if (s.consequent) place(s.consequent.type === "BlockStatement" ? s.consequent.body : [s.consequent]);
+            if (s.alternate) place(s.alternate.type === "BlockStatement" ? s.alternate.body : [s.alternate]);
+          } else if (s.type === "BlockStatement") {
+            place(s.body);
+          }
+        }
+      };
+      place(stmts);
+      if (!placed) stmts.push(...syncStmts);
     }
-    const locals = [...p.touched].sort(); // every touched var is a local (store-init); syncs also write back
+    const locals = [...p.promotable].sort(); // only promotable vars go native
     const fnDecl = {
       type: "FunctionDeclaration",
       id: { type: "Identifier", name: p.name },
@@ -526,10 +629,8 @@ export function lowerPureFunctions(program) {
       if (isCall(e, "sh2", "guard") && e.arguments && e.arguments.length === 1) e = e.arguments[0];
       if (e && e.type === "AwaitExpression") {
         const inner = rewriteCalls(e);
-        if (inner && inner.type === "CallExpression" && inner.callee && inner.callee.type === "Identifier" &&
-            lowered.has(inner.callee.name)) {
-          return { type: "ExpressionStatement", expression: inner }; // drop the await — lowered fns are sync
-        }
+        // the return-propagating wrapper is already a statement
+        if (inner && inner.type === "ExpressionStatement") return inner;
         return { type: "ExpressionStatement", expression: inner };
       }
       const out = { type: "ExpressionStatement", expression: rewriteCalls(node.expression) };
@@ -541,19 +642,61 @@ export function lowerPureFunctions(program) {
       const args = node.argument.arguments[1] && node.argument.arguments[1].type === "ArrayExpression"
         ? node.argument.arguments[1].elements : [];
       const fname = String(node.argument.arguments[0].value);
-      return {
+      const callExpr = {
         type: "CallExpression",
         callee: { type: "Identifier", name: fname },
         arguments: args.map((a) => rewriteCalls(a)),
         optional: false,
       };
+      // a function with a body-level `return N` sets $? through the exec
+      // contract — the direct call must propagate the value the same way
+      const p = plan.find((x) => x.name === fname);
+      if (p && p.hasReturn) {
+        const ret = { type: "Identifier", name: "__ret" };
+        const typeofCmp = (t) => ({
+          type: "BinaryExpression", operator: "===",
+          left: { type: "UnaryExpression", operator: "typeof", prefix: true, argument: ret },
+          right: { type: "Literal", value: t, raw: null },
+        });
+        return {
+          type: "ExpressionStatement",
+          expression: {
+            type: "CallExpression",
+            callee: {
+              type: "ArrowFunctionExpression", params: [],
+              body: {
+                type: "BlockStatement",
+                body: [
+                  { type: "VariableDeclaration", kind: "const", declarations: [{ type: "VariableDeclarator", id: { type: "Identifier", name: "__ret" }, init: callExpr }] },
+                  {
+                    type: "IfStatement",
+                    test: { type: "LogicalExpression", operator: "||", left: typeofCmp("string"), right: typeofCmp("number") },
+                    consequent: {
+                      type: "ExpressionStatement",
+                      expression: {
+                        type: "CallExpression",
+                        callee: { type: "MemberExpression", computed: false, optional: false, object: { type: "Identifier", name: "sh2" }, property: { type: "Identifier", name: "setLastExit" } },
+                        arguments: [{ type: "CallExpression", callee: { type: "Identifier", name: "Number" }, arguments: [ret], optional: false }],
+                        optional: false,
+                      },
+                    },
+                  },
+                ],
+              },
+              expression: false, async: false,
+            },
+            arguments: [], optional: false,
+          },
+        };
+      }
+      return { type: "ExpressionStatement", expression: callExpr };
     }
     const out = {};
     for (const k of Object.keys(node)) out[k] = rewriteCalls(node[k]);
     return out;
   };
   program.body = program.body.map(rewriteCalls);
-  return program;
+  return plan.length;
 }
 
 const isCallStmt = (fn, name) => ({
@@ -573,7 +716,10 @@ function makeBodyRewriter() {
     n.callee.object && n.callee.object.type === "Identifier" && n.callee.object.name === obj &&
     n.callee.property && n.callee.property.type === "Identifier" && n.callee.property.name === fn;
   const litStr = (n) => (n && n.type === "Literal" && typeof n.value === "string" ? n.value : null);
-  const inSet = (p, v) => p.touched.has(v) || p.paramSet.has(v);
+  // promote only vars THIS function writes (or its params): a read-only
+  // var like `gv` is written by a CALLEE's sync, so the store read must
+  // stay (a stale local would miss the callee's output)
+  const inSet = (p, v) => p.promotable.has(v) || p.paramSet.has(v);
 
   const splitVars = (text, p) => {
     const re = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)(?![A-Za-z0-9_])/g;
@@ -592,8 +738,8 @@ function makeBodyRewriter() {
     const quasis = [], expressions = [];
     for (let i = 0; i < segs.length; i++) {
       const seg = segs[i];
-      quasis.push({ type: "TemplateElement", value: { raw: toRaw(seg.text), cooked: seg.text }, tail: false });
       if (seg.expr) expressions.push({ type: "Identifier", name: seg.expr });
+      else quasis.push({ type: "TemplateElement", value: { raw: toRaw(seg.text), cooked: seg.text }, tail: false });
     }
     if (quasis.length) quasis[quasis.length - 1].tail = true;
     if (expressions.length >= quasis.length) {
@@ -609,19 +755,10 @@ function makeBodyRewriter() {
   const expr = (node, p) => {
     if (!node || typeof node !== "object") return node;
     if (Array.isArray(node)) return node.map((n) => expr(n, p));
-    // (Number(sh2.getVar("V")) || 0) — peel for non-param locals (V is a
-    // number there; params may hold arbitrary arg strings, keep the guard)
-    if (node.type === "LogicalExpression" && (node.operator === "||" || node.operator === "??")) {
-      const l = node.left;
-      if (l && l.type === "CallExpression" && l.callee && l.callee.type === "Identifier" && l.callee.name === "Number" &&
-          l.arguments && l.arguments.length === 1 && isCall(l.arguments[0], "sh2", "getVar")) {
-        const nm = litStr(l.arguments[0].arguments && l.arguments[0].arguments[0]);
-        if (nm && p.touched.has(nm) && !p.paramSet.has(nm) &&
-            node.right && node.right.type === "Literal" && (node.right.value === 0 || node.right.value === "0")) {
-          return { type: "Identifier", name: nm };
-        }
-      }
-    }
+    // NOTE: the `(Number(sh2.getVar("V")) || 0)` guard is DELIBERATELY
+    // kept — a promoted var can hold a STRING (`vn_n00 = sh2.getVar("lhn")`
+    // reads the store, a string), so `V + 1` would concatenate instead of
+    // adding. Only the store round-trip is removed, never the coercion.
     if (isCall(node, "sh2", "getVar") && node.arguments && node.arguments[0]) {
       const nm = litStr(node.arguments[0]);
       if (nm && inSet(p, nm)) return { type: "Identifier", name: nm };
@@ -638,6 +775,31 @@ function makeBodyRewriter() {
         node.arguments[1] && node.arguments[1].type === "Literal" &&
         typeof node.arguments[1].value === "string" && inSet(p, node.arguments[1].value)) {
       return { type: "Identifier", name: node.arguments[1].value };
+    }
+    // sh2.param("slice", "V", …) — a substring read of a promoted var
+    // (${V:off:len}): the var arrives as a NATIVE parameter/local, so the
+    // store round-trip would slice the unset store copy (empty) — every
+    // lowered draw_text char came back "" and glyph_index returned the
+    // blank space glyph, making all canvas text invisible. Rewrite to
+    // V.slice(off, off+len) with the native binding.
+    if (isCall(node, "sh2", "param") && node.arguments && node.arguments.length >= 3 &&
+        node.arguments[0] && node.arguments[0].type === "Literal" && node.arguments[0].value === "slice" &&
+        node.arguments[1] && node.arguments[1].type === "Literal" &&
+        typeof node.arguments[1].value === "string" && inSet(p, node.arguments[1].value)) {
+      const nm = node.arguments[1].value;
+      const off = expr(node.arguments[2], p);
+      const len = node.arguments.length > 3 ? expr(node.arguments[3], p) : null;
+      // the runtime's param("slice") semantics are slice(start, start+len)
+      // (the end index, exclusive) — mirror that exactly
+      const args = [off];
+      if (len) args.push({ type: "BinaryExpression", operator: "+", left: off,
+        right: { type: "UnaryExpression", operator: "+", prefix: true, argument: len } });
+      return {
+        type: "CallExpression",
+        callee: { type: "MemberExpression", object: { type: "Identifier", name: nm },
+                 property: { type: "Identifier", name: "slice" }, computed: false },
+        arguments: args,
+      };
     }
     if (isCall(node, "sh2", "setVar") && node.arguments && node.arguments.length === 2 && node.arguments[0]) {
       const nm = litStr(node.arguments[0]);
@@ -676,8 +838,10 @@ function makeBodyRewriter() {
           const q = node.quasis[i];
           const t = (q.value && q.value.cooked != null ? q.value.cooked : q.value.raw) || "";
           for (const seg of splitVars(String(t), p)) {
-            outQ.push({ type: "TemplateElement", value: { raw: toRaw(seg.text), cooked: seg.text }, tail: false });
+            // expr segments carry no text — the `$V` token becomes the
+            // expression alone; only text segments become quasis
             if (seg.expr) outE.push({ type: "Identifier", name: seg.expr });
+            else outQ.push({ type: "TemplateElement", value: { raw: toRaw(seg.text), cooked: seg.text }, tail: false });
           }
           if (i < node.expressions.length) outE.push(expr(node.expressions[i], p));
         }
