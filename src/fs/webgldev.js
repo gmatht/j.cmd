@@ -129,6 +129,7 @@ export class WebGLDevice {
     this._keys = [];                 // key queue (a game reads /dev/webgl/key)
     this._hudRects = null;           // overlay rect list (batched /dev/webgl/hud)
     this._hudTris = null;           // overlay triangles (T … lines)
+    this._hudRectsR = null;         // overlay rotated rects (R … lines)
     this._lastSwapAt = 0;            // for key-steal timeout after a game ends
     this._keyListener = null;
     this._null = false;              // headless null-device mode (no DOM)
@@ -552,7 +553,11 @@ export class WebGLDevice {
     const gl = this._gl;
     if (!gl || !this._hudRects || !this._hudRects.length) return;
     const rects = this._hudRects;
+    const tris = this._hudTris;
+    const rrects = this._hudRectsR;
     this._hudRects = null;
+    this._hudTris = null;
+    this._hudRectsR = null;
     const program = this._linkProgram();
     gl.useProgram(program);
     const bind = (attr, bufName) => {
@@ -579,14 +584,46 @@ export class WebGLDevice {
       if (uColor) gl.uniform3f(uColor, r, g, b);
       gl.drawElements(gl.TRIANGLES, 6, idxType, 0);
     }
-    // triangles: T cx cy size r g b deg — a dynamic vertex buffer, rotated
-    const tris = this._hudTris || [];
-    if (tris.length) {
+    // rotated rects: R cx cy w h deg r g b — a quad rotated by deg.
+    // The vertices are absolute NDC, so the shader's uObjPos/uScale
+    // (left over from the rect loop) must be reset to identity or the
+    // quad would be re-transformed — the same bug that mispositioned
+    // the T triangles below.
+    if (rrects && rrects.length) {
       if (!this._triBuf) this._triBuf = gl.createBuffer();
       const aLoc = gl.getAttribLocation(program, "aPosition");
       gl.bindBuffer(gl.ARRAY_BUFFER, this._triBuf);
       gl.enableVertexAttribArray(aLoc);
       gl.vertexAttribPointer(aLoc, 3, gl.FLOAT, false, 0, 0);
+      if (uPos) gl.uniform3f(uPos, 0, 0, 0);
+      if (uScale) gl.uniform3f(uScale, 1, 1, 1);
+      for (const [cx, cy, w, h, deg, r, g, b] of rrects) {
+        const a = deg * Math.PI / 180, c = Math.cos(a), sn = Math.sin(a);
+        const hw = w / 2, hh = h / 2;
+        const rot = (vx, vy) => [vx * c - vy * sn, vx * sn + vy * c];
+        const q = [rot(-hw, -hh), rot(hw, -hh), rot(hw, hh), rot(-hw, hh)];
+        const verts = new Float32Array([
+          ...q[0], cx, cy, 0, ...q[1], cx, cy, 0, ...q[2], cx, cy, 0,
+          ...q[2], cx, cy, 0, ...q[3], cx, cy, 0, ...q[0], cx, cy, 0,
+        ]);
+        gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW);
+        if (uColor) gl.uniform3f(uColor, r, g, b);
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+      }
+    }
+    // triangles: T cx cy size r g b deg — a dynamic vertex buffer, rotated
+    if (tris && tris.length) {
+      if (!this._triBuf) this._triBuf = gl.createBuffer();
+      const aLoc = gl.getAttribLocation(program, "aPosition");
+      gl.bindBuffer(gl.ARRAY_BUFFER, this._triBuf);
+      gl.enableVertexAttribArray(aLoc);
+      gl.vertexAttribPointer(aLoc, 3, gl.FLOAT, false, 0, 0);
+      // absolute-NDC vertices: the overlay shader's p = aPosition*uScale +
+      // uObjPos would re-transform them with the last rect's uniforms, so
+      // pin the transform to identity (the triangles were invisible:
+      // scaled by the previous rect's w/h and offset by its position)
+      if (uPos) gl.uniform3f(uPos, 0, 0, 0);
+      if (uScale) gl.uniform3f(uScale, 1, 1, 1);
       for (const [cx, cy, size, r, g, b, deg] of tris) {
         const a = deg * Math.PI / 180, c = Math.cos(a), sn = Math.sin(a);
         const v = (vx, vy) => [cx + size * (vx * c - vy * sn), cy + size * (vx * sn + vy * c), 0];
@@ -596,7 +633,7 @@ export class WebGLDevice {
         gl.drawArrays(gl.TRIANGLES, 0, 3);
       }
     }
-    this._log += `[hud] ${rects.length} rects ${tris.length} tris\n`;
+    this._log += `[hud] ${rects.length} rects ${rrects ? rrects.length : 0} rrects ${tris ? tris.length : 0} tris\n`;
   }
 
   _frameDataURL() {
@@ -694,9 +731,17 @@ export class WebGLDevice {
       // of async writes and blink because it landed after the swap).
       this._hudRects = [];
       this._hudTris = [];
+      this._hudRectsR = [];
       for (const line of String(content).split("\n")) {
         const t = line.trim();
-        if (t.startsWith("T ")) {
+        if (t.startsWith("R ")) {
+          // rotated rect: R cx cy w h deg r g b — a quad rotated deg
+          // (same convention as T lines) — used by the tilted viewmodel gun
+          const nums = t.slice(2).trim().split(/[\s,]+/).filter(Boolean).map(Number);
+          if (nums.length >= 8 && nums.every((n) => Number.isFinite(n))) {
+            this._hudRectsR.push(nums.slice(0, 8));
+          }
+        } else if (t.startsWith("T ")) {
           // triangle: T cx cy size r g b deg (deg rotates the up-pointing
           // unit triangle clockwise in NDC — the player facing marker)
           const nums = t.slice(2).trim().split(/[\s,]+/).filter(Boolean).map(Number);

@@ -736,8 +736,11 @@ render_frame() {
   echo "draw elements triangles 36 0 cube" > /dev/webgl/call
   echo "1 1 1" > /dev/webgl/uniform/3f/uScale
   if [ "$dyaw" -eq 0 ]; then
-    rf_z=15
-    while [ "$rf_z" -ge 0 ]; do
+    # facing -z: front = z < dpz, so FAR = smallest z — draw z
+    # ascending so the far "outside" cubes hit the canvas first and
+    # the near destructible walls paint over them
+    rf_z=0
+    while [ "$rf_z" -lt "$MAP_D" ]; do
       rf_x=0
       while [ "$rf_x" -lt "$MAP_W" ]; do
         try_draw $rf_x 2 $rf_z
@@ -745,7 +748,7 @@ render_frame() {
         try_draw $rf_x 0 $rf_z
         rf_x=$((rf_x + 1))
       done
-      rf_z=$((rf_z - 1))
+      rf_z=$((rf_z + 1))
     done
   fi
   if [ "$dyaw" -eq 1 ]; then
@@ -762,8 +765,10 @@ render_frame() {
     done
   fi
   if [ "$dyaw" -eq 2 ]; then
-    rf_z=0
-    while [ "$rf_z" -lt "$MAP_D" ]; do
+    # facing +z: front = z > dpz, so FAR = largest z — draw z
+    # descending so far cubes hit the canvas first, near last
+    rf_z=15
+    while [ "$rf_z" -ge 0 ]; do
       rf_x=0
       while [ "$rf_x" -lt "$MAP_W" ]; do
         try_draw $rf_x 2 $rf_z
@@ -771,7 +776,7 @@ render_frame() {
         try_draw $rf_x 0 $rf_z
         rf_x=$((rf_x + 1))
       done
-      rf_z=$((rf_z + 1))
+      rf_z=$((rf_z - 1))
     done
   fi
   if [ "$dyaw" -eq 3 ]; then
@@ -838,33 +843,29 @@ draw_rect() { dr_cx=$1; dr_cy=$2; dr_w=$3; dr_h=$4
 "
 }
 
-# the viewmodel gun — a 3D-looking rectangular shape at 3/4 across the
-# screen, bottom-right, barrel pointing forwards (up-screen). Drawn as
-# layered HUD rects BEFORE the radar so the radar wins any overlap;
-# the 3 shaded faces (highlight / front / shade) read as a box receding
-# into the scene. The muzzle flash appears at the barrel tip after a shot.
+# the viewmodel gun — a 3D-looking rectangular shape, bottom-right at 3/4
+# across, drawn back so it pokes off the bottom-right edge, tilted 20°
+# counter-clockwise. R-lines are rotated quads (R cx cy w h deg r g b)
+# rendered by the device; the muzzle flash appears at the barrel tip
+# after a shot.
 draw_gun() {
-  # receiver body (milli 1500,350 → NDC 0.5,-0.65 — 3/4 right, bottom)
-  ov_text="${ov_text}0.500 -0.650 0.260 0.140 0.24 0.26 0.30
+  # receiver body (partially off the bottom/right edge) + top highlight
+  ov_text="${ov_text}R 0.85 -0.95 0.40 0.30 20 0.24 0.26 0.30
 "
-  ov_text="${ov_text}0.500 -0.570 0.260 0.016 0.32 0.34 0.38
+  ov_text="${ov_text}R 0.85 -0.82 0.40 0.05 20 0.32 0.34 0.38
 "
-  ov_text="${ov_text}0.500 -0.720 0.260 0.016 0.15 0.16 0.18
+  # barrel: front face + left highlight + right shade (tilted +20°)
+  ov_text="${ov_text}R 0.70 -0.50 0.16 0.90 20 0.30 0.33 0.38
 "
-  # barrel: front face + left highlight + right shade + muzzle cap
-  ov_text="${ov_text}0.500 -0.410 0.120 0.320 0.30 0.33 0.38
+  ov_text="${ov_text}R 0.665 -0.50 0.03 0.90 20 0.44 0.47 0.52
 "
-  ov_text="${ov_text}0.442 -0.410 0.016 0.320 0.44 0.47 0.52
-"
-  ov_text="${ov_text}0.548 -0.410 0.016 0.320 0.15 0.16 0.18
-"
-  ov_text="${ov_text}0.500 -0.252 0.120 0.016 0.20 0.22 0.26
+  ov_text="${ov_text}R 0.735 -0.50 0.03 0.90 20 0.15 0.16 0.18
 "
   # muzzle flash — bright glow + white-hot core at the barrel tip
   if [ "$muzzle" -gt 0 ]; then
-    ov_text="${ov_text}0.500 -0.200 0.150 0.150 1.0 0.82 0.2
+    ov_text="${ov_text}R 0.55 -0.08 0.22 0.22 20 1.0 0.82 0.2
 "
-    ov_text="${ov_text}0.500 -0.200 0.070 0.070 1.0 1.0 0.9
+    ov_text="${ov_text}R 0.55 -0.08 0.10 0.10 20 1.0 1.0 0.9
 "
   fi
 }
@@ -999,7 +1000,7 @@ draw_minimap() {
         # glides through the SHORT arc during a turn, mirroring the view.
         # Bright yellow + slightly larger than a cell so it pops.
         dm_deg=$((0 - dpyw_raw_ms / 1000))
-        ov_text="${ov_text}T $dm_cxs $dm_cys 0.042 1.0 0.85 0.2 $dm_deg
+        ov_text="${ov_text}T $dm_cxs $dm_cys 0.042 1.0 1.0 1.0 $dm_deg
 "
         dm_draw=0
       else
@@ -1187,7 +1188,7 @@ main() {
   fi
   echo ""
   echo "╔══════════════════════════════════════════════════╗"
-  echo "║  MIMEcrofT v5.3 — 3D treasure hunt written in bash ║"
+  echo "║  MIMEcrofT v5.4 — 3D treasure hunt written in bash ║"
   echo "║  The filesystem is infested with evil MIMEs.     ║"
   echo "║  Recover the lost operating systems.             ║"
   echo "║  WASD move · arrows turn · SPACE shoot · q quit  ║"
