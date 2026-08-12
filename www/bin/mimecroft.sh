@@ -86,10 +86,15 @@ mime_count=0
 frame=0
 quit=0
 sound=1
-anim=0              # 1 while an action glides the camera (~0.5s)
-anim_t=0
-anim_steps=60       # 60 frames × 8ms ≈ 0.5s per action
+anim=0              # 1 while an action glides the camera
+anim_t0=0           # wall-clock ms when the current glide started
+ANIM_MS=200         # each action completes in 0.2s of wall time
 ax0=0; az0=0; ay0=0; ax1=0; az1=0; ay1=0; anim_ayd=0
+fps=0               # rendered frames/sec (measured over ~10-frame windows)
+fps_t0=0
+fps_rendered=0
+dpyw_raw_ms=0       # unwrapped yaw arc (can be negative) for the radar
+# triangle to take the short path while the shader uniform stays positive
 seed=20240812
 
 # ─── Shared helper outputs (set by the helpers below, read by caller
@@ -316,7 +321,7 @@ start_anim() { ax0=$1; az0=$2; ay0=$3; ax1=$4; az1=$5; ay1=$6
   anim_ayd=$((ay1 - ay0))
   if [ "$anim_ayd" -gt 2 ]; then anim_ayd=$((anim_ayd - 4)); fi
   if [ "$anim_ayd" -lt -2 ]; then anim_ayd=$((anim_ayd + 4)); fi
-  anim_t=0
+  anim_t0=$(cat /dev/time)
   anim=1
 }
 
@@ -341,19 +346,25 @@ start_turn() { tt=$1
 }
 
 # the display state the renderer uses: fractional camera position/yaw
-# (milli) plus the nearest cell + yaw for the discrete culling
+# (milli) plus the nearest cell + yaw for the discrete culling. The
+# glide is TIME-based (ANIM_MS of wall time) so every action takes the
+# same 0.2s regardless of the actual render rate.
 compute_display() {
   if [ "$anim" -eq 1 ]; then
-    dpcx_ms=$((ax0 * 1000 + (ax1 - ax0) * 1000 * anim_t / anim_steps))
-    dpcz_ms=$((az0 * 1000 + (az1 - az0) * 1000 * anim_t / anim_steps))
-    dpyw_ms=$((ay0 * 90000 + anim_ayd * 90000 * anim_t / anim_steps))
-    # keep the yaw in 0..360000: a left turn's 0→-90° arc becomes a
-    # 360→270° glide (identical rotation, positive uniform input)
+    anim_el=$((anim_now - anim_t0))
+    if [ "$anim_el" -gt "$ANIM_MS" ]; then anim_el=$ANIM_MS; fi
+    dpcx_ms=$((ax0 * 1000 + (ax1 - ax0) * 1000 * anim_el / ANIM_MS))
+    dpcz_ms=$((az0 * 1000 + (az1 - az0) * 1000 * anim_el / ANIM_MS))
+    dpyw_raw_ms=$((ay0 * 90000 + anim_ayd * 90000 * anim_el / ANIM_MS))
+    dpyw_ms=$dpyw_raw_ms
+    # keep the shader yaw in 0..360000: a left turn's 0→-90° arc
+    # becomes a 360→270° glide (identical rotation, positive input)
     if [ "$dpyw_ms" -lt 0 ]; then dpyw_ms=$((dpyw_ms + 360000)); fi
   else
     dpcx_ms=$((px * 1000))
     dpcz_ms=$((pz * 1000))
-    dpyw_ms=$((yaw * 90000))
+    dpyw_raw_ms=$((yaw * 90000))
+    dpyw_ms=$dpyw_raw_ms
   fi
   dpx=$(((dpcx_ms + 500) / 1000))
   dpz=$(((dpcz_ms + 500) / 1000))
@@ -951,8 +962,10 @@ draw_minimap() {
         dm_cxs=$fv
         fmt_ndc $dm_cym
         dm_cys=$fv
-        dm_deg=$((0 - yaw * 90))
-        ov_text="${ov_text}T $dm_cxs $dm_cys 0.032 1.0 1.0 1.0 $dm_deg
+        # display yaw (unwrapped, can be negative) so the triangle
+        # glides through the SHORT arc during a turn, mirroring the view
+        dm_deg=$((0 - dpyw_raw_ms / 1000))
+        ov_text="${ov_text}T $dm_cxs $dm_cys 0.036 1.0 1.0 1.0 $dm_deg
 "
         dm_draw=0
       else
@@ -1079,6 +1092,14 @@ draw_hud_canvas() {
   dh_b=$((TREASURE_TOTAL%10+26))
   draw_char $dh_a 984 1840 8 11 0.60 0.75 0.95
   draw_char $dh_b 1016 1840 8 11 0.60 0.75 0.95
+  # fps counter (second line, below the score)
+  draw_text "FPS" 3 60 1800 8 11 0.55 0.95 0.95
+  dh_a=$((fps/100+26))
+  dh_b=$((fps/10%10+26))
+  dh_c=$((fps%10+26))
+  draw_char $dh_a 132 1800 8 11 0.55 0.95 0.95
+  draw_char $dh_b 164 1800 8 11 0.55 0.95 0.95
+  draw_char $dh_c 196 1800 8 11 0.55 0.95 0.95
   # instructions (bottom centre)
   draw_text "WASD MOVE ARROWS TURN SPACE SHOOT" 33 538 100 7 10 0.85 0.85 0.85
   echo "$ov_text" > /dev/webgl/hud
@@ -1131,7 +1152,7 @@ main() {
   fi
   echo ""
   echo "╔══════════════════════════════════════════════════╗"
-  echo "║  MIMEcrofT v4 — 3D treasure hunt written in bash ║"
+  echo "║  MIMEcrofT v5 — 3D treasure hunt written in bash ║"
   echo "║  The filesystem is infested with evil MIMEs.     ║"
   echo "║  Recover the lost operating systems.             ║"
   echo "║  WASD move · arrows turn · SPACE shoot · q quit  ║"
@@ -1182,11 +1203,13 @@ main() {
         dirty=1
       fi
     fi
-    # advance the camera glide; snap the discrete state when it ends
+    # advance the camera glide by wall time; snap the discrete state
+    # when the 0.2s action completes (keys unlock for the next action)
     if [ "$anim" -eq 1 ]; then
-      anim_t=$((anim_t + 1))
+      anim_now=$(cat /dev/time)
+      anim_el=$((anim_now - anim_t0))
       dirty=1
-      if [ "$anim_t" -ge "$anim_steps" ]; then
+      if [ "$anim_el" -ge "$ANIM_MS" ]; then
         px=$ax1
         pz=$az1
         yaw=$ay1
@@ -1212,6 +1235,7 @@ main() {
       draw_hud_canvas
       echo "swap" > /dev/webgl/call
       dirty=0
+      fps_rendered=$((fps_rendered + 1))
     else
       # keyboard heartbeat: the device releases keys 2s after the last
       # swap — a bare swap (the back buffer is unchanged) every ~1.5s
@@ -1220,6 +1244,19 @@ main() {
       if [ "$hb" -eq 0 ]; then
         echo "swap" > /dev/webgl/call
       fi
+    fi
+    # fps: rendered frames per wall-second, sampled every 10 frames
+    fps_w=$((frame % 10))
+    if [ "$fps_w" -eq 0 ]; then
+      fps_t=$(cat /dev/time)
+      if [ "$fps_t0" -gt 0 ]; then
+        fps_dt=$((fps_t - fps_t0))
+        if [ "$fps_dt" -gt 0 ] && [ "$fps_rendered" -gt 0 ]; then
+          fps=$((fps_rendered * 1000 / fps_dt))
+        fi
+        fps_rendered=0
+      fi
+      fps_t0=$fps_t
     fi
     sleep 0.008
   done
