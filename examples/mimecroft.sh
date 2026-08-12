@@ -636,11 +636,18 @@ emit_fragment_shader() {
 }
 
 setup_webgl() {
-  echo "attribute vec3 aPosition; attribute vec3 aShade; uniform vec3 uCamPos; uniform float uCamYaw; uniform vec3 uObjPos; uniform vec3 uBlockColor; uniform vec3 uScale; uniform float uOverlay; varying vec4 vColor; void main() { vec3 p = aPosition * uScale + uObjPos; if (uOverlay > 0.5) { gl_Position = vec4(p.x, p.y, -0.95, 1.0); vColor = vec4(aShade * uBlockColor, 1.0); return; } vec3 cam = uCamPos + vec3(0.5, 0.5, 0.5); vec3 d = p - cam; float a = uCamYaw * 0.0174532925; float c = cos(a); float s = sin(a); vec3 rel = vec3(d.x * c + d.z * s, d.y, -d.x * s + d.z * c); float z = max(-rel.z, 0.05); gl_Position = vec4(rel.x * 0.9 / z, rel.y * 0.9 / z, rel.z / 64.0, 1.0); vColor = vec4(aShade * uBlockColor, 1.0); }" > /dev/webgl/shader/vertex
-  emit_fragment_shader
+  echo "attribute vec3 aPosition; attribute vec3 aShade; attribute vec2 aUv; uniform vec3 uCamPos; uniform float uCamYaw; uniform vec3 uObjPos; uniform vec3 uBlockColor; uniform vec3 uScale; uniform float uOverlay; varying vec4 vColor; varying vec2 vUv; void main() { vec3 p = aPosition * uScale + uObjPos; if (uOverlay > 0.5) { gl_Position = vec4(p.x, p.y, -0.95, 1.0); vColor = vec4(aShade * uBlockColor, 1.0); vUv = vec2(0.0); return; } vec3 cam = uCamPos + vec3(0.5, 0.5, 0.5); vec3 d = p - cam; float a = uCamYaw * 0.0174532925; float c = cos(a); float s = sin(a); vec3 rel = vec3(d.x * c + d.z * s, d.y, -d.x * s + d.z * c); float z = max(-rel.z, 0.05); gl_Position = vec4(rel.x * 0.9 / z, rel.y * 0.9 / z, rel.z / 64.0, 1.0); vColor = vec4(aShade * uBlockColor, 1.0); vUv = aUv; }" > /dev/webgl/shader/vertex
+  # textured fragment shader (hand-written GLSL — the bash→GLSL pipeline
+  # is integer-only and can't sample a texture). Texture × block colour
+  # (Minecraft-style tint), with the CRT scanline, corruption glare and
+  # vignette ported from the bash-authored version. uOverlay > 0.5 keeps
+  # the HUD flat (the overlay quads carry no UVs).
+  echo "precision mediump float; varying vec4 vColor; varying vec2 vUv; uniform sampler2D uTex; uniform float uOverlay; void main() { if (uOverlay > 0.5) { gl_FragColor = vec4(vColor.rgb, 1.0); return; } vec3 c = texture2D(uTex, vUv).rgb * vColor.rgb; if (mod(gl_FragCoord.y, 6.0) < 1.0) { c *= 0.9; } float h = mod(floor(gl_FragCoord.x) * 7.0 + floor(gl_FragCoord.y) * 13.0, 97.0); if (h < 1.0) { c = vec3(1.0, c.g * 0.5, c.b * 0.5); } float e = abs(gl_FragCoord.x - 120.0) + abs(gl_FragCoord.y - 90.0); if (e > 150.0) { float d = min(e - 150.0, 40.0); c = max(c - vec3(d), 0.0); } gl_FragColor = vec4(c, 1.0); }" > /dev/webgl/shader/fragment
   echo "link" > /dev/webgl/program
   echo "f32 -0.5 0.5 0.5 0.5 0.5 0.5 0.5 0.5 -0.5 -0.5 0.5 -0.5 -0.5 -0.5 0.5 0.5 -0.5 0.5 0.5 -0.5 -0.5 -0.5 -0.5 -0.5 -0.5 0.5 0.5 0.5 0.5 0.5 0.5 -0.5 0.5 -0.5 -0.5 0.5 -0.5 -0.5 -0.5 0.5 -0.5 -0.5 0.5 0.5 -0.5 -0.5 0.5 -0.5 0.5 -0.5 0.5 0.5 0.5 0.5 0.5 0.5 -0.5 0.5 -0.5 -0.5 -0.5 -0.5 0.5 -0.5 0.5 0.5 -0.5 0.5 -0.5 -0.5 -0.5 -0.5" > /dev/webgl/buffer/aPosition
   echo "f32 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 1 1 1 1 1 1 1 1 1 1 1 1 0.45 0.45 0.45 0.45 0.45 0.45 0.45 0.45 0.45 0.45 0.45 0.45 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.6 0.6 0.6 0.6 0.6 0.6 0.6 0.6 0.6 0.6 0.6 0.6" > /dev/webgl/buffer/aShade
+  echo "f32 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1" > /dev/webgl/buffer/aUv
+  echo "0" > /dev/webgl/uniform/1i/uTex
   echo "u16 0 1 2 0 2 3 4 5 6 4 6 7 8 9 10 8 10 11 12 13 14 12 14 15 16 17 18 16 18 19 20 21 22 20 22 23" > /dev/webgl/buffer/cube
   echo "f32 -0.5 -0.5 0 0.5 -0.5 0 0.5 0.5 0 -0.5 0.5 0" > /dev/webgl/buffer/quadpos
   echo "f32 1 1 1 1 1 1 1 1 1 1 1 1" > /dev/webgl/buffer/quadshade
@@ -648,11 +655,92 @@ setup_webgl() {
   echo "0.05 0.05 0.12 1.0" > /dev/webgl/clearcolor
 }
 
-draw_block() { db_a=$1; db_b=$2; db_c=$3; db_r=$4; db_g=$5; db_bl=$6
+# ─── texture loading: run examples/textures/texture-<name>.sh --tsv,
+# parse the tab-separated R G B fields and upload to /dev/webgl/texture/<idx>.
+# The transpiled shell's ${s#*TAB} prefix-strip is greedy and IFS-splitting
+# is broken, so fields are consumed with the probe loop from read-texture.sh.
+strip_tex_field() { sf_done=0
+  while [ "$sf_done" -eq 0 ]; do
+    sf_probe=${lt_s%%	*}
+    if [ "$sf_probe" = "" ]; then sf_done=1; lt_s=${lt_s#?}; else lt_s=${lt_s#?}; fi
+  done
+}
+
+read_tex_field() { f=${lt_s%%	*}
+  strip_tex_field
+}
+
+load_tex() { lt_name=$1; lt_idx=$2
+  # cached payload from an earlier run this session (deterministic seed)
+  if [ -f /tmp/mimecroft-tex-$lt_name ]; then
+    cat /tmp/mimecroft-tex-$lt_name > /dev/webgl/texture/$lt_idx
+    return 0
+  fi
+  lt_s=$(bash /examples/textures/texture-$lt_name.sh --tsv)
+  lt_hdr=${lt_s%%	*}
+  if [ "$lt_hdr" != "#texture" ]; then return 0; fi
+  # header: strip #texture + NAME, READ SIZExSIZE, strip the rest
+  strip_tex_field
+  strip_tex_field
+  lt_sz=${lt_s%%	*}
+  lt_size=${lt_sz%%x*}
+  strip_tex_field
+  strip_tex_field
+  strip_tex_field
+  lt_s=${lt_s#?}
+  lt_payload="$lt_size"
+  lt_px=0
+  lt_pxmax=$((lt_size * lt_size))
+  while [ "$lt_px" -lt "$lt_pxmax" ]; do
+    read_tex_field
+    lt_r=$f
+    read_tex_field
+    lt_g=$f
+    read_tex_field
+    lt_b=$f
+    lt_payload="$lt_payload $lt_r $lt_g $lt_b"
+    lt_px=$((lt_px + 1))
+  done
+  echo "$lt_payload" > /tmp/mimecroft-tex-$lt_name
+  echo "$lt_payload" > /dev/webgl/texture/$lt_idx
+}
+
+load_textures() {
+  load_tex stone 1
+  load_tex sandstone 2
+  load_tex water 3
+  load_tex brick 4
+  load_tex grass 5
+  load_tex leaves 6
+  load_tex wood 7
+  load_tex dirt 8
+}
+
+draw_block() { db_a=$1; db_b=$2; db_c=$3; db_r=$4; db_g=$5; db_bl=$6; db_tx=$7
   echo "1 1 1" > /dev/webgl/uniform/3f/uScale
   echo "$db_a $db_b $db_c" > /dev/webgl/uniform/3f/uObjPos
   echo "$db_r $db_g $db_bl" > /dev/webgl/uniform/3f/uBlockColor
+  echo "$db_tx" > /dev/webgl/uniform/1i/uTex
   echo "draw elements triangles 36 0 cube" > /dev/webgl/call
+}
+
+# texture index per block type (1=stone 2=sandstone 3=water 4=brick
+# 5=grass; 0 = the device's white fallback → the flat block colour)
+texture_of() { to_t=$1
+  if [ "$to_t" -eq 2 ]; then tx=1
+  elif [ "$to_t" -eq 4 ]; then tx=2
+  elif [ "$to_t" -eq 5 ]; then tx=3
+  elif [ "$to_t" -eq 6 ]; then tx=4
+  elif [ "$to_t" -eq 7 ]; then tx=5
+  else tx=0; fi
+}
+
+# texture per MIME type (1=jpeg 2=png 3=octet 4=text)
+mime_tex_of() { mtt=$1
+  if [ "$mtt" -eq 1 ]; then tx=6
+  elif [ "$mtt" -eq 2 ]; then tx=7
+  elif [ "$mtt" -eq 3 ]; then tx=8
+  else tx=1; fi
 }
 
 # cull + draw one cell (or a mime standing in it)
@@ -663,9 +751,11 @@ try_draw() { td_a=$1; td_b=$2; td_c=$3
       mime_at $td_a $td_c
       if [ "$mf" -eq 1 ]; then
         mime_color $mt
+        mime_tex_of $mt
         echo "$td_a $td_b $td_c" > /dev/webgl/uniform/3f/uObjPos
         echo "0.7 0.7 0.7" > /dev/webgl/uniform/3f/uScale
         echo "$cr $cg $cb" > /dev/webgl/uniform/3f/uBlockColor
+        echo "$tx" > /dev/webgl/uniform/1i/uTex
         echo "draw elements triangles 36 0 cube" > /dev/webgl/call
       fi
     fi
@@ -704,7 +794,8 @@ try_draw() { td_a=$1; td_b=$2; td_c=$3
   if [ "$td_infront" -eq 0 ]; then return 1; fi
   if [ "$td_inrow" -eq 0 ]; then return 1; fi
   block_color $gv
-  draw_block $td_a $td_b $td_c $cr $cg $cb
+  texture_of $gv
+  draw_block $td_a $td_b $td_c $cr $cg $cb $tx
   return 0
 }
 
@@ -1094,55 +1185,72 @@ draw_mime_list() {
 }
 
 # the whole on-canvas dashboard: score line, radar, instructions
-draw_hud_canvas() {
+hud_static=""
+# build the never-changing HUD parts (labels, separators, instructions)
+# ONCE into hud_static; draw_hud_canvas() re-sends it every rendered
+# frame with a leading "C" (the device clears its HUD layer first), so
+# the per-frame bash cost is only the dynamic cells — no ghosting, and
+# the device composites the layer as one textured quad per swap.
+hud_build_static() {
   ov_text=""
+  # score line (top-left)
+  draw_text "SCORE" 5 60 1840 8 11 0.95 0.85 0.30
+  # HP line
+  draw_text "HP" 2 400 1840 8 11 0.35 0.90 0.40
+  draw_char 37 560 1840 8 11 0.35 0.90 0.40
+  # ART line
+  draw_text "ART" 3 760 1840 8 11 0.60 0.75 0.95
+  draw_char 37 952 1840 8 11 0.60 0.75 0.95
+  # fps label
+  draw_text "FPS" 3 60 1778 8 11 0.55 0.95 0.95
+  # instructions (bottom centre)
+  draw_text "WASD MOVE ARROWS TURN SPACE SHOOT" 33 538 100 7 10 0.85 0.85 0.85
+  hud_static=$ov_text
+}
+
+draw_hud_canvas() {
+  ov_text="C
+"
+  ov_text="$ov_text$hud_static"
   draw_gun
   draw_minimap
   draw_mime_labels
   draw_mime_list
-  # score line (top-left)
-  draw_text "SCORE" 5 60 1840 8 11 0.95 0.85 0.30
+  # score digits
   dh_a=$((score/100%10+26))
   dh_b=$((score/10%10+26))
   dh_c=$((score%10+26))
   draw_char $dh_a 252 1840 8 11 0.95 0.85 0.30
   draw_char $dh_b 284 1840 8 11 0.95 0.85 0.30
   draw_char $dh_c 316 1840 8 11 0.95 0.85 0.30
-  draw_text "HP" 2 400 1840 8 11 0.35 0.90 0.40
+  # HP digits (current / max)
   dh_a=$((hp/10+26))
   dh_b=$((hp%10+26))
   draw_char $dh_a 496 1840 8 11 0.35 0.90 0.40
   draw_char $dh_b 528 1840 8 11 0.35 0.90 0.40
-  draw_char 37 560 1840 8 11 0.35 0.90 0.40
   dh_a=$((maxhp/10+26))
   dh_b=$((maxhp%10+26))
   draw_char $dh_a 592 1840 8 11 0.35 0.90 0.40
   draw_char $dh_b 624 1840 8 11 0.35 0.90 0.40
-  draw_text "ART" 3 760 1840 8 11 0.60 0.75 0.95
+  # ART digits (found / total)
   dh_a=$((found_count/10+26))
   dh_b=$((found_count%10+26))
   draw_char $dh_a 888 1840 8 11 0.60 0.75 0.95
   draw_char $dh_b 920 1840 8 11 0.60 0.75 0.95
-  draw_char 37 952 1840 8 11 0.60 0.75 0.95
   dh_a=$((TREASURE_TOTAL/10+26))
   dh_b=$((TREASURE_TOTAL%10+26))
   draw_char $dh_a 984 1840 8 11 0.60 0.75 0.95
   draw_char $dh_b 1016 1840 8 11 0.60 0.75 0.95
-  # fps counter (second line, below the score — half a line lower)
-  draw_text "FPS" 3 60 1778 8 11 0.55 0.95 0.95
+  # fps digits (second line, below the score)
   dh_a=$((fps/100+26))
   dh_b=$((fps/10%10+26))
   dh_c=$((fps%10+26))
   draw_char $dh_a 196 1778 8 11 0.55 0.95 0.95
   draw_char $dh_b 228 1778 8 11 0.55 0.95 0.95
   draw_char $dh_c 260 1778 8 11 0.55 0.95 0.95
-  # instructions (bottom centre)
-  draw_text "WASD MOVE ARROWS TURN SPACE SHOOT" 33 538 100 7 10 0.85 0.85 0.85
   echo "$ov_text" > /dev/webgl/hud
 }
 
-# print the starting maze exactly ONCE (before the game loop) — the
-# dashboard then lives on the 3D canvas and the terminal stays silent
 print_map_once() {
   if [ -f /tmp/mimecroft-map-shown ]; then return 0; fi
   echo "shown" > /tmp/mimecroft-map-shown
@@ -1172,13 +1280,58 @@ print_map_once() {
 }
 
 # ─── Main ───────────────────────────────────────────────────────────
+# ─── frame stats ────────────────────────────────────────────────────
+# a cheap µs clock: EPOCHREALTIME (host bash / real-bash wasm) with a
+# `date +%s%N` fallback (the transpiled shell returns Date.now()*1e6 —
+# fine for relative deltas). g_now = integer microseconds.
+gtick() {
+  g_now=$EPOCHREALTIME
+  if [ "$g_now" != "" ]; then
+    g_now=${g_now%.*}${g_now#*.}
+  else
+    g_now=$(date +%s%N 2>/dev/null)
+    if [ "$g_now" != "" ]; then g_now=$(( g_now / 1000 )); fi
+  fi
+  if [ "$g_now" = "" ]; then g_now=0; fi
+}
+
+# per-phase accumulators (µs) — what holds the frame rate back, by how
+# much: input / anim / display / mimes / render / hud / swap / sleep
+g_in=0
+g_anim=0
+g_disp=0
+g_mime=0
+g_render=0
+g_hud=0
+g_swap=0
+g_sleep=0
+
+# accumulate the µs since the last gspan into a named bucket
+gspan() {
+  gs_name=$1
+  gtick
+  gs_d=$(( g_now - g_last ))
+  if [ "$gs_name" = "input" ]; then g_in=$(( g_in + gs_d )); fi
+  if [ "$gs_name" = "anim" ]; then g_anim=$(( g_anim + gs_d )); fi
+  if [ "$gs_name" = "disp" ]; then g_disp=$(( g_disp + gs_d )); fi
+  if [ "$gs_name" = "mime" ]; then g_mime=$(( g_mime + gs_d )); fi
+  if [ "$gs_name" = "render" ]; then g_render=$(( g_render + gs_d )); fi
+  if [ "$gs_name" = "hud" ]; then g_hud=$(( g_hud + gs_d )); fi
+  if [ "$gs_name" = "swap" ]; then g_swap=$(( g_swap + gs_d )); fi
+  if [ "$gs_name" = "sleep" ]; then g_sleep=$(( g_sleep + gs_d )); fi
+  g_last=$g_now
+}
+
 main() {
   st=$(cat /dev/webgl/state)
   case $st in
     *headless*) sound=$((0)) ;;
     *) sound=$((1)) ;;
   esac
+  gtick
+  g_t0=$g_now
   setup_webgl
+  hud_build_static
   gen_maze
   place_treasures
   if [ "$MIMES_ON" -eq 1 ]; then
@@ -1188,19 +1341,24 @@ main() {
   fi
   echo ""
   echo "╔══════════════════════════════════════════════════╗"
-  echo "║  MIMEcrofT v5.4 — 3D treasure hunt written in bash ║"
+  echo "║  MIMEcrofT v5.5 — 3D treasure hunt written in bash ║"
   echo "║  The filesystem is infested with evil MIMEs.     ║"
   echo "║  Recover the lost operating systems.             ║"
   echo "║  WASD move · arrows turn · SPACE shoot · q quit  ║"
   echo "╚══════════════════════════════════════════════════╝"
   echo ""
   print_map_once
+  # block textures (generated by examples/textures at startup — cached
+  # in /tmp per session so re-runs skip the generation)
+  load_textures
   sleep 0.8
   frame=$((0))
   quit=$((0))
   dirty=1
   while [ "$quit" -eq 0 ] && [ "$hp" -gt 0 ] && [ "$found_count" -lt "$TREASURE_TOTAL" ]; do
     frame=$((frame + 1))
+    gtick
+    g_last=$g_now
     # one action at a time: input is queued until the current glide ends
     if [ "$anim" -eq 0 ]; then
       keys=$(cat /dev/webgl/key)
@@ -1239,6 +1397,7 @@ main() {
         dirty=1
       fi
     fi
+    gspan "input"
     # advance the camera glide by wall time; snap the discrete state
     # when the 0.2s action completes (keys unlock for the next action)
     if [ "$anim" -eq 1 ]; then
@@ -1252,6 +1411,7 @@ main() {
         anim=0
       fi
     fi
+    gspan "anim"
     compute_display
     # muzzle flash lifetime: a few loop frames of flash, then force a
     # clear render so the flash doesn't linger frozen on a static scene
@@ -1261,6 +1421,7 @@ main() {
         dirty=1
       fi
     fi
+    gspan "disp"
     mstep=$((frame % MIME_STEP))
     if [ "$MIMES_ON" -eq 1 ]; then
       if [ "$mstep" -eq 0 ]; then
@@ -1268,6 +1429,7 @@ main() {
         dirty=1
       fi
     fi
+    gspan "mime"
     # Render only when the world changed (key action or mime step): a
     # complete frame — world + HUD + swap — is produced atomically, and
     # the canvas (double-buffered by the browser) keeps showing the last
@@ -1276,8 +1438,11 @@ main() {
     # cap the game at ~20fps and waste the static frames.
     if [ "$dirty" -eq 1 ]; then
       render_frame
+      gspan "render"
       draw_hud_canvas
+      gspan "hud"
       echo "swap" > /dev/webgl/call
+      gspan "swap"
       dirty=0
       fps_rendered=$((fps_rendered + 1))
     else
@@ -1303,6 +1468,8 @@ main() {
       fps_t0=$fps_t
     fi
     sleep 0.008
+    # the sleep itself + the fps-sampling tail of the frame
+    gspan "sleep"
   done
   echo "hide" > /dev/webgl/call
   echo ""
@@ -1319,6 +1486,31 @@ main() {
     echo "║  $found_count / $TREASURE_TOTAL artifacts recovered.  ║"
     echo "║  Score: $score                             ║"
     echo "╚════════════════════════════════════════════╝"
+  fi
+  gtick
+  g_total=$(( g_now - g_t0 ))
+  if [ "$frame" -gt 0 ]; then
+    g_total_ms=$(( g_total / 1000 ))
+    g_avg_ms=$(( g_total / frame / 1000 ))
+    echo "#stats: frames=$frame time=${g_total_ms}ms avg=${g_avg_ms}ms/frame"
+    # per-phase breakdown: ms/frame and % of frame time, plus "other"
+    # (unmeasured loop overhead + the gspan ticks themselves)
+    g_sum=$(( g_in + g_anim + g_disp + g_mime + g_render + g_hud + g_swap + g_sleep ))
+    g_other=$(( g_total - g_sum ))
+    if [ "$g_other" -lt 0 ]; then g_other=0; fi
+    g_ff=$(( g_total / frame ))
+    if [ "$g_ff" -lt 1 ]; then g_ff=1; fi
+    fmt_gms() {
+      fg_v=$1
+      fg_ms=$(( fg_v / frame / 1000 ))
+      echo "$fg_ms"
+    }
+    fmt_gp() {
+      fp_v=$1
+      echo "$(( fp_v * 100 / g_total ))"
+    }
+    echo "#stats:   input=$(fmt_gms $g_in)ms/f($(fmt_gp $g_in)%) anim=$(fmt_gms $g_anim)ms/f($(fmt_gp $g_anim)%) disp=$(fmt_gms $g_disp)ms/f($(fmt_gp $g_disp)%) mime=$(fmt_gms $g_mime)ms/f($(fmt_gp $g_mime)%)"
+    echo "#stats:   render=$(fmt_gms $g_render)ms/f($(fmt_gp $g_render)%) hud=$(fmt_gms $g_hud)ms/f($(fmt_gp $g_hud)%) swap=$(fmt_gms $g_swap)ms/f($(fmt_gp $g_swap)%) sleep=$(fmt_gms $g_sleep)ms/f($(fmt_gp $g_sleep)%) other=$(fmt_gms $g_other)ms/f($(fmt_gp $g_other)%)"
   fi
   echo "GAME DONE"
 }

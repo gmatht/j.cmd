@@ -60,6 +60,9 @@ function makeNullGL() {
   const counters = { shaders: 0, programs: 0, buffers: 0, draws: 0 };
   const gl = {
     VERTEX_SHADER: 0x8b31, FRAGMENT_SHADER: 0x8b30,
+    TEXTURE_2D: 0x0de1, TEXTURE_MIN_FILTER: 0x2801, TEXTURE_MAG_FILTER: 0x2800,
+    TEXTURE_WRAP_S: 0x2802, TEXTURE_WRAP_T: 0x2803, CLAMP_TO_EDGE: 0x812f,
+    NEAREST: 0x2600, RGB: 0x1907, UNPACK_ALIGNMENT: 0x0cf5, TEXTURE0: 0x84c0,
     ARRAY_BUFFER: 0x8892, ELEMENT_ARRAY_BUFFER: 0x8893,
     STATIC_DRAW: 0x88e4, COLOR_BUFFER_BIT: 0x4000, DEPTH_BUFFER_BIT: 0x100, DEPTH_TEST: 0x0b71, LEQUAL: 0x0203,
     TRIANGLES: 0x0004, TRIANGLE_STRIP: 0x0005, TRIANGLE_FAN: 0x0006,
@@ -75,6 +78,13 @@ function makeNullGL() {
     deleteBuffer: () => {},
     bindBuffer: () => {},
     bufferData: () => {},
+    createTexture: () => ({ id: ++counters.buffers }),
+    deleteTexture: () => {},
+    bindTexture: () => {},
+    texParameteri: () => {},
+    pixelStorei: () => {},
+    texImage2D: () => {},
+    activeTexture: () => {},
     createShader: () => ({ id: ++counters.shaders }),
     deleteShader: () => {},
     shaderSource: () => {},
@@ -121,6 +131,8 @@ export class WebGLDevice {
     this._programLinked = false;
     this._log = "WebGL device ready.\n";
     this._buffers = new Map();    // name → { buffer, arr, type }
+    this._textures = new Map();   // texture index → WebGLTexture (R G B …)
+    this._texSize = 0;            // texture dimension (square, e.g. 16)
     this._bindings = new Map();   // attribute → { buffer, size }
     this._uniforms = new Map();   // name → { type, value: number[] }
     this._clearColor = [0, 0, 0, 1];
@@ -130,6 +142,13 @@ export class WebGLDevice {
     this._hudRects = null;           // overlay rect list (batched /dev/webgl/hud)
     this._hudTris = null;           // overlay triangles (T … lines)
     this._hudRectsR = null;         // overlay rotated rects (R … lines)
+    this._hudLayer = null;          // offscreen 2D layer — the transparent
+                                    // HUD texture, persists across frames;
+                                    // composited onto the back buffer at swap
+    this._hudDirty = false;         // layer changed → re-upload texture at swap
+    this._hudTex = null;            // WebGL texture holding the layer
+    this._hudProg = null;           // built-in composite program (internal)
+    this._hudVerts = null;          // fullscreen textured-quad buffer
     this._lastSwapAt = 0;            // for key-steal timeout after a game ends
     this._keyListener = null;
     this._null = false;              // headless null-device mode (no DOM)
@@ -275,6 +294,50 @@ export class WebGLDevice {
     return { arr, type };
   }
 
+  // a 16×16 (or N×N) RGB texture: write "SIZE R G B R G B …" (0..255)
+  // to /dev/webgl/texture/<index>. NEAREST + CLAMP_TO_EDGE → the
+  // Minecraft-style chunky pixel look.
+  // a 1x1 opaque white texture — the flat-colour fallback for uTex=0
+  _makeWhiteTexture() {
+    const gl = this._ensureGL();
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, 1, 1, 0, gl.RGB, gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255]));
+    return tex;
+  }
+
+  _uploadTexture(idx, text) {
+    const gl = this._ensureGL();
+    const nums = text.trim().split(/[\s,]+/).filter(Boolean).map(Number);
+    if (nums.length < 4 || nums.some((n) => Number.isNaN(n))) {
+      this._log += `[texture/${idx}] bad data (${nums.length} tokens)\n`;
+      return;
+    }
+    const size = nums[0];
+    const rgb = nums.slice(1);
+    const need = size * size * 3;
+    if (rgb.length < need) {
+      this._log += `[texture/${idx}] short data: ${rgb.length} < ${need}\n`;
+      return;
+    }
+    const bytes = new Uint8Array(rgb.slice(0, need));
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, size, size, 0, gl.RGB, gl.UNSIGNED_BYTE, bytes);
+    this._textures.set(Number(idx), tex);
+    this._texSize = size;
+    this._log += `[texture/${idx}] ${size}x${size} uploaded\n`;
+  }
+
   _uploadBuffer(name, parsed) {
     const gl = this._ensureGL();
     let entry = this._buffers.get(name);
@@ -357,6 +420,10 @@ export class WebGLDevice {
       return;
     }
     if (op === "swap") {
+      // Composite the transparent HUD layer (one textured quad) onto
+      // the back buffer, then present. The layer persists across
+      // frames, so bash only re-writes the changed cells.
+      this._compositeHud();
       // Present to screen — the canvas stays hidden until the first swap
       gl.flush();
       if (this._canvas) this._canvas.style.display = "block";
@@ -416,6 +483,25 @@ export class WebGLDevice {
 
     const maxVerts = this._bindAttributes();
     this._applyUniforms();
+    // texture sampler: uTex = the texture index written by the game —
+    // bind the uploaded texture to unit 0 and pin the sampler to it
+    const uTex = this._uniforms.get("uTex");
+    if (uTex && this._textures.size) {
+      // uTex = texture index (1..N) written by the game; the fragment
+      // shader samples unit 0, so bind the game's texture there.
+      // index 0 (or unknown) = flat colour: sample a 1x1 WHITE texture
+      // so texture × uBlockColor leaves the block colour unchanged.
+      const tex = this._textures.get(Number(uTex.value[0]));
+      gl.activeTexture(gl.TEXTURE0);
+      if (tex) {
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+      } else {
+        if (!this._whiteTex) this._whiteTex = this._makeWhiteTexture();
+        gl.bindTexture(gl.TEXTURE_2D, this._whiteTex);
+      }
+      const tl = gl.getUniformLocation(this._program, "uTex");
+      if (tl !== null) gl.uniform1i(tl, 0);
+    }
 
     if (kind === "elements") {
       const bufName = indexBuffer || this._lastElementBuffer;
@@ -549,91 +635,166 @@ export class WebGLDevice {
   // Draw the batched 2D overlay (see /dev/webgl/hud). Uses the quad
   // buffers the game uploads (quadpos/quadshade/quadi) and the overlay
   // shader path — one direct GL pass, no per-rect async round-trips.
-  _drawHud() {
-    const gl = this._gl;
-    if (!gl || !this._hudRects || !this._hudRects.length) return;
-    const rects = this._hudRects;
-    const tris = this._hudTris;
-    const rrects = this._hudRectsR;
+  // Rasterize the batched 2D overlay into the OFFSCREEN transparent
+  // HUD layer (the "HUD texture"). The layer persists across frames —
+  // the per-frame clear only touches the back buffer — so the bash can
+  // update only the changed cells ("E" erase + new rects) instead of
+  // re-sending and re-drawing the whole HUD every rendered frame. The
+  // layer is composited onto the back buffer with ONE textured quad at
+  // swap (_compositeHud), re-uploaded only when this write dirtied it.
+  _hudLayerCtx() {
+    if (this._hudLayer) return this._hudLayer.getContext("2d");
+    if (typeof document === "undefined" || !this._canvas) return null;
+    const c = document.createElement("canvas");
+    c.width = this._canvas.width;
+    c.height = this._canvas.height;
+    this._hudLayer = c;
+    return c.getContext("2d");
+  }
+
+  _rasterHud() {
+    try {
+      this._rasterHudImpl();
+    } catch (e) {
+      // never let a HUD rasterization break the game (swap/keyboard):
+      // log and continue with an empty layer
+      this._log += `[hud] raster FAILED: ${e && e.message ? e.message : e}\n`;
+    }
+  }
+
+  _rasterHudImpl() {
+    const ctx = this._hudLayerCtx();
+    const rects = this._hudRects || [];
+    const tris = this._hudTris || [];
+    const rrects = this._hudRectsR || [];
+    const erases = this._hudErase || [];
     this._hudRects = null;
     this._hudTris = null;
     this._hudRectsR = null;
-    const program = this._linkProgram();
-    gl.useProgram(program);
-    const bind = (attr, bufName) => {
-      const entry = this._buffers.get(bufName);
-      if (!entry) return false;
-      const loc = gl.getAttribLocation(program, attr);
-      gl.bindBuffer(gl.ARRAY_BUFFER, entry.buffer);
-      gl.enableVertexAttribArray(loc);
-      gl.vertexAttribPointer(loc, 3, gl.FLOAT, false, 0, 0);
-      return true;
-    };
-    if (!bind("aPosition", "quadpos")) return;
-    bind("aShade", "quadshade");
-    const idx = this._buffers.get("quadi");
-    if (!idx) return;
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idx.buffer);
-    const loc = (n) => gl.getUniformLocation(program, n);
-    const uPos = loc("uObjPos"), uScale = loc("uScale"), uColor = loc("uBlockColor"), uOverlay = loc("uOverlay");
-    if (uOverlay) gl.uniform1f(uOverlay, 1.0);
-    const idxType = idx.type === "u8" ? gl.UNSIGNED_BYTE : gl.UNSIGNED_SHORT;
+    this._hudErase = null;
+    this._log += `[hud] ${rects.length} rects ${rrects.length} rrects ${tris.length} tris ${erases.length} erases\n`;
+    if (!ctx) return;                       // headless: nothing to rasterize
+    const W = this._hudLayer.width, H = this._hudLayer.height;
+    const px = (x) => ((Number(x) + 1) / 2) * W;    // NDC → canvas x
+    const py = (y) => ((1 - Number(y)) / 2) * H;    // NDC → canvas y (flip)
+    const pw = (w) => (Number(w) / 2) * W;
+    const ph = (h) => (Number(h) / 2) * H;
+    const col = (r, g, b) => `rgb(${Math.round(Number(r) * 255)},${Math.round(Number(g) * 255)},${Math.round(Number(b) * 255)})`;
+    if (this._hudClearAll) ctx.clearRect(0, 0, W, H);
+    this._hudClearAll = false;
+    for (const [cx, cy, w, h] of erases) {
+      ctx.clearRect(px(cx) - pw(w) / 2, py(cy) - ph(h) / 2, pw(w), ph(h));
+    }
     for (const [cx, cy, w, h, r, g, b] of rects) {
-      if (uPos) gl.uniform3f(uPos, cx, cy, 0);
-      if (uScale) gl.uniform3f(uScale, w, h, 1);
-      if (uColor) gl.uniform3f(uColor, r, g, b);
-      gl.drawElements(gl.TRIANGLES, 6, idxType, 0);
+      ctx.fillStyle = col(r, g, b);
+      ctx.fillRect(px(cx) - pw(w) / 2, py(cy) - ph(h) / 2, pw(w), ph(h));
     }
-    // rotated rects: R cx cy w h deg r g b — a quad rotated by deg.
-    // The vertices are absolute NDC, so the shader's uObjPos/uScale
-    // (left over from the rect loop) must be reset to identity or the
-    // quad would be re-transformed — the same bug that mispositioned
-    // the T triangles below.
-    if (rrects && rrects.length) {
-      if (!this._triBuf) this._triBuf = gl.createBuffer();
-      const aLoc = gl.getAttribLocation(program, "aPosition");
-      gl.bindBuffer(gl.ARRAY_BUFFER, this._triBuf);
-      gl.enableVertexAttribArray(aLoc);
-      gl.vertexAttribPointer(aLoc, 3, gl.FLOAT, false, 0, 0);
-      if (uPos) gl.uniform3f(uPos, 0, 0, 0);
-      if (uScale) gl.uniform3f(uScale, 1, 1, 1);
-      for (const [cx, cy, w, h, deg, r, g, b] of rrects) {
-        const a = deg * Math.PI / 180, c = Math.cos(a), sn = Math.sin(a);
-        const hw = w / 2, hh = h / 2;
-        const rot = (vx, vy) => [vx * c - vy * sn, vx * sn + vy * c];
-        const q = [rot(-hw, -hh), rot(hw, -hh), rot(hw, hh), rot(-hw, hh)];
-        const verts = new Float32Array([
-          ...q[0], cx, cy, 0, ...q[1], cx, cy, 0, ...q[2], cx, cy, 0,
-          ...q[2], cx, cy, 0, ...q[3], cx, cy, 0, ...q[0], cx, cy, 0,
-        ]);
-        gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW);
-        if (uColor) gl.uniform3f(uColor, r, g, b);
-        gl.drawArrays(gl.TRIANGLES, 0, 6);
+    for (const [cx, cy, w, h, deg, r, g, b] of rrects) {
+      ctx.save();
+      ctx.translate(px(cx), py(cy));
+      ctx.rotate((-Number(deg)) * Math.PI / 180);   // NDC y-up vs canvas y-down
+      ctx.fillStyle = col(r, g, b);
+      ctx.fillRect(-pw(w) / 2, -ph(h) / 2, pw(w), ph(h));
+      ctx.restore();
+    }
+    for (const [cx, cy, size, r, g, b, deg] of tris) {
+      const a = (-Number(deg)) * Math.PI / 180;
+      const c = Math.cos(a), sn = Math.sin(a);
+      const v = (vx, vy) => [px(cx) + pw(size) * (vx * c - vy * sn), py(cy) + ph(size) * (vx * sn + vy * c)];
+      const p0 = v(0, 0.5), p1 = v(-0.5, -0.5), p2 = v(0.5, -0.5);
+      ctx.fillStyle = col(r, g, b);
+      ctx.beginPath();
+      ctx.moveTo(p0[0], p0[1]);
+      ctx.lineTo(p1[0], p1[1]);
+      ctx.lineTo(p2[0], p2[1]);
+      ctx.closePath();
+      ctx.fill();
+    }
+    this._hudDirty = true;
+  }
+
+  // One textured fullscreen quad: composite the transparent HUD layer
+  // onto the back buffer (world) after it was drawn, before presenting.
+  _linkHudProgram() {
+    const gl = this._gl;
+    const mk = (type, src) => {
+      const s = gl.createShader(type);
+      gl.shaderSource(s, src);
+      gl.compileShader(s);
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+        this._log += `[hudtex] shader FAILED: ${gl.getShaderInfoLog(s)}\n`;
+        return null;
       }
+      return s;
+    };
+    const vs = mk(gl.VERTEX_SHADER,
+      `attribute vec2 aPosition; attribute vec2 aUv; varying vec2 vUv;\n` +
+      `void main(){ vUv = aUv; gl_Position = vec4(aPosition, 0.0, 1.0); }`);
+    const fs = mk(gl.FRAGMENT_SHADER,
+      `precision mediump float; varying vec2 vUv; uniform sampler2D uTex;\n` +
+      `void main(){ gl_FragColor = texture2D(uTex, vUv); }`);
+    if (!vs || !fs) return null;
+    const prog = gl.createProgram();
+    gl.attachShader(prog, vs);
+    gl.attachShader(prog, fs);
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return null;
+    return prog;
+  }
+
+  _compositeHud() {
+    const gl = this._gl;
+    if (this._null || !this._hudLayer || !gl) return;
+    try {
+      this._compositeHudImpl();
+    } catch (e) {
+      // a composite failure must never break the swap (which drives the
+      // keyboard-capture freshness window) — log and present anyway
+      this._log += `[hud] composite FAILED: ${e && e.message ? e.message : e}\n`;
     }
-    // triangles: T cx cy size r g b deg — a dynamic vertex buffer, rotated
-    if (tris && tris.length) {
-      if (!this._triBuf) this._triBuf = gl.createBuffer();
-      const aLoc = gl.getAttribLocation(program, "aPosition");
-      gl.bindBuffer(gl.ARRAY_BUFFER, this._triBuf);
-      gl.enableVertexAttribArray(aLoc);
-      gl.vertexAttribPointer(aLoc, 3, gl.FLOAT, false, 0, 0);
-      // absolute-NDC vertices: the overlay shader's p = aPosition*uScale +
-      // uObjPos would re-transform them with the last rect's uniforms, so
-      // pin the transform to identity (the triangles were invisible:
-      // scaled by the previous rect's w/h and offset by its position)
-      if (uPos) gl.uniform3f(uPos, 0, 0, 0);
-      if (uScale) gl.uniform3f(uScale, 1, 1, 1);
-      for (const [cx, cy, size, r, g, b, deg] of tris) {
-        const a = deg * Math.PI / 180, c = Math.cos(a), sn = Math.sin(a);
-        const v = (vx, vy) => [cx + size * (vx * c - vy * sn), cy + size * (vx * sn + vy * c), 0];
-        const verts = new Float32Array([...v(0, 0.5), ...v(-0.5, -0.5), ...v(0.5, -0.5)]);
-        gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW);
-        if (uColor) gl.uniform3f(uColor, r, g, b);
-        gl.drawArrays(gl.TRIANGLES, 0, 3);
-      }
+  }
+
+  _compositeHudImpl() {
+    const gl = this._gl;
+    if (this._null || !this._hudLayer || !gl) return;
+    if (this._hudDirty) {
+      if (!this._hudTex) this._hudTex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, this._hudTex);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, this._hudLayer);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      this._hudDirty = false;
     }
-    this._log += `[hud] ${rects.length} rects ${rrects ? rrects.length : 0} rrects ${tris ? tris.length : 0} tris\n`;
+    if (!this._hudProg) this._hudProg = this._linkHudProgram();
+    if (!this._hudProg) return;
+    gl.useProgram(this._hudProg);
+    if (!this._hudVerts) this._hudVerts = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this._hudVerts);
+    // fullscreen quad (2 triangles): position + uv; canvas top → screen top
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+      -1,  1, 0, 0,    1,  1, 1, 0,    1, -1, 1, 1,
+       1, -1, 1, 1,   -1, -1, 0, 1,   -1,  1, 0, 0,
+    ]), gl.STATIC_DRAW);
+    const aPos = gl.getAttribLocation(this._hudProg, "aPosition");
+    const aUv = gl.getAttribLocation(this._hudProg, "aUv");
+    gl.enableVertexAttribArray(aPos);
+    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 16, 0);
+    gl.enableVertexAttribArray(aUv);
+    gl.vertexAttribPointer(aUv, 2, gl.FLOAT, false, 16, 8);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this._hudTex);
+    gl.uniform1i(gl.getUniformLocation(this._hudProg, "uTex"), 0);
+    const depthOn = gl.isEnabled(gl.DEPTH_TEST);
+    gl.disable(gl.DEPTH_TEST);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    gl.disable(gl.BLEND);
+    if (depthOn) gl.enable(gl.DEPTH_TEST);
+    this._log += "[hud] composited texture quad\n";
   }
 
   _frameDataURL() {
@@ -704,6 +865,10 @@ export class WebGLDevice {
       this._uploadBuffer(parts[1], this._parseBuffer(String(content)));
       return;
     }
+    if (parts[0] === "texture" && parts.length === 2) {
+      this._uploadTexture(parts[1], String(content));
+      return;
+    }
     if (parts[0] === "bind") {
       this._setBind(String(content));
       return;
@@ -724,29 +889,43 @@ export class WebGLDevice {
       return;
     }
     if (parts[0] === "hud") {
-      // 2D overlay: newline-separated rects "cx cy w h r g b" (NDC).
-      // Drawn IMMEDIATELY into the back buffer, so the presented frame
-      // (world + HUD) is atomic at the next swap — one write instead of
-      // hundreds of per-quad round-trips (the HUD used to cost ~90ms
-      // of async writes and blink because it landed after the swap).
+      // 2D overlay: newline-separated commands (NDC coordinates).
+      //   cx cy w h r g b      opaque rect
+      //   R cx cy w h deg r g b   rotated quad (viewmodel gun)
+      //   T cx cy size r g b deg  triangle (player facing marker)
+      //   E cx cy w h           erase (make transparent — ghost-free
+      //                          updates of the persistent HUD layer)
+      //   C                     clear the whole HUD layer
+      // Rendered into an OFFSCREEN transparent layer (the HUD texture)
+      // that persists across frames; composited onto the back buffer
+      // with ONE textured quad at swap, re-uploaded only when this
+      // write changed it ("update only when it changes").
       this._hudRects = [];
       this._hudTris = [];
       this._hudRectsR = [];
+      this._hudErase = [];
+      this._hudClearAll = false;
       for (const line of String(content).split("\n")) {
         const t = line.trim();
-        if (t.startsWith("R ")) {
+        if (t === "C" || t === "c") {
+          this._hudClearAll = true;
+        } else if (t.startsWith("R ")) {
           // rotated rect: R cx cy w h deg r g b — a quad rotated deg
-          // (same convention as T lines) — used by the tilted viewmodel gun
           const nums = t.slice(2).trim().split(/[\s,]+/).filter(Boolean).map(Number);
           if (nums.length >= 8 && nums.every((n) => Number.isFinite(n))) {
             this._hudRectsR.push(nums.slice(0, 8));
           }
         } else if (t.startsWith("T ")) {
-          // triangle: T cx cy size r g b deg (deg rotates the up-pointing
-          // unit triangle clockwise in NDC — the player facing marker)
+          // triangle: T cx cy size r g b deg
           const nums = t.slice(2).trim().split(/[\s,]+/).filter(Boolean).map(Number);
           if (nums.length >= 7 && nums.every((n) => Number.isFinite(n))) {
             this._hudTris.push(nums.slice(0, 7));
+          }
+        } else if (t.startsWith("E ")) {
+          // erase rect: E cx cy w h
+          const nums = t.slice(2).trim().split(/[\s,]+/).filter(Boolean).map(Number);
+          if (nums.length >= 4 && nums.every((n) => Number.isFinite(n))) {
+            this._hudErase.push(nums.slice(0, 4));
           }
         } else {
           const nums = t.split(/[\s,]+/).filter(Boolean).map(Number);
@@ -755,7 +934,7 @@ export class WebGLDevice {
           }
         }
       }
-      this._drawHud();
+      this._rasterHud();
       return;
     }
     if (parts[0] === "key") {
