@@ -65,10 +65,12 @@ export function createCRuntime({ getMem, memory, out, err, table }) {
 
   // ─── printf: %d %i %u %x %X %o %c %s %f %g %e %p %ld %zu %% ──────
   function fmtInt(v, base, pad, upper) {
+    // JS toString(base) is always lowercase — %X/%o need the table
     const digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
-    let s = v.toString(base);
+    let s = "";
+    do { s = digits[v % base] + s; v = Math.floor(v / base); } while (v > 0);
     while (s.length < pad) s = "0" + s;
-    return upper ? s : s;
+    return s;
   }
   // pad a signed integer string: C puts the zero-padding AFTER the sign
   function padNum(s, width, zero) {
@@ -177,7 +179,19 @@ export function createCRuntime({ getMem, memory, out, err, table }) {
     }
   };
 
-  return {
+  // atexit/on_exit: table-index handlers run at exit (reverse order) —
+  // both on `exit()` and on normal main return (the runner flushes
+  // via the exported flushAtexit hook).
+  const atexitFns = [];
+  const runAtexit = () => {
+    while (atexitFns.length) {
+      const e = atexitFns.pop();
+      if (Array.isArray(e)) callFnPtr(e[0], e[1], 0);
+      else callFnPtr(e, 0);
+    }
+  };
+
+  const rt = {
     "$qsort": (base, nmemb, size, compar) => {
       base = Ptr(base); nmemb = Ptr(nmemb); size = Ptr(size); compar = Ptr(compar);
       if (nmemb <= 1 || size <= 0) return;
@@ -219,6 +233,111 @@ export function createCRuntime({ getMem, memory, out, err, table }) {
 
     "$printf": (fmt, ...args) => doPrintf(Ptr(fmt), args, out),
     "$puts": (p) => { out(readStr(p) + "\n"); return 0; },
+    "$write": (fd, buf, len) => { buf = Ptr(buf); len = Ptr(len);
+      const m = u8();
+      const text = dec.decode(m.subarray(buf, buf + len));
+      if (Ptr(fd) === 2) err(text); else out(text);
+      return len;
+    },
+    "$fflush": () => 0,  // output is unbuffered — nothing to flush
+    "$fopen": () => 0,   // no synchronous FS in the sandbox — NULL
+    "$fdopen": () => 0,
+    "$fclose": () => 0,
+    "$fread": () => 0,
+    "$fwrite": () => 0,
+    "$fgets": () => 0,
+    "$fputs": () => -1,
+    "$fputc": () => -1,
+    "$fgetc": () => -1,
+    "$fseek": () => -1,
+    "$ftell": () => 0,
+    "$feof": () => 1,
+    "$ferror": () => 0,
+    "$remove": () => -1,
+    "$rename": () => -1,
+    "$rewind": () => {},
+    // tcc math builtins → IEEE doubles in JS
+    "$sin": (x) => Math.sin(x), "$cos": (x) => Math.cos(x), "$tan": (x) => Math.tan(x),
+    "$sqrt": (x) => Math.sqrt(x), "$pow": (x, y) => Math.pow(x, y),
+    "$fabs": (x) => Math.abs(x), "$floor": (x) => Math.floor(x), "$ceil": (x) => Math.ceil(x),
+    "$exp": (x) => Math.exp(x), "$log": (x) => Math.log(x), "$log10": (x) => Math.log10(x),
+    "$atan2": (x, y) => Math.atan2(x, y), "$fmod": (x, y) => x % y,
+    "$asin": (x) => Math.asin(x), "$acos": (x) => Math.acos(x),
+    "$atan": (x) => Math.atan(x), "$sinh": (x) => Math.sinh(x), "$cosh": (x) => Math.cosh(x),
+    "$tanh": (x) => Math.tanh(x), "$fmin": (x, y) => Math.min(x, y), "$fmax": (x, y) => Math.max(x, y),
+    "$round": (x) => Math.sign(x) * Math.round(Math.abs(x)),
+    "$trunc": (x) => Math.trunc(x), "$lround": (x) => Math.sign(x) * Math.round(Math.abs(x)),
+    "$labs": (x) => Math.abs(x), "$llabs": (x) => Math.abs(x),
+    "$ldexp": (x, e) => x * Math.pow(2, e), "$frexp": (x) => { if (x === 0) return 0; const e = Math.floor(Math.log2(Math.abs(x))) + 1; return e; },
+    // tcc __atomic_* builtins: 4-byte ops over the linear memory
+    "$__atomic_load_4": (p) => { p = Ptr(p); const m = u8();
+      return m[p] | (m[p + 1] << 8) | (m[p + 2] << 16) | (m[p + 3] << 24); },
+    "$__atomic_store_4": (p, v) => { p = Ptr(p); v = Ptr(v); const m = u8();
+      m[p] = v & 0xff; m[p + 1] = (v >> 8) & 0xff; m[p + 2] = (v >> 16) & 0xff; m[p + 3] = (v >> 24) & 0xff;
+      return v; },
+    "$__atomic_exchange_4": (p, v) => { p = Ptr(p); v = Ptr(v);
+      const m = u8();
+      const old = m[p] | (m[p + 1] << 8) | (m[p + 2] << 16) | (m[p + 3] << 24);
+      m[p] = v & 0xff; m[p + 1] = (v >> 8) & 0xff; m[p + 2] = (v >> 16) & 0xff; m[p + 3] = (v >> 24) & 0xff;
+      return old; },
+    "$__atomic_compare_exchange_4": (p, expected, desired, weak, succ, fail) => {
+      p = Ptr(p); expected = Ptr(expected); desired = Ptr(desired);
+      const m = u8();
+      const cur = m[p] | (m[p + 1] << 8) | (m[p + 2] << 16) | (m[p + 3] << 24);
+      const exp = m[expected] | (m[expected + 1] << 8) | (m[expected + 2] << 16) | (m[expected + 3] << 24);
+      if (cur === exp) {
+        m[p] = desired & 0xff; m[p + 1] = (desired >> 8) & 0xff; m[p + 2] = (desired >> 16) & 0xff; m[p + 3] = (desired >> 24) & 0xff;
+        return 1;
+      }
+      m[expected] = cur & 0xff; m[expected + 1] = (cur >> 8) & 0xff; m[expected + 2] = (cur >> 16) & 0xff; m[expected + 3] = (cur >> 24) & 0xff;
+      return 0;
+    },
+    "$__atomic_fetch_add_4": (p, v) => { p = Ptr(p); v = Ptr(v); const m = u8();
+      const old = m[p] | (m[p + 1] << 8) | (m[p + 2] << 16) | (m[p + 3] << 24);
+      const nv = (old + v) | 0;
+      m[p] = nv & 0xff; m[p + 1] = (nv >> 8) & 0xff; m[p + 2] = (nv >> 16) & 0xff; m[p + 3] = (nv >> 24) & 0xff;
+      return old; },
+    // pthread stubs (single-threaded sandbox)
+    "$pthread_condattr_init": () => 0,
+    "$pthread_condattr_setpshared": () => 0,
+    "$pthread_condattr_setclock": () => 0,
+    "$pthread_condattr_destroy": () => 0,
+    "$pthread_condattr_getpshared": () => 0,
+    "$pthread_cond_init": () => 0,
+    "$pthread_mutex_init": () => 0,
+    "$pthread_mutexattr_init": () => 0,
+    "$pthread_mutexattr_settype": () => 0,
+    "$pthread_create": () => 1,
+    "$pthread_join": () => 0,
+    "$pthread_self": () => 0,
+    "$pthread_mutex_lock": () => 0,
+    "$pthread_mutex_unlock": () => 0,
+    "$pthread_cond_wait": () => 0,
+    "$pthread_cond_signal": () => 0,
+    "$pthread_cond_broadcast": () => 0,
+    // tcc test-suite hooks (linker/backtrace/dso helpers)
+    "$tcc_backtrace": () => {},
+    "$get_dso_end": () => 0,
+    "$check_linker_symbols": () => 0,
+    // 104_inline: predeclared static-inline functions that the wasm32
+    // backend emits as env imports instead of local definitions — a
+    // no-op keeps the call sites harmless.
+    "$noinst_static_inline_predeclared": () => 0,
+    "$noinst2_static_inline_predeclared": () => 0,
+    "$noinst_static_inline_postdeclared": () => 0,
+    "$noinst2_static_inline_postdeclared": () => 0,
+    "$alias_for_target": () => 0,
+    "$target": () => 0,
+    "$asm_for_target": () => 0,
+    "$f_1": () => 0,
+    "$f_2": () => 0,
+    "$inunit2": () => 0,
+    "$inline_inline_undeclared": () => 0,
+    "$inline_inline_predeclared": () => 0,
+    "$inline_inline_postdeclared": () => 0,
+    "$inline_inline_undeclared2": () => 0,
+    "$inline_inline_predeclared2": () => 0,
+    "$inline_inline_postdeclared2": () => 0,
     "$freopen": (name, mode, stream) => stream,  // reopen a stream — sandbox: keep it
     "$setvbuf": (stream, buf, mode, size) => 0,   // buffer mode — sandbox: no-op
     "$putchar": (c) => { out(String.fromCharCode(c)); return c; },
@@ -245,6 +364,57 @@ export function createCRuntime({ getMem, memory, out, err, table }) {
       const sa = readStr(a), sb = readStr(b);
       return sa < sb ? -1 : sa > sb ? 1 : 0;
     },
+    "$strncmp": (a, b, n) => { a = Ptr(a); b = Ptr(b); n = Ptr(n);
+      const m = u8();
+      for (let i = 0; i < n; i++) {
+        const ca = m[a + i], cb = m[b + i];
+        if (ca !== cb) return ca - cb;
+        if (ca === 0) return 0;
+      }
+      return 0;
+    },
+    "$strcasecmp": (a, b) => { a = Ptr(a); b = Ptr(b);
+      const sa = readStr(a).toLowerCase(), sb = readStr(b).toLowerCase();
+      return sa < sb ? -1 : sa > sb ? 1 : 0;
+    },
+    "$strncasecmp": (a, b, n) => { a = Ptr(a); b = Ptr(b); n = Ptr(n);
+      const sa = readStr(a).toLowerCase().slice(0, n);
+      const sb = readStr(b).toLowerCase().slice(0, n);
+      return sa < sb ? -1 : sa > sb ? 1 : 0;
+    },
+    "$strchr": (p, c) => { p = Ptr(p); c = Ptr(c); const m = u8();
+      const ch = c & 0xff;
+      let i = p;
+      for (;;) { const b = m[i]; if (b === ch) return i; if (b === 0) return 0; i++; }
+    },
+    "$strstr": (h, n) => { h = Ptr(h); n = Ptr(n);
+      const hay = readStr(h), needle = readStr(n);
+      const i = hay.indexOf(needle);
+      return i < 0 ? 0 : h + i;
+    },
+    "$strrchr": (p, c) => { p = Ptr(p); c = Ptr(c);
+      const s = readStr(p);
+      const ch = String.fromCharCode(c & 0xff);
+      const i = s.lastIndexOf(ch);
+      return i < 0 ? 0 : p + i;
+    },
+    // ctype
+    "$tolower": (c) => { c = Ptr(c); return c >= 65 && c <= 90 ? c + 32 : c; },
+    "$toupper": (c) => { c = Ptr(c); return c >= 97 && c <= 122 ? c - 32 : c; },
+    "$isalpha": (c) => { c = Ptr(c); return (c >= 65 && c <= 90) || (c >= 97 && c <= 122) ? 1 : 0; },
+    "$isdigit": (c) => { c = Ptr(c); return c >= 48 && c <= 57 ? 1 : 0; },
+    "$isalnum": (c) => { c = Ptr(c); return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) ? 1 : 0; },
+    "$isspace": (c) => { c = Ptr(c); return c === 32 || (c >= 9 && c <= 13) ? 1 : 0; },
+    "$islower": (c) => { c = Ptr(c); return c >= 97 && c <= 122 ? 1 : 0; },
+    "$isupper": (c) => { c = Ptr(c); return c >= 65 && c <= 90 ? 1 : 0; },
+    "$isprint": (c) => { c = Ptr(c); return c >= 32 && c <= 126 ? 1 : 0; },
+    "$strdup": (s) => { s = Ptr(s); const t = readStr(s);
+      const p = growHeap(t.length + 1);
+      if (p === -1) return 0;
+      writeStr(p, t);
+      return p;
+    },
+    "$getc": () => -1, "$getchar": () => -1, "$ungetc": () => -1,
     "$strcpy": (d, s) => { d = Ptr(d); s = Ptr(s); const m = u8(); let i = 0; while (m[s + i]) { m[d + i] = m[s + i]; i++; } m[d + i] = 0; return d; },
     "$strncpy": (d, s, n) => { d = Ptr(d); s = Ptr(s); n = Ptr(n);
       const m = u8();
@@ -271,8 +441,13 @@ export function createCRuntime({ getMem, memory, out, err, table }) {
       return 0;
     },
 
-    "$exit": (code) => { throw new CExit(Ptr(code)); },
+    "$exit": (code) => { runAtexit(); throw new CExit(Ptr(code)); },
     "$abort": () => { err("abort() called\n"); throw new CExit(134); },
     "$__assert_fail": () => { err("assertion failed\n"); throw new CExit(134); },
+    "$atexit": (fn) => { atexitFns.push(Ptr(fn)); return 0; },
+    "$on_exit": (fn, arg) => { atexitFns.push([Ptr(fn), Ptr(arg)]); return 0; },
   };
+  // The atexit flush hook (runner calls it after a normal main return).
+  rt.flushAtexit = runAtexit;
+  return rt;
 }
