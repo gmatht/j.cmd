@@ -72,9 +72,9 @@ SHADE=" .:-=+*#%@"
 # clobber any value exported by the caller.
 SIZE=16
 if [ "$TEX_SIZE" != "" ]; then SIZE=$TEX_SIZE; fi
-if [ "$SIZE" -lt 8 ]; then SIZE=8; fi
-m8=$(( SIZE % 8 ))
-if [ "$m8" -ne 0 ]; then SIZE=$(( (SIZE / 8) * 8 )); fi
+if [ "$SIZE" -lt 4 ]; then SIZE=4; fi
+m4=$(( SIZE % 4 ))
+if [ "$m4" -ne 0 ]; then SIZE=$(( (SIZE / 4) * 4 )); fi
 LAST=$(( SIZE - 1 ))
 
 if [ "$TEX_SEED" = "" ]; then TEX_SEED=20240812; fi
@@ -86,6 +86,7 @@ noise_seed=$TEX_SEED
 # scale up without changing their character
 LOW_CELL=$(( SIZE / 4 ))
 HIGH_CELL=$(( SIZE / 8 ))
+if [ "$HIGH_CELL" -lt 1 ]; then HIGH_CELL=1; fi
 LOW_WRAP=4
 HIGH_WRAP=8
 

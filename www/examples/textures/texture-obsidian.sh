@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────
-# texture-dirt.sh — pseudorandom, seamlessly tileable dirt block.
+# texture-stone.sh — pseudorandom, seamlessly tileable stone texture.
 #
-#   bash texture-dirt.sh > dirt.ppm        # PPM P6, 16×16 (default)
-#   bash texture-dirt.sh --preview           # color + shade preview
-#   bash texture-dirt.sh --png               # dirt-<seed>.png (needs convert)
-#   TEX_SIZE=32 TEX_SEED=7 bash texture-dirt.sh > dirt32.ppm
+#   bash texture-stone.sh > stone.ppm        # PPM P6, 16×16 (default)
+#   bash texture-stone.sh --preview           # truecolor ANSI preview
+#   bash texture-stone.sh --png               # stone-<seed>.png (needs convert)
+#   TEX_SIZE=32 TEX_SEED=7 bash texture-stone.sh > stone32.ppm
 #
 # Self-contained (no sourcing): the shared core from texture-lib.sh is
 # inlined below, so the script runs identically under host bash, the
@@ -15,7 +15,7 @@
 # fails the suite if these drift.
 # ─────────────────────────────────────────────────────────────────────
 
-NAME="dirt"
+NAME="obsidian"
 PREVIEW=0
 DO_PNG=0
 if [ "$1" = "--preview" ]; then PREVIEW=1; fi
@@ -366,11 +366,61 @@ finish() {
   print_stats
 }
 # ─── body ───────────────────────────────────────────────────────────
-# dirt: broad clumps from low-frequency noise, fine detail, dark
-# pebbles, light grit, and the occasional pale root fleck.
-RB=111
-GB=78
-BB=52
+# base palette — obsidian: a dark purple-black glass (the block colour
+# 0.21 0.18 0.26 tints it further)
+RB=20
+GB=15
+BB=30
+
+# three crack segments: interior start point + short direction;
+# kept away from the edges so no crack crosses the seam
+rand $SIZE
+C1X=$(( 2 + rv % 12 ))
+rand $SIZE
+C1Y=$(( 2 + rv % 12 ))
+rand 5
+C1DX=$(( rv - 2 ))
+rand 5
+C1DY=$(( rv - 2 ))
+if [ "$C1DX" -eq 0 ]; then
+  if [ "$C1DY" -eq 0 ]; then
+    C1DX=1
+  fi
+fi
+C1L2=$(( C1DX * C1DX + C1DY * C1DY ))
+C1T=$(( 3 * C1L2 ))
+
+rand $SIZE
+C2X=$(( 2 + rv % 12 ))
+rand $SIZE
+C2Y=$(( 2 + rv % 12 ))
+rand 5
+C2DX=$(( rv - 2 ))
+rand 5
+C2DY=$(( rv - 2 ))
+if [ "$C2DX" -eq 0 ]; then
+  if [ "$C2DY" -eq 0 ]; then
+    C2DY=1
+  fi
+fi
+C2L2=$(( C2DX * C2DX + C2DY * C2DY ))
+C2T=$(( 3 * C2L2 ))
+
+rand $SIZE
+C3X=$(( 2 + rv % 12 ))
+rand $SIZE
+C3Y=$(( 2 + rv % 12 ))
+rand 5
+C3DX=$(( rv - 2 ))
+rand 5
+C3DY=$(( rv - 2 ))
+if [ "$C3DX" -eq 0 ]; then
+  if [ "$C3DY" -eq 0 ]; then
+    C3DX=1
+  fi
+fi
+C3L2=$(( C3DX * C3DX + C3DY * C3DY ))
+C3T=$(( 3 * C3L2 ))
 
 stat_span "setup"
 y=0
@@ -380,34 +430,75 @@ while [ "$y" -lt "$SIZE" ]; do
     r=$RB
     g=$GB
     b=$BB
+    # mottled surface — two octaves of value noise (the dark base keeps
+    # the mottle subtle: /2 and /3 of a 0..255 noise)
     vnoise2 $x $y $LOW_CELL $LOW_CELL $LOW_WRAP $LOW_WRAP
     off=$(( (vn_res - 128) / 3 ))
     r=$(( r + off ))
     g=$(( g + off ))
     b=$(( b + off ))
     vnoise2 $x $y $HIGH_CELL $HIGH_CELL $HIGH_WRAP $HIGH_WRAP
-    off=$(( (vn_res - 128) / 6 ))
+    off=$(( (vn_res - 128) / 4 ))
     r=$(( r + off ))
     g=$(( g + off ))
     b=$(( b + off ))
+    # glossy veins — the crack geometry, but BRIGHT purple (the sheen
+    # catches the light instead of the stone's dark cracks)
+    crack=0
+    dx=$(( x - C1X ))
+    dy=$(( y - C1Y ))
+    pr1=$(( dx * C1DX + dy * C1DY ))
+    cr1=$(( dx * C1DY - dy * C1DX ))
+    cr1=$(( cr1 * cr1 ))
+    if [ "$pr1" -ge 0 ]; then
+      if [ "$pr1" -le "$C1L2" ]; then
+        if [ "$cr1" -le "$C1T" ]; then
+          crack=1
+        fi
+      fi
+    fi
+    dx=$(( x - C2X ))
+    dy=$(( y - C2Y ))
+    pr2=$(( dx * C2DX + dy * C2DY ))
+    cr2=$(( dx * C2DY - dy * C2DX ))
+    cr2=$(( cr2 * cr2 ))
+    if [ "$pr2" -ge 0 ]; then
+      if [ "$pr2" -le "$C2L2" ]; then
+        if [ "$cr2" -le "$C2T" ]; then
+          crack=1
+        fi
+      fi
+    fi
+    dx=$(( x - C3X ))
+    dy=$(( y - C3Y ))
+    pr3=$(( dx * C3DX + dy * C3DY ))
+    cr3=$(( dx * C3DY - dy * C3DX ))
+    cr3=$(( cr3 * cr3 ))
+    if [ "$pr3" -ge 0 ]; then
+      if [ "$pr3" -le "$C3L2" ]; then
+        if [ "$cr3" -le "$C3T" ]; then
+          crack=1
+        fi
+      fi
+    fi
+    if [ "$crack" -eq 1 ]; then
+      r=$(( r + 26 ))
+      g=$(( g + 18 ))
+      b=$(( b + 48 ))
+    fi
+    # sheen flecks — sparse bright purple specks (and a few dark ones)
     lat_hash $x $y $SIZE $SIZE
-    m47=$(( lhn % 47 ))
-    m61=$(( lhn % 61 ))
-    m73=$(( lhn % 73 ))
-    if [ "$m47" -eq 0 ]; then
-      r=$(( r - 16 ))
-      g=$(( g - 14 ))
-      b=$(( b - 12 ))
+    m97=$(( lhn % 97 ))
+    m149=$(( lhn % 149 ))
+    if [ "$m97" -eq 0 ]; then
+      r=$(( r + 70 ))
+      g=$(( g + 48 ))
+      b=$(( b + 95 ))
     fi
-    if [ "$m61" -eq 0 ]; then
-      r=$(( r + 12 ))
-      g=$(( g + 10 ))
-      b=$(( b + 8 ))
-    fi
-    if [ "$m73" -eq 0 ]; then
-      r=$(( r - 6 ))
-      g=$(( g + 8 ))
-      b=$(( b - 4 ))
+    if [ "$m149" -eq 0 ]; then
+      r=$(( r - 12 ))
+      g=$(( g - 10 ))
+      b=$(( b - 14 ))
     fi
     clamp $r
     r=$cv

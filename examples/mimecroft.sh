@@ -44,7 +44,7 @@ VIEW_R=16                         # draw radius — the whole 16x16 map (display
 RADAR_X=80                        # radar x base (milli-NDC) — the map sits top-LEFT
 # ─── settings (editable in the pre-game menu; browser only) ────────
 cam_shift_ms=0        # camera right shift (milli-NDC, ±50 per press, no limit) — 0 = the centred view; the old 500 (a quarter-screen right shift) moved the vanishing point off-centre
-tex_size=16           # texture resolution (16/32/64 px)
+tex_size=16           # texture resolution (4/8/16/32/64 px)
 tex_seed=20240812     # texture generation seed (drives the LCG noise)
 sm_sel=0              # settings-menu cursor (0=shift 1=size 2=seed)
 sm_done=0
@@ -161,7 +161,7 @@ esac; }
 block_color() { bc_t=$1; case $bc_t in
   1) cr=0.55; cg=0.35; cb=0.20 ;;
   2) cr=0.55; cg=0.55; cb=0.58 ;;
-  3) cr=0.10; cg=0.10; cb=0.13 ;;
+  3) cr=0.55; cg=0.50; cb=0.70 ;;
   4) cr=0.95; cg=0.75; cb=0.10 ;;
   5) cr=0.20; cg=0.85; cb=0.85 ;;
   6) cr=0.85; cg=0.15; cb=0.20 ;;
@@ -1013,6 +1013,8 @@ load_textures() {
   load_tex wood 7
   echo "    dirt…"
   load_tex dirt 8
+  echo "    obsidian…"
+  load_tex obsidian 10
   echo "    crack…"
   load_tex4 crack 9
 }
@@ -1030,6 +1032,7 @@ draw_block() { db_a=$1; db_b=$2; db_c=$3; db_r=$4; db_g=$5; db_bl=$6; db_tx=$7
 # 5=grass; 0 = the device's white fallback → the flat block colour)
 texture_of() { to_t=$1
   if [ "$to_t" -eq 2 ]; then tx=1
+  elif [ "$to_t" -eq 3 ]; then tx=10
   elif [ "$to_t" -eq 4 ]; then tx=2
   elif [ "$to_t" -eq 5 ]; then tx=3
   elif [ "$to_t" -eq 6 ]; then tx=4
@@ -1387,6 +1390,37 @@ draw_text() { dt_t=$1; dt_len=$2; dt_x=$3; dt_y=$4; dt_px=$5; dt_py=$6
 # cells) is prebuilt into hud_static once — this draws only the DYNAMIC
 # part: the player triangle and the living MIMEs (they move). Air cells
 # stay dark (the base skips them), so nothing overlaps.
+# the radar base cell (wall grey / treasure green) at a map cell —
+# used to restore cells that a wide rotate-erase wiped from the static
+# layer. Air cells draw nothing (they are transparent).
+draw_radar_cell() { rc_x=$1; rc_z=$2
+  get_cell $rc_x 0 $rc_z
+  if [ "$gv" -eq "$TREASURE" ]; then rc_r=0.20; rc_g=1.00; rc_b=0.45
+  elif [ "$gv" -ne "$AIR" ]; then rc_r=0.42; rc_g=0.42; rc_b=0.47
+  else return 0
+  fi
+  rc_cxm=$((RADAR_X + rc_x*44))
+  rc_cym=$((1720 - rc_z*60))
+  fmt_ndc $rc_cxm
+  rc_cxs=$fv
+  fmt_ndc $rc_cym
+  rc_cys=$fv
+  draw_rect $rc_cxs $rc_cys $CELL_W $CELL_H $rc_r $rc_g $rc_b
+}
+
+# the mime's radar blip (ring + coloured core) at its current cell
+draw_mime_blip() { mb_i=$1
+  mime_color ${mtype[$mb_i]}
+  mb_cxm=$((RADAR_X + ${mx[$mb_i]}*44))
+  mb_cym=$((1720 - ${mz[$mb_i]}*60))
+  fmt_ndc $mb_cxm
+  mb_cxs=$fv
+  fmt_ndc $mb_cym
+  mb_cys=$fv
+  draw_rect $mb_cxs $mb_cys 0.075 0.100 0.10 0.10 0.12
+  draw_rect $mb_cxs $mb_cys 0.050 0.070 $cr $cg $cb
+}
+
 draw_minimap() {
   # the radar BASE (walls + treasure cells) is in the static layer —
   # per frame only the CHANGED squares update: erase the old cell, draw
@@ -1397,7 +1431,29 @@ draw_minimap() {
   dm_deg=$((dpyw_raw_ms / 1000))
   if [ "$prev_px" -ne "$dpx" ] || [ "$prev_pz" -ne "$dpz" ] || [ "$prev_deg" -ne "$dm_deg" ]; then
     if [ "$prev_px" -ge 0 ]; then
-      erase_rect $((RADAR_X + prev_px*44)) $((1720 - prev_pz*60)) 48 64
+      if [ "$prev_deg" -ne "$dm_deg" ]; then
+        # rotating: the triangle's corners sweep into the LEFT/RIGHT
+        # neighbour cells — erase the whole 3-cell row, then restore the
+        # base cells (walls/treasures) and any mimes that were wiped
+        erase_rect $((RADAR_X + prev_px*44)) $((1720 - prev_pz*60)) 132 64
+        draw_radar_cell $((prev_px - 1)) $prev_pz
+        draw_radar_cell $prev_px $prev_pz
+        draw_radar_cell $((prev_px + 1)) $prev_pz
+        dm_ai=0
+        while [ "$dm_ai" -lt "$mime_count" ]; do
+          dm_mx=${mx[$dm_ai]}
+          dm_mz=${mz[$dm_ai]}
+          if [ "$dm_mz" -eq "$prev_pz" ]; then
+            if [ "$dm_mx" -eq "$prev_px" ] || [ "$dm_mx" -eq "$((prev_px - 1))" ] || [ "$dm_mx" -eq "$((prev_px + 1))" ]; then
+              draw_mime_blip $dm_ai
+            fi
+          fi
+          dm_ai=$((dm_ai + 1))
+        done
+      else
+        # a move (angle unchanged): the triangle fits a 64 box
+        erase_rect $((RADAR_X + prev_px*44)) $((1720 - prev_pz*60)) 64 64
+      fi
     fi
     prev_px=$dpx
     prev_pz=$dpz
@@ -1425,15 +1481,7 @@ draw_minimap() {
       fi
       rmx[$mi]=$dm_mx
       rmz[$mi]=$dm_mz
-      mime_color ${mtype[$mi]}
-      dm_cxm=$((RADAR_X + dm_mx*44))
-      dm_cym=$((1720 - dm_mz*60))
-      fmt_ndc $dm_cxm
-      dm_cxs=$fv
-      fmt_ndc $dm_cym
-      dm_cys=$fv
-      draw_rect $dm_cxs $dm_cys 0.075 0.100 0.10 0.10 0.12
-      draw_rect $dm_cxs $dm_cys 0.050 0.070 $cr $cg $cb
+      draw_mime_blip $mi
     fi
     mi=$((mi + 1))
   done
@@ -1756,7 +1804,9 @@ settings_inc() {
     cam_shift_ms=$((cam_shift_ms + 50))
   fi
   if [ "$sm_sel" -eq 1 ]; then
-    if [ "$tex_size" -eq 16 ]; then tex_size=32
+    if [ "$tex_size" -eq 4 ]; then tex_size=8
+    elif [ "$tex_size" -eq 8 ]; then tex_size=16
+    elif [ "$tex_size" -eq 16 ]; then tex_size=32
     elif [ "$tex_size" -eq 32 ]; then tex_size=64
     fi
   fi
@@ -1779,6 +1829,8 @@ settings_dec() {
   if [ "$sm_sel" -eq 1 ]; then
     if [ "$tex_size" -eq 64 ]; then tex_size=32
     elif [ "$tex_size" -eq 32 ]; then tex_size=16
+    elif [ "$tex_size" -eq 16 ]; then tex_size=8
+    elif [ "$tex_size" -eq 8 ]; then tex_size=4
     fi
   fi
   if [ "$sm_sel" -eq 2 ]; then
