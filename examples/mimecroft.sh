@@ -49,7 +49,7 @@ tex_seed=20240812     # texture generation seed (drives the LCG noise)
 # texture cache version — bump when the texture GENERATORS change (e.g.
 # the mime type names) so stale /home + /tmp caches regenerate instead
 # of uploading the old pattern
-tex_ver=4
+tex_ver=5
 sm_sel=0              # settings-menu cursor (0=shift 1=size 2=seed)
 sm_done=0
 sm_changed=0

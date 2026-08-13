@@ -326,119 +326,7 @@ emit() {
     out="$out\\$oc"
   fi
 }
-# ─── text overlay — mime type names on the texture ────────────────
-# A 3×5 pixel font (A–Z) plus a word-wrap layout, so a mime texture
-# carries its type name ("JPEG", "PNG", "OCTET", "TEXT"). Each glyph
-# is 15 bits (5 rows × 3 cols) as a string; row r, col c = bits[r*3+c].
-font_bits() {
-  fb_int=0
-  case "$1" in
-    A) fb_int=18842895918 ;;
-    B) fb_int=16694887983 ;;
-    C) fb_int=15603893806 ;;
-    D) fb_int=16694953519 ;;
-    E) fb_int=33321092159 ;;
-    F) fb_int=1108837439 ;;
-    G) fb_int=32801457710 ;;
-    H) fb_int=18842895921 ;;
-    I) fb_int=33424543903 ;;
-    J) fb_int=6753100060 ;;
-    K) fb_int=18560947505 ;;
-    L) fb_int=33320633377 ;;
-    M) fb_int=18842572657 ;;
-    N) fb_int=18842703473 ;;
-    O) fb_int=15621211694 ;;
-    P) fb_int=1108854319 ;;
-    Q) fb_int=23946905134 ;;
-    R) fb_int=18561353263 ;;
-    S) fb_int=16660235326 ;;
-    T) fb_int=4433514655 ;;
-    U) fb_int=15621211697 ;;
-    V) fb_int=4648912433 ;;
-    W) fb_int=19182306865 ;;
-    X) fb_int=18834663985 ;;
-    Y) fb_int=4433521201 ;;
-    Z) fb_int=33321787935 ;;
-  esac
-}
 
-# Precompute the WRAPPED layout SCALARS (no arrays / ${#} / substring
-# — the transpiled shell — the browser's `bash` — returns 0 for ${#}
-# and can't write arrays from functions, so the 5×7 glyphs are bit-tested
-# as integers and the name is a top-level char array). Glyphs are 5 wide,
-# 7 tall, 6 px pitch, 8 px lines; lines are centred — the name fills the
-# texture so it reads on the small mime cube.
-layout_text() {
-  tt_cp=$(( SIZE / 6 ))
-  if [ "$tt_cp" -lt 1 ]; then tt_cp=1; fi
-  tt_lines=$(( ( TXT_LEN + tt_cp - 1 ) / tt_cp ))
-  tt_ty0=$(( ( SIZE - ( tt_lines * 8 - 1 ) ) / 2 ))
-  if [ "$tt_ty0" -lt 0 ]; then tt_ty0=0; fi
-}
-
-# is (gx,gy) on a glyph? sets g_on=1/0 — the char comes from the
-# tname[] array, the glyph pixel from bit-testing the 35-bit fb_int.
-# ALL arithmetic is precomputed into variables: $(( … )) inside test
-# brackets does not transpile (the browser's `bash` is the bash→JS
-# transpiler) — that produced the OOM.
-glyph_pixel() {
-  g_on=0
-  tt_y0=$tt_ty0
-  if [ "$2" -ge "$tt_y0" ]; then
-    tt_gl=$(( ( $2 - tt_ty0 ) / 8 ))
-    if [ "$tt_gl" -ge 0 ] && [ "$tt_gl" -lt "$tt_lines" ]; then
-      tt_gr=$(( $2 - tt_ty0 - tt_gl * 8 ))
-      if [ "$tt_gr" -lt 7 ]; then
-        tt_rem=$(( TXT_LEN - tt_gl * tt_cp ))
-        tt_llen=$tt_cp
-        if [ "$tt_rem" -lt "$tt_llen" ]; then tt_llen=$tt_rem; fi
-        tt_lsx=$(( ( SIZE - ( tt_llen * 6 - 1 ) ) / 2 ))
-        tt_x1=$(( tt_lsx + tt_llen * 6 ))
-        if [ "$1" -ge "$tt_lsx" ] && [ "$1" -lt "$tt_x1" ]; then
-          tt_gc=$(( ( $1 - tt_lsx ) / 6 ))
-          tt_gcol=$(( $1 - tt_lsx - tt_gc * 6 ))
-          if [ "$tt_gcol" -lt 5 ]; then
-            tt_ci=$(( tt_gl * tt_cp + tt_gc ))
-            font_bits "${tname[$tt_ci]}"
-            tt_bitpos=$(( tt_gr * 5 + tt_gcol ))
-            tt_bit=$(( ( fb_int >> tt_bitpos ) & 1 ))
-            if [ "$tt_bit" -eq 1 ]; then g_on=1; fi
-          fi
-        fi
-      fi
-    fi
-  fi
-}
-
-# text_overlay — white glyph + 1 px black outline over the current
-# (x,y) pattern pixel; overrides r/g/b when the pixel is text.
-text_overlay() {
-  glyph_pixel $x $y
-  if [ "$g_on" -eq 1 ]; then
-    r=250; g=250; b=250
-    return
-  fi
-  tx_x0=$(( x - 1 ))
-  tx_x1=$(( x + 1 ))
-  tx_y0=$(( y - 1 ))
-  tx_y1=$(( y + 1 ))
-  tx_ox=$tx_x0
-  tx_found=0
-  while [ "$tx_ox" -le "$tx_x1" ] && [ "$tx_found" -eq 0 ]; do
-    tx_oy=$tx_y0
-    while [ "$tx_oy" -le "$tx_y1" ] && [ "$tx_found" -eq 0 ]; do
-      if [ "$tx_ox" -ne "$x" ] || [ "$tx_oy" -ne "$y" ]; then
-        glyph_pixel $tx_ox $tx_oy
-        if [ "$g_on" -eq 1 ]; then
-          r=5; g=5; b=5
-          tx_found=1
-        fi
-      fi
-      tx_oy=$(( tx_oy + 1 ))
-    done
-    tx_ox=$(( tx_ox + 1 ))
-  done
-}
 
 # finish — PPM P6 on stdout, or PNG via ImageMagick when --png
 finish() {
@@ -481,8 +369,18 @@ finish() {
 }
 # ─── body ───────────────────────────────────────────
 tname=(O C T E T)
+tgi=(0 0 0 0 0)
+tgi[0]=15621211694
+tgi[1]=15603893806
+tgi[2]=4433514655
+tgi[3]=33321092159
+tgi[4]=4433514655
 TXT_LEN=5
-layout_text
+tt_cp=$(( SIZE / 6 ))
+if [ "$tt_cp" -lt 1 ]; then tt_cp=1; fi
+tt_lines=$(( ( TXT_LEN + tt_cp - 1 ) / tt_cp ))
+tt_ty0=$(( ( SIZE - ( tt_lines * 8 - 1 ) ) / 2 ))
+if [ "$tt_ty0" -lt 0 ]; then tt_ty0=0; fi
 y=0
 while [ "$y" -lt "$SIZE" ]; do
   x=0
@@ -504,7 +402,83 @@ while [ "$y" -lt "$SIZE" ]; do
     g=$cv
     clamp $b
     b=$cv
-    text_overlay
+    # text overlay — INLINE, no function calls: the game runs texture
+    # scripts via the BARE `bash` builtin (the async bash→JS transpiler,
+    # not /bin/bash), and an unawaited per-pixel function call piled up
+    # promises until the process OOMed. Pure arithmetic + array reads.
+    # The OWN pixel is checked FIRST (white), then the 8 neighbours for
+    # the black outline — a glyph stroke must not outline itself.
+    tt_px=$x
+    tt_py=$y
+      tt_on=0
+      if [ "$tt_py" -ge "$tt_ty0" ]; then
+        tt_gl=$(( ( tt_py - tt_ty0 ) / 8 ))
+        if [ "$tt_gl" -ge 0 ] && [ "$tt_gl" -lt "$tt_lines" ]; then
+          tt_gr=$(( tt_py - tt_ty0 - tt_gl * 8 ))
+          if [ "$tt_gr" -lt 7 ]; then
+            tt_rem=$(( TXT_LEN - tt_gl * tt_cp ))
+            tt_llen=$tt_cp
+            if [ "$tt_rem" -lt "$tt_llen" ]; then tt_llen=$tt_rem; fi
+            tt_lsx=$(( ( SIZE - ( tt_llen * 6 - 1 ) ) / 2 ))
+            tt_x1=$(( tt_lsx + tt_llen * 6 ))
+            if [ "$tt_px" -ge "$tt_lsx" ] && [ "$tt_px" -lt "$tt_x1" ]; then
+              tt_gc=$(( ( tt_px - tt_lsx ) / 6 ))
+              tt_gcol=$(( tt_px - tt_lsx - tt_gc * 6 ))
+              if [ "$tt_gcol" -lt 5 ]; then
+                tt_ci=$(( tt_gl * tt_cp + tt_gc ))
+                tt_gi=${tgi[$tt_ci]}
+                tt_bitpos=$(( tt_gr * 5 + tt_gcol ))
+                tt_bit=$(( ( tt_gi >> tt_bitpos ) & 1 ))
+                if [ "$tt_bit" -eq 1 ]; then tt_on=1; fi
+              fi
+            fi
+          fi
+        fi
+      fi
+    if [ "$tt_on" -eq 1 ]; then
+      r=250; g=250; b=250
+    else
+      tt_done=0
+      tt_cand=0
+      while [ "$tt_cand" -lt 8 ] && [ "$tt_done" -eq 0 ]; do
+        tt_offx=$(( tt_cand % 3 ))
+        tt_offy=$(( tt_cand / 3 ))
+        tt_px=$(( x + tt_offx - 1 ))
+        tt_py=$(( y + tt_offy - 1 ))
+        if [ "$tt_offx" -ne 1 ] || [ "$tt_offy" -ne 1 ]; then
+      tt_on=0
+      if [ "$tt_py" -ge "$tt_ty0" ]; then
+        tt_gl=$(( ( tt_py - tt_ty0 ) / 8 ))
+        if [ "$tt_gl" -ge 0 ] && [ "$tt_gl" -lt "$tt_lines" ]; then
+          tt_gr=$(( tt_py - tt_ty0 - tt_gl * 8 ))
+          if [ "$tt_gr" -lt 7 ]; then
+            tt_rem=$(( TXT_LEN - tt_gl * tt_cp ))
+            tt_llen=$tt_cp
+            if [ "$tt_rem" -lt "$tt_llen" ]; then tt_llen=$tt_rem; fi
+            tt_lsx=$(( ( SIZE - ( tt_llen * 6 - 1 ) ) / 2 ))
+            tt_x1=$(( tt_lsx + tt_llen * 6 ))
+            if [ "$tt_px" -ge "$tt_lsx" ] && [ "$tt_px" -lt "$tt_x1" ]; then
+              tt_gc=$(( ( tt_px - tt_lsx ) / 6 ))
+              tt_gcol=$(( tt_px - tt_lsx - tt_gc * 6 ))
+              if [ "$tt_gcol" -lt 5 ]; then
+                tt_ci=$(( tt_gl * tt_cp + tt_gc ))
+                tt_gi=${tgi[$tt_ci]}
+                tt_bitpos=$(( tt_gr * 5 + tt_gcol ))
+                tt_bit=$(( ( tt_gi >> tt_bitpos ) & 1 ))
+                if [ "$tt_bit" -eq 1 ]; then tt_on=1; fi
+              fi
+            fi
+          fi
+        fi
+      fi
+          if [ "$tt_on" -eq 1 ]; then
+            r=5; g=5; b=5
+            tt_done=1
+          fi
+        fi
+        tt_cand=$(( tt_cand + 1 ))
+      done
+    fi
     emit
     x=$(( x + 1 ))
   done
