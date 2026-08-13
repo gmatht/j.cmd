@@ -9,6 +9,10 @@
 #
 # Controls:  WASD move · ←/→ turn · SPACE shoot · Q quit
 #
+# Mining a wall breaks only the y=0 block, so a mined passage keeps the
+# y=1 block and its 1-tall opening — the eye automatically ducks to 0.3
+# (crouched) and moves at half speed through it.
+#
 # Renders through the /dev/webgl device (src/fs/webgldev.js) and plays
 # notes through /dev/audio (audiodev.js). Runs in the browser via the
 # sh2perl transpiler and headless in the Node CLI (NullGL device).
@@ -36,7 +40,7 @@ BOUND_Z=$((MAP_D - 1))            # 15 — the first rejected row
 # time (the draw radius — 4 cells each way around the player; the floor/
 # ceiling planes follow the camera so the view is a bounded patch)
 VIEW_W=4
-VIEW_R=4                          # draw radius (8x8 display window)
+VIEW_R=16                         # draw radius — the whole 16x16 map (displayed at 50% scale)
 RADAR_X=80                        # radar x base (milli-NDC) — the map sits top-LEFT
 # ─── settings (editable in the pre-game menu; browser only) ────────
 cam_shift_ms=0        # camera right shift (milli-NDC, ±50 per press, no limit) — 0 = the centred view; the old 500 (a quarter-screen right shift) moved the vanishing point off-centre
@@ -107,6 +111,9 @@ sound=1
 anim=0              # 1 while an action glides the camera
 anim_t0=0           # wall-clock ms when the current glide started
 ANIM_MS=200         # each action completes in 0.2s of wall time
+ANIM_MS_CROUCH=400  # a move through a 1-tall (mined) passage — half speed
+anim_ms=200         # the CURRENT glide's duration (moves slow when crouched)
+crouched=0          # 1 when the ceiling overhead is low — the eye ducks
 ax0=0; az0=0; ay0=0; ax1=0; az1=0; ay1=0; anim_ayd=0
 fps=0               # rendered frames/sec (measured over ~10-frame windows)
 fps_t0=0
@@ -336,6 +343,7 @@ try_move() { tm_a=$1; tm_b=$2
 # reads the interpolated display values (dpx/dpz/dyaw + fractional milli
 # positions) so the view eases instead of snapping.
 start_anim() { ax0=$1; az0=$2; ay0=$3; ax1=$4; az1=$5; ay1=$6
+  anim_ms=$ANIM_MS
   # shortest yaw arc across the 0↔3 seam (3→0 turns +90°, not -270°)
   anim_ayd=$((ay1 - ay0))
   if [ "$anim_ayd" -gt 2 ]; then anim_ayd=$((anim_ayd - 4)); fi
@@ -354,6 +362,10 @@ try_anim_move() { ta_dx=$1; ta_dz=$2
   get_cell $ta_nx 0 $ta_nz
   if [ "$gv" -eq "$AIR" ]; then
     start_anim $px $pz $yaw $ta_nx $ta_nz $yaw
+    # a mined passage keeps the y=1 block (mining only breaks the y=0
+    # layer), so the opening is 1 tall — entering it crawls at half speed
+    get_cell $ta_nx 1 $ta_nz
+    if [ "$gv" -eq "$AIR" ]; then anim_ms=$ANIM_MS; else anim_ms=$ANIM_MS_CROUCH; fi
     return 0
   fi
   return 1
@@ -371,10 +383,10 @@ start_turn() { tt=$1
 compute_display() {
   if [ "$anim" -eq 1 ]; then
     anim_el=$((anim_now - anim_t0))
-    if [ "$anim_el" -gt "$ANIM_MS" ]; then anim_el=$ANIM_MS; fi
-    dpcx_ms=$((ax0 * 1000 + (ax1 - ax0) * 1000 * anim_el / ANIM_MS))
-    dpcz_ms=$((az0 * 1000 + (az1 - az0) * 1000 * anim_el / ANIM_MS))
-    dpyw_raw_ms=$((ay0 * 90000 + anim_ayd * 90000 * anim_el / ANIM_MS))
+    if [ "$anim_el" -gt "$anim_ms" ]; then anim_el=$anim_ms; fi
+    dpcx_ms=$((ax0 * 1000 + (ax1 - ax0) * 1000 * anim_el / anim_ms))
+    dpcz_ms=$((az0 * 1000 + (az1 - az0) * 1000 * anim_el / anim_ms))
+    dpyw_raw_ms=$((ay0 * 90000 + anim_ayd * 90000 * anim_el / anim_ms))
     dpyw_ms=$dpyw_raw_ms
     # keep the shader yaw in 0..360000: a left turn's 0→-90° arc
     # becomes a 360→270° glide (identical rotation, positive input)
@@ -388,6 +400,21 @@ compute_display() {
   dpx=$(((dpcx_ms + 500) / 1000))
   dpz=$(((dpcz_ms + 500) / 1000))
   dyaw=$((((dpyw_ms + 45000) / 90000) % 4))
+}
+
+# the eye ducks (and the walk slows) when the ceiling overhead is low:
+# mining breaks only the y=0 block, so a mined passage keeps the y=1
+# block and its 1-tall opening — the camera drops below it so it stops
+# looking like you're walking INTO the ceiling. Keyed off the DISPLAY
+# cell (where the eye actually is), so the duck happens as the eye
+# crosses into the low cell.
+update_crouch() {
+  get_cell $dpx 1 $dpz
+  if [ "$gv" -eq "$AIR" ]; then
+    crouched=0
+  else
+    crouched=1
+  fi
 }
 
 # shoot straight ahead at eye level — a 1-D walk down the facing row
@@ -419,6 +446,12 @@ shoot() {
 }
 
 damage_cell() { dc_a=$1; dc_b=$2; dc_t=$3
+  # indestructible blocks (obsidian — the maze border): a dull thud, no
+  # damage accumulates, never breaks
+  if [ "$dc_t" -eq "$OBSIDIAN" ]; then
+    play "C2 0.08"
+    return 0
+  fi
   hardness $dc_t
   add_bhp $dc_a 0 $dc_b
   get_bhp $dc_a 0 $dc_b
@@ -559,6 +592,22 @@ gen_maze() {
       gm_placed=$((gm_placed + 1))
     fi
   done
+  # the maze border is INDESTRUCTIBLE obsidian — a solid perimeter the
+  # player can never mine through. Lay the ring LAST so it overwrites
+  # any border cells the drunkard's walk carved.
+  gm_x=0
+  while [ "$gm_x" -lt "$MAP_W" ]; do
+    gm_z=0
+    while [ "$gm_z" -lt "$MAP_D" ]; do
+      if [ "$gm_x" -eq 0 ] || [ "$gm_x" -eq $((MAP_W - 1)) ] \
+         || [ "$gm_z" -eq 0 ] || [ "$gm_z" -eq $((MAP_D - 1)) ]; then
+        set_cell $gm_x 0 $gm_z $OBSIDIAN
+        set_cell $gm_x 1 $gm_z $OBSIDIAN
+      fi
+      gm_z=$((gm_z + 1))
+    done
+    gm_x=$((gm_x + 1))
+  done
 }
 
 # treasure positions — the index arrives as an ARG so the array-write
@@ -622,7 +671,7 @@ emit_vertex_shader() {
   # yaw rotation, the fake perspective + the
   # strafe screen-shift (uCamShift·w keeps it a constant NDC-x offset),
   # and the uOverlay > 0.5 flat-quad path.
-  vs_fb="attribute vec3 aPosition; attribute vec3 aShade; attribute vec2 aUv; uniform vec3 uCamPos; uniform float uCamYaw; uniform float uCamShift; uniform vec3 uObjPos; uniform vec3 uBlockColor; uniform vec3 uScale; uniform float uOverlay; varying vec4 vColor; varying vec2 vUv; void main() { vec3 p = aPosition * uScale + uObjPos; if (uOverlay > 0.5) { gl_Position = vec4(p.x + uCamShift, p.y, -0.95, 1.0); vColor = vec4(aShade * uBlockColor, 1.0); vUv = vec2(0.0); return; } vec3 cam = uCamPos + vec3(0.0, 0.5, 0.0); vec3 d = p - cam; float a = uCamYaw * 0.0174532925; float c = cos(a); float s = sin(a); vec3 rel = vec3(d.x * c + d.z * s, d.y, -d.x * s + d.z * c); float w = -rel.z; gl_Position = vec4(rel.x * 0.9 + uCamShift * w, rel.y * 0.9, w * w / 64.0, w); vColor = vec4(aShade * uBlockColor, 1.0); vUv = aUv; }"
+  vs_fb="attribute vec3 aPosition; attribute vec3 aShade; attribute vec2 aUv; uniform vec3 uCamPos; uniform float uCamYaw; uniform float uCamShift; uniform vec3 uObjPos; uniform vec3 uBlockColor; uniform vec3 uScale; uniform float uOverlay; varying vec4 vColor; varying vec2 vUv; void main() { vec3 p = aPosition * uScale + uObjPos; if (uOverlay > 0.5) { gl_Position = vec4(p.x + uCamShift, p.y, -0.95, 1.0); vColor = vec4(aShade * uBlockColor, 1.0); vUv = vec2(0.0); return; } vec3 cam = uCamPos + vec3(0.0, 0.5, 0.0); vec3 d = p - cam; float a = uCamYaw * 0.0174532925; float c = cos(a); float s = sin(a); vec3 rel = vec3(d.x * c + d.z * s, d.y, -d.x * s + d.z * c); float w = -rel.z; gl_Position = vec4(rel.x * 0.45 + uCamShift * w, rel.y * 0.45, w * w / 64.0, w); vColor = vec4(aShade * uBlockColor, 1.0); vUv = aUv; }"
   # compile the bash-authored vertex program — canonical at
   # /examples/mimecroft-vertex.sh (the /examples mount serves
   # www/examples/) — with sh2glsl --vertex; fall back when the
@@ -1033,13 +1082,18 @@ render_frame() {
   czs=$fv
   fmt_pos $dpyw_ms
   yws=$fv
-  echo "$cxs 0 $czs" > /dev/webgl/uniform/3f/uCamPos
+  # the eye height: standing 0.5 (the shader adds 0.5 to uCamPos.y);
+  # crouched −0.3 → the eye ducks to 0.2 under a 1-tall opening
+  if [ "$crouched" -eq 1 ]; then cy_ms=-300; else cy_ms=0; fi
+  fmt_pos $cy_ms
+  cys=$fv
+  echo "$cxs $cys $czs" > /dev/webgl/uniform/3f/uCamPos
   echo "$yws" > /dev/webgl/uniform/1f/uCamYaw
   # floor + ceiling planes — the maze floor is carved air, so without
   # them the near-black clear colour shows as a void below/above
-  blk_p="${blk_p}$dpx -0.05 $dpz 9 0.1 9 0.45 0.40 0.34 0 0
+  blk_p="${blk_p}8 -0.05 8 16 0.1 16 0.45 0.40 0.34 0 0
 "
-  blk_p="${blk_p}$dpx 2.05 $dpz 9 0.1 9 0.24 0.24 0.28 0 0
+  blk_p="${blk_p}8 2.05 8 16 0.1 16 0.24 0.24 0.28 0 0
 "
   if [ "$dyaw" -eq 0 ]; then
     # facing -z: front = z < dpz, so FAR = smallest z — draw z
@@ -1349,7 +1403,7 @@ mime_label_pos() { ml_x=$1; ml_z=$2
   if [ "$dyaw" -eq 3 ]; then ml_rx=$((0 - ml_dz)); ml_dp=$((0 - ml_dx)); fi
   ml_ok=0
   if [ "$ml_dp" -gt 0 ]; then
-    ml_cxm=$((1000 + cam_shift_ms + ml_rx * 900 / ml_dp))
+    ml_cxm=$((1000 + cam_shift_ms + ml_rx * 450 / ml_dp))
     ml_cym=$((1030 + 450 / ml_dp))
     if [ "$ml_cxm" -ge 0 ] && [ "$ml_cxm" -le 2000 ] && [ "$ml_cym" -ge 0 ] && [ "$ml_cym" -le 2000 ]; then
       ml_cx=$ml_cxm
@@ -1902,7 +1956,7 @@ main() {
       anim_now=$(cat /dev/time)
       anim_el=$((anim_now - anim_t0))
       dirty=1
-      if [ "$anim_el" -ge "$ANIM_MS" ]; then
+      if [ "$anim_el" -ge "$anim_ms" ]; then
         px=$ax1
         pz=$az1
         yaw=$ay1
@@ -1911,6 +1965,9 @@ main() {
     fi
     gspan "anim"
     compute_display
+    # the eye ducks/steps up as the cell overhead changes (cheap: one
+    # cell read; render_frame reads crouched for the camera height)
+    update_crouch
     # muzzle flash lifetime: a few loop frames of flash, then force a
     # clear render so the flash doesn't linger frozen on a static scene
     if [ "$muzzle" -gt 0 ]; then
