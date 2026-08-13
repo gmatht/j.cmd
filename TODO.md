@@ -191,9 +191,8 @@ own tests2 corpus when generating wasm. Baseline (150 tests, fork's
 run-corpus.mjs): PASS 51 · WRONG 17 · REFUSE 60 · COMPILE-OUT 9 ·
 RUN-CRASH 2 · RUN-ERR 2 · NO-EXPECT 9.
 
-FINAL (after this session): PASS 69 · WRONG 16 · REFUSE 53 ·
-COMPILE-OUT 0 · RUN-CRASH 2 · RUN-ERR 0 · NO-EXPECT 9. All COMPILE-OUT
-(invalid wasm) and RUN-ERR (missing env imports) eliminated, no more
+FINAL (2026-08-13): PASS 88 · WRONG 5 · REFUSE 16 · RUN-CRASH 4 ·
+RUN-ERR 0 · NO-EXPECT 9. All COMPILE-OUT and RUN-ERR eliminated, no
 suite hangs. Fixes: bss zero-fill (segfault), NOP dead regions +
 suppressed dead-region edges (hangs), _start argv, long-double f64,
 br_table/br LEB encoding, inverted VT_JMP (&&/||), symbol constant
