@@ -459,6 +459,19 @@ export function createCRuntime({ getMem, memory, out, err, table }) {
 
     "$exit": (code) => { /* handlers run by the runner (fini + atexit flush) after the CExit */ throw new CExit(Ptr(code)); },
     "$abort": () => { err("abort() called\n"); throw new CExit(134); },
+    // 64-bit float conversions (tcc emits __floatundidf etc. helper calls)
+    "$__floatundidf": (v) => Number(BigInt.asUintN(64, typeof v === "bigint" ? v : BigInt(v))),
+    "$__floatdisf": (v) => Number(BigInt.asUintN(64, typeof v === "bigint" ? v : BigInt(v))),
+    "$__floatsidf": (v) => Ptr(v),
+    "$__floatunsidf": (v) => Ptr(v),
+    // the wasm sigs of the tcc helpers carry the i32 result (the tcc
+    // truncates) — return Numbers; a BigInt return would make the wasm
+    // i32↔BigInt interop throw
+    "$__fixunsdfdi": (x) => { x = Ptr(x); if (x !== x || x <= 0) return 0; if (x >= 4294967296) return 0xFFFFFFFF; return Math.trunc(x) >>> 0; },
+    "$__fixdfdi": (x) => { x = Ptr(x); if (x !== x) return 0; if (x <= -2147483648) return -2147483648; if (x >= 2147483648) return 2147483647; return Math.trunc(x) | 0; },
+    "$__fixsfsi": (x) => { x = Ptr(x); if (x !== x) return 0; if (x <= -2147483648) return -2147483648; if (x >= 2147483648) return 2147483647; return Math.trunc(x) | 0; },
+    "$__fixdfsi": (x) => { x = Ptr(x); if (x !== x) return 0; if (x <= -2147483648) return -2147483648; if (x >= 2147483648) return 2147483647; return Math.trunc(x) | 0; },
+    "$__fixunsdfsi": (x) => { x = Ptr(x); if (x !== x || x <= 0) return 0; if (x >= 4294967296) return 0xFFFFFFFF; return Math.trunc(x) >>> 0; },
     "$__builtin_abort": () => { err("abort() called\n"); throw new CExit(134); },
     "$__assert_fail": () => { err("assertion failed\n"); throw new CExit(134); },
     "$__builtin_memcpy": (d, s, n) => rt["$memcpy"](d, s, n),
