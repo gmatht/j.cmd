@@ -593,6 +593,10 @@ emit_fragment_shader() {
   echo 'r=$((vcolor_r))' >> /tmp/mimecroft-frag.sh
   echo 'g=$((vcolor_g))' >> /tmp/mimecroft-frag.sh
   echo 'b=$((vcolor_b))' >> /tmp/mimecroft-frag.sh
+  # the block texture sampled per pixel (bridged by the generator)
+  echo 'r=$((r * tex_r / 255))' >> /tmp/mimecroft-frag.sh
+  echo 'g=$((g * tex_g / 255))' >> /tmp/mimecroft-frag.sh
+  echo 'b=$((b * tex_b / 255))' >> /tmp/mimecroft-frag.sh
   echo 'scan=$((fy % 6))' >> /tmp/mimecroft-frag.sh
   echo 'if [ "$scan" -eq 0 ]; then' >> /tmp/mimecroft-frag.sh
   echo '  r=$((r * 90 / 100))' >> /tmp/mimecroft-frag.sh
@@ -631,18 +635,17 @@ emit_fragment_shader() {
   if [ "$glsl" != "" ]; then
     echo "$glsl" > /dev/webgl/shader/fragment
   else
-    echo "precision mediump float; varying vec4 vColor; void main() { gl_FragColor = vec4(vColor.rgb, 1.0); }" > /dev/webgl/shader/fragment
+    echo "precision mediump float; varying highp vec4 vColor; varying highp vec2 vUv; uniform sampler2D uTex; uniform highp float uOverlay; void main() { if (uOverlay > 0.5) { gl_FragColor = vec4(vColor.rgb, 1.0); return; } vec3 c = texture2D(uTex, vUv).rgb * vColor.rgb; if (mod(gl_FragCoord.y, 6.0) < 1.0) { c *= 0.9; } float h = mod(floor(gl_FragCoord.x) * 7.0 + floor(gl_FragCoord.y) * 13.0, 97.0); if (h < 1.0) { c = vec3(1.0, c.g * 0.5, c.b * 0.5); } float e = abs(gl_FragCoord.x - 120.0) + abs(gl_FragCoord.y - 90.0); if (e > 150.0) { float d = min(e - 150.0, 40.0); c = max(c - vec3(d), 0.0); } gl_FragColor = vec4(c, 1.0); }" > /dev/webgl/shader/fragment
   fi
 }
 
 setup_webgl() {
   echo "attribute vec3 aPosition; attribute vec3 aShade; attribute vec2 aUv; uniform vec3 uCamPos; uniform float uCamYaw; uniform vec3 uObjPos; uniform vec3 uBlockColor; uniform vec3 uScale; uniform float uOverlay; varying vec4 vColor; varying vec2 vUv; void main() { vec3 p = aPosition * uScale + uObjPos; if (uOverlay > 0.5) { gl_Position = vec4(p.x, p.y, -0.95, 1.0); vColor = vec4(aShade * uBlockColor, 1.0); vUv = vec2(0.0); return; } vec3 cam = uCamPos + vec3(0.5, 0.5, 0.5); vec3 d = p - cam; float a = uCamYaw * 0.0174532925; float c = cos(a); float s = sin(a); vec3 rel = vec3(d.x * c + d.z * s, d.y, -d.x * s + d.z * c); float z = max(-rel.z, 0.05); gl_Position = vec4(rel.x * 0.9 / z, rel.y * 0.9 / z, rel.z / 64.0, 1.0); vColor = vec4(aShade * uBlockColor, 1.0); vUv = aUv; }" > /dev/webgl/shader/vertex
-  # textured fragment shader (hand-written GLSL — the bash→GLSL pipeline
-  # is integer-only and can't sample a texture). Texture × block colour
-  # (Minecraft-style tint), with the CRT scanline, corruption glare and
-  # vignette ported from the bash-authored version. uOverlay > 0.5 keeps
-  # the HUD flat (the overlay quads carry no UVs).
-  echo "precision mediump float; varying vec4 vColor; varying vec2 vUv; uniform sampler2D uTex; uniform float uOverlay; void main() { if (uOverlay > 0.5) { gl_FragColor = vec4(vColor.rgb, 1.0); return; } vec3 c = texture2D(uTex, vUv).rgb * vColor.rgb; if (mod(gl_FragCoord.y, 6.0) < 1.0) { c *= 0.9; } float h = mod(floor(gl_FragCoord.x) * 7.0 + floor(gl_FragCoord.y) * 13.0, 97.0); if (h < 1.0) { c = vec3(1.0, c.g * 0.5, c.b * 0.5); } float e = abs(gl_FragCoord.x - 120.0) + abs(gl_FragCoord.y - 90.0); if (e > 150.0) { float d = min(e - 150.0, 40.0); c = max(c - vec3(d), 0.0); } gl_FragColor = vec4(c, 1.0); }" > /dev/webgl/shader/fragment
+  # the fragment shader is authored in bash (emit_fragment_shader) and
+  # compiled by sh2glsl when available — otherwise the equivalent
+  # hand-written textured GLSL (the same texture × colour tint + the
+  # CRT/corruption/vignette effects; uOverlay > 0.5 keeps the HUD flat)
+  emit_fragment_shader
   echo "link" > /dev/webgl/program
   echo "f32 -0.5 0.5 0.5 0.5 0.5 0.5 0.5 0.5 -0.5 -0.5 0.5 -0.5 -0.5 -0.5 0.5 0.5 -0.5 0.5 0.5 -0.5 -0.5 -0.5 -0.5 -0.5 -0.5 0.5 0.5 0.5 0.5 0.5 0.5 -0.5 0.5 -0.5 -0.5 0.5 -0.5 -0.5 -0.5 0.5 -0.5 -0.5 0.5 0.5 -0.5 -0.5 0.5 -0.5 0.5 -0.5 0.5 0.5 0.5 0.5 0.5 0.5 -0.5 0.5 -0.5 -0.5 -0.5 -0.5 0.5 -0.5 0.5 0.5 -0.5 0.5 -0.5 -0.5 -0.5 -0.5" > /dev/webgl/buffer/aPosition
   echo "f32 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 1 1 1 1 1 1 1 1 1 1 1 1 0.45 0.45 0.45 0.45 0.45 0.45 0.45 0.45 0.45 0.45 0.45 0.45 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.6 0.6 0.6 0.6 0.6 0.6 0.6 0.6 0.6 0.6 0.6 0.6" > /dev/webgl/buffer/aShade
@@ -670,8 +673,20 @@ read_tex_field() { f=${lt_s%%	*}
   strip_tex_field
 }
 
+# texture colour 0..255 → NDC string "0.xx" for the loading preview
+fmt_c() { fc_v=$1
+  fc_x=$(( (fc_v * 100) / 255 ))
+  if [ "$fc_x" -ge 100 ]; then fv="1.00"
+  elif [ "$fc_x" -lt 10 ]; then fv="0.0$fc_x"
+  else fv="0.$fc_x"; fi
+}
+
 load_tex() { lt_name=$1; lt_idx=$2
-  # cached payload from an earlier run this session (deterministic seed)
+  # cached payload from an earlier run (session /tmp, persistent /home)
+  if [ -f /home/mimecroft-tex-$lt_name ]; then
+    cat /home/mimecroft-tex-$lt_name > /dev/webgl/texture/$lt_idx
+    return 0
+  fi
   if [ -f /tmp/mimecroft-tex-$lt_name ]; then
     cat /tmp/mimecroft-tex-$lt_name > /dev/webgl/texture/$lt_idx
     return 0
@@ -688,7 +703,12 @@ load_tex() { lt_name=$1; lt_idx=$2
   strip_tex_field
   strip_tex_field
   lt_s=${lt_s#?}
+  # loading-screen geometry: 4×2 grid of 180-milli previews, 16×16 cells
+  lt_basex=$(( 140 + (lt_idx - 1) % 4 * 470 ))
+  lt_basey=$(( 1600 - (lt_idx - 1) / 4 * 470 ))
+  lt_cell=$(( 180 / lt_size ))
   lt_payload="$lt_size"
+  lt_preview=""
   lt_px=0
   lt_pxmax=$((lt_size * lt_size))
   while [ "$lt_px" -lt "$lt_pxmax" ]; do
@@ -699,10 +719,34 @@ load_tex() { lt_name=$1; lt_idx=$2
     read_tex_field
     lt_b=$f
     lt_payload="$lt_payload $lt_r $lt_g $lt_b"
+    # one preview rect per pixel — the texture appears as it generates
+    lt_col=$(( lt_px % lt_size ))
+    lt_row=$(( lt_px / lt_size ))
+    lt_pxm=$(( lt_basex + lt_col * lt_cell ))
+    lt_pym=$(( lt_basey - lt_row * lt_cell ))
+    fmt_ndc $lt_pxm
+    lt_cxs=$fv
+    fmt_ndc $lt_pym
+    lt_cys=$fv
+    fmt_ndc $(( lt_cell + 1 ))
+    lt_ws=$fv
+    fmt_c $lt_r
+    lt_cr=$fv
+    fmt_c $lt_g
+    lt_cg=$fv
+    fmt_c $lt_b
+    lt_cb=$fv
+    lt_preview="$lt_preview$lt_cxs $lt_cys $lt_ws $lt_ws $lt_cr $lt_cg $lt_cb
+"
     lt_px=$((lt_px + 1))
   done
+  echo "$lt_payload" > /home/mimecroft-tex-$lt_name
   echo "$lt_payload" > /tmp/mimecroft-tex-$lt_name
   echo "$lt_payload" > /dev/webgl/texture/$lt_idx
+  # show the freshly generated texture on the loading screen (one swap
+  # keeps the keyboard grab fresh, so keys typed during startup queue)
+  echo "$lt_preview" > /dev/webgl/hud
+  echo "swap" > /dev/webgl/call
 }
 
 load_textures() {
@@ -1341,7 +1385,7 @@ main() {
   fi
   echo ""
   echo "╔══════════════════════════════════════════════════╗"
-  echo "║  MIMEcrofT v5.5 — 3D treasure hunt written in bash ║"
+  echo "║  MIMEcrofT v5.6 — 3D treasure hunt written in bash ║"
   echo "║  The filesystem is infested with evil MIMEs.     ║"
   echo "║  Recover the lost operating systems.             ║"
   echo "║  WASD move · arrows turn · SPACE shoot · q quit  ║"

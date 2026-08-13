@@ -144,13 +144,14 @@ check("program linked", log.includes("[program] linked OK"));
 // the fragment shader is AUTHORED IN BASH and compiled by the sh→GLSL
 // generator — prove the generated source is what the game loaded
 const fragSrc = await fs.read("/dev/webgl/shader/fragment");
-check("fragment shader is the textured one",
-  fragSrc.includes("sampler2D uTex") && fragSrc.includes("texture2D(uTex, vUv)"),
+check("fragment shader is the textured one (generated)",
+  fragSrc.includes("sampler2D uTex") && fragSrc.includes("g_tex_r") &&
+  fragSrc.includes("texture2D(uTex"),
   fragSrc.slice(0, 160));
-check("fragment shader keeps the CRT effects",
-  fragSrc.includes("mod(gl_FragCoord.y, 6.0)") &&
-  fragSrc.includes("97.0") && fragSrc.includes("150.0"),
-  fragSrc.slice(0, 200));
+check("fragment shader keeps the CRT effects (generated)",
+  fragSrc.includes("g_scan") && fragSrc.includes("g_corrupt") &&
+  fragSrc.includes("g_edge") && fragSrc.includes("97") && fragSrc.includes("150"),
+  fragSrc.slice(0, 240));
 check("cube UVs uploaded (aUv buffer)",
   log.includes("[buffer/aUv]"), "");
 check("block textures uploaded to the device",
