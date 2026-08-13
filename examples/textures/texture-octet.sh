@@ -331,68 +331,78 @@ emit() {
 # carries its type name ("JPEG", "PNG", "OCTET", "TEXT"). Each glyph
 # is 15 bits (5 rows × 3 cols) as a string; row r, col c = bits[r*3+c].
 font_bits() {
-  fb="00000000000000000000000000000000000"
+  fb_int=0
   case "$1" in
-    A) fb="01110100011000111111100011000110001" ;; B) fb="11110100011000111110100011000111110" ;;
-    C) fb="01110100011000010000100001000101110" ;; D) fb="11110100011000110001100011000111110" ;;
-    E) fb="11111100001000011110100001000011111" ;; F) fb="11111100001000011110100001000010000" ;;
-    G) fb="01110100011000010111100011000101111" ;; H) fb="10001100011000111111100011000110001" ;;
-    I) fb="11111001000010000100001000010011111" ;; J) fb="00111000100001000010000101001001100" ;;
-    K) fb="10001100101010011000101001001010001" ;; L) fb="10000100001000010000100001000011111" ;;
-    M) fb="10001110111010110101100011000110001" ;; N) fb="10001110011010110011100011000110001" ;;
-    O) fb="01110100011000110001100011000101110" ;; P) fb="11110100011000111110100001000010000" ;;
-    Q) fb="01110100011000110001101011001001101" ;; R) fb="11110100011000111110101001001010001" ;;
-    S) fb="01111100001000001110000010000111110" ;; T) fb="11111001000010000100001000010000100" ;;
-    U) fb="10001100011000110001100011000101110" ;; V) fb="10001100011000110001100010101000100" ;;
-    W) fb="10001100011000110101101011101110001" ;; X) fb="10001100010101000100010101000110001" ;;
-    Y) fb="10001100010101000100001000010000100" ;; Z) fb="11111000010001000100010001000011111" ;;
+    A) fb_int=18842895918 ;;
+    B) fb_int=16694887983 ;;
+    C) fb_int=15603893806 ;;
+    D) fb_int=16694953519 ;;
+    E) fb_int=33321092159 ;;
+    F) fb_int=1108837439 ;;
+    G) fb_int=32801457710 ;;
+    H) fb_int=18842895921 ;;
+    I) fb_int=33424543903 ;;
+    J) fb_int=6753100060 ;;
+    K) fb_int=18560947505 ;;
+    L) fb_int=33320633377 ;;
+    M) fb_int=18842572657 ;;
+    N) fb_int=18842703473 ;;
+    O) fb_int=15621211694 ;;
+    P) fb_int=1108854319 ;;
+    Q) fb_int=23946905134 ;;
+    R) fb_int=18561353263 ;;
+    S) fb_int=16660235326 ;;
+    T) fb_int=4433514655 ;;
+    U) fb_int=15621211697 ;;
+    V) fb_int=4648912433 ;;
+    W) fb_int=19182306865 ;;
+    X) fb_int=18834663985 ;;
+    Y) fb_int=4433521201 ;;
+    Z) fb_int=33321787935 ;;
   esac
 }
 
-# Precompute the WRAPPED layout of $1 into tl[] (line strings), tlx[]
-# (per-line start x), ty0 (top y). Glyphs are 5 px wide, 7 tall with a
-# 1 px pitch/gap (6 px char pitch, 8 px line pitch); lines are centred
-# — the name fills the texture, so it reads on the small mime cube.
+# Precompute the WRAPPED layout SCALARS (no arrays / ${#} / substring
+# — the transpiled shell — the browser's `bash` — returns 0 for ${#}
+# and can't write arrays from functions, so the 5×7 glyphs are bit-tested
+# as integers and the name is a top-level char array). Glyphs are 5 wide,
+# 7 tall, 6 px pitch, 8 px lines; lines are centred — the name fills the
+# texture so it reads on the small mime cube.
 layout_text() {
-  lt_len=${#1}
-  lt_ci=0
-  lt_nl=0
-  lt_cp=$(( SIZE / 6 ))
-  while [ "$lt_ci" -lt "$lt_len" ]; do
-    lt_str=""
-    lt_cnt=0
-    while [ "$lt_ci" -lt "$lt_len" ] && [ "$lt_cnt" -lt "$lt_cp" ]; do
-      lt_ch=${1:$lt_ci:1}
-      lt_str="${lt_str}$lt_ch"
-      lt_ci=$(( lt_ci + 1 ))
-      lt_cnt=$(( lt_cnt + 1 ))
-    done
-    tl[$lt_nl]=$lt_str
-    tlx[$lt_nl]=$(( (SIZE - (${#lt_str} * 6 - 1) + 3) / 2 ))
-    lt_nl=$(( lt_nl + 1 ))
-  done
-  tl_n=$lt_nl
-  ty0=$(( (SIZE - (lt_nl * 8 - 1)) / 2 ))
-  if [ "$ty0" -lt 0 ]; then ty0=0; fi
+  tt_cp=$(( SIZE / 6 ))
+  if [ "$tt_cp" -lt 1 ]; then tt_cp=1; fi
+  tt_lines=$(( ( TXT_LEN + tt_cp - 1 ) / tt_cp ))
+  tt_ty0=$(( ( SIZE - ( tt_lines * 8 - 1 ) ) / 2 ))
+  if [ "$tt_ty0" -lt 0 ]; then tt_ty0=0; fi
 }
 
-# is (gx,gy) on a glyph? sets g_on=1/0
+# is (gx,gy) on a glyph? sets g_on=1/0 — the char comes from the
+# tname[] array, the glyph pixel from bit-testing the 35-bit fb_int.
+# ALL arithmetic is precomputed into variables: $(( … )) inside test
+# brackets does not transpile (the browser's `bash` is the bash→JS
+# transpiler) — that produced the OOM.
 glyph_pixel() {
   g_on=0
-  if [ "$2" -ge "$ty0" ]; then
-    gl=$(( ( $2 - ty0 ) / 8 ))
-    if [ "$gl" -ge 0 ] && [ "$gl" -lt "$tl_n" ]; then
-      gr=$(( $2 - ty0 - gl * 8 ))
-      if [ "$gr" -lt 7 ]; then
-        gl_str=${tl[$gl]}
-        gl_start=${tlx[$gl]}
-        gl_len=${#gl_str}
-        if [ "$1" -ge "$gl_start" ] && [ "$1" -lt "$(( gl_start + gl_len * 6 ))" ]; then
-          gc=$(( ( $1 - gl_start ) / 6 ))
-          gcol=$(( $1 - gl_start - gc * 6 ))
-          if [ "$gcol" -lt 5 ]; then
-            font_bits "${gl_str:$gc:1}"
-            if [ "${fb:$(( gr * 5 + gcol )):1}" = "1" ]; then g_on=1; fi
+  tt_y0=$tt_ty0
+  if [ "$2" -ge "$tt_y0" ]; then
+    tt_gl=$(( ( $2 - tt_ty0 ) / 8 ))
+    if [ "$tt_gl" -ge 0 ] && [ "$tt_gl" -lt "$tt_lines" ]; then
+      tt_gr=$(( $2 - tt_ty0 - tt_gl * 8 ))
+      if [ "$tt_gr" -lt 7 ]; then
+        tt_rem=$(( TXT_LEN - tt_gl * tt_cp ))
+        tt_llen=$tt_cp
+        if [ "$tt_rem" -lt "$tt_llen" ]; then tt_llen=$tt_rem; fi
+        tt_lsx=$(( ( SIZE - ( tt_llen * 6 - 1 ) ) / 2 ))
+        tt_x1=$(( tt_lsx + tt_llen * 6 ))
+        if [ "$1" -ge "$tt_lsx" ] && [ "$1" -lt "$tt_x1" ]; then
+          tt_gc=$(( ( $1 - tt_lsx ) / 6 ))
+          tt_gcol=$(( $1 - tt_lsx - tt_gc * 6 ))
+          if [ "$tt_gcol" -lt 5 ]; then
+            tt_ci=$(( tt_gl * tt_cp + tt_gc ))
+            font_bits "${tname[$tt_ci]}"
+            tt_bitpos=$(( tt_gr * 5 + tt_gcol ))
+            tt_bit=$(( ( fb_int >> tt_bitpos ) & 1 ))
+            if [ "$tt_bit" -eq 1 ]; then g_on=1; fi
           fi
         fi
       fi
@@ -408,15 +418,20 @@ text_overlay() {
     r=250; g=250; b=250
     return
   fi
-  tx_ox=$(( x - 1 ))
-  while [ "$tx_ox" -le $(( x + 1 )) ]; do
-    tx_oy=$(( y - 1 ))
-    while [ "$tx_oy" -le $(( y + 1 )) ]; do
+  tx_x0=$(( x - 1 ))
+  tx_x1=$(( x + 1 ))
+  tx_y0=$(( y - 1 ))
+  tx_y1=$(( y + 1 ))
+  tx_ox=$tx_x0
+  tx_found=0
+  while [ "$tx_ox" -le "$tx_x1" ] && [ "$tx_found" -eq 0 ]; do
+    tx_oy=$tx_y0
+    while [ "$tx_oy" -le "$tx_y1" ] && [ "$tx_found" -eq 0 ]; do
       if [ "$tx_ox" -ne "$x" ] || [ "$tx_oy" -ne "$y" ]; then
         glyph_pixel $tx_ox $tx_oy
         if [ "$g_on" -eq 1 ]; then
           r=5; g=5; b=5
-          return
+          tx_found=1
         fi
       fi
       tx_oy=$(( tx_oy + 1 ))
@@ -465,7 +480,9 @@ finish() {
   print_stats
 }
 # ─── body ───────────────────────────────────────────
-layout_text "OCTET"
+tname=(O C T E T)
+TXT_LEN=5
+layout_text
 y=0
 while [ "$y" -lt "$SIZE" ]; do
   x=0
