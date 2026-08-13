@@ -130,10 +130,22 @@ export function createCRuntime({ getMem, memory, out, err, table }) {
           if (typeof v === "bigint") v = Number(v);
           out += wid(String(v)); break;
         }
-        case "u": out += wid(String(arg() >>> 0)); break;
-        case "x": out += wid(fmtInt(arg() >>> 0, 16, 0, false)); break;
-        case "X": out += wid(fmtInt(arg() >>> 0, 16, 0, true)); break;
-        case "o": out += wid(fmtInt(arg() >>> 0, 8, 0, false)); break;
+        case "u": case "x": case "X": case "o": {
+          let v = arg();
+          if (typeof v === "bigint") {
+            // i64 (ll) args arrive as BigInt; format in 64-bit unsigned
+            const base = conv === "o" ? 8 : conv === "u" ? 10 : 16;
+            const digits = conv === "X" ? "0123456789ABCDEF" : "0123456789abcdef";
+            let s = "";
+            let uv = BigInt.asUintN(64, v);
+            do { s = digits[Number(uv % BigInt(base))] + s; uv /= BigInt(base); } while (uv > 0n);
+            out += wid(s);
+          } else {
+            if (conv === "u") out += wid(String(v >>> 0));
+            else out += wid(fmtInt(v >>> 0, conv === "o" ? 8 : 16, 0, conv === "X"));
+          }
+          break;
+        }
         case "c": out += String.fromCharCode(arg()); break;
         case "s": {
           const p = arg();
