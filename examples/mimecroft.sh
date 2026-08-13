@@ -604,18 +604,39 @@ gen_maze() {
   done
   # the maze border is INDESTRUCTIBLE obsidian — a solid perimeter the
   # player can never mine through. Lay the ring LAST so it overwrites
-  # any border cells the drunkard's walk carved.
+  # any border cells the drunkard's walk carved. Bounds go through
+  # PLAIN vars: a `$((…))` inside a multi-test `||` chain (and a `\`
+  # line continuation) is not parsed reliably — it silently dropped the
+  # z-tests, leaving only the x=0/z=0 edges obsidian.
+  gm_bx=$((MAP_W - 1))
+  gm_bz=$((MAP_D - 1))
   gm_x=0
   while [ "$gm_x" -lt "$MAP_W" ]; do
     gm_z=0
     while [ "$gm_z" -lt "$MAP_D" ]; do
-      if [ "$gm_x" -eq 0 ] || [ "$gm_x" -eq $((MAP_W - 1)) ] \
-         || [ "$gm_z" -eq 0 ] || [ "$gm_z" -eq $((MAP_D - 1)) ]; then
+      if [ "$gm_x" -eq 0 ] || [ "$gm_x" -eq "$gm_bx" ] || [ "$gm_z" -eq 0 ] || [ "$gm_z" -eq "$gm_bz" ]; then
         set_cell $gm_x 0 $gm_z $OBSIDIAN
         set_cell $gm_x 1 $gm_z $OBSIDIAN
       fi
       gm_z=$((gm_z + 1))
     done
+    gm_x=$((gm_x + 1))
+  done
+  # a walkable 2-tall corridor rings the maze just inside the obsidian
+  # border, so every edge is reachable and the indestructible thud can
+  # be heard from any side (the drunkard's walk alone rarely carves the
+  # far side). Interior walls at x/z ∈ [2, 13] are untouched.
+  gm_ci=$((MAP_W - 2))
+  gm_x=1
+  while [ "$gm_x" -le "$gm_ci" ]; do
+    set_cell $gm_x 0 1 $AIR
+    set_cell $gm_x 1 1 $AIR
+    set_cell $gm_x 0 $gm_ci $AIR
+    set_cell $gm_x 1 $gm_ci $AIR
+    set_cell 1 0 $gm_x $AIR
+    set_cell 1 1 $gm_x $AIR
+    set_cell $gm_ci 0 $gm_x $AIR
+    set_cell $gm_ci 1 $gm_x $AIR
     gm_x=$((gm_x + 1))
   done
 }
@@ -1093,8 +1114,8 @@ render_frame() {
   fmt_pos $dpyw_ms
   yws=$fv
   # the eye height: standing 0.5 (the shader adds 0.5 to uCamPos.y);
-  # crouched −0.3 → the eye ducks to 0.2 under a 1-tall opening
-  if [ "$crouched" -eq 1 ]; then cy_ms=-300; else cy_ms=0; fi
+  # crouched −0.4 → the eye ducks to 0.1 under a 1-tall opening
+  if [ "$crouched" -eq 1 ]; then cy_ms=-400; else cy_ms=0; fi
   fmt_pos $cy_ms
   cys=$fv
   echo "$cxs $cys $czs" > /dev/webgl/uniform/3f/uCamPos
@@ -1373,12 +1394,14 @@ draw_minimap() {
   # (yaw 0 = up on the radar = -z, the world direction the camera
   # starts in); display yaw (unwrapped, can be negative) so it glides
   # through the SHORT arc during a turn, mirroring the view.
-  if [ "$prev_px" -ne "$dpx" ] || [ "$prev_pz" -ne "$dpz" ]; then
+  dm_deg=$((dpyw_raw_ms / 1000))
+  if [ "$prev_px" -ne "$dpx" ] || [ "$prev_pz" -ne "$dpz" ] || [ "$prev_deg" -ne "$dm_deg" ]; then
     if [ "$prev_px" -ge 0 ]; then
-      erase_rect $((RADAR_X + prev_px*44)) $((1720 - prev_pz*60)) 44 60
+      erase_rect $((RADAR_X + prev_px*44)) $((1720 - prev_pz*60)) 48 64
     fi
     prev_px=$dpx
     prev_pz=$dpz
+    prev_deg=$dm_deg
   fi
   dm_cxm=$((RADAR_X + dpx*44))
   dm_cym=$((1720 - dpz*60))
@@ -1386,7 +1409,6 @@ draw_minimap() {
   dm_cxs=$fv
   fmt_ndc $dm_cym
   dm_cys=$fv
-  dm_deg=$((dpyw_raw_ms / 1000))
   ov_text="${ov_text}T $dm_cxs $dm_cys 0.042 1.0 1.0 1.0 $dm_deg
 "
   # mimes — bright red blips (ring + coloured core); only MOVED cells
@@ -1399,7 +1421,7 @@ draw_minimap() {
     dm_rmz=${rmz[$mi]}
     if [ "$dm_rmx" -ne "$dm_mx" ] || [ "$dm_rmz" -ne "$dm_mz" ]; then
       if [ "$dm_rmx" -ge 0 ]; then
-        erase_rect $((RADAR_X + dm_rmx*44)) $((1720 - dm_rmz*60)) 44 60
+        erase_rect $((RADAR_X + dm_rmx*44)) $((1720 - dm_rmz*60)) 80 105
       fi
       rmx[$mi]=$dm_mx
       rmz[$mi]=$dm_mz
@@ -1511,6 +1533,7 @@ digits_dirty=1       # the score/hp/art/fps digits — redrawn only when they ch
 flash_clear=0        # erase the muzzle flash after the last flash frame
 prev_px=-1           # the player's previous radar cell (for the erase)
 prev_pz=-1
+prev_deg=-1          # the triangle's previous rotation (turning rotates in place)
 rmx=(-1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1)   # mime radar cells already drawn (-1 = none)
 rmz=(-1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1)
 mplx=(-1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1)  # mime label positions already drawn (-1 = none)
@@ -1624,10 +1647,14 @@ draw_hud_canvas() {
     hud_static_dirty=0
   fi
   ov_text=""
-  # the muzzle flash fades: erase it once after the last flash frame
+  # the muzzle flash fades: erase the whole rotated flash (its 0.22 box
+  # rotated 20° spans ~0.28) then REDRAW the gun — the erase overlaps
+  # the barrel tip, and the gun lives in the static layer, so without
+  # the redraw a chunk of the gun would stay erased
   if [ "$flash_clear" -eq 1 ]; then
-    ov_text="${ov_text}E 0.55 -0.08 0.24 0.24
+    ov_text="${ov_text}E 0.55 -0.08 0.32 0.32
 "
+    draw_gun
     flash_clear=0
   fi
   draw_minimap
