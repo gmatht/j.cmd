@@ -640,11 +640,24 @@ emit_fragment_shader() {
   echo 'putb 255' >> /tmp/mimecroft-frag.sh
   # compile it with the sh→GLSL generator; fall back to the equivalent
   # embedded shader when the generator isn't installed
+  # the hand-written equivalent (the fallback when the generator is
+  # unavailable OR its GLSL fails to compile under the browser's ANGLE —
+  # the CLI NullGL never type-checks the shader, so a real compile is
+  # the ground truth)
+  fs_fb="precision mediump float; varying highp vec4 vColor; varying highp vec2 vUv; uniform sampler2D uTex; uniform sampler2D uCrack; uniform highp float uOverlay; uniform int uDamage; void main() { if (uOverlay > 0.5) { gl_FragColor = vec4(vColor.rgb, 1.0); return; } vec3 c = texture2D(uTex, vUv).rgb * vColor.rgb; if (uDamage > 0) { vec4 cr = texture2D(uCrack, vUv); float s = float(uDamage) / 3.0; c = mix(c, cr.rgb, cr.a * s); } if (mod(gl_FragCoord.y, 6.0) < 1.0) { c *= 0.9; } float h = mod(floor(gl_FragCoord.x) * 7.0 + floor(gl_FragCoord.y) * 13.0, 97.0); if (h < 1.0) { c = vec3(1.0, c.g * 0.5, c.b * 0.5); } float e = abs(gl_FragCoord.x - 120.0) + abs(gl_FragCoord.y - 90.0); if (e > 150.0) { float d = min(e - 150.0, 40.0); c = max(c - vec3(d), 0.0); } gl_FragColor = vec4(c, 1.0); }"
   glsl=$(sh2glsl /tmp/mimecroft-frag.sh)
   if [ "$glsl" != "" ]; then
     echo "$glsl" > /dev/webgl/shader/fragment
+    # real-GL ground truth: if the generated shader failed to compile,
+    # fall back to the hand-written one (same look, guaranteed-ES1.00).
+    # The device logs "[shader/fragment] FAILED: …" on a bad compile.
+    fs_log=$(cat /dev/webgl/log)
+    fs_probe=${fs_log%FAILED*}
+    if [ "$fs_probe" != "$fs_log" ]; then
+      echo "$fs_fb" > /dev/webgl/shader/fragment
+    fi
   else
-    echo "precision mediump float; varying highp vec4 vColor; varying highp vec2 vUv; uniform sampler2D uTex; uniform sampler2D uCrack; uniform highp float uOverlay; uniform int uDamage; void main() { if (uOverlay > 0.5) { gl_FragColor = vec4(vColor.rgb, 1.0); return; } vec3 c = texture2D(uTex, vUv).rgb * vColor.rgb; if (uDamage > 0) { vec4 cr = texture2D(uCrack, vUv); float s = float(uDamage) / 3.0; c = mix(c, cr.rgb, cr.a * s); } if (mod(gl_FragCoord.y, 6.0) < 1.0) { c *= 0.9; } float h = mod(floor(gl_FragCoord.x) * 7.0 + floor(gl_FragCoord.y) * 13.0, 97.0); if (h < 1.0) { c = vec3(1.0, c.g * 0.5, c.b * 0.5); } float e = abs(gl_FragCoord.x - 120.0) + abs(gl_FragCoord.y - 90.0); if (e > 150.0) { float d = min(e - 150.0, 40.0); c = max(c - vec3(d), 0.0); } gl_FragColor = vec4(c, 1.0); }" > /dev/webgl/shader/fragment
+    echo "$fs_fb" > /dev/webgl/shader/fragment
   fi
 }
 
@@ -1435,7 +1448,7 @@ main() {
   fi
   echo ""
   echo "╔══════════════════════════════════════════════════╗"
-  echo "║  MIMEcrofT v5.7 — 3D treasure hunt written in bash ║"
+  echo "║  MIMEcrofT v5.8 — 3D treasure hunt written in bash ║"
   echo "║  The filesystem is infested with evil MIMEs.     ║"
   echo "║  Recover the lost operating systems.             ║"
   echo "║  WASD move · arrows turn · SPACE shoot · q quit  ║"
