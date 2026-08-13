@@ -9,9 +9,9 @@
 #
 # Controls:  WASD move · ←/→ turn · SPACE shoot · Q quit
 #
-# Mining a wall breaks only the y=0 block, so a mined passage keeps the
-# y=1 block and its 1-tall opening — the eye automatically ducks to 0.3
-# (crouched) and moves at half speed through it.
+# The y=0 layer is a solid dirt floor (never mined); mining breaks the
+# y=1 wall block — a mined passage is the same 1-tall opening as a
+# corridor, so the eye stays at standing height throughout.
 #
 # Renders through the /dev/webgl device (src/fs/webgldev.js) and plays
 # notes through /dev/audio (audiodev.js). Runs in the browser via the
@@ -205,8 +205,6 @@ kill_mime_at() { ka_a=$1; ka_b=$2; ka_i=0
       # the radar/label prev cells move with the swapped mime
       rmx[$ka_i]=${rmx[$ka_last]}
       rmz[$ka_i]=${rmz[$ka_last]}
-      mplx[$ka_i]=${mplx[$ka_last]}
-      mply[$ka_i]=${mply[$ka_last]}
       mime_count=$ka_last
       hud_static_dirty=1
       play "G5 0.08"
@@ -229,7 +227,7 @@ spawn_mime() {
     sm_ax=$((rv + 1))
     rand 14
     sm_az=$((rv + 1))
-    get_cell $sm_ax 0 $sm_az
+    get_cell $sm_ax 1 $sm_az
     if [ "$gv" -eq "$AIR" ]; then
       sm_ddx=$((sm_ax - px))
       sm_ddz=$((sm_az - pz))
@@ -259,7 +257,7 @@ can_step() { cs_a=$1; cs_b=$2; cs=0
   if [ "$cs_a" -ge "$BOUND_X" ]; then return 0; fi
   if [ "$cs_b" -lt 1 ]; then return 0; fi
   if [ "$cs_b" -ge "$BOUND_Z" ]; then return 0; fi
-  get_cell $cs_a 0 $cs_b
+  get_cell $cs_a 1 $cs_b
   if [ "$gv" -ne "$AIR" ]; then return 0; fi
   cs_j=0
   cs=1
@@ -333,7 +331,7 @@ try_move() { tm_a=$1; tm_b=$2
   if [ "$tm_nx" -ge "$BOUND_X" ]; then return 1; fi
   if [ "$tm_nz" -lt 1 ]; then return 1; fi
   if [ "$tm_nz" -ge "$BOUND_Z" ]; then return 1; fi
-  get_cell $tm_nx 0 $tm_nz
+  get_cell $tm_nx 1 $tm_nz
   if [ "$gv" -eq "$AIR" ]; then
     mime_at $tm_nx $tm_nz
     if [ "$mf" -eq 0 ]; then
@@ -366,13 +364,12 @@ try_anim_move() { ta_dx=$1; ta_dz=$2
   if [ "$ta_nx" -ge "$BOUND_X" ]; then return 1; fi
   if [ "$ta_nz" -lt 1 ]; then return 1; fi
   if [ "$ta_nz" -ge "$BOUND_Z" ]; then return 1; fi
-  get_cell $ta_nx 0 $ta_nz
+  get_cell $ta_nx 1 $ta_nz
   if [ "$gv" -eq "$AIR" ]; then
     start_anim $px $pz $yaw $ta_nx $ta_nz $yaw
-    # a mined passage keeps the y=1 block (mining only breaks the y=0
-    # layer), so the opening is 1 tall — entering it crawls at half speed
-    get_cell $ta_nx 1 $ta_nz
-    if [ "$gv" -eq "$AIR" ]; then anim_ms=$ANIM_MS; else anim_ms=$ANIM_MS_CROUCH; fi
+    # a mined passage is the same 1-tall opening as a corridor (mining
+    # breaks the y=1 wall), so every move is upright
+    anim_ms=$ANIM_MS
     return 0
   fi
   return 1
@@ -439,7 +436,7 @@ shoot() {
     if [ "$sh_tx" -ge "$MAP_W" ]; then return 1; fi
     if [ "$sh_tz" -lt 0 ]; then return 1; fi
     if [ "$sh_tz" -ge "$MAP_D" ]; then return 1; fi
-    get_cell $sh_tx 0 $sh_tz
+    get_cell $sh_tx 1 $sh_tz
     if [ "$gv" -ne "$AIR" ]; then
       damage_cell $sh_tx $sh_tz $gv
       return 0
@@ -462,14 +459,14 @@ damage_cell() { dc_a=$1; dc_b=$2; dc_t=$3
     return 0
   fi
   hardness $dc_t
-  add_bhp $dc_a 0 $dc_b
-  get_bhp $dc_a 0 $dc_b
+  add_bhp $dc_a 1 $dc_b
+  get_bhp $dc_a 1 $dc_b
   if [ "$bh" -ge "$h" ]; then
     if [ "$dc_t" -eq "$TREASURE" ]; then
-      set_cell $dc_a 0 $dc_b $AIR
+      set_cell $dc_a 1 $dc_b $AIR
       claim_treasure $dc_a $dc_b
     else
-      set_cell $dc_a 0 $dc_b $AIR
+      set_cell $dc_a 1 $dc_b $AIR
       score_block $dc_t
     fi
     # the radar's static cells changed — rebuild the base layer once
@@ -526,7 +523,7 @@ gen_maze() {
   while [ "$gm_x" -lt "$MAP_W" ]; do
     gm_z=0
     while [ "$gm_z" -lt "$MAP_D" ]; do
-      set_cell $gm_x 0 $gm_z $STONE
+      set_cell $gm_x 0 $gm_z $DIRT
       set_cell $gm_x 1 $gm_z $STONE
       gm_z=$((gm_z + 1))
     done
@@ -538,7 +535,6 @@ gen_maze() {
   while [ "$gm_sx" -le 3 ]; do
     gm_sz=1
     while [ "$gm_sz" -le 3 ]; do
-      set_cell $gm_sx 0 $gm_sz $AIR
       set_cell $gm_sx 1 $gm_sz $AIR
       gm_sz=$((gm_sz + 1))
     done
@@ -551,7 +547,6 @@ gen_maze() {
   gm_steps=0
   gm_total=$((MAP_W * MAP_D * 55 / 100))
   while [ "$gm_steps" -lt "$gm_total" ]; do
-    set_cell $gm_cx 0 $gm_cz $AIR
     set_cell $gm_cx 1 $gm_cz $AIR
     rand 4
     if [ "$rv" -eq 0 ]; then gm_cx=$((gm_cx + 1)); fi
@@ -564,25 +559,19 @@ gen_maze() {
     if [ "$gm_cz" -ge "$BOUND_Z" ]; then gm_cz=$BOUND_Z; fi
     gm_steps=$((gm_steps + 1))
   done
-  # sprinkle coloured blocks into the y0 walls (and recolor y1 above)
+  # sprinkle coloured blocks into the y1 walls (the mineable layer)
   gm_placed=0
   while [ "$gm_placed" -lt 18 ]; do
     rand 14
     gm_rx=$((rv + 1))
     rand 14
     gm_rz=$((rv + 1))
-    get_cell $gm_rx 0 $gm_rz
+    get_cell $gm_rx 1 $gm_rz
     if [ "$gv" -eq "$STONE" ]; then
       rand 3
-      if [ "$rv" -eq 0 ]; then set_cell $gm_rx 0 $gm_rz $GOLD; fi
-      if [ "$rv" -eq 1 ]; then set_cell $gm_rx 0 $gm_rz $DIAMOND; fi
-      if [ "$rv" -eq 2 ]; then set_cell $gm_rx 0 $gm_rz $RUBY; fi
-      get_cell $gm_rx 1 $gm_rz
-      if [ "$gv" -eq "$STONE" ]; then
-        if [ "$rv" -eq 0 ]; then set_cell $gm_rx 1 $gm_rz $GOLD; fi
-        if [ "$rv" -eq 1 ]; then set_cell $gm_rx 1 $gm_rz $DIAMOND; fi
-        if [ "$rv" -eq 2 ]; then set_cell $gm_rx 1 $gm_rz $RUBY; fi
-      fi
+      if [ "$rv" -eq 0 ]; then set_cell $gm_rx 1 $gm_rz $GOLD; fi
+      if [ "$rv" -eq 1 ]; then set_cell $gm_rx 1 $gm_rz $DIAMOND; fi
+      if [ "$rv" -eq 2 ]; then set_cell $gm_rx 1 $gm_rz $RUBY; fi
       gm_placed=$((gm_placed + 1))
     fi
   done
@@ -629,13 +618,9 @@ gen_maze() {
   gm_ci=$((MAP_W - 2))
   gm_x=1
   while [ "$gm_x" -le "$gm_ci" ]; do
-    set_cell $gm_x 0 1 $AIR
     set_cell $gm_x 1 1 $AIR
-    set_cell $gm_x 0 $gm_ci $AIR
     set_cell $gm_x 1 $gm_ci $AIR
-    set_cell 1 0 $gm_x $AIR
     set_cell 1 1 $gm_x $AIR
-    set_cell $gm_ci 0 $gm_x $AIR
     set_cell $gm_ci 1 $gm_x $AIR
     gm_x=$((gm_x + 1))
   done
@@ -659,7 +644,7 @@ place_treasures() {
       pt_rx=$((rv + 1))
       rand 14
       pt_rz=$((rv + 1))
-      get_cell $pt_rx 0 $pt_rz
+      get_cell $pt_rx 1 $pt_rz
       if [ "$gv" -eq "$AIR" ]; then
         pt_ddx=$((pt_rx - px))
         pt_ddz=$((pt_rz - pz))
@@ -673,7 +658,7 @@ place_treasures() {
       pt_tries=$((pt_tries + 1))
     done
     if [ "$pt_placed" -eq 1 ]; then
-      set_cell $pt_rx 0 $pt_rz $TREASURE
+      set_cell $pt_rx 1 $pt_rz $TREASURE
       set_treasure_pos $pt_t $pt_rx $pt_rz
     fi
     pt_t=$((pt_t + 1))
@@ -1017,13 +1002,20 @@ load_textures() {
   load_tex obsidian 10
   echo "    crack…"
   load_tex4 crack 9
+  # the MIME type textures — one icon per evil MIME (11=jpeg 12=png
+  # 13=octet-stream 14=text/plain)
+  echo "    MIME icons…"
+  load_tex jpeg 11
+  load_tex png 12
+  load_tex octet 13
+  load_tex text 14
 }
 
 # the world is drawn as ONE batched payload per frame (/dev/webgl/blocks:
 # "x y z sx sy sz r g b tx dam" lines) — the per-cube echo round-trips
 # were the frame's bottleneck (~6 async dispatches per cube)
 draw_block() { db_a=$1; db_b=$2; db_c=$3; db_r=$4; db_g=$5; db_bl=$6; db_tx=$7
-  get_bhp $db_a 0 $db_c
+  get_bhp $db_a $db_b $db_c
   blk_p="${blk_p}$db_a $db_b $db_c 1 1 1 $db_r $db_g $db_bl $db_tx $bh
 "
 }
@@ -1042,22 +1034,21 @@ texture_of() { to_t=$1
 
 # texture per MIME type (1=jpeg 2=png 3=octet 4=text)
 mime_tex_of() { mtt=$1
-  if [ "$mtt" -eq 1 ]; then tx=6
-  elif [ "$mtt" -eq 2 ]; then tx=7
-  elif [ "$mtt" -eq 3 ]; then tx=8
-  else tx=1; fi
+  if [ "$mtt" -eq 1 ]; then tx=11
+  elif [ "$mtt" -eq 2 ]; then tx=12
+  elif [ "$mtt" -eq 3 ]; then tx=13
+  else tx=14; fi
 }
 
 # cull + draw one cell (or a mime standing in it)
 try_draw() { td_a=$1; td_b=$2; td_c=$3
   get_cell $td_a $td_b $td_c
   if [ "$gv" -eq "$AIR" ]; then
-    if [ "$td_b" -eq 0 ]; then
+    if [ "$td_b" -eq 1 ]; then
       mime_at $td_a $td_c
       if [ "$mf" -eq 1 ]; then
-        mime_color $mt
         mime_tex_of $mt
-        blk_p="${blk_p}$td_a $td_b $td_c 0.7 0.7 0.7 $cr $cg $cb $tx 0
+        blk_p="${blk_p}$td_a $td_b $td_c 0.7 0.7 0.7 1 1 1 $tx 0
 "
       fi
     fi
@@ -1487,93 +1478,9 @@ draw_minimap() {
   done
 }
 
-# mime type names (index 1=jpeg 2=png 3=octet-stream 4=text/plain) + lengths
-MTNAME=("none" "image/jpeg" "image/png" "application/octet-stream" "text/plain")
-MTN_LEN=(0 10 9 24 10)
-# the same names SPLIT at the / — part A (type) above part B (subtype),
-# drawn as a two-line tag centered on the cube (draw_mime_labels)
-MTNAME_A=("none" "image" "image" "application" "text")
-MTN_A_LEN=(0 5 5 11 4)
-MTNAME_B=("none" "jpeg" "png" "octet-stream" "plain")
-MTN_B_LEN=(0 4 3 12 5)
-
-# project a world cell to overlay NDC (milli) — the yaw rotation is exact
-# integer sign/axis swaps, the perspective divide uses integer math
-mime_label_pos() { ml_x=$1; ml_z=$2
-  ml_dx=$((ml_x - dpx))
-  ml_dz=$((ml_z - dpz))
-  if [ "$dyaw" -eq 0 ]; then ml_rx=$ml_dx; ml_dp=$((0 - ml_dz)); fi
-  if [ "$dyaw" -eq 1 ]; then ml_rx=$ml_dz; ml_dp=$ml_dx; fi
-  if [ "$dyaw" -eq 2 ]; then ml_rx=$((0 - ml_dx)); ml_dp=$ml_dz; fi
-  if [ "$dyaw" -eq 3 ]; then ml_rx=$((0 - ml_dz)); ml_dp=$((0 - ml_dx)); fi
-  ml_ok=0
-  if [ "$ml_dp" -gt 0 ]; then
-    ml_cxm=$((1000 + cam_shift_ms + ml_rx * 450 / ml_dp))
-    ml_cym=$((1030 + 450 / ml_dp))
-    if [ "$ml_cxm" -ge 0 ] && [ "$ml_cxm" -le 2000 ] && [ "$ml_cym" -ge 0 ] && [ "$ml_cym" -le 2000 ]; then
-      ml_cx=$ml_cxm
-      ml_cy=$ml_cym
-      ml_ok=1
-    fi
-  fi
-}
-
-draw_text_centered() { dtc_cx=$1; dtc_y=$2; dtc_t=$3; dtc_len=$4; dtc_px=$5
-  dtc_w=$((dtc_len * 4 * dtc_px))
-  dtc_x=$((dtc_cx - dtc_w / 2))
-  draw_text $dtc_t $dtc_len $dtc_x $dtc_y $dtc_px $6 $7 $8 $9
-}
-
-# the MIME type tag — split at the /, both halves drawn centered ON the
-# cube (type above subtype) instead of one long line floating above it.
-# ml_cy is the CELL TOP's projection; the cube (a 0.7 block sitting on
-# layer 0, y-centre 0.35, camera at 0.5) projects 30 + 585/dp below it.
-draw_mime_labels() {
-  mi=0
-  while [ "$mi" -lt "$mime_count" ]; do
-    mla=${mx[$mi]}
-    mlc=${mz[$mi]}
-    mime_label_pos $mla $mlc
-    if [ "$ml_ok" -eq 1 ]; then
-      ml_t=${mtype[$mi]}
-      mime_color $ml_t
-      ml_ccy=$((ml_cy - 30 - 585 / ml_dp))
-      # the label moves with the mime — erase the OLD label box first
-      if [ "${mplx[$mi]}" -ge 0 ]; then
-        erase_rect ${mplx[$mi]} $((mply[$mi] + 18)) 700 110
-      fi
-      draw_text_centered $ml_cx $((ml_ccy + 40)) ${MTNAME_A[$ml_t]} ${MTN_A_LEN[$ml_t]} 7 9 $cr $cg $cb
-      draw_text_centered $ml_cx $((ml_ccy - 4)) ${MTNAME_B[$ml_t]} ${MTN_B_LEN[$ml_t]} 7 9 $cr $cg $cb
-      mplx[$mi]=$ml_cx
-      mply[$mi]=$ml_ccy
-    else
-      # the mime left the view — erase its label if one was drawn
-      if [ "${mplx[$mi]}" -ge 0 ]; then
-        erase_rect ${mplx[$mi]} $((mply[$mi] + 18)) 700 110
-        mplx[$mi]=-1
-        mply[$mi]=-1
-      fi
-    fi
-    mi=$((mi + 1))
-  done
-}
-
-# sightings list under the radar: each living MIME's type, colour-coded
-draw_mime_list() {
-  mi=0
-  ml_y=690
-  while [ "$mi" -lt "$mime_count" ]; do
-    ml_t=${mtype[$mi]}
-    mime_color $ml_t
-    fmt_ndc $((ml_y + 18))
-    ml_ys=$fv
-    draw_rect "0.230" $ml_ys "0.020" "0.024" $cr $cg $cb
-    draw_text ${MTNAME[$ml_t]} ${MTN_LEN[$ml_t]} 1270 $ml_y 7 9 $cr $cg $cb
-    ml_y=$((ml_y - 52))
-    mi=$((mi + 1))
-  done
-}
-
+# MIMEs carry their own type TEXTURE on the cube (texture-jpeg/png/octet/
+# text — indices 11-14), so there are no name tags on the HUD: the radar
+# shows a colour-coded blip, the cube shows the type's icon.
 # the whole on-canvas dashboard: score line, radar, instructions
 hud_static=""
 hud_static_dirty=1   # the radar base must be built before the first frame
@@ -1584,8 +1491,6 @@ prev_pz=-1
 prev_deg=-1          # the triangle's previous rotation (turning rotates in place)
 rmx=(-1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1)   # mime radar cells already drawn (-1 = none)
 rmz=(-1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1)
-mplx=(-1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1)  # mime label positions already drawn (-1 = none)
-mply=(-1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1)
 # build the never-changing HUD parts (labels, separators, instructions,
 # radar base cells) ONCE into hud_static; draw_hud_canvas() re-sends it
 # every rendered frame with a leading "C" (the device clears its HUD
@@ -1636,7 +1541,6 @@ hud_build_static() {
   # the viewmodel gun (static) and the sightings list (changes only
   # when mimes spawn/die — hud_static_dirty) join the base layer
   draw_gun
-  draw_mime_list
   hud_static=$ov_text
   # write the whole static layer ONCE (with a clear); per-frame hud
   # writes update only the changed cells on top of it
@@ -1693,6 +1597,18 @@ draw_hud_canvas() {
   if [ "$hud_static_dirty" -eq 1 ]; then
     hud_build_static
     hud_static_dirty=0
+    # the rebuild wiped the whole layer — reset the dynamic-cell state
+    # so the triangle, mime blips and labels are redrawn this frame
+    prev_px=-1
+    prev_pz=-1
+    prev_deg=-1
+    dm_i=0
+    while [ "$dm_i" -lt "$MIME_CAP" ]; do
+      rmx[$dm_i]=-1
+      rmz[$dm_i]=-1
+      dm_i=$((dm_i + 1))
+    done
+    digits_dirty=1
   fi
   ov_text=""
   # the muzzle flash fades: erase the whole rotated flash (its 0.22 box
@@ -1706,7 +1622,6 @@ draw_hud_canvas() {
     flash_clear=0
   fi
   draw_minimap
-  draw_mime_labels
   if [ "$muzzle" -gt 0 ]; then
     ov_text="${ov_text}R 0.55 -0.08 0.22 0.22 20 1.0 0.82 0.2
 "
@@ -2001,6 +1916,10 @@ settings_menu() {
     if [ "$tex_size" -ne "$sm_size_old" ] || [ "$tex_seed" -ne "$sm_seed_old" ]; then
       echo "  regenerating textures…"
       load_textures
+      # the loading-screen previews were drawn onto the persistent HUD
+      # layer (no clear) — rebuild the static base so they are wiped
+      # and the radar/triangle/mimes/digits return next frame
+      hud_static_dirty=1
     fi
   fi
   echo ""
