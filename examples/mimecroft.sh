@@ -49,7 +49,7 @@ tex_seed=20240812     # texture generation seed (drives the LCG noise)
 # texture cache version — bump when the texture GENERATORS change (e.g.
 # the mime type names) so stale /home + /tmp caches regenerate instead
 # of uploading the old pattern
-tex_ver=2
+tex_ver=4
 sm_sel=0              # settings-menu cursor (0=shift 1=size 2=seed)
 sm_done=0
 sm_changed=0
@@ -1195,12 +1195,12 @@ render_frame() {
       rf_x=$((rf_x + 1))
     done
   fi
-  # background planes first (depth writes off — they never occlude),
-  # then the cubes (depth writes on, far-to-near painter's order)
+  echo "$blk_p" > /dev/webgl/blocks
+  echo "less" > /dev/webgl/depthfunc
   echo "0" > /dev/webgl/depthmask
   echo "$bg_p" > /dev/webgl/blocks
   echo "1" > /dev/webgl/depthmask
-  echo "$blk_p" > /dev/webgl/blocks
+  echo "lequal" > /dev/webgl/depthfunc
 }
 
 # ─── HUD (the terminal is the dashboard) ────────────────────────────
@@ -1456,10 +1456,14 @@ draw_minimap() {
   if [ "$prev_px" -ne "$dpx" ] || [ "$prev_pz" -ne "$dpz" ] || [ "$prev_deg" -ne "$dm_deg" ]; then
     if [ "$prev_px" -ge 0 ]; then
       if [ "$prev_deg" -ne "$dm_deg" ]; then
-        # rotating: the triangle's corners sweep into the LEFT/RIGHT
-        # neighbour cells — erase the whole 3-cell row, then restore the
-        # base cells (walls/treasures) and any mimes that were wiped
-        erase_rect $((RADAR_X + prev_px*44)) $((1720 - prev_pz*60)) 132 64
+        # rotating: the triangle's widest sweep is ~47 milli (its 42
+        # milli bbox grows to √1.25×42 mid-glide), so erase a 62×60 box
+        # — at least 2 px (5 milli) beyond it left/right and 1 px
+        # (3.3 milli) above/below, so no ghost pixels survive a turn
+        # (the old 132-wide row wiped the whole LEFT/RIGHT neighbour
+        # cells) — then restore the base cells (walls/treasures) and
+        # any mimes the box grazed
+        erase_rect $((RADAR_X + prev_px*44)) $((1720 - prev_pz*60)) 62 60
         draw_radar_cell $((prev_px - 1)) $prev_pz
         draw_radar_cell $prev_px $prev_pz
         draw_radar_cell $((prev_px + 1)) $prev_pz
@@ -1475,8 +1479,10 @@ draw_minimap() {
           dm_ai=$((dm_ai + 1))
         done
       else
-        # a move (angle unchanged): the triangle fits a 64 box
-        erase_rect $((RADAR_X + prev_px*44)) $((1720 - prev_pz*60)) 64 64
+        # a move (angle unchanged): the triangle is 42×42 — erase a 44
+        # box (the cell width), no longer clearing into the neighbour
+        # cells left/right like the old 64 box did
+        erase_rect $((RADAR_X + prev_px*44)) $((1720 - prev_pz*60)) 44 44
       fi
     fi
     prev_px=$dpx
