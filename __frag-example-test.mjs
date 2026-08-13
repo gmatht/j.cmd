@@ -6,9 +6,12 @@
 //   1. the committed .glsl is byte-identical to a fresh compile (no
 //      stale artifact — regenerate + re-commit when the backend changes),
 //   2. the artifact carries the quality properties the backend now
-//      guarantees: ES 1.00 mediump precision (the interval proof passed
-//      at the 800×600 canvas), main() locals, no dead runtime arrays,
-//      no texture machinery, a 4-slot out_buf.
+//      guarantees: ES 1.00 mediump float (the 800×600 canvas fits the
+//      10-bit mantissa), the mandatory-precision PROOF running honestly
+//      (highp int stays when the texture multiply's r*tex_r intermediate
+//      exceeds ±2^15 — 255×255=65025 — the proof must NOT lie), main()
+//      locals, no dead runtime arrays, the 2-fetch hoisted texture
+//      sample, a 4-slot out_buf.
 import { readFileSync } from "fs";
 import { getOtranspilerl } from "./src/otranspilerl.js";
 
@@ -28,14 +31,18 @@ if (fresh === committed) {
 
 // 2. the quality properties
 const checks = [
-  ["ES 1.00 mediump int (provable)", fresh.includes("precision mediump int;")],
+  // the texture layer's `r = r * tex_r / 255` has an intermediate of
+  // 255×255 = 65025 > ±2^15 — mediump int CANNOT hold it, so the proof
+  // correctly refuses (highp int is the honest verdict; a lying proof
+  // would miscompile on old mobile GPUs that lack highp int in fragment).
+  ["highp int (texture multiply exceeds ±2^15 — proof honest)", fresh.includes("precision highp int;")],
+  ["no mediump int (the proof correctly refuses)", !fresh.includes("precision mediump int;")],
   ["ES 1.00 mediump float (800≤2048 canvas)", fresh.includes("precision mediump float;")],
-  ["no highp int (the proof fired)", !fresh.includes("precision highp int;")],
   ["program vars are main() locals", !/^int g_[a-z_]+;$/m.test(fresh.split("void main()")[0] ?? "")],
   ["no dead g_pa param array", !fresh.includes("g_pa")],
   ["no dead g_fit array", !fresh.includes("g_fit")],
   ["no dead out_len/OUT_CAP", !fresh.includes("out_len") && !fresh.includes("OUT_CAP")],
-  ["no texture machinery (unreferenced bridges gated)", !fresh.includes("uTex") && !fresh.includes("uCrack") && !fresh.includes("texture2D") && !fresh.includes("vUv")],
+  ["texture sample hoisted (2 fetches: _tex + _crack)", (fresh.match(/texture2D\(/g) || []).length <= 2 && fresh.includes("vec4 _tex = texture2D(uTex")],
   ["4-slot out_buf (putb at fixed slots)", fresh.includes("int out_buf[4];")],
   ["the % emulation preserved", fresh.includes("g_fy / 6")],
   ["atom parens stripped", fresh.includes("g_r = 255;")],

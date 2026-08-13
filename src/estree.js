@@ -518,10 +518,32 @@ export function normalizeFunctions(program) {
 
     // build the plain function
     const localDecls = [...locals].filter((n) => !paramNames.has(n)).sort();
+    // The bash function's `$1`-assignments became JS params, so the body's
+    // STORE-string references (`sh2.setVar("map[$ms_i]", v)` — the emitter
+    // passes bash index TEXT the runtime expands via getVar) would see the
+    // param name as "" in the store → Number("") = 0 → every indexed write
+    // collapses to element 0 (the game's map became a single cell; the maze
+    // sprinkle loop never saw STONE and spun forever). Bind each param into
+    // the store on entry (`sh2.setVar(p, p)`) — bash semantics (a function
+    // param IS a shell variable during the body) — the same prologue the
+    // Lambda/arrow path already emits.
+    const paramStorePrologue = params.length ? [{
+      type: "ExpressionStatement",
+      expression: {
+        type: "SequenceExpression",
+        expressions: params.map((p) => ({
+          type: "CallExpression",
+          callee: { type: "MemberExpression", computed: false, optional: false, object: { type: "Identifier", name: "sh2" }, property: { type: "Identifier", name: "setVar" } },
+          arguments: [{ type: "Literal", value: p.name, raw: null }, { type: "Identifier", name: p.name }],
+          optional: false,
+        })),
+      },
+    }] : [];
     const fnBlock = {
       type: "BlockStatement",
       body: [
         ...(localDecls.length ? [{ type: "VariableDeclaration", kind: "let", declarations: localDecls.map((n) => ({ type: "VariableDeclarator", id: { type: "Identifier", name: n }, init: { type: "Literal", value: "", raw: null } })) }] : []),
+        ...paramStorePrologue,
         ...newRest,
       ],
     };
@@ -631,6 +653,7 @@ export async function estreeToJsMapped(program, stmtLines, a1Stmts) {
   normalized = unwrapStoreString(normalized);
   normalized = nullSentinel(normalized);
   normalized = returnInLoop(normalized, false);
+  keepVariables(normalized);
   const lowered = lowerNativeArrays(normalized);
   hoistLoopLastExit(lowered);
   hoistCommonLastExit(lowered);
