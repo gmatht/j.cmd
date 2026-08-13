@@ -183,11 +183,15 @@ export function createCRuntime({ getMem, memory, out, err, table }) {
   // both on `exit()` and on normal main return (the runner flushes
   // via the exported flushAtexit hook).
   const atexitFns = [];
-  const runAtexit = () => {
+  let exitCode = 0;
+  const runAtexit = (code) => {
+    if (code !== undefined) exitCode = code;
     while (atexitFns.length) {
       const e = atexitFns.pop();
-      if (Array.isArray(e)) callFnPtr(e[0], e[1], 0);
-      else callFnPtr(e, 0);
+      // on_exit handlers get (ret, arg) per C semantics — ret is the
+      // process exit code, arg the registered argument
+      if (Array.isArray(e)) callFnPtr(e[0], exitCode, e[1]);
+      else callFnPtr(e, exitCode);
     }
   };
 
@@ -441,7 +445,7 @@ export function createCRuntime({ getMem, memory, out, err, table }) {
       return 0;
     },
 
-    "$exit": (code) => { runAtexit(); throw new CExit(Ptr(code)); },
+    "$exit": (code) => { /* handlers run by the runner (fini + atexit flush) after the CExit */ throw new CExit(Ptr(code)); },
     "$abort": () => { err("abort() called\n"); throw new CExit(134); },
     "$__builtin_abort": () => { err("abort() called\n"); throw new CExit(134); },
     "$__assert_fail": () => { err("assertion failed\n"); throw new CExit(134); },

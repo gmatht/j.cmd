@@ -188,6 +188,7 @@ export class WasmRunner {
     this._stderr = "";
     this._stdCustomOut = "";
     this._exitCode = 0;
+    this._wasiArgs = args || [];
 
     let cached = this.cache.get(path);
     if (!cached) {
@@ -229,15 +230,21 @@ export class WasmRunner {
       if (instance.exports.memory) memRef.memory = instance.exports.memory;
       if (instance.exports.__indirect_function_table) tabRef.table = instance.exports.__indirect_function_table;
       try {
+        // tcc-compiled objects may carry a constructors section
+        // (__wasm_call_ctors) that must run before the entry point.
+        if (instance.exports.__wasm_call_ctors) instance.exports.__wasm_call_ctors();
         // qbe2wasm compiles export the QBE symbol verbatim ($main);
         // some compilers export main.
         const entry = instance.exports.$main || instance.exports.main;
         if (entry) { entry(); this._exitCode = 0; }
         else { this._exitCode = 0; }
+        if (custom.env && typeof custom.env.flushAtexit === "function") custom.env.flushAtexit(this._exitCode);
       } catch (e) {
         if (e && e.name === "CExit") this._exitCode = e.code;
         else throw e;
       }
+      if (instance.exports.__wasm_call_fini) instance.exports.__wasm_call_fini();
+      if (custom.env && typeof custom.env.flushAtexit === "function") custom.env.flushAtexit(this._exitCode);
       this._stdout = this._stdCustomOut || "";
       this._stdoutBytes = new TextEncoder().encode(this._stdout);
       this._stderr = "";
@@ -260,11 +267,13 @@ export class WasmRunner {
 
       const instance = await WebAssembly.instantiate(module, {
         ...custom,
-        wasi_snapshot_preview1: this._wasiShim(),
+        wasi_snapshot_preview1: this._wasiShim(memRef),
       });
       if (instance.exports.memory) memRef.memory = instance.exports.memory;
       if (instance.exports.__indirect_function_table) tabRef.table = instance.exports.__indirect_function_table;
       try {
+        // constructors section before the entry point (tcc objects)
+        if (instance.exports.__wasm_call_ctors) instance.exports.__wasm_call_ctors();
         if (instance.exports._start) {
           instance.exports._start();
           this._exitCode = 0;
@@ -274,10 +283,13 @@ export class WasmRunner {
         } else {
           this._exitCode = 0;
         }
+        if (custom.env && typeof custom.env.flushAtexit === "function") custom.env.flushAtexit(this._exitCode);
       } catch (e) {
         if (e && e.name === "CExit") this._exitCode = e.code;
         else throw e;
       }
+      if (instance.exports.__wasm_call_fini) instance.exports.__wasm_call_fini();
+      if (custom.env && typeof custom.env.flushAtexit === "function") custom.env.flushAtexit(this._exitCode);
       this._stdout = this._stdCustomOut || "";
       this._stdoutBytes = new TextEncoder().encode(this._stdout);
       this._stderr = "";
@@ -358,7 +370,16 @@ export class WasmRunner {
     if (instance.exports.__indirect_function_table) tabRef.table = instance.exports.__indirect_function_table;
 
     if (instance.exports._start) {
-      this._exitCode = wasi.start(instance);
+      try {
+        this._exitCode = wasi.start(instance);
+      } catch (e) {
+        this._stderr = wasi.getStderrString();
+        try {
+          const mb = instance.exports.memory ? instance.exports.memory.buffer.byteLength : -1;
+          this._stderr += "\n[DBG] mem bytes=" + mb + " code=" + (mb > 0 ? this._lastCode : 0);
+        } catch (e2) {}
+        throw e;
+      }
     } else if (instance.exports.main) {
       instance.exports.main();
       this._exitCode = 0;
@@ -414,7 +435,7 @@ export class WasmRunner {
     const needsWasi = WebAssembly.Module.imports(module)
       .some((i) => i.module === "wasi_snapshot_preview1");
     const instance = await WebAssembly.instantiate(module, {
-      ...(needsWasi ? { wasi_snapshot_preview1: this._wasiShim() } : {}),
+      ...(needsWasi ? { wasi_snapshot_preview1: this._wasiShim(memRef) } : {}),
       ...custom,
     });
     if (instance.exports.memory) memRef.memory = instance.exports.memory;
@@ -772,7 +793,7 @@ export class WasmRunner {
   // Minimal WASI for V8-instantiated modules with custom imports (tcc
   // output — see run()). proc_exit drives the exit code (CExit); the
   // other tcc-imported functions are never called by generated code.
-  _wasiShim() {
+  _wasiShim(memRef) {
     const shim = {
       proc_exit: (code) => { throw new CExit(code); },
       fd_write: () => 0,
@@ -781,6 +802,35 @@ export class WasmRunner {
       fd_read: () => 0,
       clock_time_get: () => 0,
       random_get: () => 0,
+      // WASI args — tcc-compiled `int main(int argc, char **argv)`
+      // programs fetch argc/argv in _start via these.
+      args_sizes_get: (argcPtr, bufSizePtr) => {
+        const args = this._wasiArgs || [];
+        const dv = new DataView(memRef.memory.buffer);
+        dv.setInt32(argcPtr, args.length, true);
+        let total = (args.length + 1) * 4;  // char* array incl. NULL
+        for (const a of args) total += new TextEncoder().encode(String(a)).length + 1;
+        dv.setInt32(bufSizePtr, total, true);
+        return 0;
+      },
+      args_get: (argvPtr, bufPtr) => {
+        // WASI: argv_buf holds the pointer array THEN the strings;
+        // argv and buf point at the same contiguous region.
+        const args = this._wasiArgs || [];
+        const m = new Uint8Array(memRef.memory.buffer);
+        const dv = new DataView(memRef.memory.buffer);
+        const enc = new TextEncoder();
+        let p = bufPtr + (args.length + 1) * 4;   // strings after the pointers
+        for (let i = 0; i < args.length; i++) {
+          dv.setInt32(argvPtr + i * 4, p, true);
+          const b = enc.encode(String(args[i]));
+          m.set(b, p);
+          p += b.length;
+          m[p++] = 0;
+        }
+        dv.setInt32(argvPtr + args.length * 4, 0, true);
+        return 0;
+      },
     };
     return new Proxy(shim, {
       get(t, prop) {
