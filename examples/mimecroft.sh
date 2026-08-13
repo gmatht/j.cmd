@@ -30,6 +30,8 @@ MAP_D=16
 MAP_H=3
 CELLS=$((MAP_W * MAP_D))          # 256 cells per level
 VIEW_R=8                          # draw radius
+RADAR_X=80                        # radar x base (milli-NDC) — the map sits top-LEFT
+CAM_SHIFT=500                     # view shift right by 1/4 screen (milli-NDC / NDC 0.5)
 RANGE=12                          # shoot range
 TREASURE_TOTAL=10
 MIME_CAP=12
@@ -684,7 +686,7 @@ emit_fragment_shader() {
 }
 
 setup_webgl() {
-  echo "attribute vec3 aPosition; attribute vec3 aShade; attribute vec2 aUv; uniform vec3 uCamPos; uniform float uCamYaw; uniform vec3 uObjPos; uniform vec3 uBlockColor; uniform vec3 uScale; uniform float uOverlay; varying vec4 vColor; varying vec2 vUv; void main() { vec3 p = aPosition * uScale + uObjPos; if (uOverlay > 0.5) { gl_Position = vec4(p.x, p.y, -0.95, 1.0); vColor = vec4(aShade * uBlockColor, 1.0); vUv = vec2(0.0); return; } vec3 cam = uCamPos + vec3(0.5, 0.5, 0.5); vec3 d = p - cam; float a = uCamYaw * 0.0174532925; float c = cos(a); float s = sin(a); vec3 rel = vec3(d.x * c + d.z * s, d.y, -d.x * s + d.z * c); float w = -rel.z; gl_Position = vec4(rel.x * 0.9, rel.y * 0.9, w * w / 64.0, w); vColor = vec4(aShade * uBlockColor, 1.0); vUv = aUv; }" > /dev/webgl/shader/vertex
+  echo "attribute vec3 aPosition; attribute vec3 aShade; attribute vec2 aUv; uniform vec3 uCamPos; uniform float uCamYaw; uniform vec3 uObjPos; uniform vec3 uBlockColor; uniform vec3 uScale; uniform float uOverlay; varying vec4 vColor; varying vec2 vUv; void main() { vec3 p = aPosition * uScale + uObjPos; if (uOverlay > 0.5) { gl_Position = vec4(p.x + 0.5, p.y, -0.95, 1.0); vColor = vec4(aShade * uBlockColor, 1.0); vUv = vec2(0.0); return; } vec3 cam = uCamPos + vec3(0.5, 0.5, 0.5); vec3 d = p - cam; float a = uCamYaw * 0.0174532925; float c = cos(a); float s = sin(a); vec3 rel = vec3(d.x * c + d.z * s, d.y, -d.x * s + d.z * c); float w = -rel.z; gl_Position = vec4(rel.x * 0.9 + 0.5 * w, rel.y * 0.9, w * w / 64.0, w); vColor = vec4(aShade * uBlockColor, 1.0); vUv = aUv; }" > /dev/webgl/shader/vertex
   # the fragment shader is authored in bash (emit_fragment_shader) and
   # compiled by sh2glsl when available — otherwise the equivalent
   # hand-written textured GLSL (the same texture × colour tint + the
@@ -1213,7 +1215,7 @@ draw_text() { dt_t=$1; dt_len=$2; dt_x=$3; dt_y=$4; dt_px=$5; dt_py=$6
 draw_minimap() {
   # the player is a triangle pointing the way they face (yaw 0 = up on
   # the radar = -z, the world direction the camera starts in)
-  dm_cxm=$((1260 + dpx*44))
+  dm_cxm=$((RADAR_X + dpx*44))
   dm_cym=$((1720 - dpz*60))
   fmt_ndc $dm_cxm
   dm_cxs=$fv
@@ -1227,19 +1229,22 @@ draw_minimap() {
   dm_deg=$((dpyw_raw_ms / 1000))
   ov_text="${ov_text}T $dm_cxs $dm_cys 0.042 1.0 1.0 1.0 $dm_deg
 "
-  # mimes — red blocks on the radar (they move every MIME_STEP frames)
+  # mimes — bright red blips on the radar (they move every MIME_STEP
+  # frames). Ring + coloured core so every type pops against the grey
+  # walls — the raw mime colours (grey/white types) vanished before.
   mi=0
   while [ "$mi" -lt "$mime_count" ]; do
     dm_mx=${mx[$mi]}
     dm_mz=${mz[$mi]}
     mime_color ${mtype[$mi]}
-    dm_cxm=$((1260 + dm_mx*44))
+    dm_cxm=$((RADAR_X + dm_mx*44))
     dm_cym=$((1720 - dm_mz*60))
     fmt_ndc $dm_cxm
     dm_cxs=$fv
     fmt_ndc $dm_cym
     dm_cys=$fv
-    draw_rect $dm_cxs $dm_cys $CELL_W $CELL_H $cr $cg $cb
+    draw_rect $dm_cxs $dm_cys 0.075 0.100 0.10 0.10 0.12
+    draw_rect $dm_cxs $dm_cys 0.050 0.070 $cr $cg $cb
     mi=$((mi + 1))
   done
 }
@@ -1265,7 +1270,7 @@ mime_label_pos() { ml_x=$1; ml_z=$2
   if [ "$dyaw" -eq 3 ]; then ml_rx=$((0 - ml_dz)); ml_dp=$((0 - ml_dx)); fi
   ml_ok=0
   if [ "$ml_dp" -gt 0 ]; then
-    ml_cxm=$((1000 + ml_rx * 900 / ml_dp))
+    ml_cxm=$((1000 + CAM_SHIFT + ml_rx * 900 / ml_dp))
     ml_cym=$((1030 + 450 / ml_dp))
     if [ "$ml_cxm" -ge 0 ] && [ "$ml_cxm" -le 2000 ] && [ "$ml_cym" -ge 0 ] && [ "$ml_cym" -le 2000 ]; then
       ml_cx=$ml_cxm
@@ -1356,7 +1361,7 @@ hud_build_static() {
       elif [ "$gv" -ne "$AIR" ]; then dm_r=0.42; dm_g=0.42; dm_b=0.47; dm_draw=1
       fi
       if [ "$dm_draw" -eq 1 ]; then
-        dm_cxm=$((1260 + dm_x*44))
+        dm_cxm=$((RADAR_X + dm_x*44))
         dm_cym=$((1720 - dm_z*60))
         fmt_ndc $dm_cxm
         dm_cxs=$fv
