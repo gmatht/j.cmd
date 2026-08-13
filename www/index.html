@@ -4173,7 +4173,32 @@ async function runShellScript(content, opts = {}) {
 // shared runSegment's ctx.interceptCommand hook). Handles the command and
 // returns a result, or null to let resolution continue.
 async function interceptCompilers(cmd, args, stdin, isLast, { outputRedirect, appendRedirect }) {
-// cc — the REAL C compiler: cproc (wasm32-wasi) → QBE IR →
+  // sh2glsl — compile a bash-authored fragment shader to GLSL ES 1.00
+  // in-process via the otranspilerl wasm (the MIMEcroft shader pipeline:
+  // frag_x/frag_y/vcolor/uv/tex/crack bridges). `sh2glsl file.sh` prints
+  // the GLSL; `>` redirects it (the game writes /dev/webgl/shader/fragment).
+  if (cmd === "sh2glsl" && args.length > 0) {
+    let srcFile = args[0].startsWith("/") ? args[0] : fs._resolve(args[0]);
+    let src;
+    try {
+      src = String(await fs.read(srcFile));
+    } catch (e) {
+      stderr.write(`sh2glsl: cannot read ${srcFile}: ${e.message}\n`);
+      return { ok: false, code: 1, output: "" };
+    }
+    const lib = await getOtranspilerl();
+    let glsl;
+    try {
+      glsl = lib.glsl(src);
+    } catch (e) {
+      stderr.write(`sh2glsl: ${e.message}\n`);
+      return { ok: false, code: 1, output: "" };
+    }
+    if (outputRedirect) await writeOut(outputRedirect, glsl, appendRedirect);
+    else stdout.write(glsl);
+    return { ok: true, code: 0, output: glsl };
+  }
+  // cc — the REAL C compiler: cproc (wasm32-wasi) → QBE IR →
         // qbe2wasm → wasm binary. cproc reads the source from the WASI
         // sandbox and writes the QBE IR to stdout, so no file harvest
         // is needed. libc calls (printf/puts/malloc/…) resolve to the

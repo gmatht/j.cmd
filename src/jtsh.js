@@ -131,7 +131,19 @@ async function collectCommit() {
 const _bugBaseOut = process.stdout.write.bind(process.stdout);
 const _bugBaseErr = process.stderr.write.bind(process.stderr);
 process.stdout.write = (s, ...rest) => { ringPush(s); return _bugBaseOut(s, ...rest); };
-process.stderr.write = (s, ...rest) => { ringPush(s); return _bugBaseErr(s, ...rest); };
+// stderr is the ERROR stream — render it like the browser shell's `.err`
+// (muted red) so diagnostics stand out from stdout. Only when attached
+// to a real terminal: piped stderr stays byte-clean for consumers.
+const ERR_COLOR = "\x1b[38;5;210m";
+const colorErr = (s) => {
+  if (!process.stderr.isTTY || typeof s !== "string") return s;
+  if (s.includes("\x1b[")) return s; // already styled — don't double-wrap
+  return ERR_COLOR + s + "\x1b[0m";
+};
+process.stderr.write = (s, ...rest) => { ringPush(s); return _bugBaseErr(colorErr(s), ...rest); };
+// the shell's stderr sink (and the bash/cmd REPL merges in shellcore)
+// use the same colorizer when available
+const stderrColorFn = colorErr;
 // libc declarations for C source compiled by cproc: the shell strips
 // #include/#define lines (no stdio.h in the sandbox) and injects these,
 // matching the env runtime (src/c-runtime.js) that the binaries link to.
@@ -392,6 +404,7 @@ const builtins = {
 const shellCtx = {
   stdout: process.stdout,
   stderr: process.stderr,
+  stderrColorFn,
   write: (s) => process.stdout.write(s),
   get stdin() { return stdinBuffer; },
   get isTTY() { return Boolean(process.stdin.isTTY); },
@@ -648,6 +661,30 @@ async function runEstreeProgram(program, lineAssigned, srcArgs) {
 // cc / cproc / tcc — the compilers, intercepted before resolution (the
 // shared runSegment's ctx.interceptCommand hook).
 async function interceptCompilers(cmd, args, stdin, isLast, { outputRedirect, appendRedirect }) {
+  // sh2glsl — compile a bash-authored fragment shader to GLSL ES 1.00
+  // via the otranspilerl wasm (the MIMEcroft shader pipeline)
+  if (cmd === "sh2glsl" && args.length > 0) {
+    const { getOtranspilerl } = await import("./otranspilerl.js");
+    let srcFile = args[0].startsWith("/") ? args[0] : fs._resolve(args[0]);
+    let src;
+    try {
+      src = String(await fs.read(srcFile));
+    } catch (e) {
+      process.stderr.write(`sh2glsl: cannot read ${srcFile}: ${e.message}\n`);
+      return { ok: false, code: 1, output: "" };
+    }
+    const lib = await getOtranspilerl();
+    let glsl;
+    try {
+      glsl = lib.glsl(src);
+    } catch (e) {
+      process.stderr.write(`sh2glsl: ${e.message}\n`);
+      return { ok: false, code: 1, output: "" };
+    }
+    if (outputRedirect) await writeOut(outputRedirect, glsl, appendRedirect);
+    else process.stdout.write(glsl);
+    return { ok: true, code: 0, output: glsl };
+  }
   // cc — the REAL C compiler: cproc (wasm32-wasi) → QBE IR → qbe2wasm.
   // Intercepted before resolveCommand (bare `cc` has no fetch-based
   // auto-load in node). cproc reads the source from the WASI sandbox
@@ -1261,6 +1298,7 @@ if (process.stdin.isTTY) {
 } else {
   // Batch mode — process each line sequentially using async iterator
   for await (const line of rl) {
+
     await handleLine(line);
   }
   process.exit(0);

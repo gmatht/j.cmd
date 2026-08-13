@@ -28,7 +28,7 @@
 const WASM_PATH = "wasm-bin/otranspilerl.wasm";  // browser: relative to the page
 // cache-buster — bump whenever www/wasm-bin/otranspilerl.wasm changes so
 // the browser (and the otranspiler GUI) never serves a stale wasm.
-const WASM_VERSION = "v12-cfor";  // v12: ForInit + first-class Continue/Break (strip_cfor pass) // v11: template-literal quasi escaping (trailing \ in batch echo)
+const WASM_VERSION = "v12-cfor-glsl";  // v12: ForInit + first-class Continue/Break (strip_cfor pass) // v11: template-literal quasi escaping (trailing \ in batch echo)
 
 let libPromise = null;
 
@@ -165,6 +165,9 @@ function wrapLibrary(instance, mem, out) {
     shir: (src) => call("otranspilerl_shir", [String(src)]).output,
     // A1 shIR JSON → target source (lang: c|go|java|js|perl|python|rs|sh|zig)
     render: (a1, lang) => call("otranspilerl_render", [String(a1), lang]).output,
+    // shell → GLSL ES 1.00 render fragment (the MIMEcroft shader pipeline;
+    // the `sh2glsl` shell command drives this)
+    glsl: (src) => call("otranspilerl_glsl", [String(src)]).output,
     raw: call,
   };
 }
