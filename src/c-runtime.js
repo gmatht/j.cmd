@@ -207,6 +207,15 @@ export function createCRuntime({ getMem, memory, out, err, table }) {
     }
   };
 
+  // 1/2/4-byte atomic fetch helpers (single-threaded: plain memory ops)
+  const atF = (sz, p, v, opr, retNew) => {
+    p = Ptr(p); v = Ptr(v); const m = u8();
+    let old = 0; for (let i = 0; i < sz; i++) old |= m[p + i] << (8 * i);
+    let nv = opr(old, v);
+    for (let i = 0; i < sz; i++) m[p + i] = (nv >> (8 * i)) & 0xff;
+    return retNew ? nv : old;
+  };
+
   const rt = {
     "$qsort": (base, nmemb, size, compar) => {
       base = Ptr(base); nmemb = Ptr(nmemb); size = Ptr(size); compar = Ptr(compar);
@@ -313,6 +322,33 @@ export function createCRuntime({ getMem, memory, out, err, table }) {
       const nv = (old + v) | 0;
       m[p] = nv & 0xff; m[p + 1] = (nv >> 8) & 0xff; m[p + 2] = (nv >> 16) & 0xff; m[p + 3] = (nv >> 24) & 0xff;
       return old; },
+    // 1/2/4/8-byte atomic ops (the tcc __atomic_* builtins)
+    ...Object.fromEntries(Object.entries({
+      load: (sz, p) => { p = Ptr(p); const m = u8(); let v = 0; for (let i = 0; i < sz; i++) v |= m[p + i] << (8 * i); return v; },
+      store: (sz, p, v) => { p = Ptr(p); v = Ptr(v); const m = u8(); for (let i = 0; i < sz; i++) m[p + i] = (v >> (8 * i)) & 0xff; return v; },
+      exchange: (sz, p, v) => { p = Ptr(p); v = Ptr(v); const m = u8(); let old = 0; for (let i = 0; i < sz; i++) old |= m[p + i] << (8 * i); for (let i = 0; i < sz; i++) m[p + i] = (v >> (8 * i)) & 0xff; return old; },
+      compare_exchange: (sz, p, expected, desired, weak, succ, fail) => {
+        p = Ptr(p); expected = Ptr(expected); desired = Ptr(desired); const m = u8();
+        let cur = 0, exp = 0; for (let i = 0; i < sz; i++) { cur |= m[p + i] << (8 * i); exp |= m[expected + i] << (8 * i); }
+        if (cur === exp) { for (let i = 0; i < sz; i++) m[p + i] = (desired >> (8 * i)) & 0xff; return 1; }
+        for (let i = 0; i < sz; i++) m[expected + i] = (cur >> (8 * i)) & 0xff; return 0;
+      },
+      fetch_add: (sz, p, v, opr) => atF(sz, p, v, (a, b) => a + b, false),
+      fetch_sub: (sz, p, v, opr) => atF(sz, p, v, (a, b) => a - b, false),
+      fetch_or: (sz, p, v, opr) => atF(sz, p, v, (a, b) => a | b, false),
+      fetch_and: (sz, p, v, opr) => atF(sz, p, v, (a, b) => a & b, false),
+      fetch_xor: (sz, p, v, opr) => atF(sz, p, v, (a, b) => a ^ b, false),
+      fetch_nand: (sz, p, v, opr) => atF(sz, p, v, (a, b) => ~(a & b), false),
+      add_fetch: (sz, p, v, opr) => atF(sz, p, v, (a, b) => a + b, true),
+      sub_fetch: (sz, p, v, opr) => atF(sz, p, v, (a, b) => a - b, true),
+      or_fetch: (sz, p, v, opr) => atF(sz, p, v, (a, b) => a | b, true),
+      and_fetch: (sz, p, v, opr) => atF(sz, p, v, (a, b) => a & b, true),
+      xor_fetch: (sz, p, v, opr) => atF(sz, p, v, (a, b) => a ^ b, true),
+      nand_fetch: (sz, p, v, opr) => atF(sz, p, v, (a, b) => ~(a & b), true),
+    }).flatMap(([op, fn]) => [1, 2, 4, 8].map(sz => [`$__atomic_${op}_${sz}`, (a, b, c, d, e, f) => fn(sz, a, b, c, d, e, f)]))),
+    "$atomic_thread_fence": () => 0,
+    "$atomic_signal_fence": () => 0,
+    "$__atomic_is_lock_free": (sz) => 1,   // single-threaded: everything is
     // pthread stubs (single-threaded sandbox)
     "$pthread_condattr_init": () => 0,
     "$pthread_condattr_setpshared": () => 0,
