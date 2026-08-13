@@ -597,6 +597,15 @@ emit_fragment_shader() {
   echo 'r=$((r * tex_r / 255))' >> /tmp/mimecroft-frag.sh
   echo 'g=$((g * tex_g / 255))' >> /tmp/mimecroft-frag.sh
   echo 'b=$((b * tex_b / 255))' >> /tmp/mimecroft-frag.sh
+  # crack overlay: the transparent crack texture (cr_r/g/b/a bridges),
+  # mixed in by the damage level (uDamage bridge) — layered over ANY
+  # block texture so damaged blocks show cracks
+  echo 'if [ "$damage" -gt 0 ]; then' >> /tmp/mimecroft-frag.sh
+  echo '  mix=$((damage * cr_a / 3))' >> /tmp/mimecroft-frag.sh
+  echo '  r=$((r * (255 - mix) / 255 + cr_r * mix / 255))' >> /tmp/mimecroft-frag.sh
+  echo '  g=$((g * (255 - mix) / 255 + cr_g * mix / 255))' >> /tmp/mimecroft-frag.sh
+  echo '  b=$((b * (255 - mix) / 255 + cr_b * mix / 255))' >> /tmp/mimecroft-frag.sh
+  echo 'fi' >> /tmp/mimecroft-frag.sh
   echo 'scan=$((fy % 6))' >> /tmp/mimecroft-frag.sh
   echo 'if [ "$scan" -eq 0 ]; then' >> /tmp/mimecroft-frag.sh
   echo '  r=$((r * 90 / 100))' >> /tmp/mimecroft-frag.sh
@@ -635,7 +644,7 @@ emit_fragment_shader() {
   if [ "$glsl" != "" ]; then
     echo "$glsl" > /dev/webgl/shader/fragment
   else
-    echo "precision mediump float; varying highp vec4 vColor; varying highp vec2 vUv; uniform sampler2D uTex; uniform highp float uOverlay; void main() { if (uOverlay > 0.5) { gl_FragColor = vec4(vColor.rgb, 1.0); return; } vec3 c = texture2D(uTex, vUv).rgb * vColor.rgb; if (mod(gl_FragCoord.y, 6.0) < 1.0) { c *= 0.9; } float h = mod(floor(gl_FragCoord.x) * 7.0 + floor(gl_FragCoord.y) * 13.0, 97.0); if (h < 1.0) { c = vec3(1.0, c.g * 0.5, c.b * 0.5); } float e = abs(gl_FragCoord.x - 120.0) + abs(gl_FragCoord.y - 90.0); if (e > 150.0) { float d = min(e - 150.0, 40.0); c = max(c - vec3(d), 0.0); } gl_FragColor = vec4(c, 1.0); }" > /dev/webgl/shader/fragment
+    echo "precision mediump float; varying highp vec4 vColor; varying highp vec2 vUv; uniform sampler2D uTex; uniform sampler2D uCrack; uniform highp float uOverlay; uniform int uDamage; void main() { if (uOverlay > 0.5) { gl_FragColor = vec4(vColor.rgb, 1.0); return; } vec3 c = texture2D(uTex, vUv).rgb * vColor.rgb; if (uDamage > 0) { vec4 cr = texture2D(uCrack, vUv); float s = float(uDamage) / 3.0; c = mix(c, cr.rgb, cr.a * s); } if (mod(gl_FragCoord.y, 6.0) < 1.0) { c *= 0.9; } float h = mod(floor(gl_FragCoord.x) * 7.0 + floor(gl_FragCoord.y) * 13.0, 97.0); if (h < 1.0) { c = vec3(1.0, c.g * 0.5, c.b * 0.5); } float e = abs(gl_FragCoord.x - 120.0) + abs(gl_FragCoord.y - 90.0); if (e > 150.0) { float d = min(e - 150.0, 40.0); c = max(c - vec3(d), 0.0); } gl_FragColor = vec4(c, 1.0); }" > /dev/webgl/shader/fragment
   fi
 }
 
@@ -651,6 +660,8 @@ setup_webgl() {
   echo "f32 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 1 1 1 1 1 1 1 1 1 1 1 1 0.45 0.45 0.45 0.45 0.45 0.45 0.45 0.45 0.45 0.45 0.45 0.45 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.6 0.6 0.6 0.6 0.6 0.6 0.6 0.6 0.6 0.6 0.6 0.6" > /dev/webgl/buffer/aShade
   echo "f32 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1" > /dev/webgl/buffer/aUv
   echo "0" > /dev/webgl/uniform/1i/uTex
+  echo "9" > /dev/webgl/uniform/1i/uCrack
+  echo "0" > /dev/webgl/uniform/1i/uDamage
   echo "u16 0 1 2 0 2 3 4 5 6 4 6 7 8 9 10 8 10 11 12 13 14 12 14 15 16 17 18 16 18 19 20 21 22 20 22 23" > /dev/webgl/buffer/cube
   echo "f32 -0.5 -0.5 0 0.5 -0.5 0 0.5 0.5 0 -0.5 0.5 0" > /dev/webgl/buffer/quadpos
   echo "f32 1 1 1 1 1 1 1 1 1 1 1 1" > /dev/webgl/buffer/quadshade
@@ -749,6 +760,42 @@ load_tex() { lt_name=$1; lt_idx=$2
   echo "swap" > /dev/webgl/call
 }
 
+# RGBA variant (the transparent crack overlay — R G B A per pixel)
+load_tex4() { lt_name=$1; lt_idx=$2
+  if [ -f /tmp/mimecroft-tex-$lt_name ]; then
+    cat /tmp/mimecroft-tex-$lt_name > /dev/webgl/texture/$lt_idx
+    return 0
+  fi
+  lt_s=$(bash /examples/textures/texture-$lt_name.sh --tsv)
+  lt_hdr=${lt_s%%	*}
+  if [ "$lt_hdr" != "#texture" ]; then return 0; fi
+  strip_tex_field
+  strip_tex_field
+  lt_sz=${lt_s%%	*}
+  lt_size=${lt_sz%%x*}
+  strip_tex_field
+  strip_tex_field
+  strip_tex_field
+  lt_s=${lt_s#?}
+  lt_payload="$lt_size"
+  lt_px=0
+  lt_pxmax=$((lt_size * lt_size))
+  while [ "$lt_px" -lt "$lt_pxmax" ]; do
+    read_tex_field
+    lt_r=$f
+    read_tex_field
+    lt_g=$f
+    read_tex_field
+    lt_b=$f
+    read_tex_field
+    lt_a=$f
+    lt_payload="$lt_payload $lt_r $lt_g $lt_b $lt_a"
+    lt_px=$((lt_px + 1))
+  done
+  echo "$lt_payload" > /tmp/mimecroft-tex-$lt_name
+  echo "$lt_payload" > /dev/webgl/texture/$lt_idx
+}
+
 load_textures() {
   load_tex stone 1
   load_tex sandstone 2
@@ -758,6 +805,7 @@ load_textures() {
   load_tex leaves 6
   load_tex wood 7
   load_tex dirt 8
+  load_tex4 crack 9
 }
 
 draw_block() { db_a=$1; db_b=$2; db_c=$3; db_r=$4; db_g=$5; db_bl=$6; db_tx=$7
@@ -765,6 +813,8 @@ draw_block() { db_a=$1; db_b=$2; db_c=$3; db_r=$4; db_g=$5; db_bl=$6; db_tx=$7
   echo "$db_a $db_b $db_c" > /dev/webgl/uniform/3f/uObjPos
   echo "$db_r $db_g $db_bl" > /dev/webgl/uniform/3f/uBlockColor
   echo "$db_tx" > /dev/webgl/uniform/1i/uTex
+  get_bhp $db_a 0 $db_c
+  echo "$bh" > /dev/webgl/uniform/1i/uDamage
   echo "draw elements triangles 36 0 cube" > /dev/webgl/call
 }
 
@@ -1385,7 +1435,7 @@ main() {
   fi
   echo ""
   echo "╔══════════════════════════════════════════════════╗"
-  echo "║  MIMEcrofT v5.6 — 3D treasure hunt written in bash ║"
+  echo "║  MIMEcrofT v5.7 — 3D treasure hunt written in bash ║"
   echo "║  The filesystem is infested with evil MIMEs.     ║"
   echo "║  Recover the lost operating systems.             ║"
   echo "║  WASD move · arrows turn · SPACE shoot · q quit  ║"

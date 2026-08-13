@@ -62,7 +62,8 @@ function makeNullGL() {
     VERTEX_SHADER: 0x8b31, FRAGMENT_SHADER: 0x8b30,
     TEXTURE_2D: 0x0de1, TEXTURE_MIN_FILTER: 0x2801, TEXTURE_MAG_FILTER: 0x2800,
     TEXTURE_WRAP_S: 0x2802, TEXTURE_WRAP_T: 0x2803, CLAMP_TO_EDGE: 0x812f,
-    NEAREST: 0x2600, RGB: 0x1907, UNPACK_ALIGNMENT: 0x0cf5, TEXTURE0: 0x84c0,
+    NEAREST: 0x2600, RGB: 0x1907, RGBA: 0x1908, UNPACK_ALIGNMENT: 0x0cf5,
+    TEXTURE0: 0x84c0, TEXTURE1: 0x84c1,
     ARRAY_BUFFER: 0x8892, ELEMENT_ARRAY_BUFFER: 0x8893,
     STATIC_DRAW: 0x88e4, COLOR_BUFFER_BIT: 0x4000, DEPTH_BUFFER_BIT: 0x100, DEPTH_TEST: 0x0b71, LEQUAL: 0x0203,
     TRIANGLES: 0x0004, TRIANGLE_STRIP: 0x0005, TRIANGLE_FAN: 0x0006,
@@ -319,7 +320,9 @@ export class WebGLDevice {
     }
     const size = nums[0];
     const rgb = nums.slice(1);
-    const need = size * size * 3;
+    // 4 channels (R G B A — the transparent crack overlay) or 3 (RGB)
+    const rgba = rgb.length >= size * size * 4;
+    const need = size * size * (rgba ? 4 : 3);
     if (rgb.length < need) {
       this._log += `[texture/${idx}] short data: ${rgb.length} < ${need}\n`;
       return;
@@ -332,7 +335,8 @@ export class WebGLDevice {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, size, size, 0, gl.RGB, gl.UNSIGNED_BYTE, bytes);
+    const fmt = rgba ? gl.RGBA : gl.RGB;
+    gl.texImage2D(gl.TEXTURE_2D, 0, fmt, size, size, 0, fmt, gl.UNSIGNED_BYTE, bytes);
     this._textures.set(Number(idx), tex);
     this._texSize = size;
     this._log += `[texture/${idx}] ${size}x${size} uploaded\n`;
@@ -501,6 +505,15 @@ export class WebGLDevice {
       }
       const tl = gl.getUniformLocation(this._program, "uTex");
       if (tl !== null) gl.uniform1i(tl, 0);
+    }
+    const uCrack = this._uniforms.get("uCrack");
+    if (uCrack && this._textures.size) {
+      const tex = this._textures.get(Number(uCrack.value[0]));
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, tex || null);
+      const tl = gl.getUniformLocation(this._program, "uCrack");
+      if (tl !== null) gl.uniform1i(tl, 1);
+      gl.activeTexture(gl.TEXTURE0);
     }
 
     if (kind === "elements") {
