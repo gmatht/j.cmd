@@ -9,6 +9,10 @@
 #
 # Controls:  WASD move · ←/→ turn · SPACE shoot · Q quit
 #
+# The y=0 layer is a solid dirt floor (never mined); mining breaks the
+# y=1 wall block — a mined passage is the same 1-tall opening as a
+# corridor, so the eye stays at standing height throughout.
+#
 # Renders through the /dev/webgl device (src/fs/webgldev.js) and plays
 # notes through /dev/audio (audiodev.js). Runs in the browser via the
 # sh2perl transpiler and headless in the Node CLI (NullGL device).
@@ -29,16 +33,30 @@ MAP_W=16
 MAP_D=16
 MAP_H=3
 CELLS=$((MAP_W * MAP_D))          # 256 cells per level
-VIEW_R=8                          # draw radius
+# the walkable area is 1..W-2 (the border is wall) — precomputed bounds
+BOUND_X=$((MAP_W - 1))            # 15 — the first rejected column
+BOUND_Z=$((MAP_D - 1))            # 15 — the first rejected row
+# the DISPLAY window: the world is 16x16 but only ~8x8 cells render at a
+# time (the draw radius — 4 cells each way around the player; the floor/
+# ceiling planes follow the camera so the view is a bounded patch)
+VIEW_W=4
+VIEW_R=16                         # draw radius — the whole 16x16 map (displayed at 50% scale)
 RADAR_X=80                        # radar x base (milli-NDC) — the map sits top-LEFT
-CAM_SHIFT=500                     # view shift right by 1/4 screen (milli-NDC / NDC 0.5)
+# ─── settings (editable in the pre-game menu; browser only) ────────
+cam_shift_ms=0        # camera right shift (milli-NDC, ±50 per press, no limit) — 0 = the centred view; the old 500 (a quarter-screen right shift) moved the vanishing point off-centre
+tex_size=16           # texture resolution (4/8/16/32/64 px)
+tex_seed=20240812     # texture generation seed (drives the LCG noise)
+sm_sel=0              # settings-menu cursor (0=shift 1=size 2=seed)
+sm_done=0
+sm_changed=0
+headless=1            # set from /dev/webgl/state in main()
 RANGE=12                          # shoot range
 TREASURE_TOTAL=10
 MIME_CAP=12
 MIME_STEP=15          # mimes step every N frames (~6.7/sec — calmer view)
 MIMES_ON=0             # 0 = MIMEs disabled while diagnosing the flicker; set 1 to enable
-CRT_ON=1               # 1 = CRT scanlines + vignette on the rendered view; set 0 for a clean picture
-CORRUPT_ON=1           # 1 = random corruption streaks on the view; set 0 to disable
+CRT_ON=0               # 1 = CRT scanlines + vignette on the rendered view; set 0 for a clean picture
+CORRUPT_ON=0           # 1 = random corruption streaks on the view; set 0 to disable
 
 # block ids
 AIR=0
@@ -93,6 +111,9 @@ sound=1
 anim=0              # 1 while an action glides the camera
 anim_t0=0           # wall-clock ms when the current glide started
 ANIM_MS=200         # each action completes in 0.2s of wall time
+ANIM_MS_CROUCH=400  # a move through a 1-tall (mined) passage — half speed
+anim_ms=200         # the CURRENT glide's duration (moves slow when crouched)
+crouched=0          # 1 when the ceiling overhead is low — the eye ducks
 ax0=0; az0=0; ay0=0; ax1=0; az1=0; ay1=0; anim_ayd=0
 fps=0               # rendered frames/sec (measured over ~10-frame windows)
 fps_t0=0
@@ -140,7 +161,7 @@ esac; }
 block_color() { bc_t=$1; case $bc_t in
   1) cr=0.55; cg=0.35; cb=0.20 ;;
   2) cr=0.55; cg=0.55; cb=0.58 ;;
-  3) cr=0.10; cg=0.10; cb=0.13 ;;
+  3) cr=0.55; cg=0.50; cb=0.70 ;;
   4) cr=0.95; cg=0.75; cb=0.10 ;;
   5) cr=0.20; cg=0.85; cb=0.85 ;;
   6) cr=0.85; cg=0.15; cb=0.20 ;;
@@ -181,7 +202,11 @@ kill_mime_at() { ka_a=$1; ka_b=$2; ka_i=0
       my[$ka_i]=${my[$ka_last]}
       mtype[$ka_i]=${mtype[$ka_last]}
       mhp[$ka_i]=${mhp[$ka_last]}
+      # the radar/label prev cells move with the swapped mime
+      rmx[$ka_i]=${rmx[$ka_last]}
+      rmz[$ka_i]=${rmz[$ka_last]}
       mime_count=$ka_last
+      hud_static_dirty=1
       play "G5 0.08"
       echo "  MIME sanitised  +5  ($mime_count left)"
       return 0
@@ -202,7 +227,7 @@ spawn_mime() {
     sm_ax=$((rv + 1))
     rand 14
     sm_az=$((rv + 1))
-    get_cell $sm_ax 0 $sm_az
+    get_cell $sm_ax 1 $sm_az
     if [ "$gv" -eq "$AIR" ]; then
       sm_ddx=$((sm_ax - px))
       sm_ddz=$((sm_az - pz))
@@ -222,16 +247,17 @@ spawn_mime() {
     mtype[$mime_count]=$sm_t
     mhp[$mime_count]=1
     mime_count=$((mime_count + 1))
+    hud_static_dirty=1
   fi
   return 0
 }
 
 can_step() { cs_a=$1; cs_b=$2; cs=0
   if [ "$cs_a" -lt 1 ]; then return 0; fi
-  if [ "$cs_a" -ge 15 ]; then return 0; fi
+  if [ "$cs_a" -ge "$BOUND_X" ]; then return 0; fi
   if [ "$cs_b" -lt 1 ]; then return 0; fi
-  if [ "$cs_b" -ge 15 ]; then return 0; fi
-  get_cell $cs_a 0 $cs_b
+  if [ "$cs_b" -ge "$BOUND_Z" ]; then return 0; fi
+  get_cell $cs_a 1 $cs_b
   if [ "$gv" -ne "$AIR" ]; then return 0; fi
   cs_j=0
   cs=1
@@ -296,16 +322,16 @@ update_mimes() {
 }
 
 # ─── Player ──────────────────────────────────────────────────────────
-hurt() { hu_d=$1; hp=$((hp - hu_d)); play "C3 0.15"; if [ "$hp" -lt 0 ]; then hp=0; fi; }
+hurt() { hu_d=$1; hp=$((hp - hu_d)); digits_dirty=1; play "C3 0.15"; if [ "$hp" -lt 0 ]; then hp=0; fi; }
 
 try_move() { tm_a=$1; tm_b=$2
   tm_nx=$((px + tm_a))
   tm_nz=$((pz + tm_b))
   if [ "$tm_nx" -lt 1 ]; then return 1; fi
-  if [ "$tm_nx" -ge 15 ]; then return 1; fi
+  if [ "$tm_nx" -ge "$BOUND_X" ]; then return 1; fi
   if [ "$tm_nz" -lt 1 ]; then return 1; fi
-  if [ "$tm_nz" -ge 15 ]; then return 1; fi
-  get_cell $tm_nx 0 $tm_nz
+  if [ "$tm_nz" -ge "$BOUND_Z" ]; then return 1; fi
+  get_cell $tm_nx 1 $tm_nz
   if [ "$gv" -eq "$AIR" ]; then
     mime_at $tm_nx $tm_nz
     if [ "$mf" -eq 0 ]; then
@@ -322,6 +348,7 @@ try_move() { tm_a=$1; tm_b=$2
 # reads the interpolated display values (dpx/dpz/dyaw + fractional milli
 # positions) so the view eases instead of snapping.
 start_anim() { ax0=$1; az0=$2; ay0=$3; ax1=$4; az1=$5; ay1=$6
+  anim_ms=$ANIM_MS
   # shortest yaw arc across the 0↔3 seam (3→0 turns +90°, not -270°)
   anim_ayd=$((ay1 - ay0))
   if [ "$anim_ayd" -gt 2 ]; then anim_ayd=$((anim_ayd - 4)); fi
@@ -334,12 +361,15 @@ try_anim_move() { ta_dx=$1; ta_dz=$2
   ta_nx=$((px + ta_dx))
   ta_nz=$((pz + ta_dz))
   if [ "$ta_nx" -lt 1 ]; then return 1; fi
-  if [ "$ta_nx" -ge 15 ]; then return 1; fi
+  if [ "$ta_nx" -ge "$BOUND_X" ]; then return 1; fi
   if [ "$ta_nz" -lt 1 ]; then return 1; fi
-  if [ "$ta_nz" -ge 15 ]; then return 1; fi
-  get_cell $ta_nx 0 $ta_nz
+  if [ "$ta_nz" -ge "$BOUND_Z" ]; then return 1; fi
+  get_cell $ta_nx 1 $ta_nz
   if [ "$gv" -eq "$AIR" ]; then
     start_anim $px $pz $yaw $ta_nx $ta_nz $yaw
+    # a mined passage is the same 1-tall opening as a corridor (mining
+    # breaks the y=1 wall), so every move is upright
+    anim_ms=$ANIM_MS
     return 0
   fi
   return 1
@@ -357,10 +387,10 @@ start_turn() { tt=$1
 compute_display() {
   if [ "$anim" -eq 1 ]; then
     anim_el=$((anim_now - anim_t0))
-    if [ "$anim_el" -gt "$ANIM_MS" ]; then anim_el=$ANIM_MS; fi
-    dpcx_ms=$((ax0 * 1000 + (ax1 - ax0) * 1000 * anim_el / ANIM_MS))
-    dpcz_ms=$((az0 * 1000 + (az1 - az0) * 1000 * anim_el / ANIM_MS))
-    dpyw_raw_ms=$((ay0 * 90000 + anim_ayd * 90000 * anim_el / ANIM_MS))
+    if [ "$anim_el" -gt "$anim_ms" ]; then anim_el=$anim_ms; fi
+    dpcx_ms=$((ax0 * 1000 + (ax1 - ax0) * 1000 * anim_el / anim_ms))
+    dpcz_ms=$((az0 * 1000 + (az1 - az0) * 1000 * anim_el / anim_ms))
+    dpyw_raw_ms=$((ay0 * 90000 + anim_ayd * 90000 * anim_el / anim_ms))
     dpyw_ms=$dpyw_raw_ms
     # keep the shader yaw in 0..360000: a left turn's 0→-90° arc
     # becomes a 360→270° glide (identical rotation, positive input)
@@ -376,6 +406,21 @@ compute_display() {
   dyaw=$((((dpyw_ms + 45000) / 90000) % 4))
 }
 
+# the eye ducks (and the walk slows) when the ceiling overhead is low:
+# mining breaks only the y=0 block, so a mined passage keeps the y=1
+# block and its 1-tall opening — the camera drops below it so it stops
+# looking like you're walking INTO the ceiling. Keyed off the DISPLAY
+# cell (where the eye actually is), so the duck happens as the eye
+# crosses into the low cell.
+update_crouch() {
+  get_cell $dpx 1 $dpz
+  if [ "$gv" -eq "$AIR" ]; then
+    crouched=0
+  else
+    crouched=1
+  fi
+}
+
 # shoot straight ahead at eye level — a 1-D walk down the facing row
 shoot() {
   muzzle=5
@@ -385,11 +430,13 @@ shoot() {
   while [ "$sh_i" -le "$RANGE" ]; do
     sh_tx=$((px + sh_dx * sh_i))
     sh_tz=$((pz + sh_dz * sh_i))
-    if [ "$sh_tx" -lt 1 ]; then return 1; fi
-    if [ "$sh_tx" -ge 15 ]; then return 1; fi
-    if [ "$sh_tz" -lt 1 ]; then return 1; fi
-    if [ "$sh_tz" -ge 15 ]; then return 1; fi
-    get_cell $sh_tx 0 $sh_tz
+    # the border ring (0 and MAP_W-1) is solid obsidian and MUST be
+    # reachable so hitting it plays the thud — bound by the full map
+    if [ "$sh_tx" -lt 0 ]; then return 1; fi
+    if [ "$sh_tx" -ge "$MAP_W" ]; then return 1; fi
+    if [ "$sh_tz" -lt 0 ]; then return 1; fi
+    if [ "$sh_tz" -ge "$MAP_D" ]; then return 1; fi
+    get_cell $sh_tx 1 $sh_tz
     if [ "$gv" -ne "$AIR" ]; then
       damage_cell $sh_tx $sh_tz $gv
       return 0
@@ -405,15 +452,21 @@ shoot() {
 }
 
 damage_cell() { dc_a=$1; dc_b=$2; dc_t=$3
+  # indestructible blocks (obsidian — the maze border): a dull thud, no
+  # damage accumulates, never breaks
+  if [ "$dc_t" -eq "$OBSIDIAN" ]; then
+    play "G2 0.10"
+    return 0
+  fi
   hardness $dc_t
-  add_bhp $dc_a 0 $dc_b
-  get_bhp $dc_a 0 $dc_b
+  add_bhp $dc_a 1 $dc_b
+  get_bhp $dc_a 1 $dc_b
   if [ "$bh" -ge "$h" ]; then
     if [ "$dc_t" -eq "$TREASURE" ]; then
-      set_cell $dc_a 0 $dc_b $AIR
+      set_cell $dc_a 1 $dc_b $AIR
       claim_treasure $dc_a $dc_b
     else
-      set_cell $dc_a 0 $dc_b $AIR
+      set_cell $dc_a 1 $dc_b $AIR
       score_block $dc_t
     fi
     # the radar's static cells changed — rebuild the base layer once
@@ -425,9 +478,9 @@ damage_cell() { dc_a=$1; dc_b=$2; dc_t=$3
 }
 
 score_block() { sb_t=$1
-  if [ "$sb_t" -eq "$GOLD" ]; then score=$((score + 10)); echo "  mined GOLD  +10"; fi
-  if [ "$sb_t" -eq "$DIAMOND" ]; then score=$((score + 25)); echo "  mined DIAMOND  +25"; fi
-  if [ "$sb_t" -eq "$RUBY" ]; then score=$((score + 50)); echo "  mined RUBY  +50"; fi
+  if [ "$sb_t" -eq "$GOLD" ]; then score=$((score + 10)); digits_dirty=1; echo "  mined GOLD  +10"; fi
+  if [ "$sb_t" -eq "$DIAMOND" ]; then score=$((score + 25)); digits_dirty=1; echo "  mined DIAMOND  +25"; fi
+  if [ "$sb_t" -eq "$RUBY" ]; then score=$((score + 50)); digits_dirty=1; echo "  mined RUBY  +50"; fi
 }
 
 claim_treasure() { ct_a=$1; ct_b=$2; ct_t=0
@@ -442,6 +495,7 @@ claim_treasure() { ct_a=$1; ct_b=$2; ct_t=0
         score=$((score + 100))
         maxhp=$((maxhp + 1))
         hp=$((hp + 1))
+        digits_dirty=1
         echo ""
         echo "=============================================="
         echo "  TREASURE FOUND: ${TREASURES[$ct_t]}"
@@ -469,7 +523,7 @@ gen_maze() {
   while [ "$gm_x" -lt "$MAP_W" ]; do
     gm_z=0
     while [ "$gm_z" -lt "$MAP_D" ]; do
-      set_cell $gm_x 0 $gm_z $STONE
+      set_cell $gm_x 0 $gm_z $DIRT
       set_cell $gm_x 1 $gm_z $STONE
       gm_z=$((gm_z + 1))
     done
@@ -481,7 +535,6 @@ gen_maze() {
   while [ "$gm_sx" -le 3 ]; do
     gm_sz=1
     while [ "$gm_sz" -le 3 ]; do
-      set_cell $gm_sx 0 $gm_sz $AIR
       set_cell $gm_sx 1 $gm_sz $AIR
       gm_sz=$((gm_sz + 1))
     done
@@ -494,7 +547,6 @@ gen_maze() {
   gm_steps=0
   gm_total=$((MAP_W * MAP_D * 55 / 100))
   while [ "$gm_steps" -lt "$gm_total" ]; do
-    set_cell $gm_cx 0 $gm_cz $AIR
     set_cell $gm_cx 1 $gm_cz $AIR
     rand 4
     if [ "$rv" -eq 0 ]; then gm_cx=$((gm_cx + 1)); fi
@@ -502,30 +554,24 @@ gen_maze() {
     if [ "$rv" -eq 2 ]; then gm_cz=$((gm_cz + 1)); fi
     if [ "$rv" -eq 3 ]; then gm_cz=$((gm_cz - 1)); fi
     if [ "$gm_cx" -lt 1 ]; then gm_cx=1; fi
-    if [ "$gm_cx" -ge 15 ]; then gm_cx=14; fi
+    if [ "$gm_cx" -ge "$BOUND_X" ]; then gm_cx=$BOUND_X; fi
     if [ "$gm_cz" -lt 1 ]; then gm_cz=1; fi
-    if [ "$gm_cz" -ge 15 ]; then gm_cz=14; fi
+    if [ "$gm_cz" -ge "$BOUND_Z" ]; then gm_cz=$BOUND_Z; fi
     gm_steps=$((gm_steps + 1))
   done
-  # sprinkle coloured blocks into the y0 walls (and recolor y1 above)
+  # sprinkle coloured blocks into the y1 walls (the mineable layer)
   gm_placed=0
   while [ "$gm_placed" -lt 18 ]; do
     rand 14
     gm_rx=$((rv + 1))
     rand 14
     gm_rz=$((rv + 1))
-    get_cell $gm_rx 0 $gm_rz
+    get_cell $gm_rx 1 $gm_rz
     if [ "$gv" -eq "$STONE" ]; then
       rand 3
-      if [ "$rv" -eq 0 ]; then set_cell $gm_rx 0 $gm_rz $GOLD; fi
-      if [ "$rv" -eq 1 ]; then set_cell $gm_rx 0 $gm_rz $DIAMOND; fi
-      if [ "$rv" -eq 2 ]; then set_cell $gm_rx 0 $gm_rz $RUBY; fi
-      get_cell $gm_rx 1 $gm_rz
-      if [ "$gv" -eq "$STONE" ]; then
-        if [ "$rv" -eq 0 ]; then set_cell $gm_rx 1 $gm_rz $GOLD; fi
-        if [ "$rv" -eq 1 ]; then set_cell $gm_rx 1 $gm_rz $DIAMOND; fi
-        if [ "$rv" -eq 2 ]; then set_cell $gm_rx 1 $gm_rz $RUBY; fi
-      fi
+      if [ "$rv" -eq 0 ]; then set_cell $gm_rx 1 $gm_rz $GOLD; fi
+      if [ "$rv" -eq 1 ]; then set_cell $gm_rx 1 $gm_rz $DIAMOND; fi
+      if [ "$rv" -eq 2 ]; then set_cell $gm_rx 1 $gm_rz $RUBY; fi
       gm_placed=$((gm_placed + 1))
     fi
   done
@@ -544,6 +590,39 @@ gen_maze() {
       if [ "$rv" -eq 2 ]; then set_cell $gm_rx 2 $gm_rz $GOLD; fi
       gm_placed=$((gm_placed + 1))
     fi
+  done
+  # the maze border is INDESTRUCTIBLE obsidian — a solid perimeter the
+  # player can never mine through. Lay the ring LAST so it overwrites
+  # any border cells the drunkard's walk carved. Bounds go through
+  # PLAIN vars: a `$((…))` inside a multi-test `||` chain (and a `\`
+  # line continuation) is not parsed reliably — it silently dropped the
+  # z-tests, leaving only the x=0/z=0 edges obsidian.
+  gm_bx=$((MAP_W - 1))
+  gm_bz=$((MAP_D - 1))
+  gm_x=0
+  while [ "$gm_x" -lt "$MAP_W" ]; do
+    gm_z=0
+    while [ "$gm_z" -lt "$MAP_D" ]; do
+      if [ "$gm_x" -eq 0 ] || [ "$gm_x" -eq "$gm_bx" ] || [ "$gm_z" -eq 0 ] || [ "$gm_z" -eq "$gm_bz" ]; then
+        set_cell $gm_x 0 $gm_z $OBSIDIAN
+        set_cell $gm_x 1 $gm_z $OBSIDIAN
+      fi
+      gm_z=$((gm_z + 1))
+    done
+    gm_x=$((gm_x + 1))
+  done
+  # a walkable 2-tall corridor rings the maze just inside the obsidian
+  # border, so every edge is reachable and the indestructible thud can
+  # be heard from any side (the drunkard's walk alone rarely carves the
+  # far side). Interior walls at x/z ∈ [2, 13] are untouched.
+  gm_ci=$((MAP_W - 2))
+  gm_x=1
+  while [ "$gm_x" -le "$gm_ci" ]; do
+    set_cell $gm_x 1 1 $AIR
+    set_cell $gm_x 1 $gm_ci $AIR
+    set_cell 1 1 $gm_x $AIR
+    set_cell $gm_ci 1 $gm_x $AIR
+    gm_x=$((gm_x + 1))
   done
 }
 
@@ -565,7 +644,7 @@ place_treasures() {
       pt_rx=$((rv + 1))
       rand 14
       pt_rz=$((rv + 1))
-      get_cell $pt_rx 0 $pt_rz
+      get_cell $pt_rx 1 $pt_rz
       if [ "$gv" -eq "$AIR" ]; then
         pt_ddx=$((pt_rx - px))
         pt_ddz=$((pt_rz - pz))
@@ -579,7 +658,7 @@ place_treasures() {
       pt_tries=$((pt_tries + 1))
     done
     if [ "$pt_placed" -eq 1 ]; then
-      set_cell $pt_rx 0 $pt_rz $TREASURE
+      set_cell $pt_rx 1 $pt_rz $TREASURE
       set_treasure_pos $pt_t $pt_rx $pt_rz
     fi
     pt_t=$((pt_t + 1))
@@ -587,10 +666,51 @@ place_treasures() {
 }
 
 # ─── Rendering ───────────────────────────────────────────────────────
-# The vertex shader is hand-written ES 1.00 (the backend only emits
-# fragment shaders); the FRAGMENT shader is AUTHORED IN BASH — see
-# examples/mimecroft-frag.sh — and compiled by the sh→GLSL generator
-# (sh2glsl / glsl_backend.rs) at startup.
+# BOTH shader stages are AUTHORED IN BASH — see
+# examples/mimecroft-frag.sh (fragment) and examples/mimecroft-vertex.sh
+# (vertex) — and compiled by the sh→GLSL generator (sh2glsl /
+# glsl_backend.rs) at startup.
+#
+# The vertex shader is authored in bash (emit_vertex_shader compiles
+# /examples/mimecroft-vertex.sh with `sh2glsl --vertex`); the FRAGMENT
+# shader is authored in bash (emit_fragment_shader writes the program to
+# /tmp and compiles it with `sh2glsl`). Both fall back to the
+# equivalent hand-written GLSL when the generator is unavailable or its
+# output fails to compile under the browser's ANGLE.
+emit_vertex_shader() {
+  # the hand-written equivalent (the fallback when the generator is
+  # unavailable OR its GLSL fails to compile under the browser's ANGLE —
+  # the CLI NullGL never type-checks the shader, so a real compile is
+  # the ground truth). Same look as the generated shader: object→world,
+  # camera-relative delta (the eye at the player cell CENTRE — only
+  # the y gets +0.5; x/z stay unshifted so corridors render centred),
+  # yaw rotation, the fake perspective + the
+  # strafe screen-shift (uCamShift·w keeps it a constant NDC-x offset),
+  # and the uOverlay > 0.5 flat-quad path.
+  vs_fb="attribute vec3 aPosition; attribute vec3 aShade; attribute vec2 aUv; uniform vec3 uCamPos; uniform float uCamYaw; uniform float uCamShift; uniform vec3 uObjPos; uniform vec3 uBlockColor; uniform vec3 uScale; uniform float uOverlay; varying vec4 vColor; varying vec2 vUv; void main() { vec3 p = aPosition * uScale + uObjPos; if (uOverlay > 0.5) { gl_Position = vec4(p.x + uCamShift, p.y, -0.95, 1.0); vColor = vec4(aShade * uBlockColor, 1.0); vUv = vec2(0.0); return; } vec3 cam = uCamPos + vec3(0.0, 0.5, 0.0); vec3 d = p - cam; float a = uCamYaw * 0.0174532925; float c = cos(a); float s = sin(a); vec3 rel = vec3(d.x * c + d.z * s, d.y, -d.x * s + d.z * c); float w = -rel.z; gl_Position = vec4(rel.x * 0.45 + uCamShift * w, rel.y * 0.45, w * w / 64.0, w); vColor = vec4(aShade * uBlockColor, 1.0); vUv = aUv; }"
+  # compile the bash-authored vertex program — canonical at
+  # /examples/mimecroft-vertex.sh (the /examples mount serves
+  # www/examples/) — with sh2glsl --vertex; fall back when the
+  # generator is unavailable or the file isn't mounted
+  glsl=$(sh2glsl --vertex /examples/mimecroft-vertex.sh)
+  if [ "$glsl" != "" ]; then
+    echo "$glsl" > /dev/webgl/shader/vertex
+    # real-GL ground truth: if the generated shader failed to compile,
+    # fall back to the hand-written one (same look, guaranteed-ES1.00).
+    # The device logs "[shader/vertex] FAILED: …" on a bad compile.
+    vs_log=$(cat /dev/webgl/log)
+    vs_probe=${vs_log%FAILED*}
+    if [ "$vs_probe" != "$vs_log" ]; then
+      echo "$vs_fb" > /dev/webgl/shader/vertex
+    fi
+  else
+    echo "$vs_fb" > /dev/webgl/shader/vertex
+  fi
+}
+
+# the fragment shader is authored in bash (see examples/mimecroft-frag.sh)
+# and compiled by the sh→GLSL generator (sh2glsl / glsl_backend.rs) at
+# startup.
 emit_fragment_shader() {
   # write the bash-authored fragment program to /tmp (single-quoted so
   # $(( ... )) stays literal), then compile it with the generator
@@ -638,9 +758,12 @@ emit_fragment_shader() {
     echo 'if [ "$edge" -gt 450 ]; then' >> /tmp/mimecroft-frag.sh
     echo '  dim=$((edge - 450))' >> /tmp/mimecroft-frag.sh
     echo '  if [ "$dim" -gt 30 ]; then dim=30; fi' >> /tmp/mimecroft-frag.sh
-    echo '  r=$((r - dim))' >> /tmp/mimecroft-frag.sh
-    echo '  g=$((g - dim))' >> /tmp/mimecroft-frag.sh
-    echo '  b=$((b - dim))' >> /tmp/mimecroft-frag.sh
+    # multiplicative dim (r - r·dim/255): scales toward dark instead of
+    # subtracting — dark pixels can never hard-clip to black. r·dim ≤
+    # 255·30 fits mediump int, so the fragment stays ES 1.00 portable.
+    echo '  r=$((r - r * dim / 255))' >> /tmp/mimecroft-frag.sh
+    echo '  g=$((g - g * dim / 255))' >> /tmp/mimecroft-frag.sh
+    echo '  b=$((b - b * dim / 255))' >> /tmp/mimecroft-frag.sh
     echo 'fi' >> /tmp/mimecroft-frag.sh
   fi
   echo 'if [ "$r" -lt 0 ]; then r=0; fi' >> /tmp/mimecroft-frag.sh
@@ -666,18 +789,26 @@ emit_fragment_shader() {
     fs_fb="$fs_fb float h = mod(floor(gl_FragCoord.x) * 7.0 + floor(gl_FragCoord.y) * 13.0, 97.0); if (h < 1.0) { c = vec3(1.0, c.g * 0.5, c.b * 0.5); }"
   fi
   if [ "$CRT_ON" -eq 1 ]; then
-    fs_fb="$fs_fb float e = abs(gl_FragCoord.x - 400.0) + abs(gl_FragCoord.y - 300.0); if (e > 450.0) { float d = min(e - 450.0, 30.0); c = max(c - vec3(d), 0.0); }"
+    fs_fb="$fs_fb float e = abs(gl_FragCoord.x - 400.0) + abs(gl_FragCoord.y - 300.0); if (e > 450.0) { float d = min(e - 450.0, 30.0); c *= (255.0 - d) / 255.0; }"
   fi
   fs_fb="$fs_fb gl_FragColor = vec4(c, 1.0); }"
-  glsl=$(sh2glsl /tmp/mimecroft-frag.sh)
-  if [ "$glsl" != "" ]; then
-    echo "$glsl" > /dev/webgl/shader/fragment
-    # real-GL ground truth: if the generated shader failed to compile,
-    # fall back to the hand-written one (same look, guaranteed-ES1.00).
-    # The device logs "[shader/fragment] FAILED: …" on a bad compile.
-    fs_log=$(cat /dev/webgl/log)
-    fs_probe=${fs_log%FAILED*}
-    if [ "$fs_probe" != "$fs_log" ]; then
+  # the sh→GLSL generator hardcodes the 16×16 texel grid (uv_x = vUv*16);
+  # it is only valid at the default resolution. For other texture sizes
+  # use the hand-written shader — it samples raw UVs and the device's
+  # NEAREST filter does the texel pick at any resolution.
+  if [ "$tex_size" -eq 16 ]; then
+    glsl=$(sh2glsl /tmp/mimecroft-frag.sh)
+    if [ "$glsl" != "" ]; then
+      echo "$glsl" > /dev/webgl/shader/fragment
+      # real-GL ground truth: if the generated shader failed to compile,
+      # fall back to the hand-written one (same look, guaranteed-ES1.00).
+      # The device logs "[shader/fragment] FAILED: …" on a bad compile.
+      fs_log=$(cat /dev/webgl/log)
+      fs_probe=${fs_log%FAILED*}
+      if [ "$fs_probe" != "$fs_log" ]; then
+        echo "$fs_fb" > /dev/webgl/shader/fragment
+      fi
+    else
       echo "$fs_fb" > /dev/webgl/shader/fragment
     fi
   else
@@ -686,7 +817,12 @@ emit_fragment_shader() {
 }
 
 setup_webgl() {
-  echo "attribute vec3 aPosition; attribute vec3 aShade; attribute vec2 aUv; uniform vec3 uCamPos; uniform float uCamYaw; uniform vec3 uObjPos; uniform vec3 uBlockColor; uniform vec3 uScale; uniform float uOverlay; varying vec4 vColor; varying vec2 vUv; void main() { vec3 p = aPosition * uScale + uObjPos; if (uOverlay > 0.5) { gl_Position = vec4(p.x + 0.5, p.y, -0.95, 1.0); vColor = vec4(aShade * uBlockColor, 1.0); vUv = vec2(0.0); return; } vec3 cam = uCamPos + vec3(0.5, 0.5, 0.5); vec3 d = p - cam; float a = uCamYaw * 0.0174532925; float c = cos(a); float s = sin(a); vec3 rel = vec3(d.x * c + d.z * s, d.y, -d.x * s + d.z * c); float w = -rel.z; gl_Position = vec4(rel.x * 0.9 + 0.5 * w, rel.y * 0.9, w * w / 64.0, w); vColor = vec4(aShade * uBlockColor, 1.0); vUv = aUv; }" > /dev/webgl/shader/vertex
+  # the vertex shader is authored in bash — emit_vertex_shader compiles
+  # /examples/mimecroft-vertex.sh via sh2glsl --vertex when available,
+  # otherwise the equivalent hand-written GLSL (same look: yaw rotation,
+  # fake perspective, the strafe screen-shift, the overlay flat-quad
+  # path)
+  emit_vertex_shader
   # the fragment shader is authored in bash (emit_fragment_shader) and
   # compiled by sh2glsl when available — otherwise the equivalent
   # hand-written textured GLSL (the same texture × colour tint + the
@@ -699,6 +835,8 @@ setup_webgl() {
   echo "0" > /dev/webgl/uniform/1i/uTex
   echo "9" > /dev/webgl/uniform/1i/uCrack
   echo "0" > /dev/webgl/uniform/1i/uDamage
+  fmt_pos $cam_shift_ms
+  echo "$fv" > /dev/webgl/uniform/1f/uCamShift
   echo "u16 0 1 2 0 2 3 4 5 6 4 6 7 8 9 10 8 10 11 12 13 14 12 14 15 16 17 18 16 18 19 20 21 22 20 22 23" > /dev/webgl/buffer/cube
   echo "f32 -0.5 -0.5 0 0.5 -0.5 0 0.5 0.5 0 -0.5 0.5 0" > /dev/webgl/buffer/quadpos
   echo "f32 1 1 1 1 1 1 1 1 1 1 1 1" > /dev/webgl/buffer/quadshade
@@ -733,16 +871,18 @@ load_tex() { lt_name=$1; lt_idx=$2
   # a macrotask yield so the preceding "    name…" line paints before
   # this texture's (transpiled) generation runs
   sleep 0.01
-  # cached payload from an earlier run (session /tmp, persistent /home)
-  if [ -f /home/mimecroft-tex-$lt_name ]; then
-    cat /home/mimecroft-tex-$lt_name > /dev/webgl/texture/$lt_idx
+  # cached payload from an earlier run (session /tmp, persistent /home);
+  # the cache key carries the resolution + seed so a settings change
+  # regenerates instead of reusing a stale texture
+  if [ -f /home/mimecroft-tex-$lt_name-$tex_size-$tex_seed ]; then
+    cat /home/mimecroft-tex-$lt_name-$tex_size-$tex_seed > /dev/webgl/texture/$lt_idx
     return 0
   fi
-  if [ -f /tmp/mimecroft-tex-$lt_name ]; then
-    cat /tmp/mimecroft-tex-$lt_name > /dev/webgl/texture/$lt_idx
+  if [ -f /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed ]; then
+    cat /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed > /dev/webgl/texture/$lt_idx
     return 0
   fi
-  lt_s=$(bash /examples/textures/texture-$lt_name.sh --tsv)
+  lt_s=$(bash /examples/textures/texture-$lt_name.sh --tsv --size $tex_size --seed $tex_seed)
   lt_hdr=${lt_s%%	*}
   if [ "$lt_hdr" != "#texture" ]; then return 0; fi
   # header: strip #texture + NAME, READ SIZExSIZE, strip the rest
@@ -791,8 +931,8 @@ load_tex() { lt_name=$1; lt_idx=$2
 "
     lt_px=$((lt_px + 1))
   done
-  echo "$lt_payload" > /home/mimecroft-tex-$lt_name
-  echo "$lt_payload" > /tmp/mimecroft-tex-$lt_name
+  echo "$lt_payload" > /home/mimecroft-tex-$lt_name-$tex_size-$tex_seed
+  echo "$lt_payload" > /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed
   echo "$lt_payload" > /dev/webgl/texture/$lt_idx
   # show the freshly generated texture on the loading screen (one swap
   # keeps the keyboard grab fresh, so keys typed during startup queue)
@@ -803,11 +943,11 @@ load_tex() { lt_name=$1; lt_idx=$2
 # RGBA variant (the transparent crack overlay — R G B A per pixel)
 load_tex4() { lt_name=$1; lt_idx=$2
   sleep 0.01
-  if [ -f /tmp/mimecroft-tex-$lt_name ]; then
-    cat /tmp/mimecroft-tex-$lt_name > /dev/webgl/texture/$lt_idx
+  if [ -f /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed ]; then
+    cat /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed > /dev/webgl/texture/$lt_idx
     return 0
   fi
-  lt_s=$(bash /examples/textures/texture-$lt_name.sh --tsv)
+  lt_s=$(bash /examples/textures/texture-$lt_name.sh --tsv --size $tex_size --seed $tex_seed)
   lt_hdr=${lt_s%%	*}
   if [ "$lt_hdr" != "#texture" ]; then return 0; fi
   strip_tex_field
@@ -833,11 +973,15 @@ load_tex4() { lt_name=$1; lt_idx=$2
     lt_payload="$lt_payload $lt_r $lt_g $lt_b $lt_a"
     lt_px=$((lt_px + 1))
   done
-  echo "$lt_payload" > /tmp/mimecroft-tex-$lt_name
+  echo "$lt_payload" > /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed
   echo "$lt_payload" > /dev/webgl/texture/$lt_idx
 }
 
 load_textures() {
+  # wipe the GL back buffer first so the loading grid builds on black
+  # instead of accumulating over the menu card (the HUD composite blends
+  # the layer over the preserved drawing buffer)
+  echo "clear" > /dev/webgl/call
   echo "    stone…"
   load_tex stone 1
   echo "    sandstone…"
@@ -854,15 +998,24 @@ load_textures() {
   load_tex wood 7
   echo "    dirt…"
   load_tex dirt 8
+  echo "    obsidian…"
+  load_tex obsidian 10
   echo "    crack…"
   load_tex4 crack 9
+  # the MIME type textures — one icon per evil MIME (11=jpeg 12=png
+  # 13=octet-stream 14=text/plain)
+  echo "    MIME icons…"
+  load_tex jpeg 11
+  load_tex png 12
+  load_tex octet 13
+  load_tex text 14
 }
 
 # the world is drawn as ONE batched payload per frame (/dev/webgl/blocks:
 # "x y z sx sy sz r g b tx dam" lines) — the per-cube echo round-trips
 # were the frame's bottleneck (~6 async dispatches per cube)
 draw_block() { db_a=$1; db_b=$2; db_c=$3; db_r=$4; db_g=$5; db_bl=$6; db_tx=$7
-  get_bhp $db_a 0 $db_c
+  get_bhp $db_a $db_b $db_c
   blk_p="${blk_p}$db_a $db_b $db_c 1 1 1 $db_r $db_g $db_bl $db_tx $bh
 "
 }
@@ -871,6 +1024,7 @@ draw_block() { db_a=$1; db_b=$2; db_c=$3; db_r=$4; db_g=$5; db_bl=$6; db_tx=$7
 # 5=grass; 0 = the device's white fallback → the flat block colour)
 texture_of() { to_t=$1
   if [ "$to_t" -eq 2 ]; then tx=1
+  elif [ "$to_t" -eq 3 ]; then tx=10
   elif [ "$to_t" -eq 4 ]; then tx=2
   elif [ "$to_t" -eq 5 ]; then tx=3
   elif [ "$to_t" -eq 6 ]; then tx=4
@@ -880,22 +1034,21 @@ texture_of() { to_t=$1
 
 # texture per MIME type (1=jpeg 2=png 3=octet 4=text)
 mime_tex_of() { mtt=$1
-  if [ "$mtt" -eq 1 ]; then tx=6
-  elif [ "$mtt" -eq 2 ]; then tx=7
-  elif [ "$mtt" -eq 3 ]; then tx=8
-  else tx=1; fi
+  if [ "$mtt" -eq 1 ]; then tx=11
+  elif [ "$mtt" -eq 2 ]; then tx=12
+  elif [ "$mtt" -eq 3 ]; then tx=13
+  else tx=14; fi
 }
 
 # cull + draw one cell (or a mime standing in it)
 try_draw() { td_a=$1; td_b=$2; td_c=$3
   get_cell $td_a $td_b $td_c
   if [ "$gv" -eq "$AIR" ]; then
-    if [ "$td_b" -eq 0 ]; then
+    if [ "$td_b" -eq 1 ]; then
       mime_at $td_a $td_c
       if [ "$mf" -eq 1 ]; then
-        mime_color $mt
         mime_tex_of $mt
-        blk_p="${blk_p}$td_a $td_b $td_c 0.7 0.7 0.7 $cr $cg $cb $tx 0
+        blk_p="${blk_p}$td_a $td_b $td_c 0.7 0.7 0.7 1 1 1 $tx 0
 "
       fi
     fi
@@ -954,7 +1107,12 @@ render_frame() {
   czs=$fv
   fmt_pos $dpyw_ms
   yws=$fv
-  echo "$cxs 0 $czs" > /dev/webgl/uniform/3f/uCamPos
+  # the eye height: standing 0.5 (the shader adds 0.5 to uCamPos.y);
+  # crouched −0.4 → the eye ducks to 0.1 under a 1-tall opening
+  if [ "$crouched" -eq 1 ]; then cy_ms=-400; else cy_ms=0; fi
+  fmt_pos $cy_ms
+  cys=$fv
+  echo "$cxs $cys $czs" > /dev/webgl/uniform/3f/uCamPos
   echo "$yws" > /dev/webgl/uniform/1f/uCamYaw
   # floor + ceiling planes — the maze floor is carved air, so without
   # them the near-black clear colour shows as a void below/above
@@ -979,7 +1137,7 @@ render_frame() {
     done
   fi
   if [ "$dyaw" -eq 1 ]; then
-    rf_x=15
+    rf_x=$BOUND_X
     while [ "$rf_x" -ge 0 ]; do
       rf_z=0
       while [ "$rf_z" -lt "$MAP_D" ]; do
@@ -994,7 +1152,7 @@ render_frame() {
   if [ "$dyaw" -eq 2 ]; then
     # facing +z: front = z > dpz, so FAR = largest z — draw z
     # descending so far cubes hit the canvas first, near last
-    rf_z=15
+    rf_z=$BOUND_Z
     while [ "$rf_z" -ge 0 ]; do
       rf_x=0
       while [ "$rf_x" -lt "$MAP_W" ]; do
@@ -1071,6 +1229,22 @@ draw_rect() { dr_cx=$1; dr_cy=$2; dr_w=$3; dr_h=$4
 "
 }
 
+# an erase rect — the device clears this area of the PERSISTENT HUD
+# layer (transparent → the world shows through), so a cell or label can
+# be redrawn without wiping the whole map. Args in milli (cx cy w h).
+erase_rect() { er_cx=$1; er_cy=$2; er_w=$3; er_h=$4
+  fmt_ndc $er_cx
+  er_cxs=$fv
+  fmt_ndc $er_cy
+  er_cys=$fv
+  fmt_pos $er_w
+  er_ws=$fv
+  fmt_pos $er_h
+  er_hs=$fv
+  ov_text="${ov_text}E $er_cxs $er_cys $er_ws $er_hs
+"
+}
+
 # the viewmodel gun — a 3D-looking rectangular shape, bottom-right at 3/4
 # across, drawn back so it pokes off the bottom-right edge, tilted 20°
 # counter-clockwise. R-lines are rotated quads (R cx cy w h deg r g b)
@@ -1078,6 +1252,8 @@ draw_rect() { dr_cx=$1; dr_cy=$2; dr_w=$3; dr_h=$4
 # after a shot.
 draw_gun() {
   # receiver body (partially off the bottom/right edge) + top highlight
+  # + barrel — STATIC, drawn once into the static layer (the muzzle
+  # flash is per-frame and erased when it fades)
   ov_text="${ov_text}R 0.85 -0.95 0.40 0.30 20 0.24 0.26 0.30
 "
   ov_text="${ov_text}R 0.85 -0.82 0.40 0.05 20 0.32 0.34 0.38
@@ -1089,13 +1265,6 @@ draw_gun() {
 "
   ov_text="${ov_text}R 0.735 -0.50 0.03 0.90 20 0.15 0.16 0.18
 "
-  # muzzle flash — bright glow + white-hot core at the barrel tip
-  if [ "$muzzle" -gt 0 ]; then
-    ov_text="${ov_text}R 0.55 -0.08 0.22 0.22 20 1.0 0.82 0.2
-"
-    ov_text="${ov_text}R 0.55 -0.08 0.10 0.10 20 1.0 1.0 0.9
-"
-  fi
 }
 
 # 3×5 pixel font — flat table of 38 glyphs × 15 pixels (row-major).
@@ -1212,120 +1381,116 @@ draw_text() { dt_t=$1; dt_len=$2; dt_x=$3; dt_y=$4; dt_px=$5; dt_py=$6
 # cells) is prebuilt into hud_static once — this draws only the DYNAMIC
 # part: the player triangle and the living MIMEs (they move). Air cells
 # stay dark (the base skips them), so nothing overlaps.
+# the radar base cell (wall grey / treasure green) at a map cell —
+# used to restore cells that a wide rotate-erase wiped from the static
+# layer. Air cells draw nothing (they are transparent).
+draw_radar_cell() { rc_x=$1; rc_z=$2
+  get_cell $rc_x 0 $rc_z
+  if [ "$gv" -eq "$TREASURE" ]; then rc_r=0.20; rc_g=1.00; rc_b=0.45
+  elif [ "$gv" -ne "$AIR" ]; then rc_r=0.42; rc_g=0.42; rc_b=0.47
+  else return 0
+  fi
+  rc_cxm=$((RADAR_X + rc_x*44))
+  rc_cym=$((1720 - rc_z*60))
+  fmt_ndc $rc_cxm
+  rc_cxs=$fv
+  fmt_ndc $rc_cym
+  rc_cys=$fv
+  draw_rect $rc_cxs $rc_cys $CELL_W $CELL_H $rc_r $rc_g $rc_b
+}
+
+# the mime's radar blip (ring + coloured core) at its current cell
+draw_mime_blip() { mb_i=$1
+  mime_color ${mtype[$mb_i]}
+  mb_cxm=$((RADAR_X + ${mx[$mb_i]}*44))
+  mb_cym=$((1720 - ${mz[$mb_i]}*60))
+  fmt_ndc $mb_cxm
+  mb_cxs=$fv
+  fmt_ndc $mb_cym
+  mb_cys=$fv
+  draw_rect $mb_cxs $mb_cys 0.075 0.100 0.10 0.10 0.12
+  draw_rect $mb_cxs $mb_cys 0.050 0.070 $cr $cg $cb
+}
+
 draw_minimap() {
-  # the player is a triangle pointing the way they face (yaw 0 = up on
-  # the radar = -z, the world direction the camera starts in)
+  # the radar BASE (walls + treasure cells) is in the static layer —
+  # per frame only the CHANGED squares update: erase the old cell, draw
+  # the new. The player is a triangle pointing the way they face
+  # (yaw 0 = up on the radar = -z, the world direction the camera
+  # starts in); display yaw (unwrapped, can be negative) so it glides
+  # through the SHORT arc during a turn, mirroring the view.
+  dm_deg=$((dpyw_raw_ms / 1000))
+  if [ "$prev_px" -ne "$dpx" ] || [ "$prev_pz" -ne "$dpz" ] || [ "$prev_deg" -ne "$dm_deg" ]; then
+    if [ "$prev_px" -ge 0 ]; then
+      if [ "$prev_deg" -ne "$dm_deg" ]; then
+        # rotating: the triangle's corners sweep into the LEFT/RIGHT
+        # neighbour cells — erase the whole 3-cell row, then restore the
+        # base cells (walls/treasures) and any mimes that were wiped
+        erase_rect $((RADAR_X + prev_px*44)) $((1720 - prev_pz*60)) 132 64
+        draw_radar_cell $((prev_px - 1)) $prev_pz
+        draw_radar_cell $prev_px $prev_pz
+        draw_radar_cell $((prev_px + 1)) $prev_pz
+        dm_ai=0
+        while [ "$dm_ai" -lt "$mime_count" ]; do
+          dm_mx=${mx[$dm_ai]}
+          dm_mz=${mz[$dm_ai]}
+          if [ "$dm_mz" -eq "$prev_pz" ]; then
+            if [ "$dm_mx" -eq "$prev_px" ] || [ "$dm_mx" -eq "$((prev_px - 1))" ] || [ "$dm_mx" -eq "$((prev_px + 1))" ]; then
+              draw_mime_blip $dm_ai
+            fi
+          fi
+          dm_ai=$((dm_ai + 1))
+        done
+      else
+        # a move (angle unchanged): the triangle fits a 64 box
+        erase_rect $((RADAR_X + prev_px*44)) $((1720 - prev_pz*60)) 64 64
+      fi
+    fi
+    prev_px=$dpx
+    prev_pz=$dpz
+    prev_deg=$dm_deg
+  fi
   dm_cxm=$((RADAR_X + dpx*44))
   dm_cym=$((1720 - dpz*60))
   fmt_ndc $dm_cxm
   dm_cxs=$fv
   fmt_ndc $dm_cym
   dm_cys=$fv
-  # display yaw (unwrapped, can be negative) so the triangle glides
-  # through the SHORT arc during a turn, mirroring the view. deg is
-  # CLOCKWISE from up on the radar (the device rasterizes the T marker
-  # with -deg): yaw 0 (-z) = up, +x = right, +z = down, -x = left.
-  # Bright yellow + slightly larger than a cell so it pops.
-  dm_deg=$((dpyw_raw_ms / 1000))
   ov_text="${ov_text}T $dm_cxs $dm_cys 0.042 1.0 1.0 1.0 $dm_deg
 "
-  # mimes — bright red blips on the radar (they move every MIME_STEP
-  # frames). Ring + coloured core so every type pops against the grey
-  # walls — the raw mime colours (grey/white types) vanished before.
+  # mimes — bright red blips (ring + coloured core); only MOVED cells
+  # are erased and redrawn (they step every MIME_STEP frames)
   mi=0
   while [ "$mi" -lt "$mime_count" ]; do
     dm_mx=${mx[$mi]}
     dm_mz=${mz[$mi]}
-    mime_color ${mtype[$mi]}
-    dm_cxm=$((RADAR_X + dm_mx*44))
-    dm_cym=$((1720 - dm_mz*60))
-    fmt_ndc $dm_cxm
-    dm_cxs=$fv
-    fmt_ndc $dm_cym
-    dm_cys=$fv
-    draw_rect $dm_cxs $dm_cys 0.075 0.100 0.10 0.10 0.12
-    draw_rect $dm_cxs $dm_cys 0.050 0.070 $cr $cg $cb
-    mi=$((mi + 1))
-  done
-}
-
-# mime type names (index 1=jpeg 2=png 3=octet-stream 4=text/plain) + lengths
-MTNAME=("none" "image/jpeg" "image/png" "application/octet-stream" "text/plain")
-MTN_LEN=(0 10 9 24 10)
-# the same names SPLIT at the / — part A (type) above part B (subtype),
-# drawn as a two-line tag centered on the cube (draw_mime_labels)
-MTNAME_A=("none" "image" "image" "application" "text")
-MTN_A_LEN=(0 5 5 11 4)
-MTNAME_B=("none" "jpeg" "png" "octet-stream" "plain")
-MTN_B_LEN=(0 4 3 12 5)
-
-# project a world cell to overlay NDC (milli) — the yaw rotation is exact
-# integer sign/axis swaps, the perspective divide uses integer math
-mime_label_pos() { ml_x=$1; ml_z=$2
-  ml_dx=$((ml_x - dpx))
-  ml_dz=$((ml_z - dpz))
-  if [ "$dyaw" -eq 0 ]; then ml_rx=$ml_dx; ml_dp=$((0 - ml_dz)); fi
-  if [ "$dyaw" -eq 1 ]; then ml_rx=$ml_dz; ml_dp=$ml_dx; fi
-  if [ "$dyaw" -eq 2 ]; then ml_rx=$((0 - ml_dx)); ml_dp=$ml_dz; fi
-  if [ "$dyaw" -eq 3 ]; then ml_rx=$((0 - ml_dz)); ml_dp=$((0 - ml_dx)); fi
-  ml_ok=0
-  if [ "$ml_dp" -gt 0 ]; then
-    ml_cxm=$((1000 + CAM_SHIFT + ml_rx * 900 / ml_dp))
-    ml_cym=$((1030 + 450 / ml_dp))
-    if [ "$ml_cxm" -ge 0 ] && [ "$ml_cxm" -le 2000 ] && [ "$ml_cym" -ge 0 ] && [ "$ml_cym" -le 2000 ]; then
-      ml_cx=$ml_cxm
-      ml_cy=$ml_cym
-      ml_ok=1
-    fi
-  fi
-}
-
-draw_text_centered() { dtc_cx=$1; dtc_y=$2; dtc_t=$3; dtc_len=$4; dtc_px=$5
-  dtc_w=$((dtc_len * 4 * dtc_px))
-  dtc_x=$((dtc_cx - dtc_w / 2))
-  draw_text $dtc_t $dtc_len $dtc_x $dtc_y $dtc_px $6 $7 $8 $9
-}
-
-# the MIME type tag — split at the /, both halves drawn centered ON the
-# cube (type above subtype) instead of one long line floating above it.
-# ml_cy is the CELL TOP's projection; the cube (a 0.7 block sitting on
-# layer 0, y-centre 0.35, camera at 0.5) projects 30 + 585/dp below it.
-draw_mime_labels() {
-  mi=0
-  while [ "$mi" -lt "$mime_count" ]; do
-    mla=${mx[$mi]}
-    mlc=${mz[$mi]}
-    mime_label_pos $mla $mlc
-    if [ "$ml_ok" -eq 1 ]; then
-      ml_t=${mtype[$mi]}
-      mime_color $ml_t
-      ml_ccy=$((ml_cy - 30 - 585 / ml_dp))
-      draw_text_centered $ml_cx $((ml_ccy + 40)) ${MTNAME_A[$ml_t]} ${MTN_A_LEN[$ml_t]} 7 9 $cr $cg $cb
-      draw_text_centered $ml_cx $((ml_ccy - 4)) ${MTNAME_B[$ml_t]} ${MTN_B_LEN[$ml_t]} 7 9 $cr $cg $cb
+    dm_rmx=${rmx[$mi]}
+    dm_rmz=${rmz[$mi]}
+    if [ "$dm_rmx" -ne "$dm_mx" ] || [ "$dm_rmz" -ne "$dm_mz" ]; then
+      if [ "$dm_rmx" -ge 0 ]; then
+        erase_rect $((RADAR_X + dm_rmx*44)) $((1720 - dm_rmz*60)) 80 105
+      fi
+      rmx[$mi]=$dm_mx
+      rmz[$mi]=$dm_mz
+      draw_mime_blip $mi
     fi
     mi=$((mi + 1))
   done
 }
 
-# sightings list under the radar: each living MIME's type, colour-coded
-draw_mime_list() {
-  mi=0
-  ml_y=690
-  while [ "$mi" -lt "$mime_count" ]; do
-    ml_t=${mtype[$mi]}
-    mime_color $ml_t
-    fmt_ndc $((ml_y + 18))
-    ml_ys=$fv
-    draw_rect "0.230" $ml_ys "0.020" "0.024" $cr $cg $cb
-    draw_text ${MTNAME[$ml_t]} ${MTN_LEN[$ml_t]} 1270 $ml_y 7 9 $cr $cg $cb
-    ml_y=$((ml_y - 52))
-    mi=$((mi + 1))
-  done
-}
-
+# MIMEs carry their own type TEXTURE on the cube (texture-jpeg/png/octet/
+# text — indices 11-14), so there are no name tags on the HUD: the radar
+# shows a colour-coded blip, the cube shows the type's icon.
 # the whole on-canvas dashboard: score line, radar, instructions
 hud_static=""
 hud_static_dirty=1   # the radar base must be built before the first frame
+digits_dirty=1       # the score/hp/art/fps digits — redrawn only when they change
+flash_clear=0        # erase the muzzle flash after the last flash frame
+prev_px=-1           # the player's previous radar cell (for the erase)
+prev_pz=-1
+prev_deg=-1          # the triangle's previous rotation (turning rotates in place)
+rmx=(-1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1)   # mime radar cells already drawn (-1 = none)
+rmz=(-1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1)
 # build the never-changing HUD parts (labels, separators, instructions,
 # radar base cells) ONCE into hud_static; draw_hud_canvas() re-sends it
 # every rendered frame with a leading "C" (the device clears its HUD
@@ -1373,21 +1538,27 @@ hud_build_static() {
     done
     dm_x=$((dm_x + 1))
   done
+  # the viewmodel gun (static) and the sightings list (changes only
+  # when mimes spawn/die — hud_static_dirty) join the base layer
+  draw_gun
   hud_static=$ov_text
-}
-
-draw_hud_canvas() {
-  if [ "$hud_static_dirty" -eq 1 ]; then
-    hud_build_static
-    hud_static_dirty=0
-  fi
+  # write the whole static layer ONCE (with a clear); per-frame hud
+  # writes update only the changed cells on top of it
   ov_text="C
 "
   ov_text="$ov_text$hud_static"
-  draw_gun
-  draw_minimap
-  draw_mime_labels
-  draw_mime_list
+  echo "$ov_text" > /dev/webgl/hud
+}
+
+# the score/hp/art/fps digit groups — erase + redraw only when a value
+# changed (digits_dirty); the digits are small, so the per-frame cost is
+# zero most frames
+draw_digits() {
+  # erase the four groups (score / HP / ART / FPS)
+  erase_rect 296 1812 96 60
+  erase_rect 572 1812 160 60
+  erase_rect 964 1812 160 60
+  erase_rect 240 1750 96 60
   # score digits
   dh_a=$((score/100%10+26))
   dh_b=$((score/10%10+26))
@@ -1420,7 +1591,50 @@ draw_hud_canvas() {
   draw_char $dh_a 196 1778 8 11 0.55 0.95 0.95
   draw_char $dh_b 228 1778 8 11 0.55 0.95 0.95
   draw_char $dh_c 260 1778 8 11 0.55 0.95 0.95
-  echo "$ov_text" > /dev/webgl/hud
+}
+
+draw_hud_canvas() {
+  if [ "$hud_static_dirty" -eq 1 ]; then
+    hud_build_static
+    hud_static_dirty=0
+    # the rebuild wiped the whole layer — reset the dynamic-cell state
+    # so the triangle, mime blips and labels are redrawn this frame
+    prev_px=-1
+    prev_pz=-1
+    prev_deg=-1
+    dm_i=0
+    while [ "$dm_i" -lt "$MIME_CAP" ]; do
+      rmx[$dm_i]=-1
+      rmz[$dm_i]=-1
+      dm_i=$((dm_i + 1))
+    done
+    digits_dirty=1
+  fi
+  ov_text=""
+  # the muzzle flash fades: erase the whole rotated flash (its 0.22 box
+  # rotated 20° spans ~0.28) then REDRAW the gun — the erase overlaps
+  # the barrel tip, and the gun lives in the static layer, so without
+  # the redraw a chunk of the gun would stay erased
+  if [ "$flash_clear" -eq 1 ]; then
+    ov_text="${ov_text}E 0.55 -0.08 0.32 0.32
+"
+    draw_gun
+    flash_clear=0
+  fi
+  draw_minimap
+  if [ "$muzzle" -gt 0 ]; then
+    ov_text="${ov_text}R 0.55 -0.08 0.22 0.22 20 1.0 0.82 0.2
+"
+    ov_text="${ov_text}R 0.55 -0.08 0.10 0.10 20 1.0 1.0 0.9
+"
+  fi
+  if [ "$digits_dirty" -eq 1 ]; then
+    draw_digits
+    digits_dirty=0
+  fi
+  if [ "$ov_text" != "" ]; then
+    echo "$ov_text" > /dev/webgl/hud
+  fi
 }
 
 print_map_once() {
@@ -1494,11 +1708,229 @@ gspan() {
   g_last=$g_now
 }
 
+# ─── pre-game settings menu (browser only — the headless device has
+#     no real keys and the tests drive the game directly) ────────────
+# The device captures keys only while the canvas is visible and a swap
+# happened < 2s ago, so the menu shows the canvas (first swap) and keeps
+# swapping. W/S select · A/D change · SPACE start · Q quit.
+settings_inc() {
+  if [ "$sm_sel" -eq 0 ]; then
+    # no limit — the camera may shift arbitrarily far, even negative
+    cam_shift_ms=$((cam_shift_ms + 50))
+  fi
+  if [ "$sm_sel" -eq 1 ]; then
+    if [ "$tex_size" -eq 4 ]; then tex_size=8
+    elif [ "$tex_size" -eq 8 ]; then tex_size=16
+    elif [ "$tex_size" -eq 16 ]; then tex_size=32
+    elif [ "$tex_size" -eq 32 ]; then tex_size=64
+    fi
+  fi
+  if [ "$sm_sel" -eq 2 ]; then
+    sm_nv=$((tex_seed + 1000))
+    if [ "$sm_nv" -le 99999999 ]; then tex_seed=$sm_nv; fi
+  fi
+  if [ "$sm_sel" -eq 3 ]; then
+    CRT_ON=1
+  fi
+  if [ "$sm_sel" -eq 4 ]; then
+    CORRUPT_ON=1
+  fi
+}
+
+settings_dec() {
+  if [ "$sm_sel" -eq 0 ]; then
+    cam_shift_ms=$((cam_shift_ms - 50))
+  fi
+  if [ "$sm_sel" -eq 1 ]; then
+    if [ "$tex_size" -eq 64 ]; then tex_size=32
+    elif [ "$tex_size" -eq 32 ]; then tex_size=16
+    elif [ "$tex_size" -eq 16 ]; then tex_size=8
+    elif [ "$tex_size" -eq 8 ]; then tex_size=4
+    fi
+  fi
+  if [ "$sm_sel" -eq 2 ]; then
+    sm_nv=$((tex_seed - 1000))
+    if [ "$sm_nv" -ge 1 ]; then tex_seed=$sm_nv; fi
+  fi
+  if [ "$sm_sel" -eq 3 ]; then
+    CRT_ON=0
+  fi
+  if [ "$sm_sel" -eq 4 ]; then
+    CORRUPT_ON=0
+  fi
+}
+
+# the menu card: terminal (values + cursor) and canvas (labels, the
+# live VALUES and a bright cursor block — the pixel font needs a fixed
+# glyph count, so the variable-width seed gets its digit count computed)
+draw_settings_menu() {
+  echo ""
+  echo "  ╔═══════════ SETTINGS ═══════════╗"
+  echo "  ║  ↑↓ select · ←→ change         ║"
+  echo "  ║  SPACE/ESC start · Q quit      ║"
+  echo "  ╚════════════════════════════════╝"
+  if [ "$sm_sel" -eq 0 ]; then sm_mark=">"; else sm_mark=" "; fi
+  fmt_pos $cam_shift_ms
+  echo "  $sm_mark  camera shift : $fv"
+  if [ "$sm_sel" -eq 1 ]; then sm_mark=">"; else sm_mark=" "; fi
+  echo "  $sm_mark  texture size : $tex_size"
+  if [ "$sm_sel" -eq 2 ]; then sm_mark=">"; else sm_mark=" "; fi
+  echo "  $sm_mark  texture seed : $tex_seed"
+  if [ "$sm_sel" -eq 3 ]; then sm_mark=">"; else sm_mark=" "; fi
+  if [ "$CRT_ON" -eq 1 ]; then sm_crt="ON"; else sm_crt="OFF"; fi
+  echo "  $sm_mark  CRT effect   : $sm_crt"
+  if [ "$sm_sel" -eq 4 ]; then sm_mark=">"; else sm_mark=" "; fi
+  if [ "$CORRUPT_ON" -eq 1 ]; then sm_crp="ON"; else sm_crp="OFF"; fi
+  echo "  $sm_mark  corruption  : $sm_crp"
+  # canvas card — the leading C must be on its OWN line (a real
+  # newline) or the device never clears the layer and old rects stay
+  sm_shift_s=$fv
+  # the store types are sticky — coerce the numbers to strings via
+  # echo (the pixel font draws chars, so the text arg must be a string)
+  sm_size_s=$(echo "$tex_size")
+  sm_seed_s=$(echo "$tex_seed")
+  sm_slen=1
+  if [ "$tex_seed" -ge 10000000 ]; then sm_slen=8
+  elif [ "$tex_seed" -ge 1000000 ]; then sm_slen=7
+  elif [ "$tex_seed" -ge 100000 ]; then sm_slen=6
+  elif [ "$tex_seed" -ge 10000 ]; then sm_slen=5
+  elif [ "$tex_seed" -ge 1000 ]; then sm_slen=4
+  elif [ "$tex_seed" -ge 100 ]; then sm_slen=3
+  elif [ "$tex_seed" -ge 10 ]; then sm_slen=2
+  fi
+  if [ "$CRT_ON" -eq 1 ]; then sm_crt_s="ON"; sm_crt_len=2; else sm_crt_s="OFF"; sm_crt_len=3; fi
+  if [ "$CORRUPT_ON" -eq 1 ]; then sm_crp_s="ON"; sm_crp_len=2; else sm_crp_s="OFF"; sm_crp_len=3; fi
+  ov_text="C
+"
+  draw_text "SETTINGS" 8 840 1750 10 14 0.95 0.85 0.30
+  draw_text "CAM SHIFT" 9 560 1600 8 11 0.60 0.75 0.95
+  draw_text "TEXTURE SIZE" 12 560 1500 8 11 0.60 0.75 0.95
+  draw_text "TEXTURE SEED" 12 560 1400 8 11 0.60 0.75 0.95
+  draw_text "CRT EFFECT" 10 560 1300 8 11 0.60 0.75 0.95
+  draw_text "CORRUPTION" 10 560 1200 8 11 0.60 0.75 0.95
+  draw_text $sm_shift_s 5 1000 1600 8 11 0.95 0.95 0.95
+  draw_text $sm_size_s 2 1000 1500 8 11 0.95 0.95 0.95
+  draw_text $sm_seed_s $sm_slen 1000 1400 8 11 0.95 0.95 0.95
+  draw_text $sm_crt_s $sm_crt_len 1000 1300 8 11 0.95 0.95 0.95
+  draw_text $sm_crp_s $sm_crp_len 1000 1200 8 11 0.95 0.95 0.95
+  if [ "$sm_sel" -eq 0 ]; then draw_rect "-0.520" "0.583" "0.016" "0.030" 1.0 0.85 0.30
+  elif [ "$sm_sel" -eq 1 ]; then draw_rect "-0.520" "0.483" "0.016" "0.030" 1.0 0.85 0.30
+  elif [ "$sm_sel" -eq 2 ]; then draw_rect "-0.520" "0.383" "0.016" "0.030" 1.0 0.85 0.30
+  elif [ "$sm_sel" -eq 3 ]; then draw_rect "-0.520" "0.283" "0.016" "0.030" 1.0 0.85 0.30
+  else draw_rect "-0.520" "0.183" "0.016" "0.030" 1.0 0.85 0.30; fi
+  draw_text "UP/DOWN SELECT - LEFT/RIGHT CHANGE" 34 340 250 7 10 0.85 0.85 0.85
+  draw_text "SPACE/ESC START - Q QUIT" 24 500 180 7 10 0.85 0.85 0.85
+  echo "$ov_text" > /dev/webgl/hud
+}
+
+settings_menu() {
+  if [ "$headless" -eq 1 ]; then return; fi
+  sm_mode=$1
+  sm_size_old=$tex_size
+  sm_seed_old=$tex_seed
+  sm_crt_old=$CRT_ON
+  sm_corrupt_old=$CORRUPT_ON
+  # show the canvas first so /dev/webgl/key starts capturing. The HUD
+  # composite BLENDS the layer over the back buffer and the drawing
+  # buffer is preserved now (preserveDrawingBuffer:true) — so the back
+  # buffer must be CLEARED before every present or the old card (dots,
+  # digits) stays visible underneath the new one.
+  echo "clear" > /dev/webgl/call
+  echo "swap" > /dev/webgl/call
+  draw_settings_menu
+  sm_done=0
+  while [ "$sm_done" -eq 0 ]; do
+    sm_keys=$(cat /dev/webgl/key)
+    if [ "$sm_keys" != "" ]; then
+      sm_changed=0
+      case $sm_keys in
+        *space*)
+          sm_done=1
+          ;;
+        *Escape*)
+          sm_done=1
+          ;;
+        *q*)
+          quit=1
+          sm_done=1
+          ;;
+        # ←/→ change the CURRENT item's value (like A/D). They must be
+        # matched before *w*/*a* — "ArrowLeft" contains 'w' and 'a'
+        *ArrowLeft*)
+          settings_dec
+          sm_changed=1
+          ;;
+        *ArrowRight*)
+          settings_inc
+          sm_changed=1
+          ;;
+        *ArrowUp*)
+          sm_sel=$((sm_sel - 1))
+          if [ "$sm_sel" -lt 0 ]; then sm_sel=4; fi
+          sm_changed=1
+          ;;
+        *ArrowDown*)
+          sm_sel=$((sm_sel + 1))
+          if [ "$sm_sel" -gt 4 ]; then sm_sel=0; fi
+          sm_changed=1
+          ;;
+        *w*)
+          sm_sel=$((sm_sel - 1))
+          if [ "$sm_sel" -lt 0 ]; then sm_sel=4; fi
+          sm_changed=1
+          ;;
+        *s*)
+          sm_sel=$((sm_sel + 1))
+          if [ "$sm_sel" -gt 4 ]; then sm_sel=0; fi
+          sm_changed=1
+          ;;
+        *d*)
+          settings_inc
+          sm_changed=1
+          ;;
+        *a*)
+          settings_dec
+          sm_changed=1
+          ;;
+      esac
+      if [ "$sm_changed" -eq 1 ]; then
+        draw_settings_menu
+      fi
+    fi
+    # wipe the back buffer before presenting (see above)
+    echo "clear" > /dev/webgl/call
+    echo "swap" > /dev/webgl/call
+    sleep 0.05
+  done
+  # push the camera shift to the GPU (setup_webgl also writes it)
+  fmt_pos $cam_shift_ms
+  echo "$fv" > /dev/webgl/uniform/1f/uCamShift
+  if [ "$sm_mode" = "live" ]; then
+    # mid-game: apply the settings NOW — the fragment shader encodes the
+    # CRT/corruption effects AND the texel grid size, so re-emit it when
+    # any of those changed; a resolution/seed change also needs the new
+    # textures
+    if [ "$tex_size" -ne "$sm_size_old" ] || [ "$CRT_ON" -ne "$sm_crt_old" ] || [ "$CORRUPT_ON" -ne "$sm_corrupt_old" ]; then
+      emit_fragment_shader
+    fi
+    if [ "$tex_size" -ne "$sm_size_old" ] || [ "$tex_seed" -ne "$sm_seed_old" ]; then
+      echo "  regenerating textures…"
+      load_textures
+      # the loading-screen previews were drawn onto the persistent HUD
+      # layer (no clear) — rebuild the static base so they are wiped
+      # and the radar/triangle/mimes/digits return next frame
+      hud_static_dirty=1
+    fi
+  fi
+  echo ""
+  echo "  settings: camera shift $fv · textures ${tex_size}px · seed $tex_seed"
+}
+
 main() {
   st=$(cat /dev/webgl/state)
   case $st in
-    *headless*) sound=$((0)) ;;
-    *) sound=$((1)) ;;
+    *headless*) sound=$((0)); headless=1 ;;
+    *) sound=$((1)); headless=0 ;;
   esac
   gtick
   g_t0=$g_now
@@ -1520,6 +1952,15 @@ main() {
   sleep 0.02
   print_map_once
   sleep 0.02
+  if [ "$headless" -eq 0 ]; then
+    settings_menu
+    if [ "$quit" -eq 1 ]; then
+      echo "== Quit."
+      echo "hide" > /dev/webgl/call
+      return
+    fi
+    sleep 0.02
+  fi
   echo "  compiling the fragment shader…"
   sleep 0.02
   setup_webgl
@@ -1556,6 +1997,11 @@ main() {
       case $keys in
         *q*)
           quit=$((1))
+          ;;
+        # Esc opens the settings menu mid-game (pause); Esc/SPACE close it
+        *Escape*)
+          settings_menu live
+          dirty=1
           ;;
         *space*)
           shoot
@@ -1599,7 +2045,7 @@ main() {
       anim_now=$(cat /dev/time)
       anim_el=$((anim_now - anim_t0))
       dirty=1
-      if [ "$anim_el" -ge "$ANIM_MS" ]; then
+      if [ "$anim_el" -ge "$anim_ms" ]; then
         px=$ax1
         pz=$az1
         yaw=$ay1
@@ -1608,11 +2054,15 @@ main() {
     fi
     gspan "anim"
     compute_display
+    # the eye ducks/steps up as the cell overhead changes (cheap: one
+    # cell read; render_frame reads crouched for the camera height)
+    update_crouch
     # muzzle flash lifetime: a few loop frames of flash, then force a
     # clear render so the flash doesn't linger frozen on a static scene
     if [ "$muzzle" -gt 0 ]; then
       muzzle=$((muzzle - 1))
       if [ "$muzzle" -eq 0 ]; then
+        flash_clear=1
         dirty=1
       fi
     fi
@@ -1660,21 +2110,25 @@ main() {
         fps_dt=$((fps_t - fps_t0))
         if [ "$fps_dt" -gt 0 ] && [ "$fps_rendered" -gt 0 ]; then
           fps=$((fps_rendered * 1000 / fps_dt))
+          digits_dirty=1
         fi
         fps_rendered=0
       fi
       fps_t0=$fps_t
     fi
-    # fps cap 100 (10ms/frame): sleep only the leftover budget — a
-    # frame that already took 10ms+ (render burst, slow machine) sleeps
-    # 0, never adding latency on top of a slow frame.
+    # fps cap 100 (10ms/frame): sleep the leftover budget, or a minimum
+    # 1ms yield on a slow frame — the browser CANNOT paint (terminal or
+    # canvas) while the transpiled script runs its microtask chain, so a
+    # frame that never sleeps freezes the display until the game exits.
     gtick
     fp_el=$((g_now - fp_t0))
     if [ "$fp_el" -lt 10000 ]; then
       fp_wait=$(((10000 - fp_el + 999) / 1000))
-      fmt3 $fp_wait
-      sleep 0.$fv
+    else
+      fp_wait=1
     fi
+    fmt3 $fp_wait
+    sleep 0.$fv
     fp_t0=$g_now
     # the sleep itself + the fps-sampling tail of the frame
     gspan "sleep"
