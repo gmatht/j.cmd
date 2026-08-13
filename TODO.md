@@ -191,9 +191,10 @@ own tests2 corpus when generating wasm. Baseline (150 tests, fork's
 run-corpus.mjs): PASS 51 · WRONG 17 · REFUSE 60 · COMPILE-OUT 9 ·
 RUN-CRASH 2 · RUN-ERR 2 · NO-EXPECT 9.
 
-FINAL (2026-08-13): PASS 88 · WRONG 5 · REFUSE 16 · RUN-CRASH 4 ·
-RUN-ERR 0 · NO-EXPECT 9. All COMPILE-OUT and RUN-ERR eliminated, no
-suite hangs. Fixes: bss zero-fill (segfault), NOP dead regions +
+FINAL (2026-08-13, second pass): PASS 89 · WRONG 4 · REFUSE 16 ·
+RUN-CRASH 4 · RUN-ERR 0 · NO-EXPECT 9. Long-double const loads now cast
+through c.ld (22_floating_point); the c-runtime has the full 1/2/4/8-
+byte __atomic_* matrix (125_atomic_misc near its expect). Fixes: bss zero-fill (segfault), NOP dead regions +
 suppressed dead-region edges (hangs), _start argv, long-double f64,
 br_table/br LEB encoding, inverted VT_JMP (&&/||), symbol constant
 offsets (array[i]), function-value table (atexit/ctors), output-time
