@@ -1000,6 +1000,14 @@ load_textures() {
   load_tex dirt 8
   echo "    obsidian…"
   load_tex obsidian 10
+  echo "    jpeg…"
+  load_tex jpeg 11
+  echo "    png…"
+  load_tex png 12
+  echo "    octet…"
+  load_tex octet 13
+  echo "    text…"
+  load_tex text 14
   echo "    crack…"
   load_tex4 crack 9
   # the MIME type textures — one icon per evil MIME (11=jpeg 12=png

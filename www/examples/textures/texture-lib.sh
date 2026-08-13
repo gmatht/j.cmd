@@ -311,13 +311,108 @@ emit() {
   fi
 }
 
+
+# ─── text overlay — mime type names on the texture ────────────────
+# A 3×5 pixel font (A–Z) plus a word-wrap layout, so a mime texture
+# carries its type name ("JPEG", "PNG", "OCTET", "TEXT"). Each glyph
+# is 15 bits (5 rows × 3 cols) as a string; row r, col c = bits[r*3+c].
+font_bits() {
+  fb="000000000000000"
+  case "$1" in
+    A) fb="111101111101101" ;; B) fb="110101110101110" ;; C) fb="111100100100111" ;;
+    D) fb="110101101101110" ;; E) fb="111100111100111" ;; F) fb="111100110100100" ;;
+    G) fb="111100111101111" ;; H) fb="101101111101101" ;; I) fb="111010010010111" ;;
+    J) fb="111001001011110" ;; K) fb="101101110101101" ;; L) fb="100100100100111" ;;
+    M) fb="101111111101101" ;; N) fb="101111111111101" ;; O) fb="111101101101111" ;;
+    P) fb="111101111100100" ;; Q) fb="111101101111011" ;; R) fb="111101111110101" ;;
+    S) fb="111100111001111" ;; T) fb="111010010010010" ;; U) fb="101101101101111" ;;
+    V) fb="101101101101010" ;; W) fb="101101111111101" ;; X) fb="101101010101101" ;;
+    Y) fb="101101010010010" ;; Z) fb="111001010100111" ;;
+  esac
+}
+
+# Precompute the WRAPPED layout of $1 into tl[] (line strings), tlx[]
+# (per-line start x), ty0 (top y). Chars are 4 px wide (3 + 1 pitch),
+# glyphs 5 tall with a 1 px gap (6 px line pitch); lines are centred.
+layout_text() {
+  lt_len=${#1}
+  lt_ci=0
+  lt_nl=0
+  lt_cp=$(( SIZE / 4 ))
+  while [ "$lt_ci" -lt "$lt_len" ]; do
+    lt_str=""
+    lt_cnt=0
+    while [ "$lt_ci" -lt "$lt_len" ] && [ "$lt_cnt" -lt "$lt_cp" ]; do
+      lt_ch=${1:$lt_ci:1}
+      lt_str="${lt_str}$lt_ch"
+      lt_ci=$(( lt_ci + 1 ))
+      lt_cnt=$(( lt_cnt + 1 ))
+    done
+    tl[$lt_nl]=$lt_str
+    tlx[$lt_nl]=$(( (SIZE - ${#lt_str} * 4 + 3) / 2 ))
+    lt_nl=$(( lt_nl + 1 ))
+  done
+  tl_n=$lt_nl
+  ty0=$(( (SIZE - (lt_nl * 6 - 1)) / 2 ))
+  if [ "$ty0" -lt 0 ]; then ty0=0; fi
+}
+
+# is (gx,gy) on a glyph? sets g_on=1/0
+glyph_pixel() {
+  g_on=0
+  if [ "$2" -ge "$ty0" ]; then
+    gl=$(( ( $2 - ty0 ) / 6 ))
+    if [ "$gl" -ge 0 ] && [ "$gl" -lt "$tl_n" ]; then
+      gr=$(( $2 - ty0 - gl * 6 ))
+      if [ "$gr" -lt 5 ]; then
+        gl_str=${tl[$gl]}
+        gl_start=${tlx[$gl]}
+        gl_len=${#gl_str}
+        if [ "$1" -ge "$gl_start" ] && [ "$1" -lt "$(( gl_start + gl_len * 4 ))" ]; then
+          gc=$(( ( $1 - gl_start ) / 4 ))
+          gcol=$(( $1 - gl_start - gc * 4 ))
+          if [ "$gcol" -lt 3 ]; then
+            font_bits "${gl_str:$gc:1}"
+            if [ "${fb:$(( gr * 3 + gcol )):1}" = "1" ]; then g_on=1; fi
+          fi
+        fi
+      fi
+    fi
+  fi
+}
+
+# text_overlay — white glyph + 1 px black outline over the current
+# (x,y) pattern pixel; overrides r/g/b when the pixel is text.
+text_overlay() {
+  glyph_pixel $x $y
+  if [ "$g_on" -eq 1 ]; then
+    r=250; g=250; b=250
+    return
+  fi
+  tx_ox=$(( x - 1 ))
+  while [ "$tx_ox" -le $(( x + 1 )) ]; do
+    tx_oy=$(( y - 1 ))
+    while [ "$tx_oy" -le $(( y + 1 )) ]; do
+      if [ "$tx_ox" -ne "$x" ] || [ "$tx_oy" -ne "$y" ]; then
+        glyph_pixel $tx_ox $tx_oy
+        if [ "$g_on" -eq 1 ]; then
+          r=5; g=5; b=5
+          return
+        fi
+      fi
+      tx_oy=$(( tx_oy + 1 ))
+    done
+    tx_ox=$(( tx_ox + 1 ))
+  done
+}
+
 # finish — PPM P6 on stdout, or PNG via ImageMagick when --png
 finish() {
   stat_span "finish"
   tick
   stat_total=$(( t_now - t0v ))
   if [ "$PREVIEW" -eq 1 ]; then
-    printf "$prev"
+    printf "%b" "$prev"
     print_stats
     return 0
   fi

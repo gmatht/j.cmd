@@ -1,5 +1,45 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────
+# texture-octet.sh — raw binary data — a dark hex-dump field with pseudorandom bright bits
+#
+#   bash texture-octet.sh > octet.ppm      # PPM P6, 16×16 (default)
+#   bash texture-octet.sh --preview           # truecolor ANSI preview
+#   bash texture-octet.sh --png               # octet-<seed>.png (needs convert)
+#   TEX_SIZE=32 TEX_SEED=7 bash texture-octet.sh > octet32.ppm
+#
+# Self-contained (no sourcing): the shared core from texture-lib.sh is
+# inlined below, so the script runs identically under host bash, the
+# real-bash wasm, and jtsh's transpiled bash (a sourced lib runs in a
+# separate runtime there, losing variables — inlining avoids that).
+# texture-lib.sh stays the canonical reference; __texture-test.mjs
+# fails the suite if these drift.
+# ─────────────────────────────────────────────────────────────────────
+
+NAME="octet"
+PREVIEW=0
+DO_PNG=0
+if [ "$1" = "--preview" ]; then PREVIEW=1; fi
+if [ "$2" = "--preview" ]; then PREVIEW=1; fi
+if [ "$3" = "--preview" ]; then PREVIEW=1; fi
+if [ "$1" = "--png" ]; then DO_PNG=1; fi
+if [ "$2" = "--png" ]; then DO_PNG=1; fi
+if [ "$3" = "--png" ]; then DO_PNG=1; fi
+DO_TSV=0
+if [ "$1" = "--tsv" ]; then DO_TSV=1; fi
+if [ "$2" = "--tsv" ]; then DO_TSV=1; fi
+if [ "$3" = "--tsv" ]; then DO_TSV=1; fi
+
+# settings args: `--tsv --size 32 --seed 7` — the game's pre-game menu
+# passes the resolution/seed; they become TEX_SIZE/TEX_SEED for the
+# inlined config below (env still wins: it is read first)
+if [ "$2" = "--size" ]; then TEX_SIZE=$3; fi
+if [ "$4" = "--size" ]; then TEX_SIZE=$5; fi
+if [ "$2" = "--seed" ]; then TEX_SEED=$3; fi
+if [ "$4" = "--seed" ]; then TEX_SEED=$5; fi
+
+# ─── shared core (inlined from texture-lib.sh) ──────
+#!/usr/bin/env bash
+# ─────────────────────────────────────────────────────────────────────
 # texture-lib.sh — shared core for the pseudorandom texture
 # generators (texture-wood.sh / texture-grass.sh / texture-stone.sh).
 #
@@ -49,25 +89,6 @@ HIGH_CELL=$(( SIZE / 8 ))
 if [ "$HIGH_CELL" -lt 1 ]; then HIGH_CELL=1; fi
 LOW_WRAP=4
 HIGH_WRAP=8
-
-# CLI flags are parsed HERE, from the positional params the script
-# passes when it sources this file (`. texture-lib.sh "$1" "$2" "$3"`).
-# Sourcing runs the lib in its own runtime context, so flags MUST
-# arrive as arguments — a bare `$1` read here would see the source
-# command's (empty) params, and the caller's variables are invisible
-# across the runtime boundary.
-PREVIEW=0
-DO_PNG=0
-DO_TSV=0
-if [ "$1" = "--preview" ]; then PREVIEW=1; fi
-if [ "$2" = "--preview" ]; then PREVIEW=1; fi
-if [ "$3" = "--preview" ]; then PREVIEW=1; fi
-if [ "$1" = "--png" ]; then DO_PNG=1; fi
-if [ "$2" = "--png" ]; then DO_PNG=1; fi
-if [ "$3" = "--png" ]; then DO_PNG=1; fi
-if [ "$1" = "--tsv" ]; then DO_TSV=1; fi
-if [ "$2" = "--tsv" ]; then DO_TSV=1; fi
-if [ "$3" = "--tsv" ]; then DO_TSV=1; fi
 
 # ─── pseudorandom core ──────────────────────────────────────────────
 # probe printf -v support (host bash and the real-bash wasm have it;
@@ -120,11 +141,7 @@ tick() {
   fi
 }
 
-# accumulate the µs since the last stat point into a named bucket.
-# Coarse-grained: the generators call it ONCE per phase (setup before
-# the loops, loop after them, finish inside finish()) — NOT per pixel
-# (the per-pixel spans in emit() cost ~2 dispatches + 2 clock reads per
-# pixel for µs-scale noise; the whole-loop span is what the report uses).
+# accumulate the µs since the last stat point into a named bucket
 stat_span() {
   ss_name=$1
   tick
@@ -263,8 +280,7 @@ clamp() {
 # out = binary pixel stream (one byte per channel as \ooo escapes —
 # host bash only; the transpiled sh2 printf can't emit arbitrary
 # bytes, so in jtsh use --preview); prev = ANSI truecolor blocks for
-# --preview. Call emit() once per pixel with r/g/b set. No stat_span
-# calls inside (the generators span the whole loop once instead).
+# --preview. Call emit() once per pixel with r/g/b set.
 #
 # The preview escapes use \x1b (not \033): bash's printf turns \x1b
 # into ESC, and the bash2js transpiler renders \x1b as a JS hex
@@ -310,8 +326,6 @@ emit() {
     out="$out\\$oc"
   fi
 }
-
-
 # ─── text overlay — mime type names on the texture ────────────────
 # A 3×5 pixel font (A–Z) plus a word-wrap layout, so a mime texture
 # carries its type name ("JPEG", "PNG", "OCTET", "TEXT"). Each glyph
@@ -445,3 +459,35 @@ finish() {
   printf "P6\n$SIZE $SIZE\n255\n$out"
   print_stats
 }
+# ─── body ───────────────────────────────────────────
+layout_text "OCTET"
+y=0
+while [ "$y" -lt "$SIZE" ]; do
+  x=0
+  while [ "$x" -lt "$SIZE" ]; do
+    r=12
+    g=14
+    b=18
+    lat_hash $x $y $SIZE $SIZE
+    bit=$(( lhn % 3 ))
+    if [ "$bit" -eq 0 ]; then
+      # a "1" bit — bright data-green
+      r=$(( 30 + lhn / 9 ))
+      g=$(( 180 + lhn / 7 ))
+      b=$(( 60 + lhn / 11 ))
+    fi
+    clamp $r
+    r=$cv
+    clamp $g
+    g=$cv
+    clamp $b
+    b=$cv
+    text_overlay
+    emit
+    x=$(( x + 1 ))
+  done
+  y=$(( y + 1 ))
+done
+stat_span "loop"
+echo "texture-octet: ${SIZE}x${SIZE}, seed $TEX_SEED" >&2
+finish
