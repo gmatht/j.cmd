@@ -225,3 +225,32 @@ VLA, struct-by-value, i64 varargs, asm, TLS/pthread, bcheck). Plan:
 - [x] Harness: pass ARGS (31_args, 46_grep), FLAGS (-lm, -dt, -pthread)
       and apply the upstream platform SKIP list so diagnostics/linker
       tests are measured fairly.
+
+## Next Up (tcc wasm corpus, from PASS 69)
+
+- [x] Harness: capture tcc's compile stderr (warnings) into the test
+      output like the upstream Makefile's T3 — fixes 03_struct and
+      102_alignas (the .expect's first line is a compile warning our
+      tcc does emit, the runner just drops it).
+- [x] Harness: apply the upstream platform/feature SKIP list (arm64
+      139, riscv 141, bcheck/backtrace 113/117/126/114/115/116,
+      pthread 106/124, tls 144/146) so the WRONG list is honest.
+- [x] Harness: normalize per-line trailing whitespace (38's .expect
+      strips it on lines 1-3 but not 4 — the program output is correct).
+- [x] Harness: -dt mode for 60_errors_and_warnings, 96_nodata_wanted,
+      125_atomic_misc, 128_run_atexit (compile each [test_x] section
+      separately like tcc -dt -run) — validates error recovery.
+- [x] Codegen: vararg slot collision (17_enum fixed; 22_floating_point's —
+      args share one register slot when a later gv reuses it; the push
+      reads a stale slot). The documented hard one; read each arg's
+      CURRENT location (register or saved home) without perturbing
+      w_layout.
+- [ ] Codegen: function pointers (call_indirect) — the table + element
+      section + env-runtime fn-call infra exists; emit call_indirect
+      instead of "indirect call unsupported" (07, 33, 42, 81, 82 + real
+      callback code).
+- [ ] Codegen: RUN-CRASH dispatch traps (136_atomic_gcc_style,
+      93_integer_promotion) — w_layout label→sub resolution.
+- [ ] Codegen: i64 varargs (~8 REFUSE: 95, 110, 111, 118, 119, ...).
+- [ ] Runtime: 40_stdio file I/O (env $fopen/$fgets... backed by the
+      WASI fs).
