@@ -25,7 +25,11 @@ export class ExamplesFS {
     if (this._loader) return this._loader;
     if (typeof document !== "undefined") {
       this._loader = async (name) => {
-        const resp = await fetch("examples/" + name);
+        // revalidate: a stale HTTP cache would serve an old example
+        // script forever (e.g. a texture generator without the mime
+        // type names) — a conditional GET keeps the corpus caching
+        // benefit but always returns changed files fresh.
+        const resp = await fetch("examples/" + name, { cache: "no-cache" });
         if (!resp.ok) throw new Error("ENOENT: " + name);
         return resp.text();
       };
@@ -40,9 +44,10 @@ export class ExamplesFS {
 
   // The corpus manifest (<dir>/index.json) lists every script name. The
   // corpus dirs mirror www/examples/: sh2perl (the sh2perl corpus) plus
-  // one per frontend testdata (go / fish / zsh / py / pl / c / bat / sh-posix)
-  // plus textures (the pseudorandom block-texture generators).
-  CORPUS_DIRS = ["sh2perl", "go", "fish", "zsh", "py", "pl", "c", "bat", "sh-posix", "textures"];
+  // one per frontend testdata (go / fish / zsh / py / pl / c / bat /
+  // sh-posix / cpp / powershell / rust / zig) plus textures (the
+  // pseudorandom block-texture generators).
+  CORPUS_DIRS = ["sh2perl", "go", "fish", "zsh", "py", "pl", "c", "bat", "sh-posix", "cpp", "powershell", "rust", "zig", "textures"];
 
   // drop the in-memory corpus/loader caches — the next read re-fetches
   // from the server (the `/cache` purge calls this so `rm -r /cache`
