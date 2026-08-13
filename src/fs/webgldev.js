@@ -18,6 +18,9 @@
 //   /dev/webgl/clearcolor           write  "r g b a"
 //   /dev/webgl/call                 write  "clear" | "swap" |
 //                                         "draw [arrays|elements] <mode> <count> <offset> [buffer]"
+//   /dev/webgl/depthmask            write  "0"/"1" — gl.depthMask (draw a
+//                                         background with writes off so
+//                                         later cubes always paint over it)
 //   /dev/webgl/frame                read   current frame as PNG data URL
 //
 // Shaders compile on write; the program links automatically at draw
@@ -113,6 +116,7 @@ function makeNullGL() {
     drawElements: () => { counters.draws++; },
     clear: () => {},
     clearColor: () => {},
+    depthMask: () => {},
     flush: () => {},
     getParameter: (p) => p === 0x1f02 ? "headless null device" : "0",
     getSupportedExtensions: () => [],
@@ -181,9 +185,15 @@ export class WebGLDevice {
       this._canvas = canvas;
       // Prefer WebGL1: the target GLSL (attribute/varying/gl_FragColor)
       // is ES 1.00, which only compiles on a WebGL1 context.
-      const ctx = canvas.getContext("webgl") ||
-                  canvas.getContext("webgl2") ||
-                  canvas.getContext("experimental-webgl");
+      // preserveDrawingBuffer:true keeps the presented back buffer —
+      // with the default (false) the browser CLEARS the drawing buffer
+      // after every presentation, so a game that renders only on
+      // actions (mimecroft.sh renders on keypresses, idle between) goes
+      // BLACK once it stops rendering, while the HUD (re-composited at
+      // each swap) stays visible.
+      const ctx = canvas.getContext("webgl", { preserveDrawingBuffer: true, alpha: true }) ||
+                  canvas.getContext("webgl2", { preserveDrawingBuffer: true, alpha: true }) ||
+                  canvas.getContext("experimental-webgl", { preserveDrawingBuffer: true, alpha: true });
       if (!ctx) throw new Error("context creation failed");
       this._gl = ctx;
       // Depth testing: the painter's-algorithm games (mimecroft.sh) draw
@@ -742,7 +752,11 @@ export class WebGLDevice {
     for (const [cx, cy, size, r, g, b, deg] of tris) {
       const a = (-Number(deg)) * Math.PI / 180;
       const c = Math.cos(a), sn = Math.sin(a);
-      const v = (vx, vy) => [px(cx) + pw(size) * (vx * c - vy * sn), py(cy) + ph(size) * (vx * sn + vy * c)];
+      // rotate in NDC (y-up), then place on the canvas: px() flips the
+      // CENTER, so the rotated y-offset must be SUBTRACTED (canvas y is
+      // down) or the triangle renders vertically mirrored (deg 0 points
+      // down instead of up). x needs no flip.
+      const v = (vx, vy) => [px(cx) + pw(size) * (vx * c - vy * sn), py(cy) - ph(size) * (vx * sn + vy * c)];
       const p0 = v(0, 0.5), p1 = v(-0.5, -0.5), p2 = v(0.5, -0.5);
       ctx.fillStyle = col(r, g, b);
       ctx.beginPath();
@@ -920,6 +934,12 @@ export class WebGLDevice {
         throw new Error(`unknown uniform type '${parts[1]}' (use: 1f 2f 3f 4f 1i m4)`);
       }
       this._setUniform(parts[1], parts[2], String(content));
+      return;
+    }
+    if (parts[0] === "depthmask") {
+      const gl = this._ensureGL();
+      const v = String(content).trim();
+      gl.depthMask(v === "1" || v === "true");
       return;
     }
     if (parts[0] === "clearcolor") {
