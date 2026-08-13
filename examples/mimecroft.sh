@@ -1392,7 +1392,9 @@ draw_text() { dt_t=$1; dt_len=$2; dt_x=$3; dt_y=$4; dt_px=$5; dt_py=$6
 # used to restore cells that a wide rotate-erase wiped from the static
 # layer. Air cells draw nothing (they are transparent).
 draw_radar_cell() { rc_x=$1; rc_z=$2
-  get_cell $rc_x 0 $rc_z
+  # the radar shows the MAZE — layer y=1 (the base's layer; y=0 is the
+  # dirt floor and would paint every walkable cell grey)
+  get_cell $rc_x 1 $rc_z
   if [ "$gv" -eq "$TREASURE" ]; then rc_r=0.20; rc_g=1.00; rc_b=0.45
   elif [ "$gv" -ne "$AIR" ]; then rc_r=0.42; rc_g=0.42; rc_b=0.47
   else return 0

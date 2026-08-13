@@ -1114,11 +1114,13 @@ render_frame() {
   cys=$fv
   echo "$cxs $cys $czs" > /dev/webgl/uniform/3f/uCamPos
   echo "$yws" > /dev/webgl/uniform/1f/uCamYaw
-  # floor + ceiling planes — the maze floor is carved air, so without
-  # them the near-black clear colour shows as a void below/above
-  blk_p="${blk_p}8 -0.05 8 16 0.1 16 0.45 0.40 0.34 0 0
+  # floor + ceiling planes — the background. They span the whole maze
+  # and cross the camera, so their clipped depths are garbage; draw
+  # them FIRST with depth WRITES OFF (gl.depthMask 0) — they fill the
+  # void but never occlude the cubes, which paint over them.
+  bg_p="8 -0.05 8 16 0.1 16 0.45 0.40 0.34 0 0
 "
-  blk_p="${blk_p}8 2.05 8 16 0.1 16 0.24 0.24 0.28 0 0
+  bg_p="${bg_p}8 2.05 8 16 0.1 16 0.24 0.24 0.28 0 0
 "
   if [ "$dyaw" -eq 0 ]; then
     # facing -z: front = z < dpz, so FAR = smallest z — draw z
@@ -1177,6 +1179,11 @@ render_frame() {
       rf_x=$((rf_x + 1))
     done
   fi
+  # background planes first (depth writes off — they never occlude),
+  # then the cubes (depth writes on, far-to-near painter's order)
+  echo "0" > /dev/webgl/depthmask
+  echo "$bg_p" > /dev/webgl/blocks
+  echo "1" > /dev/webgl/depthmask
   echo "$blk_p" > /dev/webgl/blocks
 }
 
@@ -1385,7 +1392,9 @@ draw_text() { dt_t=$1; dt_len=$2; dt_x=$3; dt_y=$4; dt_px=$5; dt_py=$6
 # used to restore cells that a wide rotate-erase wiped from the static
 # layer. Air cells draw nothing (they are transparent).
 draw_radar_cell() { rc_x=$1; rc_z=$2
-  get_cell $rc_x 0 $rc_z
+  # the radar shows the MAZE — layer y=1 (the base's layer; y=0 is the
+  # dirt floor and would paint every walkable cell grey)
+  get_cell $rc_x 1 $rc_z
   if [ "$gv" -eq "$TREASURE" ]; then rc_r=0.20; rc_g=1.00; rc_b=0.45
   elif [ "$gv" -ne "$AIR" ]; then rc_r=0.42; rc_g=0.42; rc_b=0.47
   else return 0
