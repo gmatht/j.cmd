@@ -28,7 +28,7 @@
 const WASM_PATH = "wasm-bin/otranspilerl.wasm";  // browser: relative to the page
 // cache-buster — bump whenever www/wasm-bin/otranspilerl.wasm changes so
 // the browser (and the otranspiler GUI) never serves a stale wasm.
-const WASM_VERSION = "v17-glsl-mediump";  // v17: ES 1.00 mediump precision gate (interval proof over all int intermediates) // v16: texture samples hoisted (2 fetches vs 7) + atom-paren strip // v15: input bridges use-gated (tex/crack/vcolor declared+seeded only when referenced) // v14: glsl DCE + scalar promotion (dead g_pa/g_fit/out_len/OUT_CAP dropped; main() locals) // v13: A1→GLSL render arm (glsl in the TARGETS dispatch — frontend A1s render to shaders) // v12: ForInit + first-class Continue/Break (strip_cfor pass) // v11: template-literal quasi escaping (trailing \ in batch echo)
+const WASM_VERSION = "v18-glsl-vignette";  // v18: guard-aware mediump proof (test refinement) + multiplicative vignette // v17: ES 1.00 mediump precision gate (interval proof over all int intermediates) // v16: texture samples hoisted (2 fetches vs 7) + atom-paren strip // v15: input bridges use-gated (tex/crack/vcolor declared+seeded only when referenced) // v14: glsl DCE + scalar promotion (dead g_pa/g_fit/out_len/OUT_CAP dropped; main() locals) // v13: A1→GLSL render arm (glsl in the TARGETS dispatch — frontend A1s render to shaders) // v12: ForInit + first-class Continue/Break (strip_cfor pass) // v11: template-literal quasi escaping (trailing \ in batch echo)
 
 let libPromise = null;
 

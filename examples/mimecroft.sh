@@ -29,16 +29,30 @@ MAP_W=16
 MAP_D=16
 MAP_H=3
 CELLS=$((MAP_W * MAP_D))          # 256 cells per level
-VIEW_R=8                          # draw radius
+# the walkable area is 1..W-2 (the border is wall) — precomputed bounds
+BOUND_X=$((MAP_W - 1))            # 15 — the first rejected column
+BOUND_Z=$((MAP_D - 1))            # 15 — the first rejected row
+# the DISPLAY window: the world is 16x16 but only ~8x8 cells render at a
+# time (the draw radius — 4 cells each way around the player; the floor/
+# ceiling planes follow the camera so the view is a bounded patch)
+VIEW_W=4
+VIEW_R=4                          # draw radius (8x8 display window)
 RADAR_X=80                        # radar x base (milli-NDC) — the map sits top-LEFT
-CAM_SHIFT=500                     # view shift right by 1/4 screen (milli-NDC / NDC 0.5)
+# ─── settings (editable in the pre-game menu; browser only) ────────
+cam_shift_ms=0        # camera right shift (milli-NDC, ±50 per press, no limit) — 0 = the centred view; the old 500 (a quarter-screen right shift) moved the vanishing point off-centre
+tex_size=16           # texture resolution (16/32/64 px)
+tex_seed=20240812     # texture generation seed (drives the LCG noise)
+sm_sel=0              # settings-menu cursor (0=shift 1=size 2=seed)
+sm_done=0
+sm_changed=0
+headless=1            # set from /dev/webgl/state in main()
 RANGE=12                          # shoot range
 TREASURE_TOTAL=10
 MIME_CAP=12
 MIME_STEP=15          # mimes step every N frames (~6.7/sec — calmer view)
 MIMES_ON=0             # 0 = MIMEs disabled while diagnosing the flicker; set 1 to enable
-CRT_ON=1               # 1 = CRT scanlines + vignette on the rendered view; set 0 for a clean picture
-CORRUPT_ON=1           # 1 = random corruption streaks on the view; set 0 to disable
+CRT_ON=0               # 1 = CRT scanlines + vignette on the rendered view; set 0 for a clean picture
+CORRUPT_ON=0           # 1 = random corruption streaks on the view; set 0 to disable
 
 # block ids
 AIR=0
@@ -228,9 +242,9 @@ spawn_mime() {
 
 can_step() { cs_a=$1; cs_b=$2; cs=0
   if [ "$cs_a" -lt 1 ]; then return 0; fi
-  if [ "$cs_a" -ge 15 ]; then return 0; fi
+  if [ "$cs_a" -ge "$BOUND_X" ]; then return 0; fi
   if [ "$cs_b" -lt 1 ]; then return 0; fi
-  if [ "$cs_b" -ge 15 ]; then return 0; fi
+  if [ "$cs_b" -ge "$BOUND_Z" ]; then return 0; fi
   get_cell $cs_a 0 $cs_b
   if [ "$gv" -ne "$AIR" ]; then return 0; fi
   cs_j=0
@@ -302,9 +316,9 @@ try_move() { tm_a=$1; tm_b=$2
   tm_nx=$((px + tm_a))
   tm_nz=$((pz + tm_b))
   if [ "$tm_nx" -lt 1 ]; then return 1; fi
-  if [ "$tm_nx" -ge 15 ]; then return 1; fi
+  if [ "$tm_nx" -ge "$BOUND_X" ]; then return 1; fi
   if [ "$tm_nz" -lt 1 ]; then return 1; fi
-  if [ "$tm_nz" -ge 15 ]; then return 1; fi
+  if [ "$tm_nz" -ge "$BOUND_Z" ]; then return 1; fi
   get_cell $tm_nx 0 $tm_nz
   if [ "$gv" -eq "$AIR" ]; then
     mime_at $tm_nx $tm_nz
@@ -334,9 +348,9 @@ try_anim_move() { ta_dx=$1; ta_dz=$2
   ta_nx=$((px + ta_dx))
   ta_nz=$((pz + ta_dz))
   if [ "$ta_nx" -lt 1 ]; then return 1; fi
-  if [ "$ta_nx" -ge 15 ]; then return 1; fi
+  if [ "$ta_nx" -ge "$BOUND_X" ]; then return 1; fi
   if [ "$ta_nz" -lt 1 ]; then return 1; fi
-  if [ "$ta_nz" -ge 15 ]; then return 1; fi
+  if [ "$ta_nz" -ge "$BOUND_Z" ]; then return 1; fi
   get_cell $ta_nx 0 $ta_nz
   if [ "$gv" -eq "$AIR" ]; then
     start_anim $px $pz $yaw $ta_nx $ta_nz $yaw
@@ -386,9 +400,9 @@ shoot() {
     sh_tx=$((px + sh_dx * sh_i))
     sh_tz=$((pz + sh_dz * sh_i))
     if [ "$sh_tx" -lt 1 ]; then return 1; fi
-    if [ "$sh_tx" -ge 15 ]; then return 1; fi
+    if [ "$sh_tx" -ge "$BOUND_X" ]; then return 1; fi
     if [ "$sh_tz" -lt 1 ]; then return 1; fi
-    if [ "$sh_tz" -ge 15 ]; then return 1; fi
+    if [ "$sh_tz" -ge "$BOUND_Z" ]; then return 1; fi
     get_cell $sh_tx 0 $sh_tz
     if [ "$gv" -ne "$AIR" ]; then
       damage_cell $sh_tx $sh_tz $gv
@@ -502,9 +516,9 @@ gen_maze() {
     if [ "$rv" -eq 2 ]; then gm_cz=$((gm_cz + 1)); fi
     if [ "$rv" -eq 3 ]; then gm_cz=$((gm_cz - 1)); fi
     if [ "$gm_cx" -lt 1 ]; then gm_cx=1; fi
-    if [ "$gm_cx" -ge 15 ]; then gm_cx=14; fi
+    if [ "$gm_cx" -ge "$BOUND_X" ]; then gm_cx=$BOUND_X; fi
     if [ "$gm_cz" -lt 1 ]; then gm_cz=1; fi
-    if [ "$gm_cz" -ge 15 ]; then gm_cz=14; fi
+    if [ "$gm_cz" -ge "$BOUND_Z" ]; then gm_cz=$BOUND_Z; fi
     gm_steps=$((gm_steps + 1))
   done
   # sprinkle coloured blocks into the y0 walls (and recolor y1 above)
@@ -587,10 +601,51 @@ place_treasures() {
 }
 
 # ─── Rendering ───────────────────────────────────────────────────────
-# The vertex shader is hand-written ES 1.00 (the backend only emits
-# fragment shaders); the FRAGMENT shader is AUTHORED IN BASH — see
-# examples/mimecroft-frag.sh — and compiled by the sh→GLSL generator
-# (sh2glsl / glsl_backend.rs) at startup.
+# BOTH shader stages are AUTHORED IN BASH — see
+# examples/mimecroft-frag.sh (fragment) and examples/mimecroft-vertex.sh
+# (vertex) — and compiled by the sh→GLSL generator (sh2glsl /
+# glsl_backend.rs) at startup.
+#
+# The vertex shader is authored in bash (emit_vertex_shader compiles
+# /examples/mimecroft-vertex.sh with `sh2glsl --vertex`); the FRAGMENT
+# shader is authored in bash (emit_fragment_shader writes the program to
+# /tmp and compiles it with `sh2glsl`). Both fall back to the
+# equivalent hand-written GLSL when the generator is unavailable or its
+# output fails to compile under the browser's ANGLE.
+emit_vertex_shader() {
+  # the hand-written equivalent (the fallback when the generator is
+  # unavailable OR its GLSL fails to compile under the browser's ANGLE —
+  # the CLI NullGL never type-checks the shader, so a real compile is
+  # the ground truth). Same look as the generated shader: object→world,
+  # camera-relative delta (the eye at the player cell CENTRE — only
+  # the y gets +0.5; x/z stay unshifted so corridors render centred),
+  # yaw rotation, the fake perspective + the
+  # strafe screen-shift (uCamShift·w keeps it a constant NDC-x offset),
+  # and the uOverlay > 0.5 flat-quad path.
+  vs_fb="attribute vec3 aPosition; attribute vec3 aShade; attribute vec2 aUv; uniform vec3 uCamPos; uniform float uCamYaw; uniform float uCamShift; uniform vec3 uObjPos; uniform vec3 uBlockColor; uniform vec3 uScale; uniform float uOverlay; varying vec4 vColor; varying vec2 vUv; void main() { vec3 p = aPosition * uScale + uObjPos; if (uOverlay > 0.5) { gl_Position = vec4(p.x + uCamShift, p.y, -0.95, 1.0); vColor = vec4(aShade * uBlockColor, 1.0); vUv = vec2(0.0); return; } vec3 cam = uCamPos + vec3(0.0, 0.5, 0.0); vec3 d = p - cam; float a = uCamYaw * 0.0174532925; float c = cos(a); float s = sin(a); vec3 rel = vec3(d.x * c + d.z * s, d.y, -d.x * s + d.z * c); float w = -rel.z; gl_Position = vec4(rel.x * 0.9 + uCamShift * w, rel.y * 0.9, w * w / 64.0, w); vColor = vec4(aShade * uBlockColor, 1.0); vUv = aUv; }"
+  # compile the bash-authored vertex program — canonical at
+  # /examples/mimecroft-vertex.sh (the /examples mount serves
+  # www/examples/) — with sh2glsl --vertex; fall back when the
+  # generator is unavailable or the file isn't mounted
+  glsl=$(sh2glsl --vertex /examples/mimecroft-vertex.sh)
+  if [ "$glsl" != "" ]; then
+    echo "$glsl" > /dev/webgl/shader/vertex
+    # real-GL ground truth: if the generated shader failed to compile,
+    # fall back to the hand-written one (same look, guaranteed-ES1.00).
+    # The device logs "[shader/vertex] FAILED: …" on a bad compile.
+    vs_log=$(cat /dev/webgl/log)
+    vs_probe=${vs_log%FAILED*}
+    if [ "$vs_probe" != "$vs_log" ]; then
+      echo "$vs_fb" > /dev/webgl/shader/vertex
+    fi
+  else
+    echo "$vs_fb" > /dev/webgl/shader/vertex
+  fi
+}
+
+# the fragment shader is authored in bash (see examples/mimecroft-frag.sh)
+# and compiled by the sh→GLSL generator (sh2glsl / glsl_backend.rs) at
+# startup.
 emit_fragment_shader() {
   # write the bash-authored fragment program to /tmp (single-quoted so
   # $(( ... )) stays literal), then compile it with the generator
@@ -638,9 +693,12 @@ emit_fragment_shader() {
     echo 'if [ "$edge" -gt 450 ]; then' >> /tmp/mimecroft-frag.sh
     echo '  dim=$((edge - 450))' >> /tmp/mimecroft-frag.sh
     echo '  if [ "$dim" -gt 30 ]; then dim=30; fi' >> /tmp/mimecroft-frag.sh
-    echo '  r=$((r - dim))' >> /tmp/mimecroft-frag.sh
-    echo '  g=$((g - dim))' >> /tmp/mimecroft-frag.sh
-    echo '  b=$((b - dim))' >> /tmp/mimecroft-frag.sh
+    # multiplicative dim (r - r·dim/255): scales toward dark instead of
+    # subtracting — dark pixels can never hard-clip to black. r·dim ≤
+    # 255·30 fits mediump int, so the fragment stays ES 1.00 portable.
+    echo '  r=$((r - r * dim / 255))' >> /tmp/mimecroft-frag.sh
+    echo '  g=$((g - g * dim / 255))' >> /tmp/mimecroft-frag.sh
+    echo '  b=$((b - b * dim / 255))' >> /tmp/mimecroft-frag.sh
     echo 'fi' >> /tmp/mimecroft-frag.sh
   fi
   echo 'if [ "$r" -lt 0 ]; then r=0; fi' >> /tmp/mimecroft-frag.sh
@@ -666,18 +724,26 @@ emit_fragment_shader() {
     fs_fb="$fs_fb float h = mod(floor(gl_FragCoord.x) * 7.0 + floor(gl_FragCoord.y) * 13.0, 97.0); if (h < 1.0) { c = vec3(1.0, c.g * 0.5, c.b * 0.5); }"
   fi
   if [ "$CRT_ON" -eq 1 ]; then
-    fs_fb="$fs_fb float e = abs(gl_FragCoord.x - 400.0) + abs(gl_FragCoord.y - 300.0); if (e > 450.0) { float d = min(e - 450.0, 30.0); c = max(c - vec3(d), 0.0); }"
+    fs_fb="$fs_fb float e = abs(gl_FragCoord.x - 400.0) + abs(gl_FragCoord.y - 300.0); if (e > 450.0) { float d = min(e - 450.0, 30.0); c *= (255.0 - d) / 255.0; }"
   fi
   fs_fb="$fs_fb gl_FragColor = vec4(c, 1.0); }"
-  glsl=$(sh2glsl /tmp/mimecroft-frag.sh)
-  if [ "$glsl" != "" ]; then
-    echo "$glsl" > /dev/webgl/shader/fragment
-    # real-GL ground truth: if the generated shader failed to compile,
-    # fall back to the hand-written one (same look, guaranteed-ES1.00).
-    # The device logs "[shader/fragment] FAILED: …" on a bad compile.
-    fs_log=$(cat /dev/webgl/log)
-    fs_probe=${fs_log%FAILED*}
-    if [ "$fs_probe" != "$fs_log" ]; then
+  # the sh→GLSL generator hardcodes the 16×16 texel grid (uv_x = vUv*16);
+  # it is only valid at the default resolution. For other texture sizes
+  # use the hand-written shader — it samples raw UVs and the device's
+  # NEAREST filter does the texel pick at any resolution.
+  if [ "$tex_size" -eq 16 ]; then
+    glsl=$(sh2glsl /tmp/mimecroft-frag.sh)
+    if [ "$glsl" != "" ]; then
+      echo "$glsl" > /dev/webgl/shader/fragment
+      # real-GL ground truth: if the generated shader failed to compile,
+      # fall back to the hand-written one (same look, guaranteed-ES1.00).
+      # The device logs "[shader/fragment] FAILED: …" on a bad compile.
+      fs_log=$(cat /dev/webgl/log)
+      fs_probe=${fs_log%FAILED*}
+      if [ "$fs_probe" != "$fs_log" ]; then
+        echo "$fs_fb" > /dev/webgl/shader/fragment
+      fi
+    else
       echo "$fs_fb" > /dev/webgl/shader/fragment
     fi
   else
@@ -686,7 +752,12 @@ emit_fragment_shader() {
 }
 
 setup_webgl() {
-  echo "attribute vec3 aPosition; attribute vec3 aShade; attribute vec2 aUv; uniform vec3 uCamPos; uniform float uCamYaw; uniform vec3 uObjPos; uniform vec3 uBlockColor; uniform vec3 uScale; uniform float uOverlay; varying vec4 vColor; varying vec2 vUv; void main() { vec3 p = aPosition * uScale + uObjPos; if (uOverlay > 0.5) { gl_Position = vec4(p.x + 0.5, p.y, -0.95, 1.0); vColor = vec4(aShade * uBlockColor, 1.0); vUv = vec2(0.0); return; } vec3 cam = uCamPos + vec3(0.5, 0.5, 0.5); vec3 d = p - cam; float a = uCamYaw * 0.0174532925; float c = cos(a); float s = sin(a); vec3 rel = vec3(d.x * c + d.z * s, d.y, -d.x * s + d.z * c); float w = -rel.z; gl_Position = vec4(rel.x * 0.9 + 0.5 * w, rel.y * 0.9, w * w / 64.0, w); vColor = vec4(aShade * uBlockColor, 1.0); vUv = aUv; }" > /dev/webgl/shader/vertex
+  # the vertex shader is authored in bash — emit_vertex_shader compiles
+  # /examples/mimecroft-vertex.sh via sh2glsl --vertex when available,
+  # otherwise the equivalent hand-written GLSL (same look: yaw rotation,
+  # fake perspective, the strafe screen-shift, the overlay flat-quad
+  # path)
+  emit_vertex_shader
   # the fragment shader is authored in bash (emit_fragment_shader) and
   # compiled by sh2glsl when available — otherwise the equivalent
   # hand-written textured GLSL (the same texture × colour tint + the
@@ -699,6 +770,8 @@ setup_webgl() {
   echo "0" > /dev/webgl/uniform/1i/uTex
   echo "9" > /dev/webgl/uniform/1i/uCrack
   echo "0" > /dev/webgl/uniform/1i/uDamage
+  fmt_pos $cam_shift_ms
+  echo "$fv" > /dev/webgl/uniform/1f/uCamShift
   echo "u16 0 1 2 0 2 3 4 5 6 4 6 7 8 9 10 8 10 11 12 13 14 12 14 15 16 17 18 16 18 19 20 21 22 20 22 23" > /dev/webgl/buffer/cube
   echo "f32 -0.5 -0.5 0 0.5 -0.5 0 0.5 0.5 0 -0.5 0.5 0" > /dev/webgl/buffer/quadpos
   echo "f32 1 1 1 1 1 1 1 1 1 1 1 1" > /dev/webgl/buffer/quadshade
@@ -733,16 +806,18 @@ load_tex() { lt_name=$1; lt_idx=$2
   # a macrotask yield so the preceding "    name…" line paints before
   # this texture's (transpiled) generation runs
   sleep 0.01
-  # cached payload from an earlier run (session /tmp, persistent /home)
-  if [ -f /home/mimecroft-tex-$lt_name ]; then
-    cat /home/mimecroft-tex-$lt_name > /dev/webgl/texture/$lt_idx
+  # cached payload from an earlier run (session /tmp, persistent /home);
+  # the cache key carries the resolution + seed so a settings change
+  # regenerates instead of reusing a stale texture
+  if [ -f /home/mimecroft-tex-$lt_name-$tex_size-$tex_seed ]; then
+    cat /home/mimecroft-tex-$lt_name-$tex_size-$tex_seed > /dev/webgl/texture/$lt_idx
     return 0
   fi
-  if [ -f /tmp/mimecroft-tex-$lt_name ]; then
-    cat /tmp/mimecroft-tex-$lt_name > /dev/webgl/texture/$lt_idx
+  if [ -f /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed ]; then
+    cat /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed > /dev/webgl/texture/$lt_idx
     return 0
   fi
-  lt_s=$(bash /examples/textures/texture-$lt_name.sh --tsv)
+  lt_s=$(bash /examples/textures/texture-$lt_name.sh --tsv --size $tex_size --seed $tex_seed)
   lt_hdr=${lt_s%%	*}
   if [ "$lt_hdr" != "#texture" ]; then return 0; fi
   # header: strip #texture + NAME, READ SIZExSIZE, strip the rest
@@ -791,8 +866,8 @@ load_tex() { lt_name=$1; lt_idx=$2
 "
     lt_px=$((lt_px + 1))
   done
-  echo "$lt_payload" > /home/mimecroft-tex-$lt_name
-  echo "$lt_payload" > /tmp/mimecroft-tex-$lt_name
+  echo "$lt_payload" > /home/mimecroft-tex-$lt_name-$tex_size-$tex_seed
+  echo "$lt_payload" > /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed
   echo "$lt_payload" > /dev/webgl/texture/$lt_idx
   # show the freshly generated texture on the loading screen (one swap
   # keeps the keyboard grab fresh, so keys typed during startup queue)
@@ -803,11 +878,11 @@ load_tex() { lt_name=$1; lt_idx=$2
 # RGBA variant (the transparent crack overlay — R G B A per pixel)
 load_tex4() { lt_name=$1; lt_idx=$2
   sleep 0.01
-  if [ -f /tmp/mimecroft-tex-$lt_name ]; then
-    cat /tmp/mimecroft-tex-$lt_name > /dev/webgl/texture/$lt_idx
+  if [ -f /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed ]; then
+    cat /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed > /dev/webgl/texture/$lt_idx
     return 0
   fi
-  lt_s=$(bash /examples/textures/texture-$lt_name.sh --tsv)
+  lt_s=$(bash /examples/textures/texture-$lt_name.sh --tsv --size $tex_size --seed $tex_seed)
   lt_hdr=${lt_s%%	*}
   if [ "$lt_hdr" != "#texture" ]; then return 0; fi
   strip_tex_field
@@ -833,11 +908,15 @@ load_tex4() { lt_name=$1; lt_idx=$2
     lt_payload="$lt_payload $lt_r $lt_g $lt_b $lt_a"
     lt_px=$((lt_px + 1))
   done
-  echo "$lt_payload" > /tmp/mimecroft-tex-$lt_name
+  echo "$lt_payload" > /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed
   echo "$lt_payload" > /dev/webgl/texture/$lt_idx
 }
 
 load_textures() {
+  # wipe the GL back buffer first so the loading grid builds on black
+  # instead of accumulating over the menu card (the HUD composite blends
+  # the layer over the preserved drawing buffer)
+  echo "clear" > /dev/webgl/call
   echo "    stone…"
   load_tex stone 1
   echo "    sandstone…"
@@ -958,9 +1037,9 @@ render_frame() {
   echo "$yws" > /dev/webgl/uniform/1f/uCamYaw
   # floor + ceiling planes — the maze floor is carved air, so without
   # them the near-black clear colour shows as a void below/above
-  blk_p="${blk_p}8 -0.05 8 16 0.1 16 0.45 0.40 0.34 0 0
+  blk_p="${blk_p}$dpx -0.05 $dpz 9 0.1 9 0.45 0.40 0.34 0 0
 "
-  blk_p="${blk_p}8 2.05 8 16 0.1 16 0.24 0.24 0.28 0 0
+  blk_p="${blk_p}$dpx 2.05 $dpz 9 0.1 9 0.24 0.24 0.28 0 0
 "
   if [ "$dyaw" -eq 0 ]; then
     # facing -z: front = z < dpz, so FAR = smallest z — draw z
@@ -979,7 +1058,7 @@ render_frame() {
     done
   fi
   if [ "$dyaw" -eq 1 ]; then
-    rf_x=15
+    rf_x=$BOUND_X
     while [ "$rf_x" -ge 0 ]; do
       rf_z=0
       while [ "$rf_z" -lt "$MAP_D" ]; do
@@ -994,7 +1073,7 @@ render_frame() {
   if [ "$dyaw" -eq 2 ]; then
     # facing +z: front = z > dpz, so FAR = largest z — draw z
     # descending so far cubes hit the canvas first, near last
-    rf_z=15
+    rf_z=$BOUND_Z
     while [ "$rf_z" -ge 0 ]; do
       rf_x=0
       while [ "$rf_x" -lt "$MAP_W" ]; do
@@ -1270,7 +1349,7 @@ mime_label_pos() { ml_x=$1; ml_z=$2
   if [ "$dyaw" -eq 3 ]; then ml_rx=$((0 - ml_dz)); ml_dp=$((0 - ml_dx)); fi
   ml_ok=0
   if [ "$ml_dp" -gt 0 ]; then
-    ml_cxm=$((1000 + CAM_SHIFT + ml_rx * 900 / ml_dp))
+    ml_cxm=$((1000 + cam_shift_ms + ml_rx * 900 / ml_dp))
     ml_cym=$((1030 + 450 / ml_dp))
     if [ "$ml_cxm" -ge 0 ] && [ "$ml_cxm" -le 2000 ] && [ "$ml_cym" -ge 0 ] && [ "$ml_cym" -le 2000 ]; then
       ml_cx=$ml_cxm
@@ -1494,11 +1573,221 @@ gspan() {
   g_last=$g_now
 }
 
+# ─── pre-game settings menu (browser only — the headless device has
+#     no real keys and the tests drive the game directly) ────────────
+# The device captures keys only while the canvas is visible and a swap
+# happened < 2s ago, so the menu shows the canvas (first swap) and keeps
+# swapping. W/S select · A/D change · SPACE start · Q quit.
+settings_inc() {
+  if [ "$sm_sel" -eq 0 ]; then
+    # no limit — the camera may shift arbitrarily far, even negative
+    cam_shift_ms=$((cam_shift_ms + 50))
+  fi
+  if [ "$sm_sel" -eq 1 ]; then
+    if [ "$tex_size" -eq 16 ]; then tex_size=32
+    elif [ "$tex_size" -eq 32 ]; then tex_size=64
+    fi
+  fi
+  if [ "$sm_sel" -eq 2 ]; then
+    sm_nv=$((tex_seed + 1000))
+    if [ "$sm_nv" -le 99999999 ]; then tex_seed=$sm_nv; fi
+  fi
+  if [ "$sm_sel" -eq 3 ]; then
+    CRT_ON=1
+  fi
+  if [ "$sm_sel" -eq 4 ]; then
+    CORRUPT_ON=1
+  fi
+}
+
+settings_dec() {
+  if [ "$sm_sel" -eq 0 ]; then
+    cam_shift_ms=$((cam_shift_ms - 50))
+  fi
+  if [ "$sm_sel" -eq 1 ]; then
+    if [ "$tex_size" -eq 64 ]; then tex_size=32
+    elif [ "$tex_size" -eq 32 ]; then tex_size=16
+    fi
+  fi
+  if [ "$sm_sel" -eq 2 ]; then
+    sm_nv=$((tex_seed - 1000))
+    if [ "$sm_nv" -ge 1 ]; then tex_seed=$sm_nv; fi
+  fi
+  if [ "$sm_sel" -eq 3 ]; then
+    CRT_ON=0
+  fi
+  if [ "$sm_sel" -eq 4 ]; then
+    CORRUPT_ON=0
+  fi
+}
+
+# the menu card: terminal (values + cursor) and canvas (labels, the
+# live VALUES and a bright cursor block — the pixel font needs a fixed
+# glyph count, so the variable-width seed gets its digit count computed)
+draw_settings_menu() {
+  echo ""
+  echo "  ╔═══════════ SETTINGS ═══════════╗"
+  echo "  ║  ↑↓ select · ←→ change         ║"
+  echo "  ║  SPACE/ESC start · Q quit      ║"
+  echo "  ╚════════════════════════════════╝"
+  if [ "$sm_sel" -eq 0 ]; then sm_mark=">"; else sm_mark=" "; fi
+  fmt_pos $cam_shift_ms
+  echo "  $sm_mark  camera shift : $fv"
+  if [ "$sm_sel" -eq 1 ]; then sm_mark=">"; else sm_mark=" "; fi
+  echo "  $sm_mark  texture size : $tex_size"
+  if [ "$sm_sel" -eq 2 ]; then sm_mark=">"; else sm_mark=" "; fi
+  echo "  $sm_mark  texture seed : $tex_seed"
+  if [ "$sm_sel" -eq 3 ]; then sm_mark=">"; else sm_mark=" "; fi
+  if [ "$CRT_ON" -eq 1 ]; then sm_crt="ON"; else sm_crt="OFF"; fi
+  echo "  $sm_mark  CRT effect   : $sm_crt"
+  if [ "$sm_sel" -eq 4 ]; then sm_mark=">"; else sm_mark=" "; fi
+  if [ "$CORRUPT_ON" -eq 1 ]; then sm_crp="ON"; else sm_crp="OFF"; fi
+  echo "  $sm_mark  corruption  : $sm_crp"
+  # canvas card — the leading C must be on its OWN line (a real
+  # newline) or the device never clears the layer and old rects stay
+  sm_shift_s=$fv
+  # the store types are sticky — coerce the numbers to strings via
+  # echo (the pixel font draws chars, so the text arg must be a string)
+  sm_size_s=$(echo "$tex_size")
+  sm_seed_s=$(echo "$tex_seed")
+  sm_slen=1
+  if [ "$tex_seed" -ge 10000000 ]; then sm_slen=8
+  elif [ "$tex_seed" -ge 1000000 ]; then sm_slen=7
+  elif [ "$tex_seed" -ge 100000 ]; then sm_slen=6
+  elif [ "$tex_seed" -ge 10000 ]; then sm_slen=5
+  elif [ "$tex_seed" -ge 1000 ]; then sm_slen=4
+  elif [ "$tex_seed" -ge 100 ]; then sm_slen=3
+  elif [ "$tex_seed" -ge 10 ]; then sm_slen=2
+  fi
+  if [ "$CRT_ON" -eq 1 ]; then sm_crt_s="ON"; sm_crt_len=2; else sm_crt_s="OFF"; sm_crt_len=3; fi
+  if [ "$CORRUPT_ON" -eq 1 ]; then sm_crp_s="ON"; sm_crp_len=2; else sm_crp_s="OFF"; sm_crp_len=3; fi
+  ov_text="C
+"
+  draw_text "SETTINGS" 8 840 1750 10 14 0.95 0.85 0.30
+  draw_text "CAM SHIFT" 9 560 1600 8 11 0.60 0.75 0.95
+  draw_text "TEXTURE SIZE" 12 560 1500 8 11 0.60 0.75 0.95
+  draw_text "TEXTURE SEED" 12 560 1400 8 11 0.60 0.75 0.95
+  draw_text "CRT EFFECT" 10 560 1300 8 11 0.60 0.75 0.95
+  draw_text "CORRUPTION" 10 560 1200 8 11 0.60 0.75 0.95
+  draw_text $sm_shift_s 5 1000 1600 8 11 0.95 0.95 0.95
+  draw_text $sm_size_s 2 1000 1500 8 11 0.95 0.95 0.95
+  draw_text $sm_seed_s $sm_slen 1000 1400 8 11 0.95 0.95 0.95
+  draw_text $sm_crt_s $sm_crt_len 1000 1300 8 11 0.95 0.95 0.95
+  draw_text $sm_crp_s $sm_crp_len 1000 1200 8 11 0.95 0.95 0.95
+  if [ "$sm_sel" -eq 0 ]; then draw_rect "-0.520" "0.583" "0.016" "0.030" 1.0 0.85 0.30
+  elif [ "$sm_sel" -eq 1 ]; then draw_rect "-0.520" "0.483" "0.016" "0.030" 1.0 0.85 0.30
+  elif [ "$sm_sel" -eq 2 ]; then draw_rect "-0.520" "0.383" "0.016" "0.030" 1.0 0.85 0.30
+  elif [ "$sm_sel" -eq 3 ]; then draw_rect "-0.520" "0.283" "0.016" "0.030" 1.0 0.85 0.30
+  else draw_rect "-0.520" "0.183" "0.016" "0.030" 1.0 0.85 0.30; fi
+  draw_text "UP/DOWN SELECT - LEFT/RIGHT CHANGE" 34 340 250 7 10 0.85 0.85 0.85
+  draw_text "SPACE/ESC START - Q QUIT" 24 500 180 7 10 0.85 0.85 0.85
+  echo "$ov_text" > /dev/webgl/hud
+}
+
+settings_menu() {
+  if [ "$headless" -eq 1 ]; then return; fi
+  sm_mode=$1
+  sm_size_old=$tex_size
+  sm_seed_old=$tex_seed
+  sm_crt_old=$CRT_ON
+  sm_corrupt_old=$CORRUPT_ON
+  # show the canvas first so /dev/webgl/key starts capturing. The HUD
+  # composite BLENDS the layer over the back buffer and the drawing
+  # buffer is preserved now (preserveDrawingBuffer:true) — so the back
+  # buffer must be CLEARED before every present or the old card (dots,
+  # digits) stays visible underneath the new one.
+  echo "clear" > /dev/webgl/call
+  echo "swap" > /dev/webgl/call
+  draw_settings_menu
+  sm_done=0
+  while [ "$sm_done" -eq 0 ]; do
+    sm_keys=$(cat /dev/webgl/key)
+    if [ "$sm_keys" != "" ]; then
+      sm_changed=0
+      case $sm_keys in
+        *space*)
+          sm_done=1
+          ;;
+        *Escape*)
+          sm_done=1
+          ;;
+        *q*)
+          quit=1
+          sm_done=1
+          ;;
+        # ←/→ change the CURRENT item's value (like A/D). They must be
+        # matched before *w*/*a* — "ArrowLeft" contains 'w' and 'a'
+        *ArrowLeft*)
+          settings_dec
+          sm_changed=1
+          ;;
+        *ArrowRight*)
+          settings_inc
+          sm_changed=1
+          ;;
+        *ArrowUp*)
+          sm_sel=$((sm_sel - 1))
+          if [ "$sm_sel" -lt 0 ]; then sm_sel=4; fi
+          sm_changed=1
+          ;;
+        *ArrowDown*)
+          sm_sel=$((sm_sel + 1))
+          if [ "$sm_sel" -gt 4 ]; then sm_sel=0; fi
+          sm_changed=1
+          ;;
+        *w*)
+          sm_sel=$((sm_sel - 1))
+          if [ "$sm_sel" -lt 0 ]; then sm_sel=4; fi
+          sm_changed=1
+          ;;
+        *s*)
+          sm_sel=$((sm_sel + 1))
+          if [ "$sm_sel" -gt 4 ]; then sm_sel=0; fi
+          sm_changed=1
+          ;;
+        *d*)
+          settings_inc
+          sm_changed=1
+          ;;
+        *a*)
+          settings_dec
+          sm_changed=1
+          ;;
+      esac
+      if [ "$sm_changed" -eq 1 ]; then
+        draw_settings_menu
+      fi
+    fi
+    # wipe the back buffer before presenting (see above)
+    echo "clear" > /dev/webgl/call
+    echo "swap" > /dev/webgl/call
+    sleep 0.05
+  done
+  # push the camera shift to the GPU (setup_webgl also writes it)
+  fmt_pos $cam_shift_ms
+  echo "$fv" > /dev/webgl/uniform/1f/uCamShift
+  if [ "$sm_mode" = "live" ]; then
+    # mid-game: apply the settings NOW — the fragment shader encodes the
+    # CRT/corruption effects AND the texel grid size, so re-emit it when
+    # any of those changed; a resolution/seed change also needs the new
+    # textures
+    if [ "$tex_size" -ne "$sm_size_old" ] || [ "$CRT_ON" -ne "$sm_crt_old" ] || [ "$CORRUPT_ON" -ne "$sm_corrupt_old" ]; then
+      emit_fragment_shader
+    fi
+    if [ "$tex_size" -ne "$sm_size_old" ] || [ "$tex_seed" -ne "$sm_seed_old" ]; then
+      echo "  regenerating textures…"
+      load_textures
+    fi
+  fi
+  echo ""
+  echo "  settings: camera shift $fv · textures ${tex_size}px · seed $tex_seed"
+}
+
 main() {
   st=$(cat /dev/webgl/state)
   case $st in
-    *headless*) sound=$((0)) ;;
-    *) sound=$((1)) ;;
+    *headless*) sound=$((0)); headless=1 ;;
+    *) sound=$((1)); headless=0 ;;
   esac
   gtick
   g_t0=$g_now
@@ -1520,6 +1809,15 @@ main() {
   sleep 0.02
   print_map_once
   sleep 0.02
+  if [ "$headless" -eq 0 ]; then
+    settings_menu
+    if [ "$quit" -eq 1 ]; then
+      echo "== Quit."
+      echo "hide" > /dev/webgl/call
+      return
+    fi
+    sleep 0.02
+  fi
   echo "  compiling the fragment shader…"
   sleep 0.02
   setup_webgl
@@ -1556,6 +1854,11 @@ main() {
       case $keys in
         *q*)
           quit=$((1))
+          ;;
+        # Esc opens the settings menu mid-game (pause); Esc/SPACE close it
+        *Escape*)
+          settings_menu live
+          dirty=1
           ;;
         *space*)
           shoot
@@ -1665,16 +1968,19 @@ main() {
       fi
       fps_t0=$fps_t
     fi
-    # fps cap 100 (10ms/frame): sleep only the leftover budget — a
-    # frame that already took 10ms+ (render burst, slow machine) sleeps
-    # 0, never adding latency on top of a slow frame.
+    # fps cap 100 (10ms/frame): sleep the leftover budget, or a minimum
+    # 1ms yield on a slow frame — the browser CANNOT paint (terminal or
+    # canvas) while the transpiled script runs its microtask chain, so a
+    # frame that never sleeps freezes the display until the game exits.
     gtick
     fp_el=$((g_now - fp_t0))
     if [ "$fp_el" -lt 10000 ]; then
       fp_wait=$(((10000 - fp_el + 999) / 1000))
-      fmt3 $fp_wait
-      sleep 0.$fv
+    else
+      fp_wait=1
     fi
+    fmt3 $fp_wait
+    sleep 0.$fv
     fp_t0=$g_now
     # the sleep itself + the fps-sampling tail of the frame
     gspan "sleep"

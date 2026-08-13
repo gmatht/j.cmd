@@ -43,7 +43,9 @@ if [ "$corrupt" -eq 0 ]; then
   b=$((b / 2))
 fi
 
-# vignette — darken toward the edges of a 240×180 view
+# vignette — darken toward the edges of a 240×180 view (multiplicative:
+# r - r·dim/255 scales toward dark, so dark pixels never clip to black;
+# r·dim ≤ 255·40 stays inside the mediump-int proof)
 vx=$((fx - 120))
 vy=$((fy - 90))
 if [ "$vx" -lt 0 ]; then vx=$((0 - vx)); fi
@@ -52,9 +54,9 @@ edge=$((vx + vy))
 if [ "$edge" -gt 150 ]; then
   dim=$((edge - 150))
   if [ "$dim" -gt 40 ]; then dim=40; fi
-  r=$((r - dim))
-  g=$((g - dim))
-  b=$((b - dim))
+  r=$((r - r * dim / 255))
+  g=$((g - g * dim / 255))
+  b=$((b - b * dim / 255))
 fi
 
 # clamp

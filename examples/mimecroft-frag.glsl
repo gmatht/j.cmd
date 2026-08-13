@@ -61,9 +61,9 @@ void main() {
         if ((g_dim > 40)) {
             g_dim = 40;
         }
-        g_r = (g_r - g_dim);
-        g_g = (g_g - g_dim);
-        g_b = (g_b - g_dim);
+        g_r = (g_r - ((((g_r * g_dim)) / 255)));
+        g_g = (g_g - ((((g_g * g_dim)) / 255)));
+        g_b = (g_b - ((((g_b * g_dim)) / 255)));
     }
     if ((g_r < 0)) {
         g_r = 0;
