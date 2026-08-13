@@ -202,7 +202,13 @@ kill_mime_at() { ka_a=$1; ka_b=$2; ka_i=0
       my[$ka_i]=${my[$ka_last]}
       mtype[$ka_i]=${mtype[$ka_last]}
       mhp[$ka_i]=${mhp[$ka_last]}
+      # the radar/label prev cells move with the swapped mime
+      rmx[$ka_i]=${rmx[$ka_last]}
+      rmz[$ka_i]=${rmz[$ka_last]}
+      mplx[$ka_i]=${mplx[$ka_last]}
+      mply[$ka_i]=${mply[$ka_last]}
       mime_count=$ka_last
+      hud_static_dirty=1
       play "G5 0.08"
       echo "  MIME sanitised  +5  ($mime_count left)"
       return 0
@@ -243,6 +249,7 @@ spawn_mime() {
     mtype[$mime_count]=$sm_t
     mhp[$mime_count]=1
     mime_count=$((mime_count + 1))
+    hud_static_dirty=1
   fi
   return 0
 }
@@ -317,7 +324,7 @@ update_mimes() {
 }
 
 # ─── Player ──────────────────────────────────────────────────────────
-hurt() { hu_d=$1; hp=$((hp - hu_d)); play "C3 0.15"; if [ "$hp" -lt 0 ]; then hp=0; fi; }
+hurt() { hu_d=$1; hp=$((hp - hu_d)); digits_dirty=1; play "C3 0.15"; if [ "$hp" -lt 0 ]; then hp=0; fi; }
 
 try_move() { tm_a=$1; tm_b=$2
   tm_nx=$((px + tm_a))
@@ -426,10 +433,12 @@ shoot() {
   while [ "$sh_i" -le "$RANGE" ]; do
     sh_tx=$((px + sh_dx * sh_i))
     sh_tz=$((pz + sh_dz * sh_i))
-    if [ "$sh_tx" -lt 1 ]; then return 1; fi
-    if [ "$sh_tx" -ge "$BOUND_X" ]; then return 1; fi
-    if [ "$sh_tz" -lt 1 ]; then return 1; fi
-    if [ "$sh_tz" -ge "$BOUND_Z" ]; then return 1; fi
+    # the border ring (0 and MAP_W-1) is solid obsidian and MUST be
+    # reachable so hitting it plays the thud — bound by the full map
+    if [ "$sh_tx" -lt 0 ]; then return 1; fi
+    if [ "$sh_tx" -ge "$MAP_W" ]; then return 1; fi
+    if [ "$sh_tz" -lt 0 ]; then return 1; fi
+    if [ "$sh_tz" -ge "$MAP_D" ]; then return 1; fi
     get_cell $sh_tx 0 $sh_tz
     if [ "$gv" -ne "$AIR" ]; then
       damage_cell $sh_tx $sh_tz $gv
@@ -449,7 +458,7 @@ damage_cell() { dc_a=$1; dc_b=$2; dc_t=$3
   # indestructible blocks (obsidian — the maze border): a dull thud, no
   # damage accumulates, never breaks
   if [ "$dc_t" -eq "$OBSIDIAN" ]; then
-    play "C2 0.08"
+    play "G2 0.10"
     return 0
   fi
   hardness $dc_t
@@ -472,9 +481,9 @@ damage_cell() { dc_a=$1; dc_b=$2; dc_t=$3
 }
 
 score_block() { sb_t=$1
-  if [ "$sb_t" -eq "$GOLD" ]; then score=$((score + 10)); echo "  mined GOLD  +10"; fi
-  if [ "$sb_t" -eq "$DIAMOND" ]; then score=$((score + 25)); echo "  mined DIAMOND  +25"; fi
-  if [ "$sb_t" -eq "$RUBY" ]; then score=$((score + 50)); echo "  mined RUBY  +50"; fi
+  if [ "$sb_t" -eq "$GOLD" ]; then score=$((score + 10)); digits_dirty=1; echo "  mined GOLD  +10"; fi
+  if [ "$sb_t" -eq "$DIAMOND" ]; then score=$((score + 25)); digits_dirty=1; echo "  mined DIAMOND  +25"; fi
+  if [ "$sb_t" -eq "$RUBY" ]; then score=$((score + 50)); digits_dirty=1; echo "  mined RUBY  +50"; fi
 }
 
 claim_treasure() { ct_a=$1; ct_b=$2; ct_t=0
@@ -489,6 +498,7 @@ claim_treasure() { ct_a=$1; ct_b=$2; ct_t=0
         score=$((score + 100))
         maxhp=$((maxhp + 1))
         hp=$((hp + 1))
+        digits_dirty=1
         echo ""
         echo "=============================================="
         echo "  TREASURE FOUND: ${TREASURES[$ct_t]}"
@@ -1204,6 +1214,22 @@ draw_rect() { dr_cx=$1; dr_cy=$2; dr_w=$3; dr_h=$4
 "
 }
 
+# an erase rect — the device clears this area of the PERSISTENT HUD
+# layer (transparent → the world shows through), so a cell or label can
+# be redrawn without wiping the whole map. Args in milli (cx cy w h).
+erase_rect() { er_cx=$1; er_cy=$2; er_w=$3; er_h=$4
+  fmt_ndc $er_cx
+  er_cxs=$fv
+  fmt_ndc $er_cy
+  er_cys=$fv
+  fmt_pos $er_w
+  er_ws=$fv
+  fmt_pos $er_h
+  er_hs=$fv
+  ov_text="${ov_text}E $er_cxs $er_cys $er_ws $er_hs
+"
+}
+
 # the viewmodel gun — a 3D-looking rectangular shape, bottom-right at 3/4
 # across, drawn back so it pokes off the bottom-right edge, tilted 20°
 # counter-clockwise. R-lines are rotated quads (R cx cy w h deg r g b)
@@ -1211,6 +1237,8 @@ draw_rect() { dr_cx=$1; dr_cy=$2; dr_w=$3; dr_h=$4
 # after a shot.
 draw_gun() {
   # receiver body (partially off the bottom/right edge) + top highlight
+  # + barrel — STATIC, drawn once into the static layer (the muzzle
+  # flash is per-frame and erased when it fades)
   ov_text="${ov_text}R 0.85 -0.95 0.40 0.30 20 0.24 0.26 0.30
 "
   ov_text="${ov_text}R 0.85 -0.82 0.40 0.05 20 0.32 0.34 0.38
@@ -1222,13 +1250,6 @@ draw_gun() {
 "
   ov_text="${ov_text}R 0.735 -0.50 0.03 0.90 20 0.15 0.16 0.18
 "
-  # muzzle flash — bright glow + white-hot core at the barrel tip
-  if [ "$muzzle" -gt 0 ]; then
-    ov_text="${ov_text}R 0.55 -0.08 0.22 0.22 20 1.0 0.82 0.2
-"
-    ov_text="${ov_text}R 0.55 -0.08 0.10 0.10 20 1.0 1.0 0.9
-"
-  fi
 }
 
 # 3×5 pixel font — flat table of 38 glyphs × 15 pixels (row-major).
@@ -1346,38 +1367,52 @@ draw_text() { dt_t=$1; dt_len=$2; dt_x=$3; dt_y=$4; dt_px=$5; dt_py=$6
 # part: the player triangle and the living MIMEs (they move). Air cells
 # stay dark (the base skips them), so nothing overlaps.
 draw_minimap() {
-  # the player is a triangle pointing the way they face (yaw 0 = up on
-  # the radar = -z, the world direction the camera starts in)
+  # the radar BASE (walls + treasure cells) is in the static layer —
+  # per frame only the CHANGED squares update: erase the old cell, draw
+  # the new. The player is a triangle pointing the way they face
+  # (yaw 0 = up on the radar = -z, the world direction the camera
+  # starts in); display yaw (unwrapped, can be negative) so it glides
+  # through the SHORT arc during a turn, mirroring the view.
+  if [ "$prev_px" -ne "$dpx" ] || [ "$prev_pz" -ne "$dpz" ]; then
+    if [ "$prev_px" -ge 0 ]; then
+      erase_rect $((RADAR_X + prev_px*44)) $((1720 - prev_pz*60)) 44 60
+    fi
+    prev_px=$dpx
+    prev_pz=$dpz
+  fi
   dm_cxm=$((RADAR_X + dpx*44))
   dm_cym=$((1720 - dpz*60))
   fmt_ndc $dm_cxm
   dm_cxs=$fv
   fmt_ndc $dm_cym
   dm_cys=$fv
-  # display yaw (unwrapped, can be negative) so the triangle glides
-  # through the SHORT arc during a turn, mirroring the view. deg is
-  # CLOCKWISE from up on the radar (the device rasterizes the T marker
-  # with -deg): yaw 0 (-z) = up, +x = right, +z = down, -x = left.
-  # Bright yellow + slightly larger than a cell so it pops.
   dm_deg=$((dpyw_raw_ms / 1000))
   ov_text="${ov_text}T $dm_cxs $dm_cys 0.042 1.0 1.0 1.0 $dm_deg
 "
-  # mimes — bright red blips on the radar (they move every MIME_STEP
-  # frames). Ring + coloured core so every type pops against the grey
-  # walls — the raw mime colours (grey/white types) vanished before.
+  # mimes — bright red blips (ring + coloured core); only MOVED cells
+  # are erased and redrawn (they step every MIME_STEP frames)
   mi=0
   while [ "$mi" -lt "$mime_count" ]; do
     dm_mx=${mx[$mi]}
     dm_mz=${mz[$mi]}
-    mime_color ${mtype[$mi]}
-    dm_cxm=$((RADAR_X + dm_mx*44))
-    dm_cym=$((1720 - dm_mz*60))
-    fmt_ndc $dm_cxm
-    dm_cxs=$fv
-    fmt_ndc $dm_cym
-    dm_cys=$fv
-    draw_rect $dm_cxs $dm_cys 0.075 0.100 0.10 0.10 0.12
-    draw_rect $dm_cxs $dm_cys 0.050 0.070 $cr $cg $cb
+    dm_rmx=${rmx[$mi]}
+    dm_rmz=${rmz[$mi]}
+    if [ "$dm_rmx" -ne "$dm_mx" ] || [ "$dm_rmz" -ne "$dm_mz" ]; then
+      if [ "$dm_rmx" -ge 0 ]; then
+        erase_rect $((RADAR_X + dm_rmx*44)) $((1720 - dm_rmz*60)) 44 60
+      fi
+      rmx[$mi]=$dm_mx
+      rmz[$mi]=$dm_mz
+      mime_color ${mtype[$mi]}
+      dm_cxm=$((RADAR_X + dm_mx*44))
+      dm_cym=$((1720 - dm_mz*60))
+      fmt_ndc $dm_cxm
+      dm_cxs=$fv
+      fmt_ndc $dm_cym
+      dm_cys=$fv
+      draw_rect $dm_cxs $dm_cys 0.075 0.100 0.10 0.10 0.12
+      draw_rect $dm_cxs $dm_cys 0.050 0.070 $cr $cg $cb
+    fi
     mi=$((mi + 1))
   done
 }
@@ -1433,8 +1468,21 @@ draw_mime_labels() {
       ml_t=${mtype[$mi]}
       mime_color $ml_t
       ml_ccy=$((ml_cy - 30 - 585 / ml_dp))
+      # the label moves with the mime — erase the OLD label box first
+      if [ "${mplx[$mi]}" -ge 0 ]; then
+        erase_rect ${mplx[$mi]} $((mply[$mi] + 18)) 700 110
+      fi
       draw_text_centered $ml_cx $((ml_ccy + 40)) ${MTNAME_A[$ml_t]} ${MTN_A_LEN[$ml_t]} 7 9 $cr $cg $cb
       draw_text_centered $ml_cx $((ml_ccy - 4)) ${MTNAME_B[$ml_t]} ${MTN_B_LEN[$ml_t]} 7 9 $cr $cg $cb
+      mplx[$mi]=$ml_cx
+      mply[$mi]=$ml_ccy
+    else
+      # the mime left the view — erase its label if one was drawn
+      if [ "${mplx[$mi]}" -ge 0 ]; then
+        erase_rect ${mplx[$mi]} $((mply[$mi] + 18)) 700 110
+        mplx[$mi]=-1
+        mply[$mi]=-1
+      fi
     fi
     mi=$((mi + 1))
   done
@@ -1459,6 +1507,14 @@ draw_mime_list() {
 # the whole on-canvas dashboard: score line, radar, instructions
 hud_static=""
 hud_static_dirty=1   # the radar base must be built before the first frame
+digits_dirty=1       # the score/hp/art/fps digits — redrawn only when they change
+flash_clear=0        # erase the muzzle flash after the last flash frame
+prev_px=-1           # the player's previous radar cell (for the erase)
+prev_pz=-1
+rmx=(-1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1)   # mime radar cells already drawn (-1 = none)
+rmz=(-1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1)
+mplx=(-1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1)  # mime label positions already drawn (-1 = none)
+mply=(-1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1)
 # build the never-changing HUD parts (labels, separators, instructions,
 # radar base cells) ONCE into hud_static; draw_hud_canvas() re-sends it
 # every rendered frame with a leading "C" (the device clears its HUD
@@ -1506,21 +1562,28 @@ hud_build_static() {
     done
     dm_x=$((dm_x + 1))
   done
+  # the viewmodel gun (static) and the sightings list (changes only
+  # when mimes spawn/die — hud_static_dirty) join the base layer
+  draw_gun
+  draw_mime_list
   hud_static=$ov_text
-}
-
-draw_hud_canvas() {
-  if [ "$hud_static_dirty" -eq 1 ]; then
-    hud_build_static
-    hud_static_dirty=0
-  fi
+  # write the whole static layer ONCE (with a clear); per-frame hud
+  # writes update only the changed cells on top of it
   ov_text="C
 "
   ov_text="$ov_text$hud_static"
-  draw_gun
-  draw_minimap
-  draw_mime_labels
-  draw_mime_list
+  echo "$ov_text" > /dev/webgl/hud
+}
+
+# the score/hp/art/fps digit groups — erase + redraw only when a value
+# changed (digits_dirty); the digits are small, so the per-frame cost is
+# zero most frames
+draw_digits() {
+  # erase the four groups (score / HP / ART / FPS)
+  erase_rect 296 1812 96 60
+  erase_rect 572 1812 160 60
+  erase_rect 964 1812 160 60
+  erase_rect 240 1750 96 60
   # score digits
   dh_a=$((score/100%10+26))
   dh_b=$((score/10%10+26))
@@ -1553,7 +1616,35 @@ draw_hud_canvas() {
   draw_char $dh_a 196 1778 8 11 0.55 0.95 0.95
   draw_char $dh_b 228 1778 8 11 0.55 0.95 0.95
   draw_char $dh_c 260 1778 8 11 0.55 0.95 0.95
-  echo "$ov_text" > /dev/webgl/hud
+}
+
+draw_hud_canvas() {
+  if [ "$hud_static_dirty" -eq 1 ]; then
+    hud_build_static
+    hud_static_dirty=0
+  fi
+  ov_text=""
+  # the muzzle flash fades: erase it once after the last flash frame
+  if [ "$flash_clear" -eq 1 ]; then
+    ov_text="${ov_text}E 0.55 -0.08 0.24 0.24
+"
+    flash_clear=0
+  fi
+  draw_minimap
+  draw_mime_labels
+  if [ "$muzzle" -gt 0 ]; then
+    ov_text="${ov_text}R 0.55 -0.08 0.22 0.22 20 1.0 0.82 0.2
+"
+    ov_text="${ov_text}R 0.55 -0.08 0.10 0.10 20 1.0 1.0 0.9
+"
+  fi
+  if [ "$digits_dirty" -eq 1 ]; then
+    draw_digits
+    digits_dirty=0
+  fi
+  if [ "$ov_text" != "" ]; then
+    echo "$ov_text" > /dev/webgl/hud
+  fi
 }
 
 print_map_once() {
@@ -1973,6 +2064,7 @@ main() {
     if [ "$muzzle" -gt 0 ]; then
       muzzle=$((muzzle - 1))
       if [ "$muzzle" -eq 0 ]; then
+        flash_clear=1
         dirty=1
       fi
     fi
@@ -2020,6 +2112,7 @@ main() {
         fps_dt=$((fps_t - fps_t0))
         if [ "$fps_dt" -gt 0 ] && [ "$fps_rendered" -gt 0 ]; then
           fps=$((fps_rendered * 1000 / fps_dt))
+          digits_dirty=1
         fi
         fps_rendered=0
       fi
