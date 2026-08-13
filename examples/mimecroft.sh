@@ -35,6 +35,8 @@ TREASURE_TOTAL=10
 MIME_CAP=12
 MIME_STEP=15          # mimes step every N frames (~6.7/sec — calmer view)
 MIMES_ON=0             # 0 = MIMEs disabled while diagnosing the flicker; set 1 to enable
+CRT_ON=1               # 1 = CRT scanlines + vignette on the rendered view; set 0 for a clean picture
+CORRUPT_ON=1           # 1 = random corruption streaks on the view; set 0 to disable
 
 # block ids
 AIR=0
@@ -412,6 +414,8 @@ damage_cell() { dc_a=$1; dc_b=$2; dc_t=$3
       set_cell $dc_a 0 $dc_b $AIR
       score_block $dc_t
     fi
+    # the radar's static cells changed — rebuild the base layer once
+    hud_static_dirty=1
     play "E3 0.06"
   else
     play "C3 0.05"
@@ -606,31 +610,37 @@ emit_fragment_shader() {
   echo '  g=$((g * (255 - mix) / 255 + cr_g * mix / 255))' >> /tmp/mimecroft-frag.sh
   echo '  b=$((b * (255 - mix) / 255 + cr_b * mix / 255))' >> /tmp/mimecroft-frag.sh
   echo 'fi' >> /tmp/mimecroft-frag.sh
-  echo 'scan=$((fy % 6))' >> /tmp/mimecroft-frag.sh
-  echo 'if [ "$scan" -eq 0 ]; then' >> /tmp/mimecroft-frag.sh
-  echo '  r=$((r * 90 / 100))' >> /tmp/mimecroft-frag.sh
-  echo '  g=$((g * 90 / 100))' >> /tmp/mimecroft-frag.sh
-  echo '  b=$((b * 90 / 100))' >> /tmp/mimecroft-frag.sh
-  echo 'fi' >> /tmp/mimecroft-frag.sh
-  echo 'hash=$((fx * 7 + fy * 13))' >> /tmp/mimecroft-frag.sh
-  echo 'corrupt=$((hash % 97))' >> /tmp/mimecroft-frag.sh
-  echo 'if [ "$corrupt" -eq 0 ]; then' >> /tmp/mimecroft-frag.sh
-  echo '  r=255' >> /tmp/mimecroft-frag.sh
-  echo '  g=$((g / 2))' >> /tmp/mimecroft-frag.sh
-  echo '  b=$((b / 2))' >> /tmp/mimecroft-frag.sh
-  echo 'fi' >> /tmp/mimecroft-frag.sh
-  echo 'vx=$((fx - 120))' >> /tmp/mimecroft-frag.sh
-  echo 'vy=$((fy - 90))' >> /tmp/mimecroft-frag.sh
-  echo 'if [ "$vx" -lt 0 ]; then vx=$((0 - vx)); fi' >> /tmp/mimecroft-frag.sh
-  echo 'if [ "$vy" -lt 0 ]; then vy=$((0 - vy)); fi' >> /tmp/mimecroft-frag.sh
-  echo 'edge=$((vx + vy))' >> /tmp/mimecroft-frag.sh
-  echo 'if [ "$edge" -gt 150 ]; then' >> /tmp/mimecroft-frag.sh
-  echo '  dim=$((edge - 150))' >> /tmp/mimecroft-frag.sh
-  echo '  if [ "$dim" -gt 40 ]; then dim=40; fi' >> /tmp/mimecroft-frag.sh
-  echo '  r=$((r - dim))' >> /tmp/mimecroft-frag.sh
-  echo '  g=$((g - dim))' >> /tmp/mimecroft-frag.sh
-  echo '  b=$((b - dim))' >> /tmp/mimecroft-frag.sh
-  echo 'fi' >> /tmp/mimecroft-frag.sh
+  if [ "$CRT_ON" -eq 1 ]; then
+    echo 'scan=$((fy % 6))' >> /tmp/mimecroft-frag.sh
+    echo 'if [ "$scan" -eq 0 ]; then' >> /tmp/mimecroft-frag.sh
+    echo '  r=$((r * 90 / 100))' >> /tmp/mimecroft-frag.sh
+    echo '  g=$((g * 90 / 100))' >> /tmp/mimecroft-frag.sh
+    echo '  b=$((b * 90 / 100))' >> /tmp/mimecroft-frag.sh
+    echo 'fi' >> /tmp/mimecroft-frag.sh
+  fi
+  if [ "$CORRUPT_ON" -eq 1 ]; then
+    echo 'hash=$((fx * 7 + fy * 13))' >> /tmp/mimecroft-frag.sh
+    echo 'corrupt=$((hash % 97))' >> /tmp/mimecroft-frag.sh
+    echo 'if [ "$corrupt" -eq 0 ]; then' >> /tmp/mimecroft-frag.sh
+    echo '  r=255' >> /tmp/mimecroft-frag.sh
+    echo '  g=$((g / 2))' >> /tmp/mimecroft-frag.sh
+    echo '  b=$((b / 2))' >> /tmp/mimecroft-frag.sh
+    echo 'fi' >> /tmp/mimecroft-frag.sh
+  fi
+  if [ "$CRT_ON" -eq 1 ]; then
+    echo 'vx=$((fx - 400))' >> /tmp/mimecroft-frag.sh
+    echo 'vy=$((fy - 300))' >> /tmp/mimecroft-frag.sh
+    echo 'if [ "$vx" -lt 0 ]; then vx=$((0 - vx)); fi' >> /tmp/mimecroft-frag.sh
+    echo 'if [ "$vy" -lt 0 ]; then vy=$((0 - vy)); fi' >> /tmp/mimecroft-frag.sh
+    echo 'edge=$((vx + vy))' >> /tmp/mimecroft-frag.sh
+    echo 'if [ "$edge" -gt 450 ]; then' >> /tmp/mimecroft-frag.sh
+    echo '  dim=$((edge - 450))' >> /tmp/mimecroft-frag.sh
+    echo '  if [ "$dim" -gt 30 ]; then dim=30; fi' >> /tmp/mimecroft-frag.sh
+    echo '  r=$((r - dim))' >> /tmp/mimecroft-frag.sh
+    echo '  g=$((g - dim))' >> /tmp/mimecroft-frag.sh
+    echo '  b=$((b - dim))' >> /tmp/mimecroft-frag.sh
+    echo 'fi' >> /tmp/mimecroft-frag.sh
+  fi
   echo 'if [ "$r" -lt 0 ]; then r=0; fi' >> /tmp/mimecroft-frag.sh
   echo 'if [ "$g" -lt 0 ]; then g=0; fi' >> /tmp/mimecroft-frag.sh
   echo 'if [ "$b" -lt 0 ]; then b=0; fi' >> /tmp/mimecroft-frag.sh
@@ -643,8 +653,20 @@ emit_fragment_shader() {
   # the hand-written equivalent (the fallback when the generator is
   # unavailable OR its GLSL fails to compile under the browser's ANGLE —
   # the CLI NullGL never type-checks the shader, so a real compile is
-  # the ground truth)
-  fs_fb="precision mediump float; varying highp vec4 vColor; varying highp vec2 vUv; uniform sampler2D uTex; uniform sampler2D uCrack; uniform highp float uOverlay; uniform int uDamage; void main() { if (uOverlay > 0.5) { gl_FragColor = vec4(vColor.rgb, 1.0); return; } vec3 c = texture2D(uTex, vUv).rgb * vColor.rgb; if (uDamage > 0) { vec4 cr = texture2D(uCrack, vUv); float s = float(uDamage) / 3.0; c = mix(c, cr.rgb, cr.a * s); } if (mod(gl_FragCoord.y, 6.0) < 1.0) { c *= 0.9; } float h = mod(floor(gl_FragCoord.x) * 7.0 + floor(gl_FragCoord.y) * 13.0, 97.0); if (h < 1.0) { c = vec3(1.0, c.g * 0.5, c.b * 0.5); } float e = abs(gl_FragCoord.x - 120.0) + abs(gl_FragCoord.y - 90.0); if (e > 150.0) { float d = min(e - 150.0, 40.0); c = max(c - vec3(d), 0.0); } gl_FragColor = vec4(c, 1.0); }"
+  # the ground truth). Assembled from parts so the CRT/corruption
+  # effects can be disabled with CRT_ON/CORRUPT_ON (same look as the
+  # generated shader: texture × colour tint + the optional effects).
+  fs_fb="precision mediump float; varying highp vec4 vColor; varying highp vec2 vUv; uniform sampler2D uTex; uniform sampler2D uCrack; uniform highp float uOverlay; uniform int uDamage; void main() { if (uOverlay > 0.5) { gl_FragColor = vec4(vColor.rgb, 1.0); return; } vec3 c = texture2D(uTex, vUv).rgb * vColor.rgb; if (uDamage > 0) { vec4 cr = texture2D(uCrack, vUv); float s = float(uDamage) / 3.0; c = mix(c, cr.rgb, cr.a * s); }"
+  if [ "$CRT_ON" -eq 1 ]; then
+    fs_fb="$fs_fb if (mod(gl_FragCoord.y, 6.0) < 1.0) { c *= 0.9; }"
+  fi
+  if [ "$CORRUPT_ON" -eq 1 ]; then
+    fs_fb="$fs_fb float h = mod(floor(gl_FragCoord.x) * 7.0 + floor(gl_FragCoord.y) * 13.0, 97.0); if (h < 1.0) { c = vec3(1.0, c.g * 0.5, c.b * 0.5); }"
+  fi
+  if [ "$CRT_ON" -eq 1 ]; then
+    fs_fb="$fs_fb float e = abs(gl_FragCoord.x - 400.0) + abs(gl_FragCoord.y - 300.0); if (e > 450.0) { float d = min(e - 450.0, 30.0); c = max(c - vec3(d), 0.0); }"
+  fi
+  fs_fb="$fs_fb gl_FragColor = vec4(c, 1.0); }"
   glsl=$(sh2glsl /tmp/mimecroft-frag.sh)
   if [ "$glsl" != "" ]; then
     echo "$glsl" > /dev/webgl/shader/fragment
@@ -662,7 +684,7 @@ emit_fragment_shader() {
 }
 
 setup_webgl() {
-  echo "attribute vec3 aPosition; attribute vec3 aShade; attribute vec2 aUv; uniform vec3 uCamPos; uniform float uCamYaw; uniform vec3 uObjPos; uniform vec3 uBlockColor; uniform vec3 uScale; uniform float uOverlay; varying vec4 vColor; varying vec2 vUv; void main() { vec3 p = aPosition * uScale + uObjPos; if (uOverlay > 0.5) { gl_Position = vec4(p.x, p.y, -0.95, 1.0); vColor = vec4(aShade * uBlockColor, 1.0); vUv = vec2(0.0); return; } vec3 cam = uCamPos + vec3(0.5, 0.5, 0.5); vec3 d = p - cam; float a = uCamYaw * 0.0174532925; float c = cos(a); float s = sin(a); vec3 rel = vec3(d.x * c + d.z * s, d.y, -d.x * s + d.z * c); float z = max(-rel.z, 0.05); gl_Position = vec4(rel.x * 0.9 / z, rel.y * 0.9 / z, rel.z / 64.0, 1.0); vColor = vec4(aShade * uBlockColor, 1.0); vUv = aUv; }" > /dev/webgl/shader/vertex
+  echo "attribute vec3 aPosition; attribute vec3 aShade; attribute vec2 aUv; uniform vec3 uCamPos; uniform float uCamYaw; uniform vec3 uObjPos; uniform vec3 uBlockColor; uniform vec3 uScale; uniform float uOverlay; varying vec4 vColor; varying vec2 vUv; void main() { vec3 p = aPosition * uScale + uObjPos; if (uOverlay > 0.5) { gl_Position = vec4(p.x, p.y, -0.95, 1.0); vColor = vec4(aShade * uBlockColor, 1.0); vUv = vec2(0.0); return; } vec3 cam = uCamPos + vec3(0.5, 0.5, 0.5); vec3 d = p - cam; float a = uCamYaw * 0.0174532925; float c = cos(a); float s = sin(a); vec3 rel = vec3(d.x * c + d.z * s, d.y, -d.x * s + d.z * c); float w = -rel.z; gl_Position = vec4(rel.x * 0.9, rel.y * 0.9, w * w / 64.0, w); vColor = vec4(aShade * uBlockColor, 1.0); vUv = aUv; }" > /dev/webgl/shader/vertex
   # the fragment shader is authored in bash (emit_fragment_shader) and
   # compiled by sh2glsl when available — otherwise the equivalent
   # hand-written textured GLSL (the same texture × colour tint + the
@@ -670,7 +692,7 @@ setup_webgl() {
   emit_fragment_shader
   echo "link" > /dev/webgl/program
   echo "f32 -0.5 0.5 0.5 0.5 0.5 0.5 0.5 0.5 -0.5 -0.5 0.5 -0.5 -0.5 -0.5 0.5 0.5 -0.5 0.5 0.5 -0.5 -0.5 -0.5 -0.5 -0.5 -0.5 0.5 0.5 0.5 0.5 0.5 0.5 -0.5 0.5 -0.5 -0.5 0.5 -0.5 -0.5 -0.5 0.5 -0.5 -0.5 0.5 0.5 -0.5 -0.5 0.5 -0.5 0.5 -0.5 0.5 0.5 0.5 0.5 0.5 0.5 -0.5 0.5 -0.5 -0.5 -0.5 -0.5 0.5 -0.5 0.5 0.5 -0.5 0.5 -0.5 -0.5 -0.5 -0.5" > /dev/webgl/buffer/aPosition
-  echo "f32 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 0.7 1 1 1 1 1 1 1 1 1 1 1 1 0.45 0.45 0.45 0.45 0.45 0.45 0.45 0.45 0.45 0.45 0.45 0.45 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.6 0.6 0.6 0.6 0.6 0.6 0.6 0.6 0.6 0.6 0.6 0.6" > /dev/webgl/buffer/aShade
+  echo "f32 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 1 1 1 1 1 1 1 1 1 1 1 1 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.95 0.95 0.95 0.95 0.95 0.95 0.95 0.95 0.95 0.95 0.95 0.95 0.85 0.85 0.85 0.85 0.85 0.85 0.85 0.85 0.85 0.85 0.85 0.85" > /dev/webgl/buffer/aShade
   echo "f32 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1" > /dev/webgl/buffer/aUv
   echo "0" > /dev/webgl/uniform/1i/uTex
   echo "9" > /dev/webgl/uniform/1i/uCrack
@@ -706,6 +728,9 @@ fmt_c() { fc_v=$1
 }
 
 load_tex() { lt_name=$1; lt_idx=$2
+  # a macrotask yield so the preceding "    name…" line paints before
+  # this texture's (transpiled) generation runs
+  sleep 0.01
   # cached payload from an earlier run (session /tmp, persistent /home)
   if [ -f /home/mimecroft-tex-$lt_name ]; then
     cat /home/mimecroft-tex-$lt_name > /dev/webgl/texture/$lt_idx
@@ -775,6 +800,7 @@ load_tex() { lt_name=$1; lt_idx=$2
 
 # RGBA variant (the transparent crack overlay — R G B A per pixel)
 load_tex4() { lt_name=$1; lt_idx=$2
+  sleep 0.01
   if [ -f /tmp/mimecroft-tex-$lt_name ]; then
     cat /tmp/mimecroft-tex-$lt_name > /dev/webgl/texture/$lt_idx
     return 0
@@ -930,9 +956,9 @@ render_frame() {
   echo "$yws" > /dev/webgl/uniform/1f/uCamYaw
   # floor + ceiling planes — the maze floor is carved air, so without
   # them the near-black clear colour shows as a void below/above
-  blk_p="${blk_p}8 -0.05 8 16 0.1 16 0.32 0.28 0.24 0 0
+  blk_p="${blk_p}8 -0.05 8 16 0.1 16 0.45 0.40 0.34 0 0
 "
-  blk_p="${blk_p}8 2.05 8 16 0.1 16 0.15 0.15 0.18 0 0
+  blk_p="${blk_p}8 2.05 8 16 0.1 16 0.24 0.24 0.28 0 0
 "
   if [ "$dyaw" -eq 0 ]; then
     # facing -z: front = z < dpz, so FAR = smallest z — draw z
@@ -1180,59 +1206,53 @@ draw_text() { dt_t=$1; dt_len=$2; dt_x=$3; dt_y=$4; dt_px=$5; dt_py=$6
   done
 }
 
-# 16×16 radar, top-right corner (air cells are left dark = background)
+# 16×16 radar, top-right corner. The static base (walls + treasure
+# cells) is prebuilt into hud_static once — this draws only the DYNAMIC
+# part: the player triangle and the living MIMEs (they move). Air cells
+# stay dark (the base skips them), so nothing overlaps.
 draw_minimap() {
-  dm_x=0
-  while [ "$dm_x" -lt "$MAP_W" ]; do
-    dm_z=0
-    while [ "$dm_z" -lt "$MAP_D" ]; do
-      dm_draw=0
-      if [ "$dm_x" -eq "$dpx" ] && [ "$dm_z" -eq "$dpz" ]; then
-        # the player is a triangle pointing the way they face (yaw 0 = up
-        # on the radar = -z, the world direction the camera starts in)
-        dm_cxm=$((1260 + dm_x*44))
-        dm_cym=$((1720 - dm_z*60))
-        fmt_ndc $dm_cxm
-        dm_cxs=$fv
-        fmt_ndc $dm_cym
-        dm_cys=$fv
-        # display yaw (unwrapped, can be negative) so the triangle
-        # glides through the SHORT arc during a turn, mirroring the view.
-        # Bright yellow + slightly larger than a cell so it pops.
-        dm_deg=$((0 - dpyw_raw_ms / 1000))
-        ov_text="${ov_text}T $dm_cxs $dm_cys 0.042 1.0 1.0 1.0 $dm_deg
+  # the player is a triangle pointing the way they face (yaw 0 = up on
+  # the radar = -z, the world direction the camera starts in)
+  dm_cxm=$((1260 + dpx*44))
+  dm_cym=$((1720 - dpz*60))
+  fmt_ndc $dm_cxm
+  dm_cxs=$fv
+  fmt_ndc $dm_cym
+  dm_cys=$fv
+  # display yaw (unwrapped, can be negative) so the triangle glides
+  # through the SHORT arc during a turn, mirroring the view. deg is
+  # CLOCKWISE from up on the radar (the device rasterizes the T marker
+  # with -deg): yaw 0 (-z) = up, +x = right, +z = down, -x = left.
+  # Bright yellow + slightly larger than a cell so it pops.
+  dm_deg=$((dpyw_raw_ms / 1000))
+  ov_text="${ov_text}T $dm_cxs $dm_cys 0.042 1.0 1.0 1.0 $dm_deg
 "
-        dm_draw=0
-      else
-        mime_at $dm_x $dm_z
-        if [ "$mf" -eq 1 ]; then
-          dm_r=1.0; dm_g=0.35; dm_b=0.25; dm_draw=1
-        else
-          get_cell $dm_x 0 $dm_z
-          if [ "$gv" -eq "$AIR" ]; then dm_draw=0
-          elif [ "$gv" -eq "$TREASURE" ]; then dm_r=0.20; dm_g=1.00; dm_b=0.45; dm_draw=1
-          else dm_r=0.42; dm_g=0.42; dm_b=0.47; dm_draw=1
-          fi
-        fi
-      fi
-      if [ "$dm_draw" -eq 1 ]; then
-        dm_cxm=$((1260 + dm_x*44))
-        dm_cym=$((1720 - dm_z*60))
-        fmt_ndc $dm_cxm
-        dm_cxs=$fv
-        fmt_ndc $dm_cym
-        dm_cys=$fv
-        draw_rect $dm_cxs $dm_cys $CELL_W $CELL_H $dm_r $dm_g $dm_b
-      fi
-      dm_z=$((dm_z + 1))
-    done
-    dm_x=$((dm_x + 1))
+  # mimes — red blocks on the radar (they move every MIME_STEP frames)
+  mi=0
+  while [ "$mi" -lt "$mime_count" ]; do
+    dm_mx=${mx[$mi]}
+    dm_mz=${mz[$mi]}
+    mime_color ${mtype[$mi]}
+    dm_cxm=$((1260 + dm_mx*44))
+    dm_cym=$((1720 - dm_mz*60))
+    fmt_ndc $dm_cxm
+    dm_cxs=$fv
+    fmt_ndc $dm_cym
+    dm_cys=$fv
+    draw_rect $dm_cxs $dm_cys $CELL_W $CELL_H $cr $cg $cb
+    mi=$((mi + 1))
   done
 }
 
 # mime type names (index 1=jpeg 2=png 3=octet-stream 4=text/plain) + lengths
 MTNAME=("none" "image/jpeg" "image/png" "application/octet-stream" "text/plain")
 MTN_LEN=(0 10 9 24 10)
+# the same names SPLIT at the / — part A (type) above part B (subtype),
+# drawn as a two-line tag centered on the cube (draw_mime_labels)
+MTNAME_A=("none" "image" "image" "application" "text")
+MTN_A_LEN=(0 5 5 11 4)
+MTNAME_B=("none" "jpeg" "png" "octet-stream" "plain")
+MTN_B_LEN=(0 4 3 12 5)
 
 # project a world cell to overlay NDC (milli) — the yaw rotation is exact
 # integer sign/axis swaps, the perspective divide uses integer math
@@ -1261,7 +1281,10 @@ draw_text_centered() { dtc_cx=$1; dtc_y=$2; dtc_t=$3; dtc_len=$4; dtc_px=$5
   draw_text $dtc_t $dtc_len $dtc_x $dtc_y $dtc_px $6 $7 $8 $9
 }
 
-# the MIME type name floats above each visible MIME block
+# the MIME type tag — split at the /, both halves drawn centered ON the
+# cube (type above subtype) instead of one long line floating above it.
+# ml_cy is the CELL TOP's projection; the cube (a 0.7 block sitting on
+# layer 0, y-centre 0.35, camera at 0.5) projects 30 + 585/dp below it.
 draw_mime_labels() {
   mi=0
   while [ "$mi" -lt "$mime_count" ]; do
@@ -1271,7 +1294,9 @@ draw_mime_labels() {
     if [ "$ml_ok" -eq 1 ]; then
       ml_t=${mtype[$mi]}
       mime_color $ml_t
-      draw_text_centered $ml_cx $ml_cy ${MTNAME[$ml_t]} ${MTN_LEN[$ml_t]} 7 9 $cr $cg $cb
+      ml_ccy=$((ml_cy - 30 - 585 / ml_dp))
+      draw_text_centered $ml_cx $((ml_ccy + 40)) ${MTNAME_A[$ml_t]} ${MTN_A_LEN[$ml_t]} 7 9 $cr $cg $cb
+      draw_text_centered $ml_cx $((ml_ccy - 4)) ${MTNAME_B[$ml_t]} ${MTN_B_LEN[$ml_t]} 7 9 $cr $cg $cb
     fi
     mi=$((mi + 1))
   done
@@ -1295,11 +1320,16 @@ draw_mime_list() {
 
 # the whole on-canvas dashboard: score line, radar, instructions
 hud_static=""
-# build the never-changing HUD parts (labels, separators, instructions)
-# ONCE into hud_static; draw_hud_canvas() re-sends it every rendered
-# frame with a leading "C" (the device clears its HUD layer first), so
-# the per-frame bash cost is only the dynamic cells — no ghosting, and
-# the device composites the layer as one textured quad per swap.
+hud_static_dirty=1   # the radar base must be built before the first frame
+# build the never-changing HUD parts (labels, separators, instructions,
+# radar base cells) ONCE into hud_static; draw_hud_canvas() re-sends it
+# every rendered frame with a leading "C" (the device clears its HUD
+# layer first), so the per-frame bash cost is only the dynamic cells —
+# no ghosting, and the device composites the layer as one textured quad
+# per swap. The radar BASE (walls + treasure cells) never moves; only
+# the player triangle and the MIMEs change per frame, so those are the
+# dynamic part. hud_static is rebuilt (hud_static_dirty=1) only when a
+# block is mined or a treasure claimed.
 hud_build_static() {
   ov_text=""
   # score line (top-left)
@@ -1314,10 +1344,38 @@ hud_build_static() {
   draw_text "FPS" 3 60 1778 8 11 0.55 0.95 0.95
   # instructions (bottom centre)
   draw_text "WASD MOVE ARROWS TURN SPACE SHOOT" 33 538 100 7 10 0.85 0.85 0.85
+  # radar base: walls + treasure cells (air stays dark; the player and
+  # MIMEs are air cells, drawn dynamically over this base each frame)
+  dm_x=0
+  while [ "$dm_x" -lt "$MAP_W" ]; do
+    dm_z=0
+    while [ "$dm_z" -lt "$MAP_D" ]; do
+      get_cell $dm_x 0 $dm_z
+      dm_draw=0
+      if [ "$gv" -eq "$TREASURE" ]; then dm_r=0.20; dm_g=1.00; dm_b=0.45; dm_draw=1
+      elif [ "$gv" -ne "$AIR" ]; then dm_r=0.42; dm_g=0.42; dm_b=0.47; dm_draw=1
+      fi
+      if [ "$dm_draw" -eq 1 ]; then
+        dm_cxm=$((1260 + dm_x*44))
+        dm_cym=$((1720 - dm_z*60))
+        fmt_ndc $dm_cxm
+        dm_cxs=$fv
+        fmt_ndc $dm_cym
+        dm_cys=$fv
+        draw_rect $dm_cxs $dm_cys $CELL_W $CELL_H $dm_r $dm_g $dm_b
+      fi
+      dm_z=$((dm_z + 1))
+    done
+    dm_x=$((dm_x + 1))
+  done
   hud_static=$ov_text
 }
 
 draw_hud_canvas() {
+  if [ "$hud_static_dirty" -eq 1 ]; then
+    hud_build_static
+    hud_static_dirty=0
+  fi
   ov_text="C
 "
   ov_text="$ov_text$hud_static"
@@ -1441,7 +1499,11 @@ main() {
   g_t0=$g_now
   # immediate feedback FIRST: the banner + map print before the slow
   # parts (the wasm shader compile + the texture generation), so the
-  # terminal is never silent during startup
+  # terminal is never silent during startup. The sleeps between phases
+  # are macrotask yields — the browser can't PAINT while a transpiled
+  # script runs (its exec calls are one microtask chain), so without
+  # them every startup message appears at once when the game loop
+  # starts instead of streaming as it loads.
   echo ""
   echo "╔══════════════════════════════════════════════════╗"
   echo "║  MIMEcrofT v5.9 — 3D treasure hunt written in bash ║"
@@ -1450,8 +1512,11 @@ main() {
   echo "║  WASD move · arrows turn · SPACE shoot · q quit  ║"
   echo "╚══════════════════════════════════════════════════╝"
   echo ""
+  sleep 0.02
   print_map_once
+  sleep 0.02
   echo "  compiling the fragment shader…"
+  sleep 0.02
   setup_webgl
   hud_build_static
   gen_maze
@@ -1464,6 +1529,7 @@ main() {
   # block textures (generated by examples/textures at startup — cached
   # in /tmp per session so re-runs skip the generation)
   echo "  loading block textures…"
+  sleep 0.02
   load_textures
   echo "  ready."
   sleep 0.8
@@ -1474,6 +1540,7 @@ main() {
     frame=$((frame + 1))
     gtick
     g_last=$g_now
+    fp_t0=$g_now
     # one action at a time: input is queued until the current glide ends
     if [ "$anim" -eq 0 ]; then
       keys=$(cat /dev/webgl/key)
@@ -1494,6 +1561,14 @@ main() {
           ;;
         *ArrowRight*)
           start_turn 1
+          ;;
+        # ArrowUp/ArrowDown contain the letter 'w' — they must be matched
+        # BEFORE *w*/*s* or both would fall through to "move forward"
+        *ArrowUp*)
+          try_anim_move $fx $fz
+          ;;
+        *ArrowDown*)
+          try_anim_move $bx $bz
           ;;
         *w*)
           try_anim_move $fx $fz
@@ -1562,9 +1637,12 @@ main() {
       fps_rendered=$((fps_rendered + 1))
     else
       # keyboard heartbeat: the device releases keys 2s after the last
-      # swap — a bare swap (the back buffer is unchanged) every ~1.5s
-      # keeps the game's keyboard grab alive while idling
-      hb=$((frame % 190))
+      # swap — a bare swap (the back buffer is unchanged) every ~1s
+      # keeps the game's keyboard grab alive while idling. (frame % 100
+      # at ~10ms/frame ≈ 1s — comfortably inside the 2s window even
+      # when a render burst slows a few frames; 190 was ~1.5s+overhead,
+      # so the window expired on slow machines and keys stopped arriving)
+      hb=$((frame % 100))
       if [ "$hb" -eq 0 ]; then
         echo "swap" > /dev/webgl/call
       fi
@@ -1582,7 +1660,17 @@ main() {
       fi
       fps_t0=$fps_t
     fi
-    sleep 0.008
+    # fps cap 100 (10ms/frame): sleep only the leftover budget — a
+    # frame that already took 10ms+ (render burst, slow machine) sleeps
+    # 0, never adding latency on top of a slow frame.
+    gtick
+    fp_el=$((g_now - fp_t0))
+    if [ "$fp_el" -lt 10000 ]; then
+      fp_wait=$(((10000 - fp_el + 999) / 1000))
+      fmt3 $fp_wait
+      sleep 0.$fv
+    fi
+    fp_t0=$g_now
     # the sleep itself + the fps-sampling tail of the frame
     gspan "sleep"
   done
