@@ -28,7 +28,7 @@
 const WASM_PATH = "wasm-bin/otranspilerl.wasm";  // browser: relative to the page
 // cache-buster — bump whenever www/wasm-bin/otranspilerl.wasm changes so
 // the browser (and the otranspiler GUI) never serves a stale wasm.
-const WASM_VERSION = "v12-cfor-glsl";  // v12: ForInit + first-class Continue/Break (strip_cfor pass) // v11: template-literal quasi escaping (trailing \ in batch echo)
+const WASM_VERSION = "v17-glsl-mediump";  // v17: ES 1.00 mediump precision gate (interval proof over all int intermediates) // v16: texture samples hoisted (2 fetches vs 7) + atom-paren strip // v15: input bridges use-gated (tex/crack/vcolor declared+seeded only when referenced) // v14: glsl DCE + scalar promotion (dead g_pa/g_fit/out_len/OUT_CAP dropped; main() locals) // v13: A1→GLSL render arm (glsl in the TARGETS dispatch — frontend A1s render to shaders) // v12: ForInit + first-class Continue/Break (strip_cfor pass) // v11: template-literal quasi escaping (trailing \ in batch echo)
 
 let libPromise = null;
 
@@ -168,6 +168,9 @@ function wrapLibrary(instance, mem, out) {
     // shell → GLSL ES 1.00 render fragment (the MIMEcroft shader pipeline;
     // the `sh2glsl` shell command drives this)
     glsl: (src) => call("otranspilerl_glsl", [String(src)]).output,
+    // shell → GLSL ES 1.00 render VERTEX shader (the other MIMEcroft
+    // stage; `sh2glsl --vertex` drives this)
+    glslv: (src) => call("otranspilerl_glslv", [String(src)]).output,
     raw: call,
   };
 }
