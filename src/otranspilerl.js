@@ -26,9 +26,16 @@
 // -----------------------------------------------------------------
 
 const WASM_PATH = "wasm-bin/otranspilerl.wasm";  // browser: relative to the page
+// The sh2runtime device canvas is 800×600 (src/fs/webgldev.js) — the
+// shader coordinate space is EMBEDDER-owned: the wasm's glsl/glslv
+// take the view width per call, and the frag/vertex programs are
+// authored against the same value (the game's shaders write `fx - 400`
+// = half of 800). Pass the canvas width explicitly; the default keeps
+// old callers (GUI transpile) working.
+export const GLSL_VIEW = 800;
 // cache-buster — bump whenever www/wasm-bin/otranspilerl.wasm changes so
 // the browser (and the otranspiler GUI) never serves a stale wasm.
-const WASM_VERSION = "v18-glsl-vignette";  // v18: guard-aware mediump proof (test refinement) + multiplicative vignette // v17: ES 1.00 mediump precision gate (interval proof over all int intermediates) // v16: texture samples hoisted (2 fetches vs 7) + atom-paren strip // v15: input bridges use-gated (tex/crack/vcolor declared+seeded only when referenced) // v14: glsl DCE + scalar promotion (dead g_pa/g_fit/out_len/OUT_CAP dropped; main() locals) // v13: A1→GLSL render arm (glsl in the TARGETS dispatch — frontend A1s render to shaders) // v12: ForInit + first-class Continue/Break (strip_cfor pass) // v11: template-literal quasi escaping (trailing \ in batch echo)
+const WASM_VERSION = "v19-glsl-view";  // v19: glsl/glslv take the embedder's view size (max_view no longer hardcoded in the wasm) // v17: ES 1.00 mediump precision gate (interval proof over all int intermediates) // v16: texture samples hoisted (2 fetches vs 7) + atom-paren strip // v15: input bridges use-gated (tex/crack/vcolor declared+seeded only when referenced) // v14: glsl DCE + scalar promotion (dead g_pa/g_fit/out_len/OUT_CAP dropped; main() locals) // v13: A1→GLSL render arm (glsl in the TARGETS dispatch — frontend A1s render to shaders) // v12: ForInit + first-class Continue/Break (strip_cfor pass) // v11: template-literal quasi escaping (trailing \ in batch echo)
 
 let libPromise = null;
 
@@ -146,10 +153,11 @@ function wrapLibrary(instance, mem, out) {
     return s;
   }
 
-  // Call an export taking N string args; returns the parsed envelope.
-  function call(fn, args) {
+  // Call an export taking N string args (optionally followed by scalar
+  // i32 args — the glsl/glslv view size); returns the parsed envelope.
+  function call(fn, args, scalars = []) {
     const ins = args.map(allocInput);
-    const res = ex[fn](...ins.flatMap((x) => [x.p, x.len]));
+    const res = ex[fn](...ins.flatMap((x) => [x.p, x.len]), ...scalars);
     ins.forEach((x) => ex.otranspilerl_free(x.p));
     const env = JSON.parse(takeResult(res));
     if (!env.ok) throw new Error(env.error || "otranspilerl: failed");
@@ -167,10 +175,10 @@ function wrapLibrary(instance, mem, out) {
     render: (a1, lang) => call("otranspilerl_render", [String(a1), lang]).output,
     // shell → GLSL ES 1.00 render fragment (the MIMEcroft shader pipeline;
     // the `sh2glsl` shell command drives this)
-    glsl: (src) => call("otranspilerl_glsl", [String(src)]).output,
+    glsl: (src, view = GLSL_VIEW) => call("otranspilerl_glsl", [String(src)], [view]).output,
     // shell → GLSL ES 1.00 render VERTEX shader (the other MIMEcroft
     // stage; `sh2glsl --vertex` drives this)
-    glslv: (src) => call("otranspilerl_glslv", [String(src)]).output,
+    glslv: (src, view = GLSL_VIEW) => call("otranspilerl_glslv", [String(src)], [view]).output,
     raw: call,
   };
 }
