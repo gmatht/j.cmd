@@ -1402,8 +1402,14 @@ draw_radar_cell() { rc_x=$1; rc_z=$2
 # the mime's radar blip (ring + coloured core) at its current cell
 draw_mime_blip() { mb_i=$1
   mime_color ${mtype[$mb_i]}
-  mb_cxm=$((RADAR_X + ${mx[$mb_i]}*44))
-  mb_cym=$((1720 - ${mz[$mb_i]}*60))
+  # read the array element to a variable FIRST — a ${arr[$i]} read
+  # inside $(( )) transpiles wrong (the debashcl emitter escapes the
+  # outer $ and the runtime's arith mis-expands it; precomputed scalar
+  # variables are the game's own discipline)
+  mb_mx=${mx[$mb_i]}
+  mb_mz=${mz[$mb_i]}
+  mb_cxm=$((RADAR_X + mb_mx*44))
+  mb_cym=$((1720 - mb_mz*60))
   fmt_ndc $mb_cxm
   mb_cxs=$fv
   fmt_ndc $mb_cym
@@ -1520,7 +1526,9 @@ hud_build_static() {
   while [ "$dm_x" -lt "$MAP_W" ]; do
     dm_z=0
     while [ "$dm_z" -lt "$MAP_D" ]; do
-      get_cell $dm_x 0 $dm_z
+      # the maze lives on layer y=1 (corridors carved there; y=0 is the
+      # solid dirt floor) — reading y=0 painted every cell as a wall
+      get_cell $dm_x 1 $dm_z
       dm_draw=0
       if [ "$gv" -eq "$TREASURE" ]; then dm_r=0.20; dm_g=1.00; dm_b=0.45; dm_draw=1
       elif [ "$gv" -ne "$AIR" ]; then dm_r=0.42; dm_g=0.42; dm_b=0.47; dm_draw=1
@@ -1650,7 +1658,7 @@ print_map_once() {
       if [ "$po_x" -eq "$px" ] && [ "$po_z" -eq "$pz" ]; then
         po_ch="@"
       else
-        get_cell $po_x 0 $po_z
+        get_cell $po_x 1 $po_z
         if [ "$gv" -eq "$AIR" ]; then po_ch="."
         elif [ "$gv" -eq "$TREASURE" ]; then po_ch="?"
         else po_ch="#"
@@ -1964,9 +1972,12 @@ main() {
   echo "  compiling the fragment shader…"
   sleep 0.02
   setup_webgl
-  hud_build_static
   gen_maze
   place_treasures
+  # the radar base needs the maze — build it now (after gen/placement),
+  # not before, so the first static layer has the real walls/treasures
+  hud_build_static
+  hud_static_dirty=0
   if [ "$MIMES_ON" -eq 1 ]; then
     spawn_mime
     spawn_mime
