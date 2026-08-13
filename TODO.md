@@ -183,3 +183,45 @@ and device files. It runs in any browser with no build step.
 - RootFS doesn't support writing files outside mount points
 - No `..` resolution past mount boundaries (e.g., `cd /tmp; cd ..` doesn't
   go to `/`)
+
+### tcc fork: fix tests2 suite failures under wasm32 output
+
+The wasm-generating tcc fork (gmatht/tinycc, wasm32 backend) fails its
+own tests2 corpus when generating wasm. Baseline (150 tests, fork's
+run-corpus.mjs): PASS 51 · WRONG 17 · REFUSE 60 · COMPILE-OUT 9 ·
+RUN-CRASH 2 · RUN-ERR 2 · NO-EXPECT 9.
+
+FINAL (after this session): PASS 69 · WRONG 16 · REFUSE 53 ·
+COMPILE-OUT 0 · RUN-CRASH 2 · RUN-ERR 0 · NO-EXPECT 9. All COMPILE-OUT
+(invalid wasm) and RUN-ERR (missing env imports) eliminated, no more
+suite hangs. Fixes: bss zero-fill (segfault), NOP dead regions +
+suppressed dead-region edges (hangs), _start argv, long-double f64,
+br_table/br LEB encoding, inverted VT_JMP (&&/||), symbol constant
+offsets (array[i]), function-value table (atexit/ctors), output-time
+global addresses, __wasm_call_ctors. Remaining WRONG are mostly
+harness expectations (-dt/compile-warning tests, WASI argv) plus a few
+codegen gaps (17_enum varargs, 22 float math, 40_stdio files,
+104 static visibility); REFUSE = documented feature gaps (fn pointers,
+VLA, struct-by-value, i64 varargs, asm, TLS/pthread, bcheck). Plan:
+
+- [x] wasm32-gen.c: bss section is emitted by reading bss_section->data
+      (NULL — bss has no initialized content) → segfault (32_led).
+      Emit zeros instead.
+- [x] wasm32-gen.c: remove the unconditional L:/E:/G:/S: w_layout debug
+      prints that pollute every compile's stderr.
+- [x] wasm32-gen.c: guard the LEB128 edge-target emit against target=-1
+      (unresolved label → infinite loop / OOB write).
+- [x] Investigate + fix the 9 COMPILE-OUT tests (27_sizeof, 31_args,
+      39_typedef, 48_nested_break, 54_goto, 70_floating_point_literals,
+      89_nocode_wanted, 93_integer_promotion, 94_generic): tcc emits
+      wasm that fails V8 validation (stack underflow / bad opcode).
+- [x] Fix the 2 RUN-CRASH tests (03_struct, 136_atomic_gcc_style):
+      "unreachable" trap — likely an infinite pc-dispatch loop.
+- [x] Fix 11_precedence + 50_logical_second_arg (&&/|| short-circuit
+      precedence wrong: line 3 got "1" want "0").
+- [x] Fix 108_constructor: __wasm_call_ctors / atexit destructors not
+      running ("constructor"/"destructor" missing).
+- [ ] Fix 17_enum vararg slot collision (documented root cause).
+- [x] Harness: pass ARGS (31_args, 46_grep), FLAGS (-lm, -dt, -pthread)
+      and apply the upstream platform SKIP list so diagnostics/linker
+      tests are measured fairly.

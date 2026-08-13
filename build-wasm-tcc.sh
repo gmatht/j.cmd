@@ -45,7 +45,9 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
 UPSTREAM="https://github.com/gmatht/tinycc.git"   # our fork of TinyCC/tinycc — wasm32 backend
-TINYCC="${TINYCC_DIR:-$REPO/build/tcc-wasm}"
+# default to the LOCAL fork checkout (carries the wasm32 backend fixes
+# that are ahead of the remote mob branch)
+TINYCC="${TINYCC_DIR:-/root/src/tinycc-wasm}"
 WASI_SDK="${WASI_SDK:-/opt/wasi-sdk-25.0-x86_64-linux}"
 WORK="$(mktemp -d /tmp/tcc-wasm-build.XXXXXX)"
 INC="$WORK/inc"          # header staging dir
