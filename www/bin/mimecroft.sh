@@ -821,14 +821,13 @@ load_textures() {
   load_tex4 crack 9
 }
 
+# the world is drawn as ONE batched payload per frame (/dev/webgl/blocks:
+# "x y z sx sy sz r g b tx dam" lines) — the per-cube echo round-trips
+# were the frame's bottleneck (~6 async dispatches per cube)
 draw_block() { db_a=$1; db_b=$2; db_c=$3; db_r=$4; db_g=$5; db_bl=$6; db_tx=$7
-  echo "1 1 1" > /dev/webgl/uniform/3f/uScale
-  echo "$db_a $db_b $db_c" > /dev/webgl/uniform/3f/uObjPos
-  echo "$db_r $db_g $db_bl" > /dev/webgl/uniform/3f/uBlockColor
-  echo "$db_tx" > /dev/webgl/uniform/1i/uTex
   get_bhp $db_a 0 $db_c
-  echo "$bh" > /dev/webgl/uniform/1i/uDamage
-  echo "draw elements triangles 36 0 cube" > /dev/webgl/call
+  blk_p="${blk_p}$db_a $db_b $db_c 1 1 1 $db_r $db_g $db_bl $db_tx $bh
+"
 }
 
 # texture index per block type (1=stone 2=sandstone 3=water 4=brick
@@ -859,11 +858,8 @@ try_draw() { td_a=$1; td_b=$2; td_c=$3
       if [ "$mf" -eq 1 ]; then
         mime_color $mt
         mime_tex_of $mt
-        echo "$td_a $td_b $td_c" > /dev/webgl/uniform/3f/uObjPos
-        echo "0.7 0.7 0.7" > /dev/webgl/uniform/3f/uScale
-        echo "$cr $cg $cb" > /dev/webgl/uniform/3f/uBlockColor
-        echo "$tx" > /dev/webgl/uniform/1i/uTex
-        echo "draw elements triangles 36 0 cube" > /dev/webgl/call
+        blk_p="${blk_p}$td_a $td_b $td_c 0.7 0.7 0.7 $cr $cg $cb $tx 0
+"
       fi
     fi
     return 1
@@ -911,10 +907,10 @@ try_draw() { td_a=$1; td_b=$2; td_c=$3
 render_frame() {
   echo "clear" > /dev/webgl/call
   echo "0.0" > /dev/webgl/uniform/1f/uOverlay
-  echo "1 1 1" > /dev/webgl/uniform/3f/uScale
   # restore the cube bindings (the overlay HUD switches them to quad)
   echo "aPosition aPosition" > /dev/webgl/bind
   echo "aShade aShade" > /dev/webgl/bind
+  blk_p=""
   fmt_pos $dpcx_ms
   cxs=$fv
   fmt_pos $dpcz_ms
@@ -925,14 +921,10 @@ render_frame() {
   echo "$yws" > /dev/webgl/uniform/1f/uCamYaw
   # floor + ceiling planes — the maze floor is carved air, so without
   # them the near-black clear colour shows as a void below/above
-  echo "8 -0.05 8" > /dev/webgl/uniform/3f/uObjPos
-  echo "16 0.1 16" > /dev/webgl/uniform/3f/uScale
-  echo "0.32 0.28 0.24" > /dev/webgl/uniform/3f/uBlockColor
-  echo "draw elements triangles 36 0 cube" > /dev/webgl/call
-  echo "8 2.05 8" > /dev/webgl/uniform/3f/uObjPos
-  echo "0.15 0.15 0.18" > /dev/webgl/uniform/3f/uBlockColor
-  echo "draw elements triangles 36 0 cube" > /dev/webgl/call
-  echo "1 1 1" > /dev/webgl/uniform/3f/uScale
+  blk_p="${blk_p}8 -0.05 8 16 0.1 16 0.32 0.28 0.24 0 0
+"
+  blk_p="${blk_p}8 2.05 8 16 0.1 16 0.15 0.15 0.18 0 0
+"
   if [ "$dyaw" -eq 0 ]; then
     # facing -z: front = z < dpz, so FAR = smallest z — draw z
     # ascending so the far "outside" cubes hit the canvas first and
@@ -990,6 +982,7 @@ render_frame() {
       rf_x=$((rf_x + 1))
     done
   fi
+  echo "$blk_p" > /dev/webgl/blocks
 }
 
 # ─── HUD (the terminal is the dashboard) ────────────────────────────
@@ -1448,7 +1441,7 @@ main() {
   fi
   echo ""
   echo "╔══════════════════════════════════════════════════╗"
-  echo "║  MIMEcrofT v5.8 — 3D treasure hunt written in bash ║"
+  echo "║  MIMEcrofT v5.9 — 3D treasure hunt written in bash ║"
   echo "║  The filesystem is infested with evil MIMEs.     ║"
   echo "║  Recover the lost operating systems.             ║"
   echo "║  WASD move · arrows turn · SPACE shoot · q quit  ║"

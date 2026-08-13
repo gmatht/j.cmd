@@ -240,7 +240,11 @@ export class WebGLDevice {
       gl.deleteShader(shader);
       this._programLinked = false;
       this._log += `[shader/${kind}] FAILED: ${info}\n`;
-      throw new Error(`shader ${kind} compile failed: ${info}`);
+      this._shaderError = { kind, info };
+      // no throw: the game reads /dev/webgl/log after writing and falls
+      // back to its hand-written shader when a generated one fails to
+      // compile under the browser's (stricter than the CLI NullGL) ANGLE
+      return;
     }
     this._shaders[kind] = shader;
     this._programLinked = false;  // needs relink
@@ -408,6 +412,31 @@ export class WebGLDevice {
   }
 
   // ─── Drawing ────────────────────────────────────────────────
+
+  // batched world draw: one dispatch for the whole frame's cubes.
+  // Each line is "x y z sx sy sz r g b tx dam" (a cube + its scale,
+  // colour, texture index and damage level). The game's per-block echo
+  // round-trips were the bottleneck (~6 async dispatches per cube); this
+  // lowers the whole scene to ONE async write + synchronous GL calls.
+  _drawBlocks(text) {
+    const gl = this._ensureGL();
+    let drawn = 0, bad = 0;
+    for (const line of String(text).split("\n")) {
+      const t = line.trim();
+      if (!t) continue;
+      const n = t.split(/[\s,]+/).filter(Boolean).map(Number);
+      if (n.length < 10 || n.some(Number.isNaN)) { bad++; continue; }
+      const [x, y, z, sx, sy, sz, r, g, b, tx, dam = 0] = n;
+      this._uniforms.set("uObjPos", { type: "3f", value: [x, y, z] });
+      this._uniforms.set("uScale", { type: "3f", value: [sx, sy, sz] });
+      this._uniforms.set("uBlockColor", { type: "3f", value: [r, g, b] });
+      this._uniforms.set("uTex", { type: "1i", value: [tx] });
+      this._uniforms.set("uDamage", { type: "1i", value: [dam] });
+      this._doCall("draw elements triangles 36 0 cube");
+      drawn++;
+    }
+    if (drawn || bad) this._log += `[blocks] ${drawn} cubes${bad ? ` (${bad} bad lines)` : ""}\n`;
+  }
 
   _doCall(raw) {
     const gl = this._ensureGL();
@@ -899,6 +928,10 @@ export class WebGLDevice {
     }
     if (parts[0] === "call") {
       this._doCall(String(content));
+      return;
+    }
+    if (parts[0] === "blocks") {
+      this._drawBlocks(String(content));
       return;
     }
     if (parts[0] === "hud") {

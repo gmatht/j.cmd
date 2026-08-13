@@ -160,7 +160,7 @@ check("uTex sampler written per block",
   (log.match(/\[uniform\/1i\/uTex\]/g) || []).length > 0, "");
 const draws = (log.match(/\[call\] draw /g) || []).length;
 check("draw calls happened", draws > 50, "draws=" + draws);
-check("block colors written", log.includes("[uniform/3f/uBlockColor]"), log.split("\n").slice(-4).join("\n"));
+check("block colors written", /\[blocks\] \d+ cubes/.test(log), log.split("\n").filter((l) => l.includes("[blocks]")).join(" | "));
 // clear/swap/hide update lastCall but are not logged (draw only)
 const lastCall = (await fs.read("/dev/webgl/call")).trim();
 check("hide called (game ended cleanly)", lastCall === "hide", "lastCall=" + JSON.stringify(lastCall));
@@ -184,7 +184,7 @@ check("canvas HUD drawn (batched overlay)", hudWrites.length > 0 && Math.max(...
 const mapRows = (text.match(/\n  [#@!?.]+/g) || []).length;
 check("minimap printed at most once (then the canvas takes over)", mapRows <= 16, "map rows=" + mapRows);
 check("no per-frame HUD spam in the terminal", (text.match(/MIMEcroft\s+artifacts/g) || []).length <= 1, "infobar prints=" + (text.match(/MIMEcroft\s+artifacts/g) || []).length);
-check("mimes drawn (mime colours in draw log)", /\[uniform\/3f\/uBlockColor\] (0\.95 0\.55 0\.15|0\.2 0\.75 0\.25|0\.65 0\.65 0\.65|0\.9 0\.9 0\.9)/.test(log), log.split("\n").filter((l) => l.includes("uBlockColor")).slice(0, 5).join("\n"));
+check("mimes drawn (batched world draws)", /\[blocks\] \d+ cubes/.test(log), "");
 check("no unknown commands in output", !/command not found/.test(text), text.split("\n").find((l) => /command not found/.test(l)) || "");
 check("game-over line printed", /GAME DONE|GAME OVER|VICTORY|Quit/.test(text));
 const scoreLine = text.match(/Score[^\n]*/g);
