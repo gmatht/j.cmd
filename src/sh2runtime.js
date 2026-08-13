@@ -62,9 +62,15 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
   // Expand a test-expression operand ($var, ${var}, quotes already stripped).
   // Factory-local: it needs getVar for variable expansion.
   function expandOperand(s) {
+    // Fast path: no `$` means no expansion — the common case is a plain
+    // number / literal index (arrayIndex("map", "123")), which the three
+    // regex passes below would otherwise scan pointlessly (the game's
+    // per-block cell reads hit this thousands of times per frame).
+    const str = String(s);
+    if (str.indexOf("$") === -1) return str;
     // ${#arr[@]} — array length · ${#name} — string length (the emitter
     // passes both inside test strings like `[ $i -lt ${#arr[@]} ]`)
-    const withLen = String(s)
+    const withLen = str
       .replace(/\$\{#([A-Za-z_][A-Za-z0-9_]*)\[@\]\}/g, (m, name) => arrayLen(name))
       .replace(/\$\{#([A-Za-z_][A-Za-z0-9_]*)\}/g, (m, name) => String(getVar(name)).length);
     return withLen.replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*|\d+|#|@|\*|\?|\$|\!)\}?/g, (m, name) => {
@@ -102,6 +108,16 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       const v = vars.get(name);
       return Array.isArray(v) ? String(v[0] ?? "") : v;
     }
+    // EPOCHREALTIME / EPOCHSECONDS — bash's wall-clock special variables.
+    // A static env value would go stale; return a LIVE value so the µs
+    // clocks in the texture generators and mimecroft (tick/gtick) skip
+    // the `date +%s%N` command-substitution fallback. Without this the
+    // per-pixel tick() calls ran ~512 date execs through the full
+    // command machinery per texture (~8s each) and gtick() ran ~9 per
+    // game frame — the startup and keyboard-capture killers. Integer µs
+    // matches the consumers' `${var%.*}${var#*.}` dot-strip exactly.
+    if (name === "EPOCHREALTIME") return String(Date.now() * 1000);
+    if (name === "EPOCHSECONDS") return String(Math.floor(Date.now() / 1000));
     if (env && env[name] !== undefined) return String(env[name]);
     return "";
   }
@@ -135,6 +151,11 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       }
       const existing = vars.get(arrName);
       if (Array.isArray(existing) && Number.isFinite(idx)) {
+        // redundant-write fast path: same value → skip the full-array
+        // copy (setVar copies the whole array per element write — the
+        // game's loops re-write cells whose value is unchanged, e.g.
+        // the gen-time `map[$i]=0` seeding and repeated damage writes).
+        if (!isBox && existing[idx] === val) return;
         const list = existing.slice();
         list[idx] = isBox ? value : val;
         vars.set(arrName, list);
@@ -315,6 +336,17 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       const fd = r.fd || 1;
       const content = fd === 2 ? buf.err : buf.out;
       handled[fd] = true;
+      const target = String(r.target || "");
+      // `>&2` / `2>&1` / `&2` — an fd-dup target (the transpiler emits
+      // `target: "&2"` for a `>&2` redirect). Route the content to the
+      // fd's sink — it is NOT a VFS file named "&2".
+      if (target.startsWith("&")) {
+        const tfd = Number(target.slice(1));
+        if (tfd === 1) { if (content) stdout.write(content); }
+        else if (tfd === 2) { if (content) stderr.write(content); }
+        else throw new Error(`redirect: no fd ${tfd}`);
+        continue;
+      }
       if (r.mode === "a") {
         let existing = "";
         try { existing = await fs.read(r.target); } catch { /* new file */ }
@@ -549,7 +581,12 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     // pointers pass the bare name — both must work.
     if (/^\u0001mem:/.test(String(name))) return memLoad1(memAdvance(String(name), Number(idx) || 0));
     const v = vars.get(name);
-    const i = Number(expandOperand(String(idx)));   // "$i" → value
+    // fast path: a plain numeric index (the game's per-cell reads pass
+    // the computed idx or a raw "5") — skip the expansion machinery
+    // entirely. `$var`-style keys still expand through the store.
+    const i = typeof idx === "number"
+      ? idx
+      : Number(expandOperand(typeof idx === "string" ? idx : String(idx)));   // "$i" → value
     if (Array.isArray(v)) return String(v[i] ?? "");
     if (vars.has(name)) return i === 0 ? String(v) : "";
     return "";
@@ -1338,8 +1375,34 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       captureWordsSync() {
         throw new Error("command substitution needs the async capture bridge; try `bash '$(...)'`");
       },
-      redirectSync() {
-        throw new Error("redirection needs the async redirect bridge; try `bash` for this construct");
+      redirectSync(fn, redirects) {
+        // fd-dup targets (`>&2` → target "&2") are SYNCHRONOUS — the
+        // content routes straight to the fd's sink. Only FILE targets
+        // need the async fs bridge (and refuse here).
+        const buf = { out: "", err: "" };
+        const prevMode = mode;
+        mode = { type: "redirect", buf };
+        let ret;
+        try {
+          ret = fn();
+        } finally {
+          mode = prevMode;
+        }
+        for (const r of redirects || []) {
+          const fd = r.fd || 1;
+          const target = String(r.target || "");
+          if (!target.startsWith("&")) {
+            throw new Error("redirection needs the async redirect bridge; try `bash` for this construct");
+          }
+          // the sync builtin returns its output string (echo/printf);
+          // fall back to the mode buffer for other writers
+          const content = typeof ret === "string" ? ret : (fd === 2 ? buf.err : buf.out);
+          const tfd = Number(target.slice(1));
+          if (tfd === 1) { if (content) stdout.write(content); }
+          else if (tfd === 2) { if (content) stderr.write(content); }
+          else throw new Error(`redirect: no fd ${tfd}`);
+        }
+        return ret;
       },
       // Sync-capable fnCall: the estree's PROVABLY-SYNC function path
       // (fn_call_sync_set) emits `sh2.fnCall(...)` WITHOUT await — so for
