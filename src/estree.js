@@ -69,6 +69,48 @@ function stripProcessEnv(node) {
 // (the demo for-loop prints the pre-sort array). Await every sh2.fnCall
 // that isn't already inside an AwaitExpression — a no-op on a sync
 // value, a correct sequencing fix on a promise.
+// ─── awaitAsyncDirectCalls: a function the sync/direct analysis put in
+// the DIRECT set can still be emitted ASYNC — awaitSyncFnCalls injects
+// awaits into its body (the fnCall safety net) and markAsyncOnAwait then
+// marks the arrow async. Its `sh2.callDirect("X", __fn_X, args)` call
+// sites must await the returned promise or the call DETACHES: the
+// caller's subsequent statements run before the callee, the callee's
+// status/return value is dropped, and a long body churns on the
+// microtask queue (starving timers) while the caller waits on one.
+// After this pass the runtime's callDirect returns a promise only for
+// async arrows, and every such call is awaited — sequencing is restored.
+function awaitAsyncDirectCalls(program) {
+  const asyncDirect = new Set();
+  const walk = (n, visit) => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) { for (const x of n) walk(x, visit); return; }
+    visit(n);
+    for (const k of Object.keys(n)) walk(n[k], visit);
+  };
+  walk(program, (n) => {
+    if (n.type === "AssignmentExpression" && n.operator === "=" &&
+        n.left && n.left.type === "Identifier" && n.left.name.startsWith("__fn_") &&
+        n.right && n.right.type === "ArrowFunctionExpression" && n.right.async) {
+      asyncDirect.add(n.left.name.slice(5));
+    }
+  });
+  const rewrite = (n) => {
+    if (!n || typeof n !== "object") return n;
+    if (Array.isArray(n)) return n.map(rewrite);
+    if (n.type === "CallExpression" && n.callee && n.callee.type === "MemberExpression" &&
+        n.callee.object && n.callee.object.type === "Identifier" && n.callee.object.name === "sh2" &&
+        n.callee.property && n.callee.property.type === "Identifier" && n.callee.property.name === "callDirect" &&
+        n.arguments && n.arguments[0] && n.arguments[0].type === "Literal" &&
+        asyncDirect.has(String(n.arguments[0].value))) {
+      return { type: "AwaitExpression", argument: n };
+    }
+    const out = {};
+    for (const k of Object.keys(n)) out[k] = rewrite(n[k]);
+    return out;
+  };
+  return rewrite(program);
+}
+
 // ─── unwrapStoreString: the C frontend's assign lowering wraps every
 // rhs store read in `String(sh2.vars.x)` — a BOXED pointer (the plan's
 // `{arena, off, tag}` value) would stringify to "[object Object]".
@@ -204,20 +246,10 @@ function awaitSyncFnCalls(node, inAwait) {
       },
     };
   }
-  if (node.type === "CallExpression" && node.callee && node.callee.type === "MemberExpression" &&
-      node.callee.object && node.callee.object.type === "Identifier" && node.callee.object.name === "sh2" &&
-      node.callee.property && node.callee.property.type === "Identifier" && node.callee.property.name === "fnCall" &&
-      !inAwait) {
-    return {
-      type: "AwaitExpression",
-      argument: { ...node, arguments: node.arguments.map((a) => awaitSyncFnCalls(a, false)) },
-    };
-  }
   const out = {};
   for (const k of Object.keys(node)) out[k] = awaitSyncFnCalls(node[k], false);
   return out;
 }
-
 // A final top-level statement that corresponds to a source statement:
 // declaration hoists (`let x = 0`) and lastExit bookkeeping carry no
 // source line — everything else maps to an A1 stmt in order.
@@ -327,10 +359,16 @@ export function normalizeFunctions(program) {
   // 2. scan the WHOLE program for store-name usage (to decide function-locality)
   const usage = new Map(); // name -> Set of "top" | fnName
   const runtimeByName = new Set(); // names read/written by the runtime via string args (getLine/getVar)
-  const walkUsage = (node, owner) => {
+  // the registration arrows are re-scanned per-owner below — skipping them
+  // here keeps "top" as GENUINE top-level use only (a var with a real
+  // top-level write AND a function read must stay module-level, e.g. the
+  // game's persistent `seed` the LCG `rand` advances).
+  const arrowSkips = new Set(registrations.map((r) => r.arrow));
+  const walkUsage = (node, owner, skip) => {
     if (!node || typeof node !== "object") return;
-    if (Array.isArray(node)) { for (const n of node) walkUsage(n, owner); return; }
-    if (isSh2Vars(node) && node.property.type === "Identifier") {
+    if (Array.isArray(node)) { for (const n of node) walkUsage(n, owner, skip); return; }
+    const skipped = skip.has(node);
+    if (!skipped && isSh2Vars(node) && node.property.type === "Identifier") {
       const name = node.property.name;
       if (!usage.has(name)) usage.set(name, new Set());
       usage.get(name).add(owner);
@@ -351,20 +389,19 @@ export function normalizeFunctions(program) {
         }
       }
     }
-    for (const k of Object.keys(node)) walkUsage(node[k], owner);
+    for (const k of Object.keys(node)) walkUsage(node[k], owner, skip);
   };
-  walkUsage(program.body, "top");
+  walkUsage(program.body, "top", arrowSkips);
   for (const r of registrations) {
-    // remove the arrow's own body from the "top" scan? — the walkUsage above
-    // already counted everything as "top"; re-scan each arrow with its own id
-    // and remove it from the top set.
+    // add the arrow's OWN uses under its fnName (the initial scan skipped
+    // the arrows, so nothing to remove — a genuine top-level use stays).
     const walkArrow = (node, owner) => {
       if (!node || typeof node !== "object") return;
       if (Array.isArray(node)) { for (const n of node) walkArrow(n, owner); return; }
       if (isSh2Vars(node) && node.property.type === "Identifier") {
         const name = node.property.name;
-        const set = usage.get(name);
-        if (set) { set.delete("top"); set.add(owner); }
+        if (!usage.has(name)) usage.set(name, new Set());
+        usage.get(name).add(owner);
       }
       for (const k of Object.keys(node)) walkArrow(node[k], owner);
     };
@@ -462,10 +499,53 @@ export function normalizeFunctions(program) {
     }
 
     const paramByPos = new Map(params.filter((p) => !p.cast).map((p) => [p.n, p.name]));
+    // `"$X"` / `"map[$X]"` / `"$X + 1"` — string literals that reference
+    // a param/local BY NAME (the runtime's `$var` expansion reads the
+    // STORE; a normalized param/local is a native JS variable the store
+    // never sees — the expansion would answer "" and arrayIndex/setVar/
+    // arith would read/write the WRONG element). Interpolate the native
+    // variable into a template literal so the value travels with the
+    // call. `$N` positional refs bind to the consumed params too.
+    const interpolateDollarVars = (str) => {
+      const segs = []; // alternating text / {expr} starting with text
+      let re = /\$(\$|[A-Za-z_][A-Za-z0-9_]*|[1-9][0-9]*)/g;
+      let last = 0, hit = false;
+      for (let m = re.exec(str); m; m = re.exec(str)) {
+        if (m[1] === "$") { continue; }
+        let nm = null;
+        if (/^[A-Za-z_]/.test(m[1])) {
+          if (paramNames.has(m[1]) || locals.has(m[1])) nm = m[1];
+        } else {
+          const p = paramByPos.get(Number(m[1]) - 1);
+          if (p) nm = p;
+        }
+        if (!nm) continue;
+        hit = true;
+        segs.push(str.slice(last, m.index));
+        segs.push({ expr: { type: "Identifier", name: nm } });
+        last = m.index + m[0].length;
+      }
+      if (!hit) return null;
+      segs.push(str.slice(last));
+      return {
+        type: "TemplateLiteral",
+        quasis: segs.filter((s, i) => i % 2 === 0).map((t, i, arr) => ({
+          type: "TemplateElement",
+          value: { raw: t, cooked: t },
+          tail: i === arr.length - 1,
+        })),
+        expressions: segs.filter((s) => s && typeof s === "object").map((s) => s.expr),
+      };
+    };
     // rewrite store access → native identifiers inside the body
     const rewrite = (node) => {
       if (!node || typeof node !== "object") return node;
       if (Array.isArray(node)) return node.map(rewrite);
+      // a `$X` literal naming a param/local → interpolate the native var
+      if (node.type === "Literal" && typeof node.value === "string") {
+        const tpl = interpolateDollarVars(node.value);
+        if (tpl) return tpl;
+      }
       // `sh2.positional[N] ?? ""` / `String(sh2.positional[N] ?? "")` that
       // names one of THIS function's params → the parameter identifier
       const positionalName = (n) => {
@@ -643,16 +723,24 @@ export function normalizeFunctions(program) {
 // Returns { js, map } where map[i] = { jsStart, jsEnd, sourceLine }.
 export async function estreeToJsMapped(program, stmtLines, a1Stmts) {
   const lowerMod = await import("./lower.js");
-  const { lowerNativeArrays, hoistLoopLastExit, hoistCommonLastExit, dropDeadFlags, mergeInitAssignments, pushLastExitToEnd, nativeForLoops, lowerPureFunctions } = lowerMod;
+  const { lowerNativeArrays, hoistLoopLastExit, hoistCommonLastExit, dropDeadFlags, mergeInitAssignments, pushLastExitToEnd, nativeForLoops, lowerPureFunctions, flattenAndOrAll, lowerDeviceRedirects } = lowerMod;
   // awaitSyncFnCalls must run BEFORE normalizeFunctions: the sync-fnCall
   // form (a fnCall the frontend believes is await-free) becomes an
   // AwaitExpression here; markAsyncOnAwait then sets async on every
   // function whose body awaits (a non-async function with `await` inside
   // is a SyntaxError), and normalizeFunctions keeps the flag.
-  let normalized = normalizeFunctions(markAsyncOnAwait(awaitSyncFnCalls(stripProcessEnv(program), false)));
+  let normalized = normalizeFunctions(awaitAsyncDirectCalls(markAsyncOnAwait(awaitSyncFnCalls(stripProcessEnv(program), false))));
   normalized = unwrapStoreString(normalized);
   normalized = nullSentinel(normalized);
   normalized = returnInLoop(normalized, false);
+  // keepVariables (the A1 path's array pre-seeding) must run for the
+  // debashcl path too: the wasm lowers `a=(...)` to `sh2.setArray` only
+  // for the arrays it flags, and the game's module arrays (DIR_X, DIR_Z,
+  // CAM_YAW, TREASURES, MIME_DMG, GFONT …) arrive as plain `let`
+  // declarators — `sh2.arrayIndex("DIR_X", "$yaw")` then reads an EMPTY
+  // store (facing vectors "" → the shot ray went (0,0) → shots missed).
+  // The pass collects `let a = [...]` declarators, splits them out of
+  // the multi-declarator statement and syncs them into the store.
   keepVariables(normalized);
   const lowered = lowerNativeArrays(normalized);
   hoistLoopLastExit(lowered);
@@ -665,6 +753,14 @@ export async function estreeToJsMapped(program, stmtLines, a1Stmts) {
   // break the game, the while-loop form still works.
   if (typeof nativeForLoops === "function") nativeForLoops(lowered);
   else console.warn("[estree] nativeForLoops missing from lower.js (stale cache?) — skipping the for-recovery pass");
+  // flatten and/or AFTER the loop recovery (loop conds flatten inside
+  // whileLoopParts): a loop body still carrying the and() await lets the
+  // counter promotion's maybeYield guard pass, and the flattened
+  // function then becomes pure for the fixpoint below.
+  if (typeof flattenAndOrAll === "function") flattenAndOrAll(lowered);
+  else console.warn("[estree] flattenAndOrAll missing from lower.js (stale cache?) — skipping the and/or lowering");
+  if (typeof lowerDeviceRedirects === "function") lowerDeviceRedirects(lowered);
+  else console.warn("[estree] lowerDeviceRedirects missing from lower.js (stale cache?) — skipping the device-redirect lowering");
   if (typeof lowerPureFunctions === "function") lowerPureFunctions(lowered);
   else console.warn("[estree] lowerPureFunctions missing from lower.js (stale cache?) — skipping the pure-helper lowering");
   const { generate } = await getAstring();
@@ -823,6 +919,42 @@ export function keepVariables(program, knownArrays = []) {
           type: "ExpressionStatement",
           expression: call(member(id("sh2"), id("setArray")), [lit(d.id.name), id(d.id.name)]),
         }, { _sh2Sync: true }));
+        continue;
+      }
+    }
+    // MULTI-declarator `let a = [...], b = [...], c = 1, …` — the game's
+    // module arrays arrive in ONE statement (DIR_X, DIR_Z, CAM_YAW,
+    // TREASURES, MIME_DMG, GFONT …). The single-declarator branch above
+    // skips these, so the arrays stay JS-local-only: `sh2.arrayIndex("DIR_X",
+    // "$yaw")` then reads an EMPTY store → the facing vectors were "" → the
+    // shot ray went (0,0) (straight ahead never moved) and the maze
+    // direction reads desynced. Split the array declarators out: keep the
+    // scalars/__fn_ bindings in `let`, emit each known array as an
+    // assignment + `sh2.setArray` store sync.
+    if (st.type === "VariableDeclaration" && st.declarations && st.declarations.length > 1) {
+      const arrayDecls = [];
+      const rest = [];
+      for (const d of st.declarations) {
+        if (d && d.id && d.id.type === "Identifier" && d.init && d.init.type === "ArrayExpression" && known.has(d.id.name)) {
+          arrayDecls.push(d);
+        } else {
+          rest.push(d);
+        }
+      }
+      if (arrayDecls.length) {
+        if (rest.length) {
+          out.push({ type: "VariableDeclaration", kind: st.kind || "let", declarations: rest });
+        }
+        for (const d of arrayDecls) {
+          out.push({
+            type: "ExpressionStatement",
+            expression: { type: "AssignmentExpression", operator: "=", left: id(d.id.name), right: d.init },
+          });
+          out.push(Object.assign({
+            type: "ExpressionStatement",
+            expression: call(member(id("sh2"), id("setArray")), [lit(d.id.name), id(d.id.name)]),
+          }, { _sh2Sync: true }));
+        }
         continue;
       }
     }
