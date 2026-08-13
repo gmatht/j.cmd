@@ -923,7 +923,10 @@ load_tex() { lt_name=$1; lt_idx=$2
     lt_cxs=$fv
     fmt_ndc $lt_pym
     lt_cys=$fv
-    fmt_ndc $(( lt_cell + 1 ))
+    # the rect SIZE is a positive NDC width (fmt_pos), NOT a position
+    # (fmt_ndc would turn 12 milli into -0.988 — a negative full-screen
+    # rect, the "massive texture extension" on the loading screen)
+    fmt_pos $(( lt_cell + 1 ))
     lt_ws=$fv
     fmt_c $lt_r
     lt_cr=$fv

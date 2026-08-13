@@ -24,12 +24,16 @@ export class ExamplesFS {
   _source() {
     if (this._loader) return this._loader;
     if (typeof document !== "undefined") {
+      // bumped whenever the example files change — the query makes the
+      // URL differ, so even a stubborn HTTP cache can't serve an old
+      // generator script (the mime texture names, etc.)
+      const EXAMPLES_VERSION = "3";
       this._loader = async (name) => {
-        // revalidate: a stale HTTP cache would serve an old example
-        // script forever (e.g. a texture generator without the mime
-        // type names) — a conditional GET keeps the corpus caching
-        // benefit but always returns changed files fresh.
-        const resp = await fetch("examples/" + name, { cache: "no-cache" });
+        // revalidate + version the URL: a stale HTTP cache would serve
+        // an old example script forever (e.g. a texture generator
+        // without the mime type names). The conditional GET keeps the
+        // corpus caching benefit but always returns changed files fresh.
+        const resp = await fetch("examples/" + name + "?v=" + EXAMPLES_VERSION, { cache: "no-cache" });
         if (!resp.ok) throw new Error("ENOENT: " + name);
         return resp.text();
       };
