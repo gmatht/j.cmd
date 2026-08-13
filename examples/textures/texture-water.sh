@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────
-# texture-crack.sh — a TRANSPARENT cracked-glass tile for damaged
-# blocks: dark crack lines on a fully transparent background, so the
-# game can LAYER it over any block texture (mix by the damage level).
+# texture-water.sh — pseudorandom, seamlessly tileable water surface.
 #
-#   bash texture-crack.sh > crack.ppm       # PPM P6 (alpha lost in PPM)
-#   bash texture-crack.sh --tsv             # RGBA: 4 numbers per pixel
-#                                            #   (R G B A — A=255 on the
-#                                            #   cracks, 0 elsewhere)
-#   bash texture-crack.sh --preview         # '#' = crack, '.' = clear
+#   bash texture-water.sh > water.ppm        # PPM P6, 16×16 (default)
+#   bash texture-water.sh --preview           # color + shade preview
+#   bash texture-water.sh --png               # water-<seed>.png (needs convert)
+#   TEX_SIZE=32 TEX_SEED=7 bash texture-water.sh > water32.ppm
 #
-# A full member of the texture family (the shared core from
-# texture-lib.sh is inlined, so it transpiles through bash2js for
-# jtsh). Deterministic per seed.
+# Self-contained (no sourcing): the shared core from texture-lib.sh is
+# inlined below, so the script runs identically under host bash, the
+# real-bash wasm, and jtsh's transpiled bash (a sourced lib runs in a
+# separate runtime there, losing variables — inlining avoids that).
+# texture-lib.sh stays the canonical reference; __texture-test.mjs
+# fails the suite if these drift.
 # ─────────────────────────────────────────────────────────────────────
 
-NAME="crack"
+NAME="water"
 PREVIEW=0
 DO_PNG=0
 if [ "$1" = "--preview" ]; then PREVIEW=1; fi
@@ -312,7 +312,7 @@ emit() {
     # and char-strips are used by readers. The \t/\n stay literal here
     # (printf converts them in host bash; the transpiler makes them
     # real bytes in the JS string so echo works too).
-    tsv="$tsv$r\t$g\t$b\t$a\t"
+    tsv="$tsv$r\t$g\t$b\t"
     if [ "$x" -eq "$LAST" ]; then
       tsv="$tsv\n"
     fi
@@ -368,65 +368,40 @@ finish() {
 # water: diagonal wave bands following (x+y) mod 8 (period 8 tiles on
 # both axes), fine ripple noise, and sparse sun glints.
 RB=34
-# per-pixel RGBA (transparent background)
-pi2=0
-while [ "$pi2" -lt $((SIZE * SIZE)) ]; do
-  cr[$pi2]=0
-  cg[$pi2]=0
-  cb[$pi2]=0
-  ca[$pi2]=0
-  pi2=$((pi2 + 1))
-done
-
-# crack geometry: 8 jagged walk segments from random starts (the LCG
-# stream — deterministic). Each segment marks dark pixels with alpha 255.
-seg=0
-while [ "$seg" -lt 8 ]; do
-  rand $((SIZE * SIZE))
-  cx=$((rv % SIZE))
-  rand $((SIZE * SIZE))
-  cy=$((rv % SIZE))
-  rand 4
-  cdir=$rv
-  rand 4
-  clen=$((rv + 4))
-  cstep=0
-  while [ "$cstep" -lt "$clen" ]; do
-    cr[$((cy * SIZE + cx))]=28
-    cg[$((cy * SIZE + cx))]=28
-    cb[$((cy * SIZE + cx))]=32
-    ca[$((cy * SIZE + cx))]=255
-    if [ "$cdir" -eq 0 ]; then cx=$((cx + 1)); fi
-    if [ "$cdir" -eq 1 ]; then cy=$((cy + 1)); fi
-    if [ "$cdir" -eq 2 ]; then cx=$((cx - 1)); fi
-    if [ "$cdir" -eq 3 ]; then cy=$((cy - 1)); fi
-    rand 2
-    if [ "$rv" -eq 0 ]; then
-      rand 4
-      if [ "$rv" -eq 0 ]; then cx=$((cx + 1)); fi
-      if [ "$rv" -eq 1 ]; then cy=$((cy + 1)); fi
-      if [ "$rv" -eq 2 ]; then cx=$((cx - 1)); fi
-      if [ "$rv" -eq 3 ]; then cy=$((cy - 1)); fi
-    fi
-    if [ "$cx" -lt 0 ]; then cx=0; fi
-    if [ "$cx" -ge "$SIZE" ]; then cx=$((SIZE - 1)); fi
-    if [ "$cy" -lt 0 ]; then cy=0; fi
-    if [ "$cy" -ge "$SIZE" ]; then cy=$((SIZE - 1)); fi
-    cstep=$((cstep + 1))
-  done
-  seg=$((seg + 1))
-done
+GB=88
+BB=158
 
 stat_span "setup"
 y=0
 while [ "$y" -lt "$SIZE" ]; do
   x=0
   while [ "$x" -lt "$SIZE" ]; do
-    pi=$((y * SIZE + x))
-    r=${cr[$pi]}
-    g=${cg[$pi]}
-    b=${cb[$pi]}
-    a=${ca[$pi]}
+    r=$RB
+    g=$GB
+    b=$BB
+    phase=$(( (x + y) % 8 ))
+    if [ "$phase" -lt 2 ]; then
+      r=$(( r * 112 / 100 ))
+      g=$(( g * 112 / 100 ))
+      b=$(( b * 108 / 100 ))
+    fi
+    if [ "$phase" -gt 5 ]; then
+      r=$(( r * 88 / 100 ))
+      g=$(( g * 90 / 100 ))
+      b=$(( b * 92 / 100 ))
+    fi
+    vnoise2 $x $y $HIGH_CELL $HIGH_CELL $HIGH_WRAP $HIGH_WRAP
+    off=$(( (vn_res - 128) / 6 ))
+    r=$(( r + off ))
+    g=$(( g + off ))
+    b=$(( b + off ))
+    lat_hash $x $y $SIZE $SIZE
+    m53=$(( lhn % 53 ))
+    if [ "$m53" -eq 0 ]; then
+      r=$(( r + 30 ))
+      g=$(( g + 32 ))
+      b=$(( b + 30 ))
+    fi
     clamp $r
     r=$cv
     clamp $g

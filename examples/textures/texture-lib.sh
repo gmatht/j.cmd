@@ -1,45 +1,5 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────
-# texture-crack.sh — a TRANSPARENT cracked-glass tile for damaged
-# blocks: dark crack lines on a fully transparent background, so the
-# game can LAYER it over any block texture (mix by the damage level).
-#
-#   bash texture-crack.sh > crack.ppm       # PPM P6 (alpha lost in PPM)
-#   bash texture-crack.sh --tsv             # RGBA: 4 numbers per pixel
-#                                            #   (R G B A — A=255 on the
-#                                            #   cracks, 0 elsewhere)
-#   bash texture-crack.sh --preview         # '#' = crack, '.' = clear
-#
-# A full member of the texture family (the shared core from
-# texture-lib.sh is inlined, so it transpiles through bash2js for
-# jtsh). Deterministic per seed.
-# ─────────────────────────────────────────────────────────────────────
-
-NAME="crack"
-PREVIEW=0
-DO_PNG=0
-if [ "$1" = "--preview" ]; then PREVIEW=1; fi
-if [ "$2" = "--preview" ]; then PREVIEW=1; fi
-if [ "$3" = "--preview" ]; then PREVIEW=1; fi
-if [ "$1" = "--png" ]; then DO_PNG=1; fi
-if [ "$2" = "--png" ]; then DO_PNG=1; fi
-if [ "$3" = "--png" ]; then DO_PNG=1; fi
-DO_TSV=0
-if [ "$1" = "--tsv" ]; then DO_TSV=1; fi
-if [ "$2" = "--tsv" ]; then DO_TSV=1; fi
-if [ "$3" = "--tsv" ]; then DO_TSV=1; fi
-
-# settings args: `--tsv --size 32 --seed 7` — the game's pre-game menu
-# passes the resolution/seed; they become TEX_SIZE/TEX_SEED for the
-# inlined config below (env still wins: it is read first)
-if [ "$2" = "--size" ]; then TEX_SIZE=$3; fi
-if [ "$4" = "--size" ]; then TEX_SIZE=$5; fi
-if [ "$2" = "--seed" ]; then TEX_SEED=$3; fi
-if [ "$4" = "--seed" ]; then TEX_SEED=$5; fi
-
-# ─── shared core (inlined from texture-lib.sh) ──────
-#!/usr/bin/env bash
-# ─────────────────────────────────────────────────────────────────────
 # texture-lib.sh — shared core for the pseudorandom texture
 # generators (texture-wood.sh / texture-grass.sh / texture-stone.sh).
 #
@@ -88,6 +48,25 @@ LOW_CELL=$(( SIZE / 4 ))
 HIGH_CELL=$(( SIZE / 8 ))
 LOW_WRAP=4
 HIGH_WRAP=8
+
+# CLI flags are parsed HERE, from the positional params the script
+# passes when it sources this file (`. texture-lib.sh "$1" "$2" "$3"`).
+# Sourcing runs the lib in its own runtime context, so flags MUST
+# arrive as arguments — a bare `$1` read here would see the source
+# command's (empty) params, and the caller's variables are invisible
+# across the runtime boundary.
+PREVIEW=0
+DO_PNG=0
+DO_TSV=0
+if [ "$1" = "--preview" ]; then PREVIEW=1; fi
+if [ "$2" = "--preview" ]; then PREVIEW=1; fi
+if [ "$3" = "--preview" ]; then PREVIEW=1; fi
+if [ "$1" = "--png" ]; then DO_PNG=1; fi
+if [ "$2" = "--png" ]; then DO_PNG=1; fi
+if [ "$3" = "--png" ]; then DO_PNG=1; fi
+if [ "$1" = "--tsv" ]; then DO_TSV=1; fi
+if [ "$2" = "--tsv" ]; then DO_TSV=1; fi
+if [ "$3" = "--tsv" ]; then DO_TSV=1; fi
 
 # ─── pseudorandom core ──────────────────────────────────────────────
 # probe printf -v support (host bash and the real-bash wasm have it;
@@ -140,7 +119,11 @@ tick() {
   fi
 }
 
-# accumulate the µs since the last stat point into a named bucket
+# accumulate the µs since the last stat point into a named bucket.
+# Coarse-grained: the generators call it ONCE per phase (setup before
+# the loops, loop after them, finish inside finish()) — NOT per pixel
+# (the per-pixel spans in emit() cost ~2 dispatches + 2 clock reads per
+# pixel for µs-scale noise; the whole-loop span is what the report uses).
 stat_span() {
   ss_name=$1
   tick
@@ -279,7 +262,8 @@ clamp() {
 # out = binary pixel stream (one byte per channel as \ooo escapes —
 # host bash only; the transpiled sh2 printf can't emit arbitrary
 # bytes, so in jtsh use --preview); prev = ANSI truecolor blocks for
-# --preview. Call emit() once per pixel with r/g/b set.
+# --preview. Call emit() once per pixel with r/g/b set. No stat_span
+# calls inside (the generators span the whole loop once instead).
 #
 # The preview escapes use \x1b (not \033): bash's printf turns \x1b
 # into ESC, and the bash2js transpiler renders \x1b as a JS hex
@@ -312,7 +296,7 @@ emit() {
     # and char-strips are used by readers. The \t/\n stay literal here
     # (printf converts them in host bash; the transpiler makes them
     # real bytes in the JS string so echo works too).
-    tsv="$tsv$r\t$g\t$b\t$a\t"
+    tsv="$tsv$r\t$g\t$b\t"
     if [ "$x" -eq "$LAST" ]; then
       tsv="$tsv\n"
     fi
@@ -325,6 +309,7 @@ emit() {
     out="$out\\$oc"
   fi
 }
+
 # finish — PPM P6 on stdout, or PNG via ImageMagick when --png
 finish() {
   stat_span "finish"
@@ -364,81 +349,3 @@ finish() {
   printf "P6\n$SIZE $SIZE\n255\n$out"
   print_stats
 }
-# ─── body ───────────────────────────────────────────────────────────
-# water: diagonal wave bands following (x+y) mod 8 (period 8 tiles on
-# both axes), fine ripple noise, and sparse sun glints.
-RB=34
-# per-pixel RGBA (transparent background)
-pi2=0
-while [ "$pi2" -lt $((SIZE * SIZE)) ]; do
-  cr[$pi2]=0
-  cg[$pi2]=0
-  cb[$pi2]=0
-  ca[$pi2]=0
-  pi2=$((pi2 + 1))
-done
-
-# crack geometry: 8 jagged walk segments from random starts (the LCG
-# stream — deterministic). Each segment marks dark pixels with alpha 255.
-seg=0
-while [ "$seg" -lt 8 ]; do
-  rand $((SIZE * SIZE))
-  cx=$((rv % SIZE))
-  rand $((SIZE * SIZE))
-  cy=$((rv % SIZE))
-  rand 4
-  cdir=$rv
-  rand 4
-  clen=$((rv + 4))
-  cstep=0
-  while [ "$cstep" -lt "$clen" ]; do
-    cr[$((cy * SIZE + cx))]=28
-    cg[$((cy * SIZE + cx))]=28
-    cb[$((cy * SIZE + cx))]=32
-    ca[$((cy * SIZE + cx))]=255
-    if [ "$cdir" -eq 0 ]; then cx=$((cx + 1)); fi
-    if [ "$cdir" -eq 1 ]; then cy=$((cy + 1)); fi
-    if [ "$cdir" -eq 2 ]; then cx=$((cx - 1)); fi
-    if [ "$cdir" -eq 3 ]; then cy=$((cy - 1)); fi
-    rand 2
-    if [ "$rv" -eq 0 ]; then
-      rand 4
-      if [ "$rv" -eq 0 ]; then cx=$((cx + 1)); fi
-      if [ "$rv" -eq 1 ]; then cy=$((cy + 1)); fi
-      if [ "$rv" -eq 2 ]; then cx=$((cx - 1)); fi
-      if [ "$rv" -eq 3 ]; then cy=$((cy - 1)); fi
-    fi
-    if [ "$cx" -lt 0 ]; then cx=0; fi
-    if [ "$cx" -ge "$SIZE" ]; then cx=$((SIZE - 1)); fi
-    if [ "$cy" -lt 0 ]; then cy=0; fi
-    if [ "$cy" -ge "$SIZE" ]; then cy=$((SIZE - 1)); fi
-    cstep=$((cstep + 1))
-  done
-  seg=$((seg + 1))
-done
-
-stat_span "setup"
-y=0
-while [ "$y" -lt "$SIZE" ]; do
-  x=0
-  while [ "$x" -lt "$SIZE" ]; do
-    pi=$((y * SIZE + x))
-    r=${cr[$pi]}
-    g=${cg[$pi]}
-    b=${cb[$pi]}
-    a=${ca[$pi]}
-    clamp $r
-    r=$cv
-    clamp $g
-    g=$cv
-    clamp $b
-    b=$cv
-    emit
-    x=$(( x + 1 ))
-  done
-  y=$(( y + 1 ))
-done
-
-stat_span "loop"
-echo "texture-$NAME: ${SIZE}x${SIZE}, seed $TEX_SEED" >&2
-finish

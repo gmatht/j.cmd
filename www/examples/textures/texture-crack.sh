@@ -29,6 +29,14 @@ if [ "$1" = "--tsv" ]; then DO_TSV=1; fi
 if [ "$2" = "--tsv" ]; then DO_TSV=1; fi
 if [ "$3" = "--tsv" ]; then DO_TSV=1; fi
 
+# settings args: `--tsv --size 32 --seed 7` — the game's pre-game menu
+# passes the resolution/seed; they become TEX_SIZE/TEX_SEED for the
+# inlined config below (env still wins: it is read first)
+if [ "$2" = "--size" ]; then TEX_SIZE=$3; fi
+if [ "$4" = "--size" ]; then TEX_SIZE=$5; fi
+if [ "$2" = "--seed" ]; then TEX_SEED=$3; fi
+if [ "$4" = "--seed" ]; then TEX_SEED=$5; fi
+
 # ─── shared core (inlined from texture-lib.sh) ──────
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────
@@ -281,7 +289,6 @@ out=""
 prev=""
 tsv=""
 emit() {
-  stat_span "loop"
   if [ "$PREVIEW" -eq 1 ]; then
     # 256-color cube (16 + 36r + 6g + b) — far more terminals render
     # 48;5;N than truecolor 48;2;R;G;B
@@ -317,9 +324,7 @@ emit() {
     printf -v oc '%03o' "$b"
     out="$out\\$oc"
   fi
-  stat_span "emit"
 }
-
 # finish — PPM P6 on stdout, or PNG via ImageMagick when --png
 finish() {
   stat_span "finish"
@@ -434,5 +439,6 @@ while [ "$y" -lt "$SIZE" ]; do
   y=$(( y + 1 ))
 done
 
+stat_span "loop"
 echo "texture-$NAME: ${SIZE}x${SIZE}, seed $TEX_SEED" >&2
 finish
