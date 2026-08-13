@@ -46,6 +46,10 @@ RADAR_X=80                        # radar x base (milli-NDC) — the map sits to
 cam_shift_ms=0        # camera right shift (milli-NDC, ±50 per press, no limit) — 0 = the centred view; the old 500 (a quarter-screen right shift) moved the vanishing point off-centre
 tex_size=16           # texture resolution (4/8/16/32/64 px)
 tex_seed=20240812     # texture generation seed (drives the LCG noise)
+# texture cache version — bump when the texture GENERATORS change (e.g.
+# the mime type names) so stale /home + /tmp caches regenerate instead
+# of uploading the old pattern
+tex_ver=2
 sm_sel=0              # settings-menu cursor (0=shift 1=size 2=seed)
 sm_done=0
 sm_changed=0
@@ -874,12 +878,12 @@ load_tex() { lt_name=$1; lt_idx=$2
   # cached payload from an earlier run (session /tmp, persistent /home);
   # the cache key carries the resolution + seed so a settings change
   # regenerates instead of reusing a stale texture
-  if [ -f /home/mimecroft-tex-$lt_name-$tex_size-$tex_seed ]; then
-    cat /home/mimecroft-tex-$lt_name-$tex_size-$tex_seed > /dev/webgl/texture/$lt_idx
+  if [ -f /home/mimecroft-tex-$lt_name-$tex_size-$tex_seed-$tex_ver ]; then
+    cat /home/mimecroft-tex-$lt_name-$tex_size-$tex_seed-$tex_ver > /dev/webgl/texture/$lt_idx
     return 0
   fi
-  if [ -f /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed ]; then
-    cat /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed > /dev/webgl/texture/$lt_idx
+  if [ -f /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed-$tex_ver ]; then
+    cat /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed-$tex_ver > /dev/webgl/texture/$lt_idx
     return 0
   fi
   lt_s=$(bash /examples/textures/texture-$lt_name.sh --tsv --size $tex_size --seed $tex_seed)
@@ -931,8 +935,8 @@ load_tex() { lt_name=$1; lt_idx=$2
 "
     lt_px=$((lt_px + 1))
   done
-  echo "$lt_payload" > /home/mimecroft-tex-$lt_name-$tex_size-$tex_seed
-  echo "$lt_payload" > /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed
+  echo "$lt_payload" > /home/mimecroft-tex-$lt_name-$tex_size-$tex_seed-$tex_ver
+  echo "$lt_payload" > /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed-$tex_ver
   echo "$lt_payload" > /dev/webgl/texture/$lt_idx
   # show the freshly generated texture on the loading screen (one swap
   # keeps the keyboard grab fresh, so keys typed during startup queue)
@@ -943,8 +947,8 @@ load_tex() { lt_name=$1; lt_idx=$2
 # RGBA variant (the transparent crack overlay — R G B A per pixel)
 load_tex4() { lt_name=$1; lt_idx=$2
   sleep 0.01
-  if [ -f /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed ]; then
-    cat /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed > /dev/webgl/texture/$lt_idx
+  if [ -f /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed-$tex_ver ]; then
+    cat /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed-$tex_ver > /dev/webgl/texture/$lt_idx
     return 0
   fi
   lt_s=$(bash /examples/textures/texture-$lt_name.sh --tsv --size $tex_size --seed $tex_seed)
@@ -973,7 +977,7 @@ load_tex4() { lt_name=$1; lt_idx=$2
     lt_payload="$lt_payload $lt_r $lt_g $lt_b $lt_a"
     lt_px=$((lt_px + 1))
   done
-  echo "$lt_payload" > /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed
+  echo "$lt_payload" > /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed-$tex_ver
   echo "$lt_payload" > /dev/webgl/texture/$lt_idx
 }
 
