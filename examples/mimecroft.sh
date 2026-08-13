@@ -54,7 +54,7 @@ RANGE=12                          # shoot range
 TREASURE_TOTAL=10
 MIME_CAP=12
 MIME_STEP=15          # mimes step every N frames (~6.7/sec — calmer view)
-MIMES_ON=0             # 0 = MIMEs disabled while diagnosing the flicker; set 1 to enable
+MIMES_ON=1             # the evil MIMEs hunt you (their type name is on the texture)
 CRT_ON=0               # 1 = CRT scanlines + vignette on the rendered view; set 0 for a clean picture
 CORRUPT_ON=0           # 1 = random corruption streaks on the view; set 0 to disable
 
@@ -1126,9 +1126,13 @@ render_frame() {
   # and cross the camera, so their clipped depths are garbage; draw
   # them FIRST with depth WRITES OFF (gl.depthMask 0) — they fill the
   # void but never occlude the cubes, which paint over them.
-  bg_p="8 -0.05 8 16 0.1 16 0.45 0.40 0.34 0 0
+  # camera-following patches (span 40 = ±20 cells) so the coverage is
+  # ROTATION-INVARIANT — a fixed 16-wide slab ended at the map edge, so
+  # mid-turn the plane's boundary swept across the view and the clear
+  # colour (blackness) showed past the 2-tall obsidian border
+  bg_p="$dpx -0.05 $dpz 40 0.1 40 0.45 0.40 0.34 0 0
 "
-  bg_p="${bg_p}8 2.05 8 16 0.1 16 0.24 0.24 0.28 0 0
+  bg_p="${bg_p}$dpx 2.05 $dpz 40 0.1 40 0.24 0.24 0.28 0 0
 "
   if [ "$dyaw" -eq 0 ]; then
     # facing -z: front = z < dpz, so FAR = smallest z — draw z
@@ -1431,8 +1435,10 @@ draw_mime_blip() { mb_i=$1
   mb_cxs=$fv
   fmt_ndc $mb_cym
   mb_cys=$fv
-  draw_rect $mb_cxs $mb_cys 0.075 0.100 0.10 0.10 0.12
-  draw_rect $mb_cxs $mb_cys 0.050 0.070 $cr $cg $cb
+  # blip must fit the radar cell box (44×60 milli): ring 36×48,
+  # core 24×32 — the old 75×100/50×70 overflowed into neighbour cells
+  draw_rect $mb_cxs $mb_cys 0.036 0.048 0.10 0.10 0.12
+  draw_rect $mb_cxs $mb_cys 0.024 0.032 $cr $cg $cb
 }
 
 draw_minimap() {
@@ -1491,7 +1497,9 @@ draw_minimap() {
     dm_rmz=${rmz[$mi]}
     if [ "$dm_rmx" -ne "$dm_mx" ] || [ "$dm_rmz" -ne "$dm_mz" ]; then
       if [ "$dm_rmx" -ge 0 ]; then
-        erase_rect $((RADAR_X + dm_rmx*44)) $((1720 - dm_rmz*60)) 80 105
+        # erase just the blip's cell (40×52 covers the 36×48 ring without
+        # punching into the neighbouring cells' static base)
+        erase_rect $((RADAR_X + dm_rmx*44)) $((1720 - dm_rmz*60)) 40 52
       fi
       rmx[$mi]=$dm_mx
       rmz[$mi]=$dm_mz
