@@ -314,6 +314,127 @@ export function flattenAndOrAll(program) {
   return program;
 }
 
+// ── lowerDeviceRedirects: compile `echo X > /dev/…` into fs.write ──
+//
+// `await sh2.redirect(async () => await sh2.exec("echo", [ARG]), [{fd: 1,
+// mode: "w", target: "/dev/webgl/..."}])` is a pure device write behind
+// three shell layers (redirect mode plumbing → exec dispatch → shellExec
+// → fs.write). With the /dev mount table being a stable runtime fact,
+// the whole statement is exactly `await fs.write(target, ARG + "\n")`.
+// The $? record (echo succeeds) is preserved with `sh2.lastExit = 0`.
+//
+// Guards: the inner command must be `echo` with ONE argument (echo joins
+// multiple args with spaces — not compiled), the redirect must be a
+// single {fd: 1, mode: "w", target: <literal path>} (append "a" reads
+// the old content — not compiled), and `echo` must not be shadowed by a
+// user function. Everything else stays on the runtime redirect.
+export function lowerDeviceRedirects(program) {
+  if (!program || program.type !== "Program") return program;
+  // echo must not be a user function (bash precedence: a define shadows
+  // the builtin — then the redirect is NOT a plain fs.write)
+  let echoShadowed = false;
+  walk(program, (n) => {
+    if (!echoShadowed && n.type === "CallExpression" && n.callee && n.callee.type === "MemberExpression" &&
+        n.callee.object && n.callee.object.type === "Identifier" && n.callee.object.name === "sh2" &&
+        n.callee.property && n.callee.property.type === "Identifier" && n.callee.property.name === "define" &&
+        n.arguments && n.arguments[0] && n.arguments[0].type === "Literal" && n.arguments[0].value === "echo") {
+      echoShadowed = true;
+    }
+  });
+
+  const fsWrite = (target, arg) => ({
+    type: "CallExpression",
+    callee: { type: "MemberExpression", computed: false, optional: false, object: { type: "Identifier", name: "fs" }, property: { type: "Identifier", name: "write" } },
+    arguments: [
+      { type: "Literal", value: target, raw: null },
+      { type: "BinaryExpression", operator: "+", left: arg, right: { type: "Literal", value: "\n", raw: null } },
+    ],
+    optional: false,
+  });
+
+  const rewriteStmt = (stmt) => {
+    if (!stmt || stmt.type !== "ExpressionStatement" || !stmt.expression) return null;
+    let e = stmt.expression;
+    // top-level statements carry an `sh2.guard(…)` wrapper
+    if (e.type === "CallExpression" && e.callee && e.callee.type === "MemberExpression" &&
+        e.callee.object && e.callee.object.type === "Identifier" && e.callee.object.name === "sh2" &&
+        e.callee.property && e.callee.property.type === "Identifier" && e.callee.property.name === "guard" &&
+        e.arguments && e.arguments.length === 1) e = e.arguments[0];
+    if (e.type !== "AwaitExpression") return null;
+    const call = e.argument;
+    if (!call || call.type !== "CallExpression" || call.callee && call.callee.type !== "MemberExpression" ||
+        !call.callee || call.callee.object && call.callee.object.type !== "Identifier" ||
+        !call.callee.object || call.callee.object.name !== "sh2" ||
+        call.callee.property && call.callee.property.type !== "Identifier" ||
+        !call.callee.property || call.callee.property.name !== "redirect" ||
+        !call.arguments || call.arguments.length !== 2) return null;
+    const arrow = call.arguments[0];
+    if (!arrow || arrow.type !== "ArrowFunctionExpression") return null;
+    let inner = arrow.expression ? arrow.body :
+      (arrow.body && arrow.body.type === "BlockStatement" && arrow.body.body.length === 1 &&
+       arrow.body.body[0].type === "ReturnStatement" ? arrow.body.body[0].argument : null);
+    if (!inner || inner.type !== "AwaitExpression") return null;
+    const exec = inner.argument;
+    if (!exec || exec.type !== "CallExpression" || exec.callee && exec.callee.type !== "MemberExpression" ||
+        !exec.callee || exec.callee.object && exec.callee.object.type !== "Identifier" ||
+        !exec.callee.object || exec.callee.object.name !== "sh2" ||
+        exec.callee.property && exec.callee.property.type !== "Identifier" ||
+        !exec.callee.property || exec.callee.property.name !== "exec" ||
+        !exec.arguments || exec.arguments.length !== 2 ||
+        exec.arguments[0].type !== "Literal" || exec.arguments[0].value !== "echo" ||
+        exec.arguments[1].type !== "ArrayExpression" || exec.arguments[1].elements.length !== 1) return null;
+    const arg = exec.arguments[1].elements[0];
+    if (!arg) return null;
+    const redirs = call.arguments[1];
+    if (!redirs || redirs.type !== "ArrayExpression" || redirs.elements.length !== 1) return null;
+    const o = redirs.elements[0];
+    if (!o || o.type !== "ObjectExpression" || !o.properties) return null;
+    let fd = null, mode = null, target = null;
+    for (const p of o.properties) {
+      const k = p.key && (p.key.name || p.key.value);
+      if (k === "fd" && p.value.type === "Literal") fd = p.value.value;
+      if (k === "mode" && p.value.type === "Literal") mode = p.value.value;
+      if (k === "target" && p.value.type === "Literal") target = p.value.value;
+    }
+    if (fd !== 1 || mode !== "w" || typeof target !== "string" || target.startsWith("&")) return null;
+    // a template/string arg keeps its own interpolations — just append \n
+    return {
+      type: "ExpressionStatement",
+      expression: {
+        type: "SequenceExpression",
+        expressions: [
+          { type: "AwaitExpression", argument: fsWrite(target, arg) },
+          {
+            type: "AssignmentExpression", operator: "=",
+            left: { type: "MemberExpression", computed: false, optional: false, object: { type: "Identifier", name: "sh2" }, property: { type: "Identifier", name: "lastExit" } },
+            right: { type: "Literal", value: 0, raw: null },
+          },
+        ],
+      },
+    };
+  };
+
+  const rewrite = (node) => {
+    if (!node || typeof node !== "object") return node;
+    if (Array.isArray(node)) return node.map(rewrite);
+    if (node.type === "BlockStatement" && Array.isArray(node.body)) {
+      node.body = node.body.map((s) => (echoShadowed ? s : rewriteStmt(s) || rewrite(s)));
+      return node;
+    }
+    if (node.type === "Program" && Array.isArray(node.body)) {
+      node.body = node.body.map((s) => (echoShadowed ? s : rewriteStmt(s) || rewrite(s)));
+      return node;
+    }
+    const out = {};
+    for (const k of Object.keys(node)) {
+      if (k === "loc" || k === "parent") continue;
+      out[k] = rewrite(node[k]);
+    }
+    return out;
+  };
+  return rewrite(program);
+}
+
 // ── lowerPureFunctions: pull await-free helpers out of the shell ──
 //
 // `sh2.define("f", async () => { … })` with an AWAIT-FREE body is a
@@ -388,7 +509,37 @@ function lowerPureRound(program) {
   for (const d of defs) {
     const block = d.arrow.body;
     if (!block || block.type !== "BlockStatement" || !Array.isArray(block.body)) continue;
-    if (hasAwait(block)) continue; // not pure
+    // lowerable if every await is a DEVICE call (`fs.write/read/…`) or an
+    // exec of an ALREADY-lowered function (rewritten to a direct call).
+    // Anything else (a builtin exec, capture, redirect, …) keeps the shell.
+    let isAsync = false;
+    let lowerable = true;
+    const scanAwaits = (n) => {
+      if (!lowerable || !n || typeof n !== "object") return;
+      if (Array.isArray(n)) { for (const x of n) scanAwaits(x); return; }
+      if (n.type === "AwaitExpression") {
+        const a = n.argument;
+        if (a && a.type === "CallExpression" && a.callee && a.callee.type === "MemberExpression" &&
+            a.callee.object && a.callee.object.type === "Identifier" && a.callee.object.name === "fs") {
+          isAsync = true; // device op — stays async, but callable directly
+        } else if (a && a.type === "CallExpression" && a.callee && a.callee.type === "MemberExpression" &&
+            a.callee.object && a.callee.object.type === "Identifier" && a.callee.object.name === "sh2" &&
+            a.callee.property && a.callee.property.type === "Identifier" && a.callee.property.name === "exec" &&
+            a.arguments && a.arguments[0] && a.arguments[0].type === "Literal" &&
+            lowered.has(String(a.arguments[0].value))) {
+          // exec of a lowered fn — becomes a direct call
+        } else {
+          lowerable = false;
+        }
+        return;
+      }
+      for (const k of Object.keys(n)) {
+        if (k === "loc" || k === "parent") continue;
+        scanAwaits(n[k]);
+      }
+    };
+    scanAwaits(block);
+    if (!lowerable) continue;
     // a body-level `return N` sets $? via the exec contract — the direct
     // call must propagate it (see the wrapReturn below)
     let hasReturn = false;
@@ -535,11 +686,35 @@ function lowerPureRound(program) {
     for (const pp of params) if (refsOutside.has(pp.name)) syncs.push(pp.name);
 
     lowered.add(d.name);
-    plan.push({ def: d, name: d.name, params, paramSet, touched, written, promotable, syncs, rest, hasReturn });
+    plan.push({ def: d, name: d.name, params, paramSet, touched, written, promotable, syncs, rest, hasReturn, isAsync });
   }
   if (!plan.length) return 0;
 
-  // 3. rewrite body + build the native function + adapter
+  // 3. transitive async: a function calling an ASYNC lowered callee must
+  //    be async itself (its direct call will be `await g(...)`). The base
+  //    isAsync covers the device awaits; propagate through the exec calls.
+  const planByName = new Map(plan.map((p) => [p.name, p]));
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const p of plan) {
+      if (p.isAsync) continue;
+      let callsAsync = false;
+      walk(p.rest, (n) => {
+        if (callsAsync) return;
+        if (n.type === "CallExpression" && n.callee && n.callee.type === "MemberExpression" &&
+            n.callee.object && n.callee.object.type === "Identifier" && n.callee.object.name === "sh2" &&
+            n.callee.property && n.callee.property.type === "Identifier" && n.callee.property.name === "exec" &&
+            n.arguments && n.arguments[0] && n.arguments[0].type === "Literal") {
+          const g = planByName.get(String(n.arguments[0].value));
+          if (g && g.isAsync) callsAsync = true;
+        }
+      });
+      if (callsAsync) { p.isAsync = true; changed = true; }
+    }
+  }
+
+  // 4. rewrite body + build the native function + adapter
   const rewriteBody = makeBodyRewriter();
   const newBody = [];
   for (const st of body) {
@@ -589,7 +764,7 @@ function lowerPureRound(program) {
       },
       generator: false,
       expression: false,
-      async: false,
+      async: p.isAsync,
     };
     const adapter = {
       type: "ArrowFunctionExpression",
@@ -651,6 +826,7 @@ function lowerPureRound(program) {
       // a function with a body-level `return N` sets $? through the exec
       // contract — the direct call must propagate the value the same way
       const p = plan.find((x) => x.name === fname);
+      const asyncFn = !!(p && p.isAsync);
       if (p && p.hasReturn) {
         const ret = { type: "Identifier", name: "__ret" };
         const typeofCmp = (t) => ({
@@ -658,6 +834,9 @@ function lowerPureRound(program) {
           left: { type: "UnaryExpression", operator: "typeof", prefix: true, argument: ret },
           right: { type: "Literal", value: t, raw: null },
         });
+        const inner = asyncFn
+          ? { type: "AwaitExpression", argument: callExpr }
+          : callExpr;
         return {
           type: "ExpressionStatement",
           expression: {
@@ -667,7 +846,7 @@ function lowerPureRound(program) {
               body: {
                 type: "BlockStatement",
                 body: [
-                  { type: "VariableDeclaration", kind: "const", declarations: [{ type: "VariableDeclarator", id: { type: "Identifier", name: "__ret" }, init: callExpr }] },
+                  { type: "VariableDeclaration", kind: "const", declarations: [{ type: "VariableDeclarator", id: { type: "Identifier", name: "__ret" }, init: inner }] },
                   {
                     type: "IfStatement",
                     test: { type: "LogicalExpression", operator: "||", left: typeofCmp("string"), right: typeofCmp("number") },
@@ -683,11 +862,14 @@ function lowerPureRound(program) {
                   },
                 ],
               },
-              expression: false, async: false,
+              expression: false, async: asyncFn,
             },
             arguments: [], optional: false,
           },
         };
+      }
+      if (asyncFn) {
+        return { type: "ExpressionStatement", expression: { type: "AwaitExpression", argument: callExpr } };
       }
       return { type: "ExpressionStatement", expression: callExpr };
     }

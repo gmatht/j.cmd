@@ -68,7 +68,7 @@ function makeNullGL() {
     NEAREST: 0x2600, RGB: 0x1907, RGBA: 0x1908, UNPACK_ALIGNMENT: 0x0cf5,
     TEXTURE0: 0x84c0, TEXTURE1: 0x84c1,
     ARRAY_BUFFER: 0x8892, ELEMENT_ARRAY_BUFFER: 0x8893,
-    STATIC_DRAW: 0x88e4, COLOR_BUFFER_BIT: 0x4000, DEPTH_BUFFER_BIT: 0x100, DEPTH_TEST: 0x0b71, LEQUAL: 0x0203,
+    STATIC_DRAW: 0x88e4, COLOR_BUFFER_BIT: 0x4000, DEPTH_BUFFER_BIT: 0x100, DEPTH_TEST: 0x0b71, LEQUAL: 0x0203, LESS: 0x0201, GEQUAL: 0x0206,
     TRIANGLES: 0x0004, TRIANGLE_STRIP: 0x0005, TRIANGLE_FAN: 0x0006,
     POINTS: 0x0000, LINES: 0x0001, LINE_LOOP: 0x0002, LINE_STRIP: 0x0003,
     FLOAT: 0x1406, INT: 0x1404, FLOAT_VEC2: 0x8b50, FLOAT_VEC3: 0x8b51,
@@ -117,6 +117,7 @@ function makeNullGL() {
     clear: () => {},
     clearColor: () => {},
     depthMask: () => {},
+    depthFunc: () => {},
     flush: () => {},
     getParameter: (p) => p === 0x1f02 ? "headless null device" : "0",
     getSupportedExtensions: () => [],
@@ -940,6 +941,16 @@ export class WebGLDevice {
       const gl = this._ensureGL();
       const v = String(content).trim();
       gl.depthMask(v === "1" || v === "true");
+      return;
+    }
+    if (parts[0] === "depthfunc") {
+      // "lequal" | "less" — the background fill uses LESS so its
+      // fragments only land where NOTHING nearer was drawn (the cleared
+      // void), never over the cubes
+      const gl = this._ensureGL();
+      const v = String(content).trim().toLowerCase();
+      const f = v === "less" ? gl.LESS : gl.LEQUAL;
+      gl.depthFunc(f);
       return;
     }
     if (parts[0] === "clearcolor") {

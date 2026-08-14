@@ -218,11 +218,33 @@ function markAsyncOnAwait(node) {
   return node;
 }
 
-function awaitSyncFnCalls(node, inAwait) {
+function awaitSyncFnCalls(node, inAwait, inSync) {
   if (!node || typeof node !== "object") return node;
-  if (Array.isArray(node)) return node.map((n) => awaitSyncFnCalls(n, false));
+  if (Array.isArray(node)) return node.map((n) => awaitSyncFnCalls(n, false, inSync));
   if (node.type === "AwaitExpression") {
-    return { ...node, argument: awaitSyncFnCalls(node.argument, true) };
+    return { ...node, argument: awaitSyncFnCalls(node.argument, true, inSync) };
+  }
+  // a *Sync twin's body arrow was PROVEN await-free by the emitter — a
+  // fnCall inside it targets a sync function (else the twin would not
+  // have been chosen); awaiting it would flip the arrow async and make
+  // the sync twin throw "async result". Keep those fnCalls un-awaited.
+  if (node.type === "CallExpression" && node.callee && node.callee.type === "MemberExpression" &&
+      node.callee.object && node.callee.object.type === "Identifier" && node.callee.object.name === "sh2" &&
+      node.callee.property && node.callee.property.type === "Identifier" &&
+      /^(capture|redirect|pipeline|subshell|block|whileLoop|forLoop|cstyleFor)Sync$/.test(node.callee.property.name)) {
+    return {
+      ...node,
+      arguments: node.arguments.map((a) => awaitSyncFnCalls(a, false, true)),
+    };
+  }
+  if (node.type === "CallExpression" && node.callee && node.callee.type === "MemberExpression" &&
+      node.callee.object && node.callee.object.type === "Identifier" && node.callee.object.name === "sh2" &&
+      node.callee.property && node.callee.property.type === "Identifier" && node.callee.property.name === "fnCall" &&
+      !inAwait && !inSync) {
+    return {
+      type: "AwaitExpression",
+      argument: { ...node, arguments: node.arguments.map((a) => awaitSyncFnCalls(a, false, inSync)) },
+    };
   }
   if (node.type === "CallExpression" && node.callee && node.callee.type === "MemberExpression" &&
       node.callee.object && node.callee.object.type === "Identifier" && node.callee.object.name === "sh2" &&
@@ -240,14 +262,14 @@ function awaitSyncFnCalls(node, inAwait) {
         callee: { type: "MemberExpression", computed: false, optional: false, object: { type: "Identifier", name: "sh2" }, property: { type: "Identifier", name: "exec" } },
         arguments: [
           { type: "Literal", value: ".", raw: null },
-          node.arguments[1] ? awaitSyncFnCalls(node.arguments[1], false) : { type: "ArrayExpression", elements: [] },
+          node.arguments[1] ? awaitSyncFnCalls(node.arguments[1], false, inSync) : { type: "ArrayExpression", elements: [] },
         ],
         optional: false,
       },
     };
   }
   const out = {};
-  for (const k of Object.keys(node)) out[k] = awaitSyncFnCalls(node[k], false);
+  for (const k of Object.keys(node)) out[k] = awaitSyncFnCalls(node[k], false, inSync);
   return out;
 }
 // A final top-level statement that corresponds to a source statement:

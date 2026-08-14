@@ -1,0 +1,7 @@
+[
+"t01_echo.ps1",
+"t02_braced_variable.ps1",
+"t03_cast.ps1",
+"t04_invocation_operator.ps1",
+"t05_concatenated_argument.ps1"
+]

@@ -452,6 +452,10 @@ shoot() {
     fi
     sh_i=$((sh_i + 1))
   done
+  # nothing hit within range (the row is clear / the target is beyond
+  # RANGE) — the shot still makes the gun's sound; hits play their own
+  # impact note (thud / tick / break / mime-kill)
+  play "D2 0.06"
   return 1
 }
 
@@ -821,31 +825,31 @@ emit_fragment_shader() {
 }
 
 setup_webgl() {
-  # the vertex shader is authored in bash — emit_vertex_shader compiles
+    # the vertex shader is authored in bash — emit_vertex_shader compiles
   # /examples/mimecroft-vertex.sh via sh2glsl --vertex when available,
   # otherwise the equivalent hand-written GLSL (same look: yaw rotation,
   # fake perspective, the strafe screen-shift, the overlay flat-quad
   # path)
   emit_vertex_shader
-  # the fragment shader is authored in bash (emit_fragment_shader) and
+    # the fragment shader is authored in bash (emit_fragment_shader) and
   # compiled by sh2glsl when available — otherwise the equivalent
   # hand-written textured GLSL (the same texture × colour tint + the
   # CRT/corruption/vignette effects; uOverlay > 0.5 keeps the HUD flat)
   emit_fragment_shader
-  echo "link" > /dev/webgl/program
+    echo "link" > /dev/webgl/program
   echo "f32 -0.5 0.5 0.5 0.5 0.5 0.5 0.5 0.5 -0.5 -0.5 0.5 -0.5 -0.5 -0.5 0.5 0.5 -0.5 0.5 0.5 -0.5 -0.5 -0.5 -0.5 -0.5 -0.5 0.5 0.5 0.5 0.5 0.5 0.5 -0.5 0.5 -0.5 -0.5 0.5 -0.5 -0.5 -0.5 0.5 -0.5 -0.5 0.5 0.5 -0.5 -0.5 0.5 -0.5 0.5 -0.5 0.5 0.5 0.5 0.5 0.5 0.5 -0.5 0.5 -0.5 -0.5 -0.5 -0.5 0.5 -0.5 0.5 0.5 -0.5 0.5 -0.5 -0.5 -0.5 -0.5" > /dev/webgl/buffer/aPosition
   echo "f32 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 1 1 1 1 1 1 1 1 1 1 1 1 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.95 0.95 0.95 0.95 0.95 0.95 0.95 0.95 0.95 0.95 0.95 0.95 0.85 0.85 0.85 0.85 0.85 0.85 0.85 0.85 0.85 0.85 0.85 0.85" > /dev/webgl/buffer/aShade
   echo "f32 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1" > /dev/webgl/buffer/aUv
-  echo "0" > /dev/webgl/uniform/1i/uTex
+    echo "0" > /dev/webgl/uniform/1i/uTex
   echo "9" > /dev/webgl/uniform/1i/uCrack
   echo "0" > /dev/webgl/uniform/1i/uDamage
   fmt_pos $cam_shift_ms
-  echo "$fv" > /dev/webgl/uniform/1f/uCamShift
+    echo "$fv" > /dev/webgl/uniform/1f/uCamShift
   echo "u16 0 1 2 0 2 3 4 5 6 4 6 7 8 9 10 8 10 11 12 13 14 12 14 15 16 17 18 16 18 19 20 21 22 20 22 23" > /dev/webgl/buffer/cube
   echo "f32 -0.5 -0.5 0 0.5 -0.5 0 0.5 0.5 0 -0.5 0.5 0" > /dev/webgl/buffer/quadpos
   echo "f32 1 1 1 1 1 1 1 1 1 1 1 1" > /dev/webgl/buffer/quadshade
   echo "u16 0 1 2 0 2 3" > /dev/webgl/buffer/quadi
-  echo "0.05 0.05 0.12 1.0" > /dev/webgl/clearcolor
+    echo "0.05 0.05 0.12 1.0" > /dev/webgl/clearcolor
 }
 
 # ─── texture loading: run examples/textures/texture-<name>.sh --tsv,
@@ -1149,9 +1153,9 @@ render_frame() {
     while [ "$rf_z" -lt "$MAP_D" ]; do
       rf_x=0
       while [ "$rf_x" -lt "$MAP_W" ]; do
-        try_draw $rf_x 2 $rf_z
-        try_draw $rf_x 1 $rf_z
         try_draw $rf_x 0 $rf_z
+        try_draw $rf_x 1 $rf_z
+        try_draw $rf_x 2 $rf_z
         rf_x=$((rf_x + 1))
       done
       rf_z=$((rf_z + 1))
@@ -1162,9 +1166,9 @@ render_frame() {
     while [ "$rf_x" -ge 0 ]; do
       rf_z=0
       while [ "$rf_z" -lt "$MAP_D" ]; do
-        try_draw $rf_x 2 $rf_z
-        try_draw $rf_x 1 $rf_z
         try_draw $rf_x 0 $rf_z
+        try_draw $rf_x 1 $rf_z
+        try_draw $rf_x 2 $rf_z
         rf_z=$((rf_z + 1))
       done
       rf_x=$((rf_x - 1))
@@ -1177,9 +1181,9 @@ render_frame() {
     while [ "$rf_z" -ge 0 ]; do
       rf_x=0
       while [ "$rf_x" -lt "$MAP_W" ]; do
-        try_draw $rf_x 2 $rf_z
-        try_draw $rf_x 1 $rf_z
         try_draw $rf_x 0 $rf_z
+        try_draw $rf_x 1 $rf_z
+        try_draw $rf_x 2 $rf_z
         rf_x=$((rf_x + 1))
       done
       rf_z=$((rf_z - 1))
@@ -1190,20 +1194,21 @@ render_frame() {
     while [ "$rf_x" -lt "$MAP_W" ]; do
       rf_z=0
       while [ "$rf_z" -lt "$MAP_D" ]; do
-        try_draw $rf_x 2 $rf_z
-        try_draw $rf_x 1 $rf_z
         try_draw $rf_x 0 $rf_z
+        try_draw $rf_x 1 $rf_z
+        try_draw $rf_x 2 $rf_z
         rf_z=$((rf_z + 1))
       done
       rf_x=$((rf_x + 1))
     done
   fi
-  echo "$blk_p" > /dev/webgl/blocks
-  echo "less" > /dev/webgl/depthfunc
+  # background planes first with depth WRITES OFF (gl.depthMask 0) —
+  # they fill the void but never record depth, so the cubes drawn after
+  # (depth writes on) ALWAYS paint over them
   echo "0" > /dev/webgl/depthmask
   echo "$bg_p" > /dev/webgl/blocks
   echo "1" > /dev/webgl/depthmask
-  echo "lequal" > /dev/webgl/depthfunc
+  echo "$blk_p" > /dev/webgl/blocks
 }
 
 # ─── HUD (the terminal is the dashboard) ────────────────────────────
@@ -1642,7 +1647,7 @@ draw_digits() {
 draw_hud_canvas() {
   if [ "$hud_static_dirty" -eq 1 ]; then
     hud_build_static
-    hud_static_dirty=0
+        hud_static_dirty=0
     # the rebuild wiped the whole layer — reset the dynamic-cell state
     # so the triangle, mime blips and labels are redrawn this frame
     prev_px=-1
@@ -1950,7 +1955,7 @@ settings_menu() {
   done
   # push the camera shift to the GPU (setup_webgl also writes it)
   fmt_pos $cam_shift_ms
-  echo "$fv" > /dev/webgl/uniform/1f/uCamShift
+    echo "$fv" > /dev/webgl/uniform/1f/uCamShift
   if [ "$sm_mode" = "live" ]; then
     # mid-game: apply the settings NOW — the fragment shader encodes the
     # CRT/corruption effects AND the texel grid size, so re-emit it when
@@ -1987,8 +1992,7 @@ main() {
   # script runs (its exec calls are one microtask chain), so without
   # them every startup message appears at once when the game loop
   # starts instead of streaming as it loads.
-  echo ""
-  echo "╔══════════════════════════════════════════════════╗"
+    echo "╔══════════════════════════════════════════════════╗"
   echo "║  MIMEcrofT v5.9 — 3D treasure hunt written in bash ║"
   echo "║  The filesystem is infested with evil MIMEs.     ║"
   echo "║  Recover the lost operating systems.             ║"
@@ -1996,9 +2000,9 @@ main() {
   echo "╚══════════════════════════════════════════════════╝"
   echo ""
   sleep 0.02
-  print_map_once
+    print_map_once
   sleep 0.02
-  if [ "$headless" -eq 0 ]; then
+    if [ "$headless" -eq 0 ]; then
     settings_menu
     if [ "$quit" -eq 1 ]; then
       echo "== Quit."
@@ -2009,13 +2013,13 @@ main() {
   fi
   echo "  compiling the fragment shader…"
   sleep 0.02
-  setup_webgl
+    setup_webgl
   gen_maze
   place_treasures
-  # the radar base needs the maze — build it now (after gen/placement),
+    # the radar base needs the maze — build it now (after gen/placement),
   # not before, so the first static layer has the real walls/treasures
   hud_build_static
-  hud_static_dirty=0
+    hud_static_dirty=0
   if [ "$MIMES_ON" -eq 1 ]; then
     spawn_mime
     spawn_mime
@@ -2025,8 +2029,8 @@ main() {
   # in /tmp per session so re-runs skip the generation)
   echo "  loading block textures…"
   sleep 0.02
-  load_textures
-  echo "  ready."
+    load_textures
+    echo "  ready."
   sleep 0.8
   frame=$((0))
   quit=$((0))

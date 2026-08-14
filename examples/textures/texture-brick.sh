@@ -332,7 +332,7 @@ finish() {
   tick
   stat_total=$(( t_now - t0v ))
   if [ "$PREVIEW" -eq 1 ]; then
-    printf "$prev"
+    printf "%b" "$prev"
     print_stats
     return 0
   fi

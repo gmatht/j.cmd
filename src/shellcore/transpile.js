@@ -116,6 +116,13 @@ export async function runSourceContent(content, lang, srcArgs, ctx) {
     ).join("");
     a1 = JSON.parse(lib.shir(seed + String(content)));
   } else {
+    if (lang === "cpp" || lang === "powershell" || lang === "rust" || lang === "zig") {
+      // These frontends exist in the sh2loop fleet (cpp-sh-go /
+      // powershell-sh-go / rust-frontend / zig-sh-go) but are not in
+      // the browser busybox (tree-sitter cgo / a Rust binary).
+      throw new Error(lang + " frontend not ported to the browser wasm yet — " +
+        "run it in the sh2loop fleet to transpile");
+    }
     const { ensureBusyboxWasm, busyboxA1 } = await import("../busybox.js");
     const wasmPath = await ensureBusyboxWasm(fs, {
       goRunner: ctx.goRunner, goCmd: ctx.goCmd, fetchBytes: ctx.fetchBusyboxBytes,

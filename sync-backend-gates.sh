@@ -100,7 +100,9 @@ for lang, ps_name, scope, label, name in BACKENDS:
 
 # source frontends → www corpus dir name (frontend-js-gate.sh's lang keys)
 FRONTEND_DIR = {"sh": "sh-posix", "go": "go", "py": "py",
-                "fish": "fish", "zsh": "zsh", "pl": "pl", "c": "c", "bat": "bat"}
+                "fish": "fish", "zsh": "zsh", "pl": "pl", "c": "c",
+                "bat": "bat", "cpp": "cpp", "powershell": "powershell",
+                "rust": "rust", "zig": "zig"}
 frontends = {}
 tsv = os.path.join(loop, ".frontend_gate.tsv")
 if os.path.isfile(tsv):
@@ -131,9 +133,11 @@ else:
 # (default js) and per-backend (shared sh corpus) gates don't cover.
 # Per frontend-example × backend verdict, plus a per-backend summary over
 # the frontend corpora. Last row per pair wins.
-TRIAGE_FRONTEND = {"c-sh-go": "c", "cpp-sh-go": "c", "bat-sh-go": "bat",
+TRIAGE_FRONTEND = {"c-sh-go": "c", "cpp-sh-go": "cpp", "bat-sh-go": "bat",
                    "py-sh-go": "py", "perl-sh-go": "pl", "posix-sh-go": "sh-posix",
-                   "zsh-sh-go": "zsh", "fish-sh-go": "fish", "go-sh": "go"}
+                   "zsh-sh-go": "zsh", "fish-sh-go": "fish", "go-sh": "go",
+                   "powershell-sh-go": "powershell", "rust-frontend": "rust",
+                   "zig-sh-go": "zig"}
 triage = {"frontends": {}, "backends": {}}
 tv = os.path.join(loop, "triage", "verdicts.tsv")
 if os.path.isfile(tv):

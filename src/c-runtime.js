@@ -127,8 +127,12 @@ export function createCRuntime({ getMem, memory, out, err, table }) {
         case "%": out += "%"; break;
         case "d": case "i": {
           let v = arg();
-          if (typeof v === "bigint") v = Number(v);
-          out += wid(String(v)); break;
+          // i64 (ll) args arrive as BigInt: format the SIGNED 64-bit
+          // value with BigInt arithmetic (Number(v) would round values
+          // beyond 2^53 — 1e19 prints 384 low)
+          if (typeof v === "bigint") out += wid(BigInt.asIntN(64, v).toString());
+          else out += wid(String(v));
+          break;
         }
         case "u": case "x": case "X": case "o": {
           let v = arg();
@@ -483,6 +487,8 @@ export function createCRuntime({ getMem, memory, out, err, table }) {
       return d;
     },
     "$memcpy": (d, s, n) => { d = Ptr(d); s = Ptr(s); n = Ptr(n); const m = u8(); m.set(m.subarray(s, s + n), d); return d; },
+    "$mmap": () => -1,   /* WASI emulation: no mmap — callers check for -1 */
+    "$munmap": () => 0,
     "$memmove": (d, s, n) => { d = Ptr(d); s = Ptr(s); n = Ptr(n); const m = u8(); m.set(m.slice(s, s + n), d); return d; },
     "$memset": (d, c, n) => { d = Ptr(d); c = Ptr(c); n = Ptr(n); u8().fill(c & 0xff, d, d + n); return d; },
     "$memcmp": (a, b, n) => { a = Ptr(a); b = Ptr(b); n = Ptr(n);

@@ -444,9 +444,21 @@ function genFunction(fn, mod) {
       return;
     }
     if (op.startsWith("extern$")) {
+      const sym = op.slice(6);
+      // a DATA symbol (e.g. `loadw extern $x` of a global struct): its
+      // value is the byte offset in the module's static data.
+      if (mod.dataOffset && mod.dataOffset.has(sym)) {
+        const off = mod.dataOffset.get(sym);
+        if (wasm64) emit(OP.i64_const, sleb(BigInt(off)));
+        else {
+          emit(OP.i32_const, uleb(off));
+          if (expect === I64) emit(OP.i64_extend_i32_u);
+        }
+        return;
+      }
       // a FUNCTION symbol operand (parser collapsed `extern $f`): its
       // value is the index of $f in the module's function table.
-      const ti = mod.funcTableIdx.get(op.slice(6));
+      const ti = mod.funcTableIdx && mod.funcTableIdx.get(sym);
       if (ti === undefined) throw new Error(`qbe: undefined function symbol ${op}`);
       if (wasm64) emit(OP.i64_const, sleb(BigInt(ti)));
       else {
@@ -493,6 +505,12 @@ function genFunction(fn, mod) {
     dtosi: [OP.i32_trunc_f64_s, D], dtoui: [OP.i32_trunc_f64_u, D], dtoli: [OP.i64_trunc_f64_s, D], dtouli: [OP.i64_trunc_f64_u, D],
     itos: [OP.f32_convert_i32_s, I32], uitos: [OP.f32_convert_i32_u, I32], ltos: [OP.f32_convert_i64_s, I64], ultos: [OP.f32_convert_i64_u, I64],
     itod: [OP.f64_convert_i32_s, I32], uitod: [OP.f64_convert_i32_u, I32], ltod: [OP.f64_convert_i64_s, I64], ultod: [OP.f64_convert_i64_u, I64],
+    // the op names cproc actually emits (the QBE suffix is the DESTINATION):
+    // swtof/uwtof/sltof/ultof → float32; swtod/uwtod/sltod/ultod → float64
+    swtof: [OP.f32_convert_i32_s, I32], uwtof: [OP.f32_convert_i32_u, I32],
+    sltof: [OP.f32_convert_i64_s, I64], ultof: [OP.f32_convert_i64_u, I64],
+    swtod: [OP.f64_convert_i32_s, I32], uwtod: [OP.f64_convert_i32_u, I32],
+    sltod: [OP.f64_convert_i64_s, I64], ultod: [OP.f64_convert_i64_u, I64],
   }[q]);
   const cvtMap = {
     stod: OP.f64_promote_f32, dtos: OP.f32_demote_f64,
@@ -973,10 +991,11 @@ export function qbe2wasm(irText, { importBase = "env", wasm64 = false } = {}) {
   // funcref table (exported under the wasm-ld name) and the operands
   // lower to its indices.
   let usesFnPtrs = false;
+  const extArg = (a) => String(a && a.value !== undefined ? a.value : a).startsWith("extern$");
   for (const fn of mod.funcs) for (const b of fn.blocks) for (const st of b.stmts) {
     if (st.kind === "op" && st.op === "call" && st.fname.startsWith("%")) { usesFnPtrs = true; break; }
-    if (st.kind === "op" && st.args.some((a) => String(a.value).startsWith("extern$"))) { usesFnPtrs = true; break; }
-    if (st.kind === "store" && String(st.value).startsWith("extern$")) { usesFnPtrs = true; break; }
+    if (st.kind === "op" && (st.args || []).some(extArg)) { usesFnPtrs = true; break; }
+    if (st.kind === "store" && extArg(st.value)) { usesFnPtrs = true; break; }
   }
   if (usesFnPtrs) {
     const tableFuncs = mod.funcs.map((f) => f.name);

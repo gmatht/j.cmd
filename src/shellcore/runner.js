@@ -7,6 +7,7 @@
 // ctx: { stderr, write, getBgJobs, runViaTranspiler, runSegment }.
 import { hasOption, setShellStatus, setLastBgPid } from "../env.js";
 import { tokenize } from "./tokenize.js";
+import { createSh2Runtime } from "../sh2runtime.js";
 
 // Ctrl+C (SIGINT) — the shared command runners race a command against
 // this so an abort returns status 130 (128 + SIGINT).
@@ -41,6 +42,13 @@ export function splitBgList(line) {
     if (ch === '"') { inDouble = true; cur += ch; continue; }
     if (ch === "&") {
       if (line[i + 1] === "&") { cur += "&&"; i++; continue; }  // conditional op
+      // `&` inside a redirection — `>&2`, `2>&1`, `&>file` — is NOT a
+      // background marker (bash: `cmd >&2` runs in the FOREGROUND with
+      // stdout dup'd to fd 2). Background `&` is a word boundary: its
+      // previous char is a space/operator, never `>` (and `&>` starts
+      // the redirect, so a following `>` also disqualifies it).
+      const lastNonSpace = (() => { let c = null; for (let j = cur.length - 1; j >= 0; j--) { if (cur[j] !== " " && cur[j] !== "\t") { c = cur[j]; break; } } return c; })();
+      if (lastNonSpace === ">" || line[i + 1] === ">") { cur += ch; continue; }
       parts.push({ text: cur, bg: true });
       cur = "";
       continue;
@@ -86,7 +94,12 @@ export function splitConditionals(line) {
       continue;
     }
     if (ch === "&") {
-      throw new Error("syntax error near unexpected token '&'");
+      // a lone `&` is an error — UNLESS it's inside a redirect (`>&2`,
+      // `2>&1`, `&>`), where the splitter must let it through
+      const lastNonSpace = (() => { let c = null; for (let j = cur.length - 1; j >= 0; j--) { if (cur[j] !== " " && cur[j] !== "\t") { c = cur[j]; break; } } return c; })();
+      if (!(lastNonSpace === ">" || line[i + 1] === ">")) {
+        throw new Error("syntax error near unexpected token '&'");
+      }
     }
     cur += ch;
   }
@@ -356,18 +369,73 @@ export async function runSegment(segmentText, stdin, isLast, target, ctx) {
     if (folded !== cmd) cmd = folded;
   }
 
+  // ── fd redirections: `>&2`, `1>&2`, `2>&1`, `2>file`, `&>file` ──
+  // The `&` here is a redirect, not background (splitBgList already
+  // keeps it in the segment). Only fds 1 and 2 are real sinks in this
+  // shell; route stdout/stderr to the fd or file target. `1>file` is the
+  // existing `> file` handled below.
+  let stdoutFd = null;      // >&2 / 1>&2  — stdout goes to stderr
+  let stderrFd = null;      // 2>&1        — stderr goes to stdout
+  let stderrTarget = null;  // 2>file / 2>>file
+  let stderrAppend = false;
+  let bothTarget = null;    // &>file / &>>file — stdout AND stderr → file
+  let bothAppend = false;
+  let stdoutTarget = null;  // 1>file — the explicit fd-1 form (plain `> file`
+  let stdoutAppend = false; //          is handled by the existing logic below)
+  const keptArgs = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    const fdLink = /^(\d*)>&(\d+)$/.exec(a);          // >&2, 1>&2, 2>&1
+    const fdFile = /^([0-9]*|&)(>>?)([^>].*)$/.exec(a); // 2>file, 2>>file, 1>file, &>file (glued)
+    if (fdLink) {
+      const from = fdLink[1] ? Number(fdLink[1]) : 1;
+      const to = Number(fdLink[2]);
+      if (from === 1 && to === 2) stdoutFd = 2;
+      else if (from === 2 && to === 1) stderrFd = 1;
+      else ctx.stderr.write(`jtsh: ${a}: only 1>&2 and 2>&1 are supported here\n`);
+      continue;
+    }
+    if (fdFile) {
+      const from = fdFile[1] || "1";
+      const op = fdFile[2];
+      const target = fdFile[3];
+      if (from === "&") { bothTarget = target; bothAppend = op === ">>"; }
+      else if (from === "2") { stderrTarget = target; stderrAppend = op === ">>"; }
+      else if (from === "1") { stdoutTarget = target; stdoutAppend = op === ">>"; }
+      else ctx.stderr.write(`jtsh: ${a}: only fds 1 and 2 exist here\n`);
+      continue;
+    }
+    if ((a === "&>" || a === "&>>" || a === "1>" || a === "1>>" || a === "2>" || a === "2>>") && i + 1 < args.length) {
+      if (a.startsWith("&")) { bothTarget = args[i + 1]; bothAppend = a === "&>>"; }
+      else if (a.startsWith("2")) { stderrTarget = args[i + 1]; stderrAppend = a === "2>>"; }
+      else { stdoutTarget = args[i + 1]; stdoutAppend = a === "1>>"; }
+      i++; // consume the target token
+      continue;
+    }
+    keptArgs.push(a);
+  }
+  args.length = 0; args.push(...keptArgs);
+
   // Output router for THIS command only (guarded restore): background
   // jobs render into their panel slice (target), foreground commands go
   // to the terminal. Because it is installed per command, a job that
   // runs forever never captures the foreground's output, and nested
   // routers forward to their saved writer instead of recursing.
+  // fd redirections reroute the streams: `>&2` sends stdout to the
+  // stderr sink, `2>&1` stderr to stdout, `2>file`/`&>file` capture
+  // stderr for a file flush in the finally.
   const preOut = ctx.stdout.write;
   const preErr = ctx.stderr.write;
+  const effectiveOut = stdoutFd === 2 ? preErr : preOut;
+  const effectiveErr = stderrFd === 1 ? preOut : preErr;
+  const stderrToFile = bothTarget || stderrTarget;
+  const stderrAppendTo = bothTarget ? bothAppend : stderrAppend;
+  const errChunks = [];
   const routerOut = (chunk) => {
     if (ctx.stdout.write !== routerOut) return preOut(chunk);
     if (ctx.suppressOutput()) return true;
     if (target && target.appendOut) { target.appendOut(chunk); return true; }
-    return preOut(chunk);
+    return effectiveOut(chunk);
   };
   // Transparent router: forwards to its saved writer. The __wraps link
   // lets nested captures (runNestedCommand) recognise they're still in
@@ -379,7 +447,8 @@ export async function runSegment(segmentText, stdin, isLast, target, ctx) {
     if (ctx.stderr.write !== routerErr) return preErr(chunk);
     if (ctx.suppressOutput()) return true;
     if (target && target.appendErr) { target.appendErr(chunk); return true; }
-    return preErr(chunk);
+    if (stderrToFile) { errChunks.push(chunk); return true; }
+    return effectiveErr(chunk);
   };
   routerErr.__wraps = preErr;
   ctx.stdout.write = routerOut;
@@ -392,10 +461,16 @@ export async function runSegment(segmentText, stdin, isLast, target, ctx) {
 
   let outputRedirect = null;
   let appendRedirect = false;
+  // `&>file` — stdout AND stderr to the same file: the existing stdout
+  // redirect mechanism handles the stdout side; stderr is captured by
+  // the router and flushed in the finally. `1>file` (explicit fd-1) is
+  // the same as `> file` — the fd-1 parse above may have set it.
+  if (bothTarget) { outputRedirect = bothTarget; appendRedirect = bothAppend; }
+  else if (stdoutTarget) { outputRedirect = stdoutTarget; appendRedirect = stdoutAppend; }
   let redirectIndex = args.indexOf(">>");
   if (redirectIndex === -1) redirectIndex = args.indexOf(">");
   else appendRedirect = true;
-  if (redirectIndex !== -1) {
+  if (redirectIndex !== -1 && !outputRedirect) {
     outputRedirect = args[redirectIndex + 1];
     args.splice(redirectIndex, 2);
   }
@@ -652,15 +727,15 @@ export async function runSegment(segmentText, stdin, isLast, target, ctx) {
     // `sh2` — the bash runtime (saved bash2js output calls sh2.exec & co.)
     const sh2rt = createSh2Runtime({
       fs: ctx.fs, env: ctx.env,
-      shellExec: runNestedCommand,
-      stdout, stderr,
+      shellExec: ctx.runNestedCommand,
+      stdout: ctx.stdout, stderr: ctx.stderr,
       args: args.slice(1),
       argv0: cmd,
     });
     // `shell` — lets commands run lines through the shell itself (the
     // floating xterm terminal uses this); returns { out, err, code }.
     const shellApi = {
-      runLine: (cmdLine) => runNestedCommand(cmdLine),
+      runLine: (cmdLine) => ctx.runNestedCommand(cmdLine),
       jobs: ctx.getJobScheduler(),   // at/cron scheduler (src/jobs.js)
       // When the command runs as a background job, its output lands in
       // the job's panel slice; direct-DOM commands (watch) render there.
@@ -671,7 +746,7 @@ export async function runSegment(segmentText, stdin, isLast, target, ctx) {
       // Register a callback fired on printable keys (and Enter/Backspace)
       // while the command runs — lets interactive commands (typist) read
       // the keyboard. Return true to consume the key.
-      onKey: (fn) => { keyCallbacks.push(fn); },
+      onKey: (fn) => { ctx.keyCallbacks.push(fn); },
     };
     const pipe = {
       in: stdin,          // raw pipe input (string or Uint8Array)
@@ -681,20 +756,20 @@ export async function runSegment(segmentText, stdin, isLast, target, ctx) {
     // (otProc has env; the browser's global process is go.js's env-less
     // shim; node's global has everything).
     const fileProc = (ctx.otProc() && ctx.otProc().env)
-      ? otProc
-      : (typeof process !== "undefined" && process && process.env ? process : { env: env || {} });
+      ? ctx.otProc()
+      : (typeof process !== "undefined" && process && process.env ? process : { env: ctx.env || {} });
     const keyCbsBefore = ctx.keyCallbacks.length;
     const intrCbsBefore = ctx.interruptCallbacks.length;
     let ret;
     try {
-      ret = await fn(args, fs, fakeConsole, pipeText(stdin), env, fileProc, sh2rt.sh2, sh2libFacade, shellApi, qbe2wasm, pipe);
+      ret = await fn(args, ctx.fs, fakeConsole, pipeText(stdin), ctx.env, fileProc, sh2rt.sh2, ctx.sh2libFacade, shellApi, ctx.qbe2wasm, pipe);
     } finally {
       // Commands may register key/interrupt callbacks (typist, watch,
       // ...). Once the command finishes — normally or via Ctrl+C — the
       // shell owns the keyboard again: drop whatever it left registered
       // so a stale callback can never swallow typing or Tab completion.
-      keyCallbacks.length = keyCbsBefore;
-      interruptCallbacks.length = intrCbsBefore;
+      ctx.keyCallbacks.length = keyCbsBefore;
+      ctx.interruptCallbacks.length = intrCbsBefore;
     }
     // A command file may return a number to set its exit status
     const code = typeof ret === "number" ? ret : 0;
@@ -725,6 +800,11 @@ export async function runSegment(segmentText, stdin, isLast, target, ctx) {
   }
   } finally {
     restoreWriters();
+    // flush a `2>file` / `&>file` stderr capture (the routers collected
+    // the chunks while the command ran)
+    if (stderrToFile && errChunks.length) {
+      await ctx.writeOut(stderrToFile, joinOut(errChunks), stderrAppendTo);
+    }
   }
 }
 

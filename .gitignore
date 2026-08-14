@@ -12,6 +12,10 @@ target/
 *.a
 *.class
 
+# Generated texture outputs (examples/textures/make-textures.sh)
+examples/textures/*.ppm
+examples/textures/*.png
+
 # Python
 __pycache__/
 *.pyc

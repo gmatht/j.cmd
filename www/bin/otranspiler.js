@@ -5,10 +5,10 @@
 //
 //   otranspiler <input> [<output>] [flags]
 //     input  file.{sh,go,py,c,pl,zsh,fish,bat,shir}   (no ext = sh; - = stdin: A1, or source with --source-lang)
-//     output {-,file}.{js,pl,c,go,py,java,rs,zig,sh,shir}  (no ext = js; - = stdout)
+//     output {-,file}.{js,pl,c,go,py,java,rs,zig,glsl,sh,shir}  (no ext = js; - = stdout)
 //   flags:
 //     --shir            output the contract (A1 shIR JSON) instead of rendering
-//     --target L        force the target language (js|pl|c|go|py|java|rs|zig|sh|shir)
+//     --target L        force the target language (js|pl|c|go|py|java|rs|zig|glsl|sh|shir)
 //     --source-lang L   force the source language (sh|go|py|c|pl|zsh|fish|bat|shir)
 //     --run             js target: also execute the generated JS
 //     -h|--help         usage
@@ -52,7 +52,7 @@ async function readSource(input) {
   try { return await fs.read(input); } catch (e) { return input; } // inline source
 }
 
-var SOURCE_EXTS = { sh: 1, go: 1, py: 1, c: 1, pl: 1, zsh: 1, fish: 1, bat: 1, shir: 1 };
+var SOURCE_EXTS = { sh: 1, go: 1, py: 1, c: 1, pl: 1, zsh: 1, fish: 1, bat: 1, cc: 1, cpp: 1, ps1: 1, rs: 1, zig: 1, shir: 1 };
 function langOf(path) {
   if (path === "-") return "shir";
   var ext = path.split(".").pop();
@@ -61,7 +61,7 @@ function langOf(path) {
 // The TARGET languages (a superset of the source exts — js/java/rs/zig
 // are targets only). The output file's extension picks the target; `-`
 // (stdout) and an extensionless output default to js (see the CLI).
-var TARGET_EXTS = { js: 1, pl: 1, c: 1, go: 1, py: 1, java: 1, rs: 1, zig: 1, sh: 1, shir: 1 };
+var TARGET_EXTS = { js: 1, pl: 1, c: 1, go: 1, py: 1, java: 1, rs: 1, zig: 1, glsl: 1, sh: 1, shir: 1 };
 function targetLangOf(path) {
   if (path === "-") return "";
   var ext = path.split(".").pop();
@@ -98,6 +98,10 @@ async function contractFor(srcLang, source, srcName) {
   if (!SOURCE_EXTS[srcLang]) {
     throw new Error("source language '" + srcLang + "' not wired (sh | go | py | c | pl | zsh | fish | bat | shir)");
   }
+  if (srcLang === "cc" || srcLang === "cpp" || srcLang === "ps1" || srcLang === "rs" || srcLang === "zig") {
+    throw new Error(srcLang + " frontend not ported to the browser wasm yet — " +
+      "run it in the sh2loop fleet (cpp-sh-go / powershell-sh-go / rust-frontend / zig-sh-go)");
+  }
   return await sh2lib.busyboxA1(source, srcLang);
 }
 
@@ -109,6 +113,13 @@ async function contractFor(srcLang, source, srcName) {
 // sh2.* runtime.
 async function render(target, contract, source, srcLang) {
   if (target === "shir") return JSON.stringify(contract, null, 2);
+  if (target === "glsl") {
+    // sh → the dedicated shell→shader entry (the sh2glsl pipeline);
+    // frontend A1 → the generic A1→GLSL render arm (both emit the same
+    // ES 1.00 fragment with the frag_x/frag_y/vcolor/uv/tex bridges).
+    if (srcLang === "sh") return await sh2lib.glsl(source);
+    return await sh2lib.render(JSON.stringify(contract), "glsl");
+  }
   const a1 = JSON.stringify(contract);
   if (target === "js") {
     const estree = JSON.parse(await sh2lib.render(a1, "js"));
@@ -129,9 +140,9 @@ function emit(text) {
 function usage() {
   return `otranspiler <input> [<output>] [flags]
   input  file.{sh,go,py,c,pl,zsh,fish,bat,shir}   (no ext = sh; - = stdin: A1, or source with --source-lang)
-  output {-,file}.{js,pl,c,go,py,java,rs,zig,sh,shir}  (no ext = js; - = stdout)
+  output {-,file}.{js,pl,c,go,py,java,rs,zig,glsl,sh,shir}  (no ext = js; - = stdout)
   --shir            output the contract (A1 shIR JSON) instead of rendering
-  --target L        force the target language (js|pl|c|go|py|java|rs|zig|sh|shir)
+  --target L        force the target language (js|pl|c|go|py|java|rs|zig|glsl|sh|shir)
   --source-lang L   force the source language (sh|go|py|c|pl|zsh|fish|bat|shir)
   --run             js target: also execute the generated JS
   -h, --help        this help
@@ -204,8 +215,8 @@ var srcLang = forceSrc || langOf(input);
 var tgtLang = forceTgt;
 if (!tgtLang && output) tgtLang = targetLangOf(output);
 if (!tgtLang) tgtLang = "js";                    // the default target
-if (!{ js: 1, pl: 1, c: 1, go: 1, py: 1, java: 1, rs: 1, zig: 1, sh: 1, shir: 1 }[tgtLang]) {
-  console.log("otranspiler: target '" + tgtLang + "' not wired (js | pl | c | go | py | java | rs | zig | sh | shir)");
+if (!{ js: 1, pl: 1, c: 1, go: 1, py: 1, java: 1, rs: 1, zig: 1, glsl: 1, sh: 1, shir: 1 }[tgtLang]) {
+  console.log("otranspiler: target '" + tgtLang + "' not wired (js | pl | c | go | py | java | rs | zig | glsl | sh | shir)");
   return 2;
 }
 

@@ -23,7 +23,7 @@ import { InterruptError } from "./runner.js";
 export function sourceLangOf(path) {
   const m = /\.([A-Za-z0-9]+)$/.exec(path);
   const ext = m ? m[1].toLowerCase() : "";
-  return { sh: "sh", zsh: "zsh", fish: "fish", c: "c", go: "go", py: "py", pl: "pl", perl: "pl", js: "js", bat: "bat" }[ext] || "sh";
+  return { sh: "sh", zsh: "zsh", fish: "fish", c: "c", cc: "cpp", cpp: "cpp", go: "go", py: "py", pl: "pl", perl: "pl", js: "js", bat: "bat", ps1: "powershell", psd1: "powershell", psm1: "powershell", rs: "rust", zig: "zig" }[ext] || "sh";
 }
 
 export const builtins = {

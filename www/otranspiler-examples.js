@@ -13,6 +13,8 @@
 export const EXAMPLES = {
   sh: [
     { name: "hello", desc: "Hello world with a variable", code: 'name="world"\necho "hello $name"\n' },
+    { name: "vertex-shader", desc: "bash-authored VERTEX shader (pick the glslv target) — MIMEcroft's camera transform", code: '# the MIMEcroft VERTEX shader, authored in bash — pick the glslv target to\n# compile it to GLSL ES 1.00 (the sh2glsl --vertex pipeline: ap_*/ash_*/auv_*/\n# ucp_*/ucy_*/ucs/uop_*/usc_*/ublk_*/uov bridges in, vp_*/vc_*/vu_* out).\n# Object → world (floats via the bc captures — note every capture carries a\n# decimal-point literal, the float-path gate).\nwx=$(echo "scale=4; $ap_x * $usc_x / 1000000.0 + $uop_x / 1000.0" | bc)\nwy=$(echo "scale=4; $ap_y * $usc_y / 1000000.0 + $uop_y / 1000.0" | bc)\nwz=$(echo "scale=4; $ap_z * $usc_z / 1000000.0 + $uop_z / 1000.0" | bc)\n# face brightness × block colour (int, ×1000)\nvc_r=$((ash_r * ublk_r / 1000))\nvc_g=$((ash_g * ublk_g / 1000))\nvc_b=$((ash_b * ublk_b / 1000))\nvc_a=1000\nif [ "$uov" -gt 500 ]; then\n  # overlay: flat NDC\n  vp_x=$wx\n  vp_y=$wy\n  vp_z=$(echo "scale=4; $uov * 0.0 - 0.95" | bc)\n  vp_w=$(echo "scale=4; $uov * 0.0 + 1.0" | bc)\n  vu_u=0\n  vu_v=0\nelse\n  # camera-relative + yaw rotation (bc trig → GLSL cos/sin)\n  cx=$(echo "scale=4; $ucp_x / 1000.0 + 0.0" | bc)\n  cz=$(echo "scale=4; $ucp_z / 1000.0 + 0.0" | bc)\n  dx=$(echo "scale=4; $wx - $cx + 0.0" | bc)\n  dz=$(echo "scale=4; $wz - $cz + 0.0" | bc)\n  rad=$(echo "scale=8; $ucy_m * 3.14159265 / 180000.0" | bc)\n  c=$(echo "scale=6; c($rad) + 0.0" | bc)\n  s=$(echo "scale=6; s($rad) + 0.0" | bc)\n  relx=$(echo "scale=4; $dx * $c + $dz * $s + 0.0" | bc)\n  relz=$(echo "scale=4; 0 - $dx * $s + $dz * $c + 0.0" | bc)\n  w=$(echo "scale=4; 0 - $relz + 0.0" | bc)\n  vp_x=$(echo "scale=4; $relx * 0.9" | bc)\n  vp_y=$(echo "scale=4; $dy * 0.9" | bc)\n  vp_z=$(echo "scale=4; $w * $w / 64.0" | bc)\n  vp_w=$w\n  vu_u=$auv_u\n  vu_v=$auv_v\nfi\n' },
+  { name: "fragment-shader", desc: "bash-authored fragment shader (pick the glsl target)", code: '# a minimal fragment shader — pick the glsl target to compile it to GLSL ES 1.00\n# (the sh2glsl pipeline: frag_x/frag_y/vcolor_rgb bridges + putb output)\nfx=$((frag_x))\nfy=$((frag_y))\nr=$((vcolor_r))\nif [ $((fx % 8)) -eq 0 ]; then\n  putb 255\nelse\n  putb $r\nfi\nputb 0\nputb $((fy % 4 * 60))\nputb 255\n' },
     { name: "loop-count", desc: "for loop 1..3", code: 'for i in 1 2 3; do\n  echo "count $i"\ndone\n' },
     { name: "arith", desc: "$(( )) arithmetic", code: 'x=6\ny=7\necho "6*7=$((x * y))"\n' },
     { name: "conditional", desc: "if / else on a variable", code: 'n=5\nif [ "$n" -gt 3 ]; then\n  echo "big"\nelse\n  echo "small"\nfi\n' },
@@ -474,6 +476,57 @@ int main() {
     { name: "continuation", desc: "^ line continuation", code: '@echo off\r\necho one^\r\ntwo\r\n' },
     { name: "block", desc: "multi-line parenthesized block", code: '@echo off\r\nif "1"=="1" (\r\n    echo in-block\r\n    echo second-line\r\n)\r\necho after\r\n' },
   ],
+
+  cpp: [
+    // C++ (the cpp-sh-go frontend's tree-sitter-cpp subset — the
+    // c-sh-go clib lowering underneath). The browser has no C++
+    // frontend wasm yet, so the GUI shows the transpiled target only.
+    { name: "hello", desc: "Hello world (printf)", code: '#include <cstdio>\nint main() {\n    printf("hello from c++\n");\n    return 0;\n}\n' },
+    { name: "bool", desc: "bool comparisons", code: '#include <cstdio>\nint main() {\n    bool ok = true;\n    bool no = false;\n    if (ok == 1) printf("yes\n");\n    if (no == 0) printf("not no\n");\n    if (!(no == 1)) printf("bang\n");\n    printf("%d %d\n", ok, no);\n    return 0;\n}\n' },
+    { name: "arith-loop", desc: "for + while loop", code: '#include <cstdio>\nint main() {\n    int sum = 0;\n    for (int i = 1; i <= 4; i++) {\n        sum += i;\n    }\n    printf("sum=%d\n", sum);\n    int n = 0;\n    while (n < 3) {\n        n++;\n    }\n    printf("n=%d\n", n);\n    return 0;\n}\n' },
+    { name: "break", desc: "break out of a while", code: '#include <cstdio>\nint main() {\n    int i = 0;\n    while (1) {\n        i++;\n        if (i == 3) break;\n        printf("%d\n", i);\n    }\n    printf("done i=%d\n", i);\n    return 0;\n}\n' },
+    { name: "switch", desc: "switch/case dispatch", code: '#include <cstdio>\nint main() {\n    int x = 2;\n    switch (x) {\n        case 1: printf("one\n"); break;\n        case 2: printf("two\n"); break;\n        default: printf("other\n"); break;\n    }\n    return 0;\n}\n' },
+    { name: "cond", desc: "ternary ?: expression", code: '#include <cstdio>\nint main() {\n    int a = 3;\n    int b = 5;\n    int m = (a > b) ? a : b;\n    printf("max=%d\n", m);\n    int x = -2;\n    int s = (x > 0) ? 1 : (x < 0) ? -1 : 0;\n    printf("sign=%d\n", s);\n    return 0;\n}\n' },
+  ],
+
+  powershell: [
+    // PowerShell (.ps1 — the powershell-sh-go frontend's v1 subset:
+    // Write-Output/echo, ${} braced vars, [type] casts in argument
+    // position, &/. invocation of literal names, adjacent-argument
+    // concatenation). No browser pwsh, and no browser frontend wasm
+    // yet — the GUI shows the transpiled target only.
+    { name: "echo", desc: "Write-Output hello", code: '# a comment\nWrite-Output "hello powershell"\n' },
+    { name: "braced-var", desc: "${name} variable read", code: 'Write-Output "a ${foo} b"\n' },
+    { name: "cast", desc: "[type] cast in argument position", code: 'Write-Output [string]"cast value"\n' },
+    { name: "invocation", desc: "& / . invocation operators", code: '& echo hello\n. echo "world"\n' },
+    { name: "concat", desc: "concatenated command argument", code: 'Write-Output pre"mid"post\nWrite-Output $foo"b"\nWrite-Output 2"a"\n' },
+  ],
+
+  rust: [
+    // Rust (the rust-frontend's syn-based subset: fn main, let, println!,
+    // arithmetic, if/else, while, for range). No browser Rust frontend
+    // wasm yet — the GUI shows the transpiled target only.
+    { name: "hello", desc: "Hello world", code: 'fn main() {\n    println!("hello rust");\n}\n' },
+    { name: "let", desc: "let binding + print", code: 'fn main() {\n    let x = 42;\n    println!("x={}", x);\n}\n' },
+    { name: "arith", desc: "arithmetic expressions", code: 'fn main() {\n    let x = 2;\n    println!("{}", x + 3);\n    println!("{}", x * 4);\n    println!("{}", 10 / 3);\n    println!("{}", 10 % 3);\n    println!("{}", 7 - 2);\n}\n' },
+    { name: "if-else", desc: "if / else", code: 'fn main() {\n    let x = 2;\n    if x > 1 {\n        println!("big");\n    } else {\n        println!("small");\n    }\n}\n' },
+    { name: "while", desc: "while loop", code: 'fn main() {\n    let mut i = 0;\n    while i < 3 {\n        println!("i={}", i);\n        i += 1;\n    }\n}\n' },
+    { name: "for-range", desc: "for over a range", code: 'fn main() {\n    for i in 0..3 {\n        println!("n={}", i);\n    }\n}\n' },
+  ],
+
+  zig: [
+    // Zig (the zig-sh-go frontend's clib-lowered subset: std.debug.print,
+    // ints, if/else, while, for ranges, fn, pointers, switch, comptime
+    // consts, @intCast/@as). No browser Zig frontend wasm yet — the GUI
+    // shows the transpiled target only.
+    { name: "print", desc: "std.debug.print hello", code: 'const std = @import("std");\n\npub fn main() void {\n    std.debug.print("hello zig\n", .{});\n}\n' },
+    { name: "arith", desc: "binary arithmetic", code: 'const std = @import("std");\n\npub fn main() void {\n    std.debug.print("{d}\n", .{1 + 2});\n    std.debug.print("{d}\n", .{3 * 4});\n    std.debug.print("{d}\n", .{(8 - 3) * 2});\n}\n' },
+    { name: "if-else", desc: "if / else-if / else", code: 'const std = @import("std");\n\npub fn main() void {\n    const s = 85;\n    if (s >= 90) {\n        std.debug.print("A\n", .{});\n    } else if (s >= 80) {\n        std.debug.print("B\n", .{});\n    } else if (s >= 70) {\n        std.debug.print("C\n", .{});\n    } else {\n        std.debug.print("F\n", .{});\n    }\n}\n' },
+    { name: "while", desc: "while with : (update)", code: 'const std = @import("std");\n\npub fn main() void {\n    var i: i32 = 0;\n    while (i < 3) : (i += 1) {\n        std.debug.print("w{d}\n", .{i});\n    }\n}\n' },
+    { name: "for-range", desc: "for (START..END) |i|", code: 'const std = @import("std");\n\npub fn main() void {\n    for (0..4) |i| {\n        std.debug.print("{d}\n", .{i});\n    }\n}\n' },
+    { name: "fn", desc: "user functions + nested calls", code: 'const std = @import("std");\n\nfn triple(n: i32) i32 {\n    return n * 3;\n}\n\npub fn main() void {\n    std.debug.print("{d}\n", .{triple(5)});\n}\n' },
+    { name: "switch", desc: "switch prongs + else", code: 'const std = @import("std");\n\npub fn main() void {\n    const x = 2;\n    switch (x) {\n        1 => std.debug.print("one\n", .{}),\n        2 => std.debug.print("two\n", .{}),\n        else => std.debug.print("other\n", .{}),\n    }\n}\n' },
+  ],
 };
 
 // Language metadata for the sidebar pills.
@@ -486,6 +539,10 @@ export const LANGS = {
   c:    { label: "c",    full: "C",            runtime: "tcc.wasm" },
   pl:   { label: "pl",   full: "Perl",         runtime: "zeroperl.wasm (Perl 5.42)" },
   bat:  { label: "bat",  full: "Windows batch", runtime: "none (no cmd.exe in browser)" },
+  cpp:  { label: "cpp",  full: "C++",           runtime: "none (no browser C++ frontend wasm yet)" },
+  powershell: { label: "ps1", full: "PowerShell", runtime: "none (no browser pwsh/frontend wasm yet)" },
+  rust: { label: "rs",   full: "Rust",          runtime: "none (no browser Rust frontend wasm yet)" },
+  zig:  { label: "zig",  full: "Zig",           runtime: "none (no browser Zig frontend wasm yet)" },
 };
 
 export function getExamples(lang) {

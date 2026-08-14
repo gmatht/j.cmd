@@ -661,11 +661,20 @@ async function runEstreeProgram(program, lineAssigned, srcArgs) {
 // cc / cproc / tcc — the compilers, intercepted before resolution (the
 // shared runSegment's ctx.interceptCommand hook).
 async function interceptCompilers(cmd, args, stdin, isLast, { outputRedirect, appendRedirect }) {
-  // sh2glsl — compile a bash-authored fragment shader to GLSL ES 1.00
-  // via the otranspilerl wasm (the MIMEcroft shader pipeline)
+  // sh2glsl — compile a bash-authored shader to GLSL ES 1.00 via the
+  // otranspilerl wasm (the MIMEcroft shader pipeline). `sh2glsl file.sh`
+  // compiles a fragment shader (frag_x/frag_y/vcolor/uv/tex/crack
+  // bridges); `sh2glsl --vertex file.sh` compiles a VERTEX shader (the
+  // ap_*/ash_*/auv_*/ucp_*/ucy_*/uop_*/usc_*/ublk_*/uov bridges).
   if (cmd === "sh2glsl" && args.length > 0) {
     const { getOtranspilerl } = await import("./otranspilerl.js");
-    let srcFile = args[0].startsWith("/") ? args[0] : fs._resolve(args[0]);
+    const vert = args[0] === "--vertex";
+    const srcArg = vert ? args[1] : args[0];
+    if (!srcArg) {
+      process.stderr.write(`sh2glsl: missing source file\n`);
+      return { ok: false, code: 1, output: "" };
+    }
+    let srcFile = srcArg.startsWith("/") ? srcArg : fs._resolve(srcArg);
     let src;
     try {
       src = String(await fs.read(srcFile));
@@ -676,7 +685,7 @@ async function interceptCompilers(cmd, args, stdin, isLast, { outputRedirect, ap
     const lib = await getOtranspilerl();
     let glsl;
     try {
-      glsl = lib.glsl(src);
+      glsl = vert ? lib.glslv(src) : lib.glsl(src);
     } catch (e) {
       process.stderr.write(`sh2glsl: ${e.message}\n`);
       return { ok: false, code: 1, output: "" };

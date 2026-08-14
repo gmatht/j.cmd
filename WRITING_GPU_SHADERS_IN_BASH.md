@@ -1,27 +1,30 @@
 # Writing GPU Shaders in Bash
 
 The sh→GLSL backend compiles a bash program into a **GLSL ES 1.00
-(WebGL 1) fragment shader**. You write a *pure-computation* bash program
-— integer arithmetic over the fragment's input bridges, `echo`/`printf`/
-`putb` for output — and the backend emits a shader whose fragment colour
-is the program's stdout bytes.
+(WebGL 1) shader** — both stages. You write a *pure-computation* bash
+program — integer arithmetic over the stage's input bridges, `echo`/
+`printf`/`putb` (fragment) or the `vp_*`/`vc_*`/`vu_*` output vars
+(vertex) — and the backend emits real GLSL.
 
 Pipeline (all in-process in the browser):
 
 ```
-bash source ──debashl──▶ A1 shIR ──A2──▶ GLSL ES 1.00 fragment shader
+bash source ──debashl──▶ A1 shIR ──A2──▶ GLSL ES 1.00 shader
 ```
 
-Driven by the `otranspilerl_glsl` entry / `sh2glsl` shell command, or
-the otranspiler GUI's `glsl` target (sh sources; non-sh sources reach
-the same backend through A1 render). The reference shader is
-`www/examples/mimecroft-frag.sh` (68 lines, compiles with 0
-unsupported constructs).
+Driven by the `otranspilerl_glsl` / `otranspilerl_glslv` entries / the
+`sh2glsl` / `sh2glsl --vertex` shell commands, or the otranspiler
+GUI's `glsl` / `glslv` targets (sh sources; non-sh sources reach the
+same backend through A1 render). The reference shaders are
+`www/examples/mimecroft-frag.sh` (fragment, 68 lines) and
+`www/examples/mimecroft-vertex.sh` (vertex, ~50 lines) — both compile
+with 0 unsupported constructs and are what MIMEcroft actually runs.
 
 **The rule of thumb:** if your bash needs a *process*, a *file*, or an
 external binary, it cannot run on a GPU. Everything that maps to pure
 integer computation — assignment, `$(( ))`, `echo`/`printf`, `putb`,
-`if`/`while`/`for`/`case`, user functions, arrays — becomes real GLSL.
+`if`/`while`/`for`/`case`, user functions, arrays, the
+`echo "scale=K; …" | bc` float captures — becomes real GLSL.
 Everything else renders as a `/* TODO(unsupported) */` marker and the
 shader still compiles (that construct just does nothing).
 
@@ -62,6 +65,52 @@ them:
 There is **no `argv`**: `$1`, `$2`, … read at top level are empty (the
 GPU has no command line). Inside a user function, positionals map to
 the `g_pa[]` parameter array instead.
+
+## 2b. Input bridges and outputs (render-VERTEX mode, `sh2glsl --vertex`)
+
+The backend also emits a **vertex shader** (`vert_out` — the
+`otranspilerl_glslv` entry / the `sh2glsl --vertex` command / the
+GUI's `glslv` target). A vertex program has no bytes and no fragment
+colour: it reads the attribute/uniform bridges and sets output vars
+that the backend turns into `gl_Position` and the varyings.
+
+| variable | source |
+|---|---|
+| `ap_x/y/z` | `int(aPosition.xyz * 1000.0)` — the cube corners (±500) |
+| `ash_r/g/b` | `int(aShade.rgb * 1000.0)` — face brightness (450–1000) |
+| `auv_u/v` | `int(aUv.xy * 1000.0)` — texture coordinates (0–1000) |
+| `ucp_x/y/z` | `int(uCamPos.xyz * 1000.0)` — the camera (world units) |
+| `ucy_m` | `int(uCamYaw * 1000.0)` — the yaw in milli-degrees (0–360000) |
+| `ucs` | `int(uCamShift * 1000.0)` — the strafe screen-shift (milli-NDC) |
+| `uop_x/y/z` | `int(uObjPos.xyz * 1000.0)` — the object centre (world) |
+| `usc_x/y/z` | `int(uScale.xyz * 1000.0)` — the object scale (1 → 1000) |
+| `ublk_r/g/b` | `int(uBlockColor.rgb * 1000.0)` — the block colour (0–1000) |
+| `uov` | `int(uOverlay * 1000.0)` — 0/1000: the flat HUD-overlay path |
+
+Outputs (all forced-declared; the backend emits the final lines):
+
+| variable | becomes |
+|---|---|
+| `vp_x/y/z/w` | `gl_Position` (floats — set them via the bc captures) |
+| `vc_r/g/b/a` | `vColor` (ints, ×1000 — `vec4(float(vc)/1000, …)`) |
+| `vu_u/v` | `vUv` (ints, ×1000) |
+
+Vertex programs use the **float bc captures** for the transform math:
+`wx=$(echo "scale=4; $ap_x * $usc_x / 1000000.0 + $uop_x / 1000.0" | bc)`
+etc. The float grammar covers `+ - * / % ^`, parens and the bc trig
+`c(…)` / `s(…)` → GLSL `cos`/`sin` (the camera rotation). Two rules:
+
+- **every capture needs a decimal-point literal** (`0.9`, `64.0`,
+  `+ 0.0`) — the float-path gate; and
+- **float vars chain**: a later capture reads an earlier float var
+  directly (`g_rad` stays `float`, never a `float(int())` round-trip),
+  and `vp_x=$wx` is a direct float copy.
+
+`precision highp float/int` is always emitted for a vertex (ES 1.00
+requires highp in vertex shaders — the mediump gate is fragment-only).
+See `www/examples/mimecroft-vertex.sh` for the full worked example
+(object→world, camera-relative delta, yaw rotation, the fake
+perspective).
 
 ## 3. What works (the supported subset)
 
@@ -150,25 +199,32 @@ will be missing whatever they were supposed to do. A correct shader has
 
 ## 6. Checklist before you ship a shader
 
-1. **Only** `echo`/`print`/`printf`/`putb` for output, and keep it
-   under ~4 KB.
+1. **Only** `echo`/`print`/`printf`/`putb` for output (fragment), and
+   keep it under ~4 KB; a VERTEX program outputs through the
+   `vp_*`/`vc_*`/`vu_*` vars instead — no `putb` there.
 2. Read inputs only through the bridges (`frag_x`, `frag_y`,
-   `vcolor_*`, `uv_*`, `tex_*`, `damage`, `cr_*`).
-3. All arithmetic in `$(( ))` with i32-range values; use the
-   `echo "scale=K; …" | bc` capture for anything fractional.
+   `vcolor_*`, `uv_*`, `tex_*`, `damage`, `cr_*` — or the vertex
+   `ap_*`/`ash_*`/`auv_*`/`ucp_*`/`ucy_m`/`ucs`/`uop_*`/`usc_*`/
+   `ublk_*`/`uov` set).
+3. All integer arithmetic in `$(( ))` with i32-range values; use the
+   `echo "scale=K; …" | bc` capture for anything fractional (with a
+   decimal-point literal in every capture — the float-path gate).
 4. No external commands, no files, no pipes (except the bc form), no
    subshells, no background jobs.
 5. Functions: void, non-recursive, args by position (`$1` → `g_pa[]`).
-6. Verify: run `sh2glsl your-shader.sh` (or the GUI's `glsl` target)
-   and confirm the footer says
-   `// TODO(unsupported): 0 construct(s)`. Any nonzero count names the
-   constructs that silently did nothing.
+6. Verify: run `sh2glsl your-shader.sh` (or `sh2glsl --vertex` for a
+   vertex program, or the GUI's `glsl`/`glslv` target) and confirm the
+   footer says `// TODO(unsupported): 0 construct(s)`. Any nonzero
+   count names the constructs that silently did nothing.
 
 ---
 
-See `www/examples/mimecroft-frag.sh` for a shader that does all of this
-(CRT scanlines, per-pixel corruption hashing, vignette, textured blocks
-with a crack overlay) and compiles clean. The backend lives in
-`sh2perl/src/glsl_backend.rs` (the sketch notes the planned i64 bridge);
-the browser entry is `otranspilerl_glsl` in
-`otranspilerl/src/wasi.rs`.
+See `www/examples/mimecroft-frag.sh` (CRT scanlines, per-pixel
+corruption hashing, vignette, textured blocks with a crack overlay)
+and `www/examples/mimecroft-vertex.sh` (object→world, the yaw rotation
+via bc trig, the fake perspective, the strafe shift, the overlay path)
+for shaders that do all of this and compile clean. The backend lives in
+`sh2perl/src/glsl_backend.rs`; the browser entries are
+`otranspilerl_glsl` (fragment) and `otranspilerl_glslv` (vertex) in
+`otranspilerl/src/wasi.rs` — the `sh2glsl` / `sh2glsl --vertex` shell
+commands in the browser and the Node CLI.

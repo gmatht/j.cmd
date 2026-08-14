@@ -332,7 +332,7 @@ import { GoRunner } from "../src/go.js";
 import { WasmRunner } from "../src/wasm.js";
 import { ensureBusyboxWasm, busyboxA1, BUSYBOX_VERSION } from "../src/busybox.js";
 import { pyExec } from "../src/py.js";
-import { LANGS, getExamples } from "./otranspiler-examples.js?v=11";  // v=7: added bat frontend (bump on example changes)
+import { LANGS, getExamples } from "./otranspiler-examples.js?v=12";  // v=12: added cpp/powershell/rust/zig frontends (bump on example changes)
 
 // ─── state ──────────────────────────────────────────────────────
 let srcLang = "sh";
@@ -343,7 +343,7 @@ let autoTimer = null;
 let busy = false;
 const libPromise = getOtranspilerl();
 
-const TARGETS = ["js", "pl", "c", "go", "py", "java", "rs", "zig", "sh", "shir"];
+const TARGETS = ["js", "pl", "c", "go", "py", "java", "rs", "zig", "glsl", "glslv", "sh", "shir"];
 const TARGETS_TEXT = ["sh", "pl", "c", "go", "py", "java", "rs", "zig"];
 
 // ── backend gate status ─────────────────────────────────────────
@@ -364,13 +364,15 @@ const BACKEND_STATUS = {
   java: { pass: 19,  total: 613, name: "java" },
   rs:   { pass: 23,  total: 539, name: "rust" },
   zig:  { pass: 0,   total: 539, name: "zig" },
+  glsl: { pass: 0,   total: 0,   name: "glsl", note: "sh→GLSL ES 1.00 renderer (sh2glsl) — no fleet gate data yet" },
+  glslv: { pass: 0, total: 0, name: "glslv", note: "sh→GLSL ES 1.00 VERTEX renderer (sh2glsl --vertex) — no fleet gate data yet" },
   shir: { pass: 0,   total: 0,   name: "A1 contract" },
 };
 // green ≥90% · yellow >50% · red ≤50% (0/0 = the contract — always green)
 function backendGrade(lang) {
   const s = BACKEND_STATUS[lang];
   if (!s) return { cls: "red", label: "no gate data" };
-  if (s.total === 0) return { cls: "green", label: s.name + " — the contract itself, 100%" };
+  if (s.total === 0) return { cls: s.note ? "yellow" : "green", label: s.name + (s.note ? " — " + s.note : " — the contract itself, 100%") };
   const pct = s.pass / s.total;
   const cls = pct >= 0.9 ? "green" : pct > 0.5 ? "yellow" : "red";
   let label = s.name + " " + Math.round(pct * 100) + "% (" + s.pass + "/" + s.total + ")" + (s.note ? " — " + s.note : "");
@@ -401,6 +403,10 @@ const FRONTEND_STATUS = {
   pl:   { pass: 65, total: 65, name: "perl-sh-go", note: "1 fragment skipped" },
   c:    { pass: 31, total: 31, name: "c-sh-go",    note: "0 fragments skipped" },
   bat:  { pass: 0,  total: 0,  name: "bat-sh-go",  note: "not gated — no native cmd.exe reference for the stdout gate, and no browser cmd.exe either" },
+  cpp:  { pass: 0,  total: 0,  name: "cpp-sh-go",  note: "frontend→js gate not run yet — cross-product triage colours the cpp corpus instead" },
+  powershell: { pass: 0, total: 0, name: "powershell-sh-go", note: "frontend→js gate not run yet (live pwsh oracle is fleet-side)" },
+  rust: { pass: 0,  total: 0,  name: "rust-frontend", note: "frontend→js gate not run yet — cross-product triage does not cover rust-frontend either" },
+  zig:  { pass: 0,  total: 0,  name: "zig-sh-go",  note: "frontend→js gate not run yet — cross-product triage does not cover zig-sh-go either" },
 };
 // Same thresholds as the backend gate (defined once in the legend).
 function frontendGrade(lang) {
@@ -529,17 +535,32 @@ function corpusCountText(dir) {
 // Which languages have a browser runtime we can execute for the stdout diff.
 // (java/rs/zig render code but have no browser runtime — the diff notes it.)
 const RUNNABLE = { sh: 1, zsh: 1, fish: 1, go: 1, py: 1, c: 1, pl: 1, js: 1 };
+// Frontends merged into the browser busybox (www/bin + otranspiler-busybox.wasm).
+// cpp/powershell/rust/zig frontends exist in the sh2loop fleet but are NOT
+// ported to the browser wasm yet (tree-sitter cgo / a Rust binary) — their
+// corpora are browsable, transpile throws the clear message below.
+const FRONTEND_PORTED = { sh: 1, zsh: 1, fish: 1, go: 1, py: 1, c: 1, pl: 1, bat: 1, js: 1 };
 const RUNTIME_LABEL = {
   sh: "bash.wasm", zsh: "zsh.wasm", fish: "fish.wasm",
   go: "go.wasm (toolchain)", py: "micropython.wasm", c: "tcc.wasm",
   pl: "zeroperl.wasm (Perl 5.42)", js: "browser JS (sh2 runtime)",
   bat: "none (no cmd.exe in the browser)",
+  glsl: "sh2glsl — in-process GLSL ES 1.00 compiler (fragment shader, not runnable)",
+  glslv: "sh2glsl --vertex — in-process GLSL ES 1.00 vertex shader compiler (not runnable)",
+  cpp: "none (no browser C++ frontend wasm yet — transpile works fleet-side only)",
+  powershell: "none (no browser pwsh/frontend wasm yet)",
+  rust: "none (no browser Rust frontend wasm yet)",
+  zig: "none (no browser Zig frontend wasm yet)",
 };
 const CAVEAT = {
   py: "micropython is an older build — f-strings / some imports in generated code may fail (syntax error shows below)",
   pl: "zeroperl is a subset — some core modules (IPC::Open3 …) may be missing from generated code",
   go: "first run downloads the Go toolchain (~50 MB) and compiles — be patient",
   c: "first run stages tcc.wasm + libc headers",
+  cpp: "the cpp-sh-go frontend is not ported to the browser wasm yet (tree-sitter-cpp, cgo) — source loads and the target buttons render, but transpile needs the sh2loop fleet",
+  powershell: "the powershell-sh-go frontend is not ported to the browser wasm yet (tree-sitter-powershell, cgo)",
+  rust: "the rust-frontend is not ported to the browser wasm yet (syn + serde_json, a Rust binary)",
+  zig: "the zig-sh-go frontend is not ported to the browser wasm yet (tree-sitter-zig, cgo)",
 };
 
 // ─── small DOM helpers ──────────────────────────────────────────
@@ -676,8 +697,24 @@ async function transpile(source, srcLang, tgt) {
   let text, a1 = null, map = null;
   if (srcLang === "sh") {
     // the debashl core — full bash, in-process (fast path)
-    text = lib.transpile(String(source), "sh", tgt);
-    try { a1 = JSON.parse(lib.shir(String(source))); } catch {}
+    if (tgt === "glsl") {
+      // the dedicated shell→shader entry (otranspilerl_glsl, the
+      // sh2glsl pipeline) — parse + bridge in one call.
+      text = lib.glsl(String(source));
+    } else if (tgt === "glslv") {
+      // the VERTEX variant (otranspilerl_glslv, `sh2glsl --vertex`) —
+      // the ap_*/ucp_*/ucy_*/… bridges and the vp_*/vc_*/vu_* outputs.
+      text = lib.glslv(String(source));
+    } else {
+      text = lib.transpile(String(source), "sh", tgt);
+      try { a1 = JSON.parse(lib.shir(String(source))); } catch {}
+    }
+  } else if (!FRONTEND_PORTED[srcLang]) {
+    // cpp / powershell / rust / zig frontends are not in the browser
+    // busybox yet (tree-sitter cgo / a Rust binary) — the corpora are
+    // browsable, but the A1 pipeline needs the sh2loop fleet.
+    throw new Error(srcLang + " frontend not ported to the browser wasm yet — " +
+      "load it in the sh2loop fleet (" + (FRONTEND_STATUS[srcLang] || {}).name + ") to transpile");
   } else {
     // zsh/fish/go/py/c/pl → A1 via the merged frontend (prebuilt busybox)
     const goRunner = new GoRunner(fs);
@@ -1116,6 +1153,10 @@ const CORPUS_DIRS = {
   pl:   [{ dir: "pl",   label: "perl-sh-go testdata", hint: "the perl-sh-go frontend testdata (Perl)." }],
   c:    [{ dir: "c",    label: "c-sh-go testdata",    hint: "the c-sh-go frontend testdata (C)." }],
   bat:  [{ dir: "bat",  label: "bat-sh-go testdata",  hint: "the bat-sh-go frontend testdata (Windows batch, cmd.exe)." }],
+  cpp:  [{ dir: "cpp",  label: "cpp-sh-go testdata",  hint: "the cpp-sh-go frontend testdata (C++, tree-sitter-cpp subset). No browser C++ frontend wasm yet — it transpiles via the sh2loop fleet only." }],
+  powershell: [{ dir: "powershell", label: "powershell-sh-go testdata", hint: "the powershell-sh-go frontend testdata (PowerShell .ps1). No browser pwsh or frontend wasm yet." }],
+  rust: [{ dir: "rust", label: "rust-frontend testdata", hint: "the rust-frontend testdata (Rust, syn-based subset). No browser Rust frontend wasm yet." }],
+  zig:  [{ dir: "zig",  label: "zig-sh-go testdata",  hint: "the zig-sh-go frontend testdata (Zig, clib-lowered subset). No browser Zig frontend wasm yet." }],
 };
 
 function setSearch(q) {
@@ -1417,25 +1458,27 @@ function corpusDirOf(name) {
   if (!name) return "";
   for (const { dir } of (CORPUS_DIRS[srcLang] || [])) {
     if (getExamples(srcLang).some((e) => e.name === name)) return ""; // curated
-    if (dir === "sh2perl" || name.endsWith("." + { sh: "sh", go: "go", fish: "fish", zsh: "zsh", py: "py", pl: "pl", c: "c", bat: "bat" }[srcLang] || "sh")) {
+    if (dir === "sh2perl" || name.endsWith("." + { sh: "sh", go: "go", fish: "fish", zsh: "zsh", py: "py", pl: "pl", c: "c", bat: "bat", cpp: "cc", powershell: "ps1", rust: "rs", zig: "zig" }[srcLang] || "sh")) {
       return dir; // a corpus file (the manifest names carry the ext)
     }
   }
   return "";
 }
 function tryCommand() {
-  const ext = { sh: "sh", zsh: "zsh", fish: "fish", go: "go", py: "py", c: "c", pl: "pl", bat: "bat" }[srcLang] || "sh";
+  const ext = { sh: "sh", zsh: "zsh", fish: "fish", go: "go", py: "py", c: "c", pl: "pl", bat: "bat", cpp: "cc", powershell: "ps1", rust: "rs", zig: "zig" }[srcLang] || "sh";
   // a frontend-testdata corpus example (any source lang) is served
   // read-only at /examples/<dir>/ via the ExamplesFS mount
   const corpusEntry = corpusDirOf(currentExample);
   const src = corpusEntry
     ? "/examples/" + corpusEntry + "/" + currentExample
     : "/home/examples/" + (currentExample || "try") + "." + ext;
-  const outExt = { sh: "sh", js: "js", c: "c", go: "go", py: "py", pl: "pl", java: "java", rs: "rs", zig: "zig" }[tgtLang] || "sh";
+  const outExt = { sh: "sh", js: "js", c: "c", go: "go", py: "py", pl: "pl", java: "java", rs: "rs", zig: "zig", glsl: "glsl", glslv: "glsl" }[tgtLang] || "sh";
   const out = "/tmp/out." + outExt;
   switch (tgtLang) {
     case "sh":  return "otranspiler " + src + " " + out + " && bash " + out;
     case "js":  return "otranspiler " + src + " - --run";
+    case "glsl": return "sh2glsl " + src;
+    case "glslv": return "sh2glsl --vertex " + src;
     case "c":   return "otranspiler " + src + " " + out + " && cc " + out + " && ./a.wasm";
     case "zig": return "otranspiler " + src + " " + out + " && zig build-exe " + out + " -target wasm32-wasi && " + out.replace(/\.zig$/, ".wasm");
     case "go":  return "otranspiler " + src + " " + out + " && go run " + out;
@@ -1473,7 +1516,7 @@ function wireTryButton() {
 // generated code + stdout diff without any token leaving the page.
 function bugFence(t) {
   return { c: "c", go: "go", rs: "rust", zig: "zig", py: "python", pl: "perl",
-           js: "javascript", sh: "sh", shir: "json", java: "java", bat: "bat" }[t] || "";
+           js: "javascript", sh: "sh", shir: "json", java: "java", bat: "bat", glsl: "glsl", glslv: "glsl" }[t] || "";
 }
 function bugDiff() {
   const ops = lineDiff($("out-orig").value, $("out-tgt").value);

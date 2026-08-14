@@ -40,7 +40,6 @@ func isBreakStmt(m map[string]any) bool {
 	return false
 }
 
-
 // addrTaken — names whose address is taken (&x): their storage must live
 // in the sh2 store (the emitter would otherwise lift them to native JS
 // bindings, and the mem.* seam reads/writes the store — divergence).
@@ -104,6 +103,33 @@ type structMember struct{ name, ctype string }
 
 var structLayouts = map[string][]structMember{}
 
+// structRegs — the layout-registry registrations collected during the
+// parse: each `struct Tag { … }` emits one registerStruct A1 call
+// (`sh2.registerStruct("Tag-<fnv1a-hex>", [[name, offset, type], …])`).
+// The runtime keeps the tag → layout table; `malloc(sizeof(struct Tag))`
+// tags its box so nodeChild/nodeData can introspect it.
+var structRegs []any
+
+// structTag — the plan's "Tag-<fnv1a-hex>" key: a stable hash of the
+// struct name (the runtime registry is keyed by this).
+func structTag(name string) string {
+	h := uint32(2166136261)
+	for i := 0; i < len(name); i++ {
+		h ^= uint32(name[i])
+		h *= 16777619
+	}
+	return fmt.Sprintf("Tag-%08x", h)
+}
+
+// structPtrVars — `struct Node *p;` declarations (params, locals, globals):
+// name -> tag. A struct-pointer member access `p->x` resolves the member's
+// byte offset from structLayouts[tag] at compile time (see valueNode "arrow").
+var structPtrVars = map[string]string{}
+
+// fnPtrParamNames — FUNCTION-pointer parameters (`int (*cmp)(const void *, const void *)`):
+// the param receives a comparator's NAME; calls through it lower to the comparator bridge.
+var fnPtrParamNames = map[string]bool{}
+
 // varStruct — `struct Point p;` — a var's declared struct type (for
 // sizeof(p) and member resolution).
 var varStruct = map[string]string{}
@@ -131,6 +157,12 @@ func cTypeSize(t string) (int, bool) {
 	case "long", "double", "size_t", "long long":
 		return 8, true
 	}
+	// `struct Tag*` / `void*` / `char*` — a pointer member is one word
+	// (8 bytes in the runtime arena; the arena is byte-indexed and the
+	// frontend reads pointer members with elem "char" at the byte offset)
+	if strings.HasSuffix(t, "*") {
+		return 8, true
+	}
 	return 0, false
 }
 
@@ -145,6 +177,23 @@ func structSize(tag string) (int, bool) {
 		total += sz
 	}
 	return total, true
+}
+
+// memberOffset — the byte offset of a struct member (sum of preceding
+// cTypeSizes); the `p->x` lowering reads the mem arena at this offset.
+func memberOffset(tag, member string) (int, bool) {
+	off := 0
+	for _, m := range structLayouts[tag] {
+		if m.name == member {
+			return off, true
+		}
+		sz, ok := cTypeSize(m.ctype)
+		if !ok {
+			return 0, false
+		}
+		off += sz
+	}
+	return 0, false
 }
 
 // storeAssignStmt — a store write (Expr(setVar(...))): for names the
@@ -587,8 +636,79 @@ func refuse(msg string) {
 //	  arena call (the size must fold — the arena needs a concrete byte
 //	  count). The returned handle lands in a store variable; every
 //	  pointer use lowers to memLoad/memStore/memFree (see heapPtrs).
+func allLiteral(args []*expr) bool {
+	for _, a := range args {
+		if a.kind != "str" && a.kind != "num" && a.kind != "char" {
+			return false
+		}
+	}
+	return true
+}
+
 func callNode(e *expr) any {
+	// a call through a FUNCTION-pointer parameter — `cmp(a, b)` /
+	// `(*cmp)(a, b)`: the param holds the comparator's NAME (a bash
+	// function); dispatch through the comparator bridge — capture the
+	// echoed -1/0/1 verdict (the C qsort protocol), like cmp_call.
+	if fnPtrParamNames[e.name] {
+		elems := make([]any, 0, len(e.args))
+		for _, a := range e.args {
+			elems = append(elems, valueNode(a))
+		}
+		return map[string]any{
+			"type": "Call", "func": "capture", "purity": "Emulable",
+			"args": []any{map[string]any{
+				"type": "Arrow",
+				"body": []any{map[string]any{
+					"type": "Expr",
+					"expr": call("exec", []any{call("getVar", []any{st(e.name)}), map[string]any{"type": "Array", "elements": elems}}),
+				}},
+			}},
+		}
+	}
 	switch e.name {
+	case "sizeof":
+		// sizeof(T) / sizeof(p) — fold to the ABI byte size (the runtime
+		// arena is byte-indexed). sizeof(struct Tag) arrives as the marker
+		// id "struct <Tag>".
+		if len(e.args) == 1 {
+			a := e.args[0]
+			if a.kind == "id" {
+				if sz, ok := cTypeSize(a.name); ok {
+					return st(strconv.Itoa(sz))
+				}
+				if strings.HasPrefix(a.name, "struct ") {
+					if sz, ok := structSize(strings.TrimPrefix(a.name, "struct ")); ok {
+						return st(strconv.Itoa(sz))
+					}
+				}
+				if tag, ok := varStruct[a.name]; ok {
+					if sz, ok := structSize(tag); ok {
+						return st(strconv.Itoa(sz))
+					}
+				}
+			}
+		}
+		refuse("sizeof needs a type name or struct variable")
+	case "getline":
+		// getline(&buf, &size, stdin) — the STANDARD POSIX line reader:
+		// reads the next line into the variable `buf` points at (resolved
+		// through the addr handle), returns the chars read, or -1 at EOF
+		// (buf left unchanged). The size pointer and the FILE* stream are
+		// accepted and ignored — the runtime store is untyped and stdin
+		// is the current command's pipe input.
+		if len(e.args) != 3 {
+			refuse("getline needs (&buf, &size, stdin)")
+		}
+		ptr := e.args[0]
+		if ptr.kind != "addr" || ptr.l == nil || ptr.l.kind != "id" {
+			refuse("getline's first argument must be &buffer (a char **)")
+		}
+		// the buffer var is written by the runtime under its NAME — mark it
+		// as addrTaken so the native-lift never promotes it (a lifted
+		// native binding would desync from getLine's store write).
+		addrTaken[ptr.l.name] = true
+		return call("getLine", []any{st(ptr.l.name)})
 	case "malloc":
 		if len(e.args) != 1 {
 			refuse("unsupported function call " + e.name)
@@ -596,6 +716,18 @@ func callNode(e *expr) any {
 		s, ok := foldConst(e.args[0], nil)
 		if !ok {
 			refuse("malloc size must be a compile-time constant in the v1 subset")
+		}
+		// `malloc(sizeof(struct Tag))` — tag the box with the layout
+		// key (the runtime's nodeChild/nodeData introspection seam).
+		tag := ""
+		if e.args[0].kind == "call" && e.args[0].name == "sizeof" && len(e.args[0].args) == 1 &&
+			e.args[0].args[0].kind == "id" {
+			if tn := strings.TrimPrefix(e.args[0].args[0].name, "struct "); structLayouts[tn] != nil {
+				tag = structTag(tn)
+			}
+		}
+		if tag != "" {
+			return call("memAlloc", []any{st(s), st(tag)})
 		}
 		return call("memAlloc", []any{st(s)})
 	case "calloc":
@@ -639,6 +771,24 @@ func callNode(e *expr) any {
 			}
 		}
 		refuse("unsupported function call " + e.name)
+	}
+	// the layout-registry introspection bridge: `nodeChild(p, k)` /
+	// `nodeData(p, k)` read a tagged allocation's k-th member (offset +
+	// element size from the registered layout); `ptrTag(p)` returns the
+	// box's "Tag-<hash>" key. The generic-walk seam — a walker that
+	// works over ANY tagged structure without knowing its layout.
+	if (e.name == "nodeChild" || e.name == "nodeData") && len(e.args) == 2 {
+		return call(e.name, []any{valueNode(e.args[0]), valueNode(e.args[1])})
+	}
+	if e.name == "ptrTag" && len(e.args) == 1 {
+		return call("ptrTag", []any{valueNode(e.args[0])})
+	}
+	// strcmp with RUNTIME args — a real call: the runtime `sh2.strcmp`
+	// bridge returns the C sign (-1/0/1) from two store strings, so a
+	// dynamic list walk can compare nodes (find). All-literal args still
+	// fold at compile time.
+	if e.name == "strcmp" && len(e.args) == 2 && !allLiteral(e.args) {
+		return call("strcmp", []any{valueNode(e.args[0]), valueNode(e.args[1])})
 	}
 	// strcmp / user functions — fold with all-literal args (the v1
 	// compile-time interpretation). A user function with a RUNTIME
@@ -691,10 +841,92 @@ func userExprA1(e *expr, params []string) any {
 		return map[string]any{"type": "Arith", "ast": arithNode(e)}
 	case "call":
 		return callNode(e)
-	case "index", "deref", "addr":
+	case "index", "deref", "addr", "arrow":
 		return valueNode(e)
 	}
 	return st("")
+}
+
+// structPtrCond — `p != 0` / `p == 0` / bare `p` on a struct-pointer
+// variable → the STRING-nonempty test (`-n $p` / `-z $p`): a live heap
+// handle is a non-empty string, and Number(handle) would coerce to 0.
+func structPtrCond(e *expr) (any, bool) {
+	ptr := func(x *expr) (string, bool) {
+		if x != nil && x.kind == "id" {
+			if _, ok := structPtrVars[x.name]; ok {
+				return x.name, true
+			}
+			// a plain pointer param (void* / int* / …): a NULL check on
+			// one must also be the string-nonempty test — the boxed
+			// pointer is an object, and Number(box) is NaN → 0, which
+			// would call every live pointer NULL.
+			if _, ok := ptrDecls[x.name]; ok {
+				return x.name, true
+			}
+		}
+		return "", false
+	}
+	zero := func(x *expr) bool {
+		return x != nil && x.kind == "num" && (x.num == "0" || x.num == "0.0")
+	}
+	if e.kind == "id" {
+		if name, ok := ptr(e); ok {
+			return testCall("-n $" + name), true
+		}
+	}
+	if e.kind == "bin" && (e.op == "!=" || e.op == "==") {
+		flag := "-n"
+		if e.op == "==" {
+			flag = "-z"
+		}
+		if l, ok := ptr(e.l); ok && zero(e.r) {
+			return testCall(flag + " $" + l), true
+		}
+		if l, ok := ptr(e.r); ok && zero(e.l) {
+			return testCall(flag + " $" + l), true
+		}
+	}
+	return nil, false
+}
+
+// condA1 — a user-body condition → A1: struct-pointer NULL checks lower
+// to the string test; everything else to the Arith form. Runtime reads
+// (array elements, derefs) are hoisted into a temp store var first
+// (`___tN = <read>`), because the A1 Arith grammar has no Call node.
+func condA1(e *expr, params []string, out *[]any) any {
+	if c, ok := structPtrCond(e); ok {
+		return c
+	}
+	return map[string]any{"type": "Arith", "ast": condArith(e, params, out)}
+}
+
+// condArith — the Arith AST for a condition, hoisting runtime reads.
+func condArith(e *expr, params []string, out *[]any) any {
+	if e == nil {
+		return map[string]any{"type": "Num", "value": 1}
+	}
+	switch e.kind {
+	case "num":
+		n, _ := strconv.Atoi(e.num)
+		return map[string]any{"type": "Num", "value": n}
+	case "id":
+		return map[string]any{"type": "Var", "name": e.name}
+	case "bin":
+		return map[string]any{
+			"type": "Bin", "op": e.op,
+			"lhs": condArith(e.l, params, out),
+			"rhs": condArith(e.r, params, out),
+		}
+	}
+	// a runtime value (array element / deref / call) — hoist into a temp
+	userTempSeq++
+	tmp := "___t" + strconv.Itoa(userTempSeq)
+	*out = append(*out, map[string]any{
+		"type":    "Assign",
+		"targets": []any{map[string]any{"var": tmp, "indices": []any{}, "sigil": nil}},
+		"expr":    userExprA1(e, params),
+	})
+	return map[string]any{"type": "Var", "name": tmp}
 }
 
 // ptrAdvanceDelta — is this assignment a POINTER advance (`p = p + 1`,
@@ -902,10 +1134,18 @@ func userStmtsA1(stmts []*uStmt, params []string, ptrs map[string]string) []any 
 				// `*p++ = v` — advance the pointer after the store
 				out = append(out, memAdvanceCall(s.name, 1))
 			}
+		case "if":
+			out = append(out, map[string]any{
+				"type":   "If",
+				"cond":   condA1(s.e, params, &out),
+				"then":   userStmtsA1(s.body, params, ptrs),
+				"elsifs": []any{},
+				"else":   userStmtsA1(s.elseBody, params, ptrs),
+			})
 		case "while":
 			out = append(out, map[string]any{
 				"type": "While",
-				"cond": userExprA1(s.e, params),
+				"cond": condA1(s.e, params, &out),
 				"body": userStmtsA1(s.body, params, ptrs),
 			})
 		case "seq":
@@ -923,9 +1163,59 @@ func userStmtsA1(stmts []*uStmt, params []string, ptrs map[string]string) []any 
 			}
 			out = append(out, map[string]any{
 				"type": "While",
-				"cond": userExprA1(s.e, params),
+				"cond": condA1(s.e, params, &out),
 				"body": userStmtsA1(body, params, ptrs),
 			})
+		case "idxassign":
+			// a[idx] = v — a baked-subscript store write: the index
+			// interpolates into the name string `a[<expr>]`; the runtime
+			// store substitutes ${var} references inside it and writes
+			// the element.
+			idx := userExprA1(s.idx, params)
+			var name any
+			if _, isPtrParam := ptrs[s.name]; isPtrParam {
+				// base[idx] = v on an ARRAY-NAME pointer param: the name is
+				// the param's RUNTIME value (the array's variable name) —
+				// `setVar(`${base}[${idx}]`, v)`.
+				name = map[string]any{
+					"type": "Interpolate",
+					"parts": []any{
+						map[string]any{"kind": "expr", "expr": call("getVar", []any{st(s.name)})},
+						map[string]any{"kind": "lit", "text": "["},
+						map[string]any{"kind": "expr", "expr": idx},
+						map[string]any{"kind": "lit", "text": "]"},
+					},
+				}
+			} else {
+				name = map[string]any{
+					"type": "Interpolate",
+					"parts": []any{
+						map[string]any{"kind": "lit", "text": s.name + "["},
+						map[string]any{"kind": "expr", "expr": idx},
+						map[string]any{"kind": "lit", "text": "]"},
+					},
+				}
+			}
+			out = append(out, map[string]any{
+				"type": "Expr",
+				"expr": call("setVar", []any{name, userExprA1(s.e, params)}),
+			})
+		case "arrowstore":
+			// p->member = v — memStore the value into the arena at the
+			// member's byte offset (the handle lives in the store).
+			if tag, ok := structPtrVars[s.name]; ok {
+				if off, ok := memberOffset(tag, s.member); ok {
+					out = append(out, map[string]any{
+						"type": "Expr",
+						"expr": call("memStore", []any{
+							call("getVar", []any{st(s.name)}),
+							st(strconv.Itoa(off)), st("char"), userExprA1(s.e, params),
+						}),
+					})
+					break
+				}
+			}
+			refuse("arrow store to unknown struct member " + s.name + "->" + s.member)
 		case "ret":
 			out = append(out, map[string]any{
 				"type":  "Return",
@@ -945,6 +1235,11 @@ func userStmtsA1(stmts []*uStmt, params []string, ptrs map[string]string) []any 
 // sh2.define, the perl backend to a `sub`). The params bind the
 // positional args first ($1..$N — the fnCall/callDirect dispatch sets
 // scriptArgs), then the body runs; `return e` carries the value out.
+// fnPtrParams — the CURRENT user function's pointer params (set while its
+// body emits): `base[j]` on a `void *base` param reads the runtime store
+// by the array NAME the param holds.
+var fnPtrParams = map[string]string{}
+
 func buildUserFnA1(name string, fn *userFunc) map[string]any {
 	body := []any{}
 	for i, pn := range fn.params {
@@ -954,7 +1249,10 @@ func buildUserFnA1(name string, fn *userFunc) map[string]any {
 			"expr":    call("getVar", []any{st(strconv.Itoa(i + 1))}),
 		})
 	}
+	prevPtr := fnPtrParams
+	fnPtrParams = fn.ptrParams
 	body = append(body, userStmtsA1(fn.body, fn.params, fn.ptrParams)...)
+	fnPtrParams = prevPtr
 	return map[string]any{"type": "Function", "name": name, "body": body}
 }
 
@@ -979,15 +1277,18 @@ var userFuncs = map[string]*userFunc{}
 // uStmt — a user-function body statement (the mini-AST the literal-arg
 // fold interprets; see foldUserBody).
 type uStmt struct {
-	kind    string // assign | while | if | ret | skip | exec | derefstore | ptrinc | seq | for
-	name    string // assign target / deref pointer / ptrinc var
-	op      string // "=" | "+=" | "-="  (ptrinc: "++" | "--")
-	e       *expr  // assign rhs / while cond / return expr / deref rhs / for cond
-	body    []*uStmt // while body / if then-arm / for body / seq items
-	init    *uStmt   // for: the loop initializer (an assign)
-	step    *uStmt   // for: the loop step (an assign)
-	a1      any  // a raw A1 statement (exec-carrier kind)
-	ptrPost bool // derefstore: `*p++ = v` — advance the pointer after the store
+	kind     string   // assign | while | if | ret | skip | exec | derefstore | ptrinc | seq | for | idxassign | arrowstore
+	name     string   // assign target / deref pointer / ptrinc var / idxassign array / arrow pointer var
+	member   string   // arrowstore: the struct member name
+	op       string   // "=" | "+=" | "-="  (ptrinc: "++" | "--")
+	e        *expr    // assign rhs / while cond / return expr / deref rhs / for cond / idxassign value / arrowstore value
+	idx      *expr    // idxassign: the array index expression
+	body     []*uStmt // while body / if then-arm / for body / seq items
+	elseBody []*uStmt // if else-arm
+	init     *uStmt   // for: the loop initializer (an assign)
+	step     *uStmt   // for: the loop step (an assign)
+	a1       any      // a raw A1 statement (exec-carrier kind)
+	ptrPost  bool     // derefstore: `*p++ = v` — advance the pointer after the store
 }
 
 // evUExpr — evaluate a body expression with the va_arg stack (a
@@ -1315,6 +1616,12 @@ func foldCallConst(e *expr, env map[string]string) (string, bool) {
 				if sz, ok := cTypeSize(a.name); ok {
 					return strconv.Itoa(sz), true
 				}
+				// sizeof(struct Tag) — the marker id "struct <Tag>"
+				if strings.HasPrefix(a.name, "struct ") {
+					if sz, ok := structSize(strings.TrimPrefix(a.name, "struct ")); ok {
+						return strconv.Itoa(sz), true
+					}
+				}
 				// sizeof(p) on a struct-typed variable -> the layout size
 				if tag, ok := varStruct[a.name]; ok {
 					if sz, ok := structSize(tag); ok {
@@ -1477,7 +1784,7 @@ func lex(src string) ([]tok, error) {
 				continue
 			}
 			switch two {
-			case "==", "!=", "<=", ">=", "&&", "||", "+=", "-=", "++", "--",
+			case "==", "!=", "<=", ">=", "&&", "||", "+=", "-=", "++", "--", "->",
 				"<<", ">>", "*=", "/=", "%=", "&=", "|=", "^=":
 				out = append(out, tok{"op", two})
 				i += 2
@@ -1658,6 +1965,14 @@ func (p *parser) next() *tok {
 	}
 	return t
 }
+func (p *parser) nextIf(s string) bool {
+	if p.isOp(s) {
+		p.next()
+		return true
+	}
+	return false
+}
+
 func (p *parser) isOp(s string) bool { t := p.peek(); return t != nil && t.kind == "op" && t.text == s }
 func (p *parser) isId(s string) bool { t := p.peek(); return t != nil && t.kind == "id" && t.text == s }
 func (p *parser) expectOp(s string) error {
@@ -1964,6 +2279,23 @@ func (p *parser) primary() (*expr, error) {
 			var args []*expr
 			if !p.isOp(")") {
 				for {
+					// sizeof(struct Tag) — the arg is a TYPE name; consume
+					// it as a marker id ("struct Node") for the sizeof fold
+					if t.text == "sizeof" && p.isId("struct") {
+						p.next() // struct
+						tg := p.next()
+						if tg == nil || tg.kind != "id" {
+							return nil, fmt.Errorf("expected struct tag in sizeof")
+						}
+						args = append(args, &expr{kind: "id", name: "struct " + tg.text})
+						if p.isOp(")") {
+							break
+						}
+						if err := p.expectOp(","); err != nil {
+							return nil, err
+						}
+						continue
+					}
 					a, err := p.expr()
 					if err != nil {
 						return nil, err
@@ -2000,6 +2332,17 @@ func (p *parser) primary() (*expr, error) {
 			}
 			return &expr{kind: "member", name: t.text + "." + mn.text}, nil
 		}
+		if p.isOp("->") {
+			// p->member — struct-pointer member access: p holds a heap
+			// handle (or the global head); the member reads/writes the mem
+			// arena at its byte offset (see valueNode "arrow").
+			p.next()
+			mn := p.next()
+			if mn == nil || mn.kind != "id" {
+				return nil, fmt.Errorf("expected member name after '->'")
+			}
+			return &expr{kind: "arrow", name: mn.text, l: &expr{kind: "id", name: t.text}}, nil
+		}
 		return &expr{kind: "id", name: t.text}, nil
 	case "op":
 		if t.text == "(" {
@@ -2021,6 +2364,29 @@ func (p *parser) primary() (*expr, error) {
 			}
 			if err := p.expectOp(")"); err != nil {
 				return nil, err
+			}
+			// `(*cmp)(a, b)` — a call through a DEREF'D function pointer:
+			// `(*cmp)` lowers to the deref expr, then the call applies.
+			if p.isOp("(") && e.kind == "deref" && e.l != nil && e.l.kind == "id" {
+				p.next() // (
+				var args []*expr
+				if !p.isOp(")") {
+					for {
+						a, err := p.expr()
+						if err != nil {
+							return nil, err
+						}
+						args = append(args, a)
+						if p.isOp(")") {
+							break
+						}
+						if err := p.expectOp(","); err != nil {
+							return nil, err
+						}
+					}
+				}
+				p.next() // )
+				return &expr{kind: "call", name: e.l.name, args: args}, nil
 			}
 			return e, nil
 		}
@@ -2103,6 +2469,13 @@ func valueNode(e *expr) any {
 		if _, ok := heapPtrs[e.name]; ok {
 			refuse("raw pointer value use of " + e.name)
 		}
+		if arrayVars[e.name] {
+			// an ARRAY name in a value position (a C call argument like
+			// `my_qsort(a, ...)`): decay to the NAME — the runtime treats
+			// a pointer as the variable name it aliases. getVar would
+			// return element 0 and break the callee's arrayIndex walks.
+			return st(e.name)
+		}
 		return call("getVar", []any{st(e.name)})
 	case "member":
 		// p.x — a flattened struct member: a plain store read
@@ -2124,6 +2497,21 @@ func valueNode(e *expr) any {
 		return call("ternary", []any{condArg, valueNode(e.r), st("")})
 	case "call":
 		return callNode(e)
+	case "arrow":
+		// p->member — through a struct-pointer handle: read the mem
+		// arena at the member's byte offset (elem "char" = byte
+		// addressing; the arena was malloc'd with sizeof(struct) bytes).
+		if e.l != nil && e.l.kind == "id" {
+			if tag, ok := structPtrVars[e.l.name]; ok {
+				if off, ok := memberOffset(tag, e.name); ok {
+					return call("memLoad", []any{
+						call("getVar", []any{st(e.l.name)}),
+						st(strconv.Itoa(off)), st("char"),
+					})
+				}
+			}
+		}
+		return nil
 	case "addr":
 		// &x — a handle to x's storage (allocation_id + offset; offset 0)
 		if e.l != nil && e.l.kind == "id" {
@@ -2211,6 +2599,14 @@ func valueNode(e *expr) any {
 				return call("memLoad", []any{call("getVar", []any{st(hp.root)}), indexArith(e.r, hp.off), st(hp.elem)})
 			}
 		}
+		// base[j] on an ARRAY-NAME pointer param — the param holds the
+		// array's NAME (arrays decay to their name at call sites); read
+		// through the runtime store by that name, like the `void *base`
+		// of qsort. The index may be runtime (arith).
+		if _, ok := fnPtrParams[e.l.name]; ok {
+			return call("arrayIndex", []any{call("getVar", []any{st(e.l.name)}), indexArith(e.r, 0)})
+		}
+
 		return nil
 	case "bin":
 		// a heap pointer in a VALUE position (printf arg, plain assign
@@ -2837,7 +3233,7 @@ func (p *parser) stmt() (any, error) {
 			var ptrParams map[string]string
 			isVarargs := false
 			if !p.isOp(")") {
-				if p.isId("void") {
+				if p.isId("void") && p.p+1 < len(p.ts) && p.ts[p.p+1].kind == "op" && p.ts[p.p+1].text == ")" {
 					p.next() // main(void)
 				} else {
 					for {
@@ -2848,8 +3244,36 @@ func (p *parser) stmt() (any, error) {
 							break
 						}
 						t := p.peek()
-						if t == nil || t.kind != "id" || (t.text != "int" && t.text != "char") {
-							return nil, fmt.Errorf("expected parameter type (int|char) at token %v", t)
+						if t == nil || t.kind != "id" || (t.text != "int" && t.text != "char" && t.text != "void" && t.text != "struct") {
+							return nil, fmt.Errorf("expected parameter type (int|char|void|struct) at token %v", t)
+						}
+						// a STRUCT-POINTER parameter: `struct Node *head` — the
+						// param receives a list/struct handle (a name/box);
+						// `head->member` goes through the mem arena.
+						if t.text == "struct" {
+							p.next() // struct
+							tag := p.next()
+							if tag == nil || tag.kind != "id" {
+								return nil, fmt.Errorf("expected struct tag in parameter type")
+							}
+							if !p.isOp("*") {
+								return nil, fmt.Errorf("expected '*' after struct parameter type")
+							}
+							p.next() // *
+							pn := p.next()
+							if pn == nil || pn.kind != "id" {
+								return nil, fmt.Errorf("expected parameter name at token %v", pn)
+							}
+							structPtrVars[pn.text] = tag.text
+							params = append(params, pn.text)
+							paramTypes = append(paramTypes, "struct")
+							if p.isOp(")") {
+								break
+							}
+							if err := p.expectOp(","); err != nil {
+								return nil, err
+							}
+							continue
 						}
 						ptype := t.text
 						p.next() // int | char
@@ -2857,6 +3281,43 @@ func (p *parser) stmt() (any, error) {
 						for p.isOp("*") {
 							p.next()
 							isPtr = true
+						}
+						// a FUNCTION-pointer parameter: `int (*cmp)(const void *, const void *)`
+						// — the `( * name )` form after the return type. The param receives
+						// a comparator's NAME; calls through it (`cmp(a, b)` / `(*cmp)(a, b)`)
+						// lower to the comparator bridge.
+						if p.isOp("(") && p.p+1 < len(p.ts) && p.ts[p.p+1].kind == "op" && p.ts[p.p+1].text == "*" {
+							p.next() // (
+							p.next() // *
+							pn := p.next()
+							if pn == nil || pn.kind != "id" {
+								return nil, fmt.Errorf("expected function-pointer parameter name")
+							}
+							if err := p.expectOp(")"); err != nil {
+								return nil, err
+							}
+							// consume the comparator's own parameter list
+							// (`(const void *, const void *)`) — tokens skipped
+							if p.isOp("(") {
+								p.next()
+								for !p.isOp(")") {
+									if p.peek() == nil {
+										return nil, fmt.Errorf("unterminated function-pointer parameter list")
+									}
+									p.next()
+								}
+								p.next() // )
+							}
+							fnPtrParamNames[pn.text] = true
+							params = append(params, pn.text)
+							paramTypes = append(paramTypes, ptype)
+							if p.isOp(")") {
+								break
+							}
+							if err := p.expectOp(","); err != nil {
+								return nil, err
+							}
+							continue
 						}
 						pn := p.next()
 						if pn == nil || pn.kind != "id" {
@@ -2869,6 +3330,11 @@ func (p *parser) stmt() (any, error) {
 								ptrParams = map[string]string{}
 							}
 							ptrParams[pn.text] = ptype
+							// a plain pointer param (void* / int* / …):
+							// NULL checks on it are the string-nonempty
+							// test (structPtrCond) — a boxed pointer is
+							// an object, and Number(box) is NaN → 0.
+							ptrDecls[pn.text] = ptype
 						}
 						if p.isOp(")") {
 							break
@@ -3982,12 +4448,29 @@ func (p *parser) structDecl() (any, error) {
 		return nil, fmt.Errorf("expected struct tag")
 	}
 	if !p.isOp("{") {
-		// `struct Point p;` — a variable of the declared struct type
+		// `struct Point p;` / `struct Node *list;` — a variable (a struct
+		// POINTER global becomes a structPtrVars member; a VALUE var is
+		// flattened to dotted scalars, so sizeof(p) knows its layout)
+		isPtr := p.nextIf("*")
 		vn := p.next()
 		if vn == nil || vn.kind != "id" {
 			return nil, fmt.Errorf("expected variable name after struct tag")
 		}
+		if isPtr {
+			structPtrVars[vn.text] = tn.text
+		}
 		varStruct[vn.text] = tn.text
+		if p.isOp("=") {
+			// struct-pointer globals often seed with NULL: `= 0;`
+			p.next()
+			if _, err := p.expr(); err != nil {
+				return nil, err
+			}
+			if err := p.expectOp(";"); err != nil {
+				return nil, err
+			}
+			return nil, nil
+		}
 		if err := p.expectOp(";"); err != nil {
 			return nil, err
 		}
@@ -3999,18 +4482,44 @@ func (p *parser) structDecl() (any, error) {
 		if p.peek() == nil {
 			return nil, fmt.Errorf("unterminated struct definition")
 		}
-		mt := p.next()
-		if mt == nil || mt.kind != "id" {
-			return nil, fmt.Errorf("expected member type at token %v", mt)
+		// the BASE member type: `int` / `char *` / `struct Tag *`
+		var base string
+		if p.isId("struct") {
+			p.next() // struct
+			tag := p.next()
+			if tag == nil || tag.kind != "id" {
+				return nil, fmt.Errorf("expected struct tag in member type")
+			}
+			base = "struct " + tag.text
+			for p.isOp("*") {
+				p.next()
+				base += "*"
+			}
+		} else {
+			mt := p.next()
+			if mt == nil || mt.kind != "id" {
+				return nil, fmt.Errorf("expected member type at token %v", mt)
+			}
+			base = mt.text
 		}
-		for p.isOp("*") {
-			p.next()
+		// comma-separated names with per-name stars: `int a, b;` /
+		// `char *x, *y;` — the `*` binds to the NAME in C
+		for {
+			ctype := base
+			for p.isOp("*") {
+				p.next()
+				ctype += "*"
+			}
+			mn := p.next()
+			if mn == nil || mn.kind != "id" {
+				return nil, fmt.Errorf("expected member name at token %v", mn)
+			}
+			members = append(members, structMember{mn.text, ctype})
+			if !p.isOp(",") {
+				break
+			}
+			p.next() // ,
 		}
-		mn := p.next()
-		if mn == nil || mn.kind != "id" {
-			return nil, fmt.Errorf("expected member name at token %v", mn)
-		}
-		members = append(members, structMember{mn.text, mt.text})
 		if err := p.expectOp(";"); err != nil {
 			return nil, err
 		}
@@ -4020,6 +4529,26 @@ func (p *parser) structDecl() (any, error) {
 		return nil, err
 	}
 	structLayouts[tn.text] = members
+	// the layout registry: emit registerStruct("Tag-<fnv1a>", members)
+	// so the runtime can introspect malloc'd boxes of this type
+	// (nodeChild / nodeData — the generic-walk seam). Member byte
+	// offsets accumulate in declaration order (LP64, matching
+	// structSize / cTypeSize).
+	reg := make([]any, 0, len(members))
+	off := 0
+	for _, m := range members {
+		reg = append(reg, map[string]any{
+			"type":     "Array",
+			"elements": []any{st(m.name), st(strconv.Itoa(off)), st(m.ctype)},
+		})
+		if sz, ok := cTypeSize(m.ctype); ok {
+			off += sz
+		}
+	}
+	structRegs = append(structRegs, map[string]any{
+		"type": "Expr",
+		"expr": call("registerStruct", []any{st(structTag(tn.text)), map[string]any{"elements": reg, "type": "Array"}}),
+	})
 	return nil, nil
 }
 
@@ -4123,6 +4652,47 @@ func (p *parser) userStmt() (*uStmt, error) {
 			return seq[0], nil
 		}
 		return &uStmt{kind: "seq", body: seq}, nil
+	case p.isId("struct"):
+		// `struct Node *n = malloc(sizeof(struct Node));` — a local
+		// struct-POINTER declaration in a function body (records the
+		// pointer's tag so `n->member` resolves; the value is the handle).
+		p.next() // struct
+		tag := p.next()
+		if tag == nil || tag.kind != "id" {
+			return nil, fmt.Errorf("expected struct tag in declaration")
+		}
+		if !p.isOp("*") {
+			// a struct VALUE local — not supported in function bodies
+			for !p.isOp(";") && p.peek() != nil {
+				p.next()
+			}
+			if p.isOp(";") {
+				p.next()
+			}
+			return &uStmt{kind: "skip"}, nil
+		}
+		p.next() // *
+		nm := p.next()
+		if nm == nil || nm.kind != "id" {
+			return nil, fmt.Errorf("expected pointer name in declaration")
+		}
+		structPtrVars[nm.text] = tag.text
+		if p.isOp("=") {
+			p.next()
+			e, err := p.expr()
+			if err != nil {
+				return nil, err
+			}
+			if err := p.expectOp(";"); err != nil {
+				return nil, err
+			}
+			return &uStmt{kind: "assign", name: nm.text, op: "=", e: e}, nil
+		}
+		if err := p.expectOp(";"); err != nil {
+			return nil, err
+		}
+		return &uStmt{kind: "skip"}, nil
+
 	case p.isId("printf"):
 		// printf(...) in a function body — the same execPrintf lowering
 		// the main body uses, carried as a raw A1 stmt.
@@ -4233,6 +4803,50 @@ func (p *parser) userStmt() (*uStmt, error) {
 			body = []*uStmt{one}
 		}
 		return &uStmt{kind: "for", e: cond, body: body, init: init, step: step}, nil
+	case p.isId("if"):
+		p.next()
+		if err := p.expectOp("("); err != nil {
+			return nil, err
+		}
+		c, err := p.expr()
+		if err != nil {
+			return nil, err
+		}
+		if err := p.expectOp(")"); err != nil {
+			return nil, err
+		}
+		var body []*uStmt
+		if p.isOp("{") {
+			body, err = p.userBlock()
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			one, err := p.userStmt()
+			if err != nil {
+				return nil, err
+			}
+			body = []*uStmt{one}
+		}
+		var elseBody []*uStmt
+		if p.isId("else") {
+			p.next()
+			if p.isOp("{") {
+				elseBody, err = p.userBlock()
+				if err != nil {
+					return nil, err
+				}
+			} else {
+				one, err := p.userStmt()
+				if err != nil {
+					return nil, err
+				}
+				elseBody = []*uStmt{one}
+			}
+		}
+		return &uStmt{kind: "if", e: c, body: body, elseBody: elseBody}, nil
+	case p.isId("if2"): // never matches — debug marker
+		return nil, nil
 	case p.isId("while"):
 		p.next()
 		if err := p.expectOp("("); err != nil {
@@ -4281,6 +4895,53 @@ func (p *parser) userStmt() (*uStmt, error) {
 					return nil, err
 				}
 				return &uStmt{kind: "assign", name: nm.text, op: op, e: e}, nil
+			}
+			if p.isOp("->") {
+				// p->member = v — a struct-pointer member write in a
+				// function body (memStore through the handle)
+				p.next() // ->
+				mn := p.next()
+				if mn == nil || mn.kind != "id" {
+					return nil, fmt.Errorf("expected member name after '->'")
+				}
+				if !p.isOp("=") {
+					return nil, fmt.Errorf("expected '=' after member access")
+				}
+				p.next()
+				e, err := p.expr()
+				if err != nil {
+					return nil, err
+				}
+				if err := p.expectOp(";"); err != nil {
+					return nil, err
+				}
+				return &uStmt{kind: "arrowstore", name: nm.text, member: mn.text, op: "=", e: e}, nil
+			}
+			if p.isOp("[") {
+				// a[idx] = v — an array-element write in a function body
+				p.next()
+				idx, err := p.expr()
+				if err != nil {
+					return nil, err
+				}
+				if err := p.expectOp("]"); err != nil {
+					return nil, err
+				}
+				if !p.isAssignOp() {
+					return nil, fmt.Errorf("expected assignment after index")
+				}
+				op := p.next().text
+				e, err := p.expr()
+				if err != nil {
+					return nil, err
+				}
+				if err := p.expectOp(";"); err != nil {
+					return nil, err
+				}
+				if op != "=" {
+					refuse("compound assignment through an index is not in the v1 subset")
+				}
+				return &uStmt{kind: "idxassign", name: nm.text, idx: idx, e: e}, nil
 			}
 		}
 		if t.kind == "op" && t.text == "*" {
@@ -4450,6 +5111,8 @@ func Shir(src string) (out []byte, err error) {
 	charVars = map[string]bool{}
 	funcPtrs = map[string]string{}
 	structLayouts = map[string][]structMember{}
+	structRegs = []any{}
+	fnPtrParamNames = map[string]bool{}
 	varStruct = map[string]string{}
 	macros = map[string]macro{}
 	preprocessDefines(src)
@@ -4473,12 +5136,19 @@ func Shir(src string) (out []byte, err error) {
 		if fn.varargs {
 			continue
 		}
-		userDefs = append(userDefs, buildUserFnA1(name, fn))
+		u := buildUserFnA1(name, fn)
+		// store-route the function body too — a getline buffer (&b) is a
+		// store var; a plain `b = ""` decl would lift to a native binding
+		// and desync from getLine's store write
+		if fb, ok := u["body"].([]any); ok {
+			u["body"] = applyStoreRouting(fb)
+		}
+		userDefs = append(userDefs, u)
 	}
 	sort.Slice(userDefs, func(i, j int) bool {
 		return userDefs[i].(map[string]any)["name"].(string) < userDefs[j].(map[string]any)["name"].(string)
 	})
-	stmts = append(userDefs, stmts...)
+	stmts = append(append(append([]any{}, structRegs...), userDefs...), stmts...)
 	prog := map[string]any{
 		"type":             "Program",
 		"contract_version": 1,

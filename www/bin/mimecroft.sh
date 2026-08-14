@@ -46,6 +46,10 @@ RADAR_X=80                        # radar x base (milli-NDC) — the map sits to
 cam_shift_ms=0        # camera right shift (milli-NDC, ±50 per press, no limit) — 0 = the centred view; the old 500 (a quarter-screen right shift) moved the vanishing point off-centre
 tex_size=16           # texture resolution (4/8/16/32/64 px)
 tex_seed=20240812     # texture generation seed (drives the LCG noise)
+# texture cache version — bump when the texture GENERATORS change (e.g.
+# the mime type names) so stale /home + /tmp caches regenerate instead
+# of uploading the old pattern
+tex_ver=5
 sm_sel=0              # settings-menu cursor (0=shift 1=size 2=seed)
 sm_done=0
 sm_changed=0
@@ -54,7 +58,7 @@ RANGE=12                          # shoot range
 TREASURE_TOTAL=10
 MIME_CAP=12
 MIME_STEP=15          # mimes step every N frames (~6.7/sec — calmer view)
-MIMES_ON=0             # 0 = MIMEs disabled while diagnosing the flicker; set 1 to enable
+MIMES_ON=1             # the evil MIMEs hunt you (their type name is on the texture)
 CRT_ON=0               # 1 = CRT scanlines + vignette on the rendered view; set 0 for a clean picture
 CORRUPT_ON=0           # 1 = random corruption streaks on the view; set 0 to disable
 
@@ -448,6 +452,10 @@ shoot() {
     fi
     sh_i=$((sh_i + 1))
   done
+  # nothing hit within range (the row is clear / the target is beyond
+  # RANGE) — the shot still makes the gun's sound; hits play their own
+  # impact note (thud / tick / break / mime-kill)
+  play "D2 0.06"
   return 1
 }
 
@@ -817,31 +825,31 @@ emit_fragment_shader() {
 }
 
 setup_webgl() {
-  # the vertex shader is authored in bash — emit_vertex_shader compiles
+    # the vertex shader is authored in bash — emit_vertex_shader compiles
   # /examples/mimecroft-vertex.sh via sh2glsl --vertex when available,
   # otherwise the equivalent hand-written GLSL (same look: yaw rotation,
   # fake perspective, the strafe screen-shift, the overlay flat-quad
   # path)
   emit_vertex_shader
-  # the fragment shader is authored in bash (emit_fragment_shader) and
+    # the fragment shader is authored in bash (emit_fragment_shader) and
   # compiled by sh2glsl when available — otherwise the equivalent
   # hand-written textured GLSL (the same texture × colour tint + the
   # CRT/corruption/vignette effects; uOverlay > 0.5 keeps the HUD flat)
   emit_fragment_shader
-  echo "link" > /dev/webgl/program
+    echo "link" > /dev/webgl/program
   echo "f32 -0.5 0.5 0.5 0.5 0.5 0.5 0.5 0.5 -0.5 -0.5 0.5 -0.5 -0.5 -0.5 0.5 0.5 -0.5 0.5 0.5 -0.5 -0.5 -0.5 -0.5 -0.5 -0.5 0.5 0.5 0.5 0.5 0.5 0.5 -0.5 0.5 -0.5 -0.5 0.5 -0.5 -0.5 -0.5 0.5 -0.5 -0.5 0.5 0.5 -0.5 -0.5 0.5 -0.5 0.5 -0.5 0.5 0.5 0.5 0.5 0.5 0.5 -0.5 0.5 -0.5 -0.5 -0.5 -0.5 0.5 -0.5 0.5 0.5 -0.5 0.5 -0.5 -0.5 -0.5 -0.5" > /dev/webgl/buffer/aPosition
   echo "f32 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 1 1 1 1 1 1 1 1 1 1 1 1 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.95 0.95 0.95 0.95 0.95 0.95 0.95 0.95 0.95 0.95 0.95 0.95 0.85 0.85 0.85 0.85 0.85 0.85 0.85 0.85 0.85 0.85 0.85 0.85" > /dev/webgl/buffer/aShade
   echo "f32 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1" > /dev/webgl/buffer/aUv
-  echo "0" > /dev/webgl/uniform/1i/uTex
+    echo "0" > /dev/webgl/uniform/1i/uTex
   echo "9" > /dev/webgl/uniform/1i/uCrack
   echo "0" > /dev/webgl/uniform/1i/uDamage
   fmt_pos $cam_shift_ms
-  echo "$fv" > /dev/webgl/uniform/1f/uCamShift
+    echo "$fv" > /dev/webgl/uniform/1f/uCamShift
   echo "u16 0 1 2 0 2 3 4 5 6 4 6 7 8 9 10 8 10 11 12 13 14 12 14 15 16 17 18 16 18 19 20 21 22 20 22 23" > /dev/webgl/buffer/cube
   echo "f32 -0.5 -0.5 0 0.5 -0.5 0 0.5 0.5 0 -0.5 0.5 0" > /dev/webgl/buffer/quadpos
   echo "f32 1 1 1 1 1 1 1 1 1 1 1 1" > /dev/webgl/buffer/quadshade
   echo "u16 0 1 2 0 2 3" > /dev/webgl/buffer/quadi
-  echo "0.05 0.05 0.12 1.0" > /dev/webgl/clearcolor
+    echo "0.05 0.05 0.12 1.0" > /dev/webgl/clearcolor
 }
 
 # ─── texture loading: run examples/textures/texture-<name>.sh --tsv,
@@ -874,12 +882,12 @@ load_tex() { lt_name=$1; lt_idx=$2
   # cached payload from an earlier run (session /tmp, persistent /home);
   # the cache key carries the resolution + seed so a settings change
   # regenerates instead of reusing a stale texture
-  if [ -f /home/mimecroft-tex-$lt_name-$tex_size-$tex_seed ]; then
-    cat /home/mimecroft-tex-$lt_name-$tex_size-$tex_seed > /dev/webgl/texture/$lt_idx
+  if [ -f /home/mimecroft-tex-$lt_name-$tex_size-$tex_seed-$tex_ver ]; then
+    cat /home/mimecroft-tex-$lt_name-$tex_size-$tex_seed-$tex_ver > /dev/webgl/texture/$lt_idx
     return 0
   fi
-  if [ -f /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed ]; then
-    cat /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed > /dev/webgl/texture/$lt_idx
+  if [ -f /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed-$tex_ver ]; then
+    cat /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed-$tex_ver > /dev/webgl/texture/$lt_idx
     return 0
   fi
   lt_s=$(bash /examples/textures/texture-$lt_name.sh --tsv --size $tex_size --seed $tex_seed)
@@ -919,7 +927,10 @@ load_tex() { lt_name=$1; lt_idx=$2
     lt_cxs=$fv
     fmt_ndc $lt_pym
     lt_cys=$fv
-    fmt_ndc $(( lt_cell + 1 ))
+    # the rect SIZE is a positive NDC width (fmt_pos), NOT a position
+    # (fmt_ndc would turn 12 milli into -0.988 — a negative full-screen
+    # rect, the "massive texture extension" on the loading screen)
+    fmt_pos $(( lt_cell + 1 ))
     lt_ws=$fv
     fmt_c $lt_r
     lt_cr=$fv
@@ -931,8 +942,8 @@ load_tex() { lt_name=$1; lt_idx=$2
 "
     lt_px=$((lt_px + 1))
   done
-  echo "$lt_payload" > /home/mimecroft-tex-$lt_name-$tex_size-$tex_seed
-  echo "$lt_payload" > /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed
+  echo "$lt_payload" > /home/mimecroft-tex-$lt_name-$tex_size-$tex_seed-$tex_ver
+  echo "$lt_payload" > /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed-$tex_ver
   echo "$lt_payload" > /dev/webgl/texture/$lt_idx
   # show the freshly generated texture on the loading screen (one swap
   # keeps the keyboard grab fresh, so keys typed during startup queue)
@@ -943,8 +954,8 @@ load_tex() { lt_name=$1; lt_idx=$2
 # RGBA variant (the transparent crack overlay — R G B A per pixel)
 load_tex4() { lt_name=$1; lt_idx=$2
   sleep 0.01
-  if [ -f /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed ]; then
-    cat /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed > /dev/webgl/texture/$lt_idx
+  if [ -f /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed-$tex_ver ]; then
+    cat /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed-$tex_ver > /dev/webgl/texture/$lt_idx
     return 0
   fi
   lt_s=$(bash /examples/textures/texture-$lt_name.sh --tsv --size $tex_size --seed $tex_seed)
@@ -973,7 +984,7 @@ load_tex4() { lt_name=$1; lt_idx=$2
     lt_payload="$lt_payload $lt_r $lt_g $lt_b $lt_a"
     lt_px=$((lt_px + 1))
   done
-  echo "$lt_payload" > /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed
+  echo "$lt_payload" > /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed-$tex_ver
   echo "$lt_payload" > /dev/webgl/texture/$lt_idx
 }
 
@@ -1000,6 +1011,14 @@ load_textures() {
   load_tex dirt 8
   echo "    obsidian…"
   load_tex obsidian 10
+  echo "    jpeg…"
+  load_tex jpeg 11
+  echo "    png…"
+  load_tex png 12
+  echo "    octet…"
+  load_tex octet 13
+  echo "    text…"
+  load_tex text 14
   echo "    crack…"
   load_tex4 crack 9
   # the MIME type textures — one icon per evil MIME (11=jpeg 12=png
@@ -1118,9 +1137,13 @@ render_frame() {
   # and cross the camera, so their clipped depths are garbage; draw
   # them FIRST with depth WRITES OFF (gl.depthMask 0) — they fill the
   # void but never occlude the cubes, which paint over them.
-  bg_p="8 -0.05 8 16 0.1 16 0.45 0.40 0.34 0 0
+  # camera-following patches (span 40 = ±20 cells) so the coverage is
+  # ROTATION-INVARIANT — a fixed 16-wide slab ended at the map edge, so
+  # mid-turn the plane's boundary swept across the view and the clear
+  # colour (blackness) showed past the 2-tall obsidian border
+  bg_p="$dpx -0.05 $dpz 40 0.1 40 0.45 0.40 0.34 0 0
 "
-  bg_p="${bg_p}8 2.05 8 16 0.1 16 0.24 0.24 0.28 0 0
+  bg_p="${bg_p}$dpx 2.05 $dpz 40 0.1 40 0.24 0.24 0.28 0 0
 "
   if [ "$dyaw" -eq 0 ]; then
     # facing -z: front = z < dpz, so FAR = smallest z — draw z
@@ -1130,9 +1153,9 @@ render_frame() {
     while [ "$rf_z" -lt "$MAP_D" ]; do
       rf_x=0
       while [ "$rf_x" -lt "$MAP_W" ]; do
-        try_draw $rf_x 2 $rf_z
-        try_draw $rf_x 1 $rf_z
         try_draw $rf_x 0 $rf_z
+        try_draw $rf_x 1 $rf_z
+        try_draw $rf_x 2 $rf_z
         rf_x=$((rf_x + 1))
       done
       rf_z=$((rf_z + 1))
@@ -1143,9 +1166,9 @@ render_frame() {
     while [ "$rf_x" -ge 0 ]; do
       rf_z=0
       while [ "$rf_z" -lt "$MAP_D" ]; do
-        try_draw $rf_x 2 $rf_z
-        try_draw $rf_x 1 $rf_z
         try_draw $rf_x 0 $rf_z
+        try_draw $rf_x 1 $rf_z
+        try_draw $rf_x 2 $rf_z
         rf_z=$((rf_z + 1))
       done
       rf_x=$((rf_x - 1))
@@ -1158,9 +1181,9 @@ render_frame() {
     while [ "$rf_z" -ge 0 ]; do
       rf_x=0
       while [ "$rf_x" -lt "$MAP_W" ]; do
-        try_draw $rf_x 2 $rf_z
-        try_draw $rf_x 1 $rf_z
         try_draw $rf_x 0 $rf_z
+        try_draw $rf_x 1 $rf_z
+        try_draw $rf_x 2 $rf_z
         rf_x=$((rf_x + 1))
       done
       rf_z=$((rf_z - 1))
@@ -1171,16 +1194,17 @@ render_frame() {
     while [ "$rf_x" -lt "$MAP_W" ]; do
       rf_z=0
       while [ "$rf_z" -lt "$MAP_D" ]; do
-        try_draw $rf_x 2 $rf_z
-        try_draw $rf_x 1 $rf_z
         try_draw $rf_x 0 $rf_z
+        try_draw $rf_x 1 $rf_z
+        try_draw $rf_x 2 $rf_z
         rf_z=$((rf_z + 1))
       done
       rf_x=$((rf_x + 1))
     done
   fi
-  # background planes first (depth writes off — they never occlude),
-  # then the cubes (depth writes on, far-to-near painter's order)
+  # background planes first with depth WRITES OFF (gl.depthMask 0) —
+  # they fill the void but never record depth, so the cubes drawn after
+  # (depth writes on) ALWAYS paint over them
   echo "0" > /dev/webgl/depthmask
   echo "$bg_p" > /dev/webgl/blocks
   echo "1" > /dev/webgl/depthmask
@@ -1423,8 +1447,10 @@ draw_mime_blip() { mb_i=$1
   mb_cxs=$fv
   fmt_ndc $mb_cym
   mb_cys=$fv
-  draw_rect $mb_cxs $mb_cys 0.075 0.100 0.10 0.10 0.12
-  draw_rect $mb_cxs $mb_cys 0.050 0.070 $cr $cg $cb
+  # blip must fit the radar cell box (44×60 milli): ring 36×48,
+  # core 24×32 — the old 75×100/50×70 overflowed into neighbour cells
+  draw_rect $mb_cxs $mb_cys 0.036 0.048 0.10 0.10 0.12
+  draw_rect $mb_cxs $mb_cys 0.024 0.032 $cr $cg $cb
 }
 
 draw_minimap() {
@@ -1438,10 +1464,14 @@ draw_minimap() {
   if [ "$prev_px" -ne "$dpx" ] || [ "$prev_pz" -ne "$dpz" ] || [ "$prev_deg" -ne "$dm_deg" ]; then
     if [ "$prev_px" -ge 0 ]; then
       if [ "$prev_deg" -ne "$dm_deg" ]; then
-        # rotating: the triangle's corners sweep into the LEFT/RIGHT
-        # neighbour cells — erase the whole 3-cell row, then restore the
-        # base cells (walls/treasures) and any mimes that were wiped
-        erase_rect $((RADAR_X + prev_px*44)) $((1720 - prev_pz*60)) 132 64
+        # rotating: the triangle's widest sweep is ~47 milli (its 42
+        # milli bbox grows to √1.25×42 mid-glide), so erase a 62×60 box
+        # — at least 2 px (5 milli) beyond it left/right and 1 px
+        # (3.3 milli) above/below, so no ghost pixels survive a turn
+        # (the old 132-wide row wiped the whole LEFT/RIGHT neighbour
+        # cells) — then restore the base cells (walls/treasures) and
+        # any mimes the box grazed
+        erase_rect $((RADAR_X + prev_px*44)) $((1720 - prev_pz*60)) 62 60
         draw_radar_cell $((prev_px - 1)) $prev_pz
         draw_radar_cell $prev_px $prev_pz
         draw_radar_cell $((prev_px + 1)) $prev_pz
@@ -1457,8 +1487,10 @@ draw_minimap() {
           dm_ai=$((dm_ai + 1))
         done
       else
-        # a move (angle unchanged): the triangle fits a 64 box
-        erase_rect $((RADAR_X + prev_px*44)) $((1720 - prev_pz*60)) 64 64
+        # a move (angle unchanged): the triangle is 42×42 — erase a 44
+        # box (the cell width), no longer clearing into the neighbour
+        # cells left/right like the old 64 box did
+        erase_rect $((RADAR_X + prev_px*44)) $((1720 - prev_pz*60)) 44 44
       fi
     fi
     prev_px=$dpx
@@ -1483,7 +1515,9 @@ draw_minimap() {
     dm_rmz=${rmz[$mi]}
     if [ "$dm_rmx" -ne "$dm_mx" ] || [ "$dm_rmz" -ne "$dm_mz" ]; then
       if [ "$dm_rmx" -ge 0 ]; then
-        erase_rect $((RADAR_X + dm_rmx*44)) $((1720 - dm_rmz*60)) 80 105
+        # erase just the blip's cell (40×52 covers the 36×48 ring without
+        # punching into the neighbouring cells' static base)
+        erase_rect $((RADAR_X + dm_rmx*44)) $((1720 - dm_rmz*60)) 40 52
       fi
       rmx[$mi]=$dm_mx
       rmz[$mi]=$dm_mz
@@ -1613,7 +1647,7 @@ draw_digits() {
 draw_hud_canvas() {
   if [ "$hud_static_dirty" -eq 1 ]; then
     hud_build_static
-    hud_static_dirty=0
+        hud_static_dirty=0
     # the rebuild wiped the whole layer — reset the dynamic-cell state
     # so the triangle, mime blips and labels are redrawn this frame
     prev_px=-1
@@ -1921,7 +1955,7 @@ settings_menu() {
   done
   # push the camera shift to the GPU (setup_webgl also writes it)
   fmt_pos $cam_shift_ms
-  echo "$fv" > /dev/webgl/uniform/1f/uCamShift
+    echo "$fv" > /dev/webgl/uniform/1f/uCamShift
   if [ "$sm_mode" = "live" ]; then
     # mid-game: apply the settings NOW — the fragment shader encodes the
     # CRT/corruption effects AND the texel grid size, so re-emit it when
@@ -1958,8 +1992,7 @@ main() {
   # script runs (its exec calls are one microtask chain), so without
   # them every startup message appears at once when the game loop
   # starts instead of streaming as it loads.
-  echo ""
-  echo "╔══════════════════════════════════════════════════╗"
+    echo "╔══════════════════════════════════════════════════╗"
   echo "║  MIMEcrofT v5.9 — 3D treasure hunt written in bash ║"
   echo "║  The filesystem is infested with evil MIMEs.     ║"
   echo "║  Recover the lost operating systems.             ║"
@@ -1967,9 +2000,9 @@ main() {
   echo "╚══════════════════════════════════════════════════╝"
   echo ""
   sleep 0.02
-  print_map_once
+    print_map_once
   sleep 0.02
-  if [ "$headless" -eq 0 ]; then
+    if [ "$headless" -eq 0 ]; then
     settings_menu
     if [ "$quit" -eq 1 ]; then
       echo "== Quit."
@@ -1980,13 +2013,13 @@ main() {
   fi
   echo "  compiling the fragment shader…"
   sleep 0.02
-  setup_webgl
+    setup_webgl
   gen_maze
   place_treasures
-  # the radar base needs the maze — build it now (after gen/placement),
+    # the radar base needs the maze — build it now (after gen/placement),
   # not before, so the first static layer has the real walls/treasures
   hud_build_static
-  hud_static_dirty=0
+    hud_static_dirty=0
   if [ "$MIMES_ON" -eq 1 ]; then
     spawn_mime
     spawn_mime
@@ -1996,8 +2029,8 @@ main() {
   # in /tmp per session so re-runs skip the generation)
   echo "  loading block textures…"
   sleep 0.02
-  load_textures
-  echo "  ready."
+    load_textures
+    echo "  ready."
   sleep 0.8
   frame=$((0))
   quit=$((0))

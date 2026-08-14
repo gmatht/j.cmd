@@ -41,7 +41,7 @@ export async function runReplLine(line, ctx) {
       await runBash(ctx.fs, src, {
         runCmd: ctx.runNestedCommand,
         stdout: { write: (s) => { ctx.replState.bashOut += s; } },
-        stderr: { write: (s) => { ctx.replState.bashOut += s; } },
+        stderr: { write: (s) => { ctx.replState.bashOut += ctx.stderrColorFn ? ctx.stderrColorFn(s) : s; } },
         markers: [pre, post],
       });
       const pi = ctx.replState.bashOut.indexOf(pre);
@@ -88,7 +88,7 @@ export async function runReplLine(line, ctx) {
       await runBat(ctx.fs, src, {
         runCmd: ctx.runNestedCommand,
         stdout: { write: (s) => { ctx.replState.cmdOut += s; } },
-        stderr: { write: (s) => { ctx.replState.cmdOut += s; } },
+        stderr: { write: (s) => { ctx.replState.cmdOut += ctx.stderrColorFn ? ctx.stderrColorFn(s) : s; } },
       });
       const pi = ctx.replState.cmdOut.indexOf(pre);
       const pj = ctx.replState.cmdOut.lastIndexOf(post);

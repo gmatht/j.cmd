@@ -20,6 +20,14 @@ texture-leaves.sh    foliage canopy: clusters + dark undergrowth gaps
 texture-sandstone.sh sandstone: horizontal strata + bedding planes
 texture-water.sh     water: diagonal wave bands + glints
 texture-dirt.sh      dirt: clumps + pebbles + root flecks
+texture-jpeg.sh      the MIME "image/jpeg" icon — a tiny photo (sky,
+                     sun, hills) with the 8×8 DCT grid it's famous for
+texture-png.sh       the MIME "image/png" icon — the transparency
+                     checkerboard with a dark border
+texture-octet.sh     the MIME "application/octet-stream" icon — a dark
+                     hex-dump field with pseudorandom bright bits
+texture-text.sh      the MIME "text/plain" icon — paper with indented
+                     lines of text
 make-textures.sh     one-shot: PPMs → PNGs → seam checks → contact sheet
                      (auto-discovers every texture-*.sh)
 ```

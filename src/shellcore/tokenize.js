@@ -83,11 +83,24 @@ export function tokenize(segment) {
     }
     if (ch === ">") {
       // `>` is a metacharacter (bash-style): `echo 1>log` redirects to
-      // log instead of echoing "1>log". Split it out of the word, and
-      // treat ">>" as its own append-redirect token.
-      push();
-      if (segment[i + 1] === ">") { tokens.push(">>"); quotedFlags.push(false); i++; }
-      else { tokens.push(">"); quotedFlags.push(false); }
+      // log instead of echoing "1>log". Split it out of the word — but
+      // the fd forms stay GLUED as one redirect token: `2>file`,
+      // `2>>file`, `2>&1`, `>&2`, `&>file` (a glued digit prefix before
+      // `>` is the fd, not an argument — exactly what bash does).
+      let tok = ">";
+      const fdPrefix = /^\d+$/.test(cur) ? cur : null;
+      if (fdPrefix) { cur = ""; started = false; tok = fdPrefix + ">"; }
+      else if (cur === "&") { cur = ""; started = false; tok = "&>"; }   // &>file — both streams
+      else push();
+      if (segment[i + 1] === ">") { tok += ">"; i++; }
+      // `>&fd` fd-dup — absorb the `&` and its digits: `>&2`, `2>&1`
+      if (segment[i + 1] === "&") {
+        let j = i + 2;
+        while (j < segment.length && /\d/.test(segment[j])) j++;
+        if (j > i + 2) { tok += "&" + segment.slice(i + 2, j); i = j - 1; }
+        else { tok += "&"; i++; }
+      }
+      tokens.push(tok); quotedFlags.push(false);
       continue;
     }
     if (/\s/.test(ch)) { push(); continue; }

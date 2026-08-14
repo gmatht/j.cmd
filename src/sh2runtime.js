@@ -1272,6 +1272,21 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
           case "false": return "";
           case "date": return new Date().toString() + "\n";
           case "pwd": return ((fs.cwd !== undefined ? fs.cwd : "/") || "/") + "\n";
+          case "cat": {
+            // SYNC cat for sourced function bodies (the emitter renders
+            // `cat file > device` through sh2.builtin). Read via the fs
+            // sync bridge (local mounts); remote/device paths without a
+            // sync backend answer "" — the async exec path covers those.
+            let out = "";
+            for (const p of a) {
+              if (p === "-") { out += stdinData; continue; }
+              try {
+                const r = fs.readSync ? fs.readSync(p) : null;
+                out += r === null || r === undefined ? "" : String(r);
+              } catch { /* ENOENT → empty */ }
+            }
+            return out;
+          }
           case "cd": {
             const target = (a[0] || (env && env.HOME) || "/").replace(/\/+$/, "") || "/";
             if (fs && fs.cwd !== undefined) {
@@ -1391,6 +1406,11 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
         for (const r of redirects || []) {
           const fd = r.fd || 1;
           const target = String(r.target || "");
+          // `/dev/null` — discard, the universal no-op (a sync builtin's
+          // `2>/dev/null` must not trip the file-target bridge)
+          if (target === "/dev/null") {
+            continue;
+          }
           if (!target.startsWith("&")) {
             throw new Error("redirection needs the async redirect bridge; try `bash` for this construct");
           }
@@ -1423,11 +1443,22 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
           throw e;
         }
         if (r && typeof r.then === "function") {
-          return r.then((v) => {
-            scriptArgs = prev;
-            lastStatus = v === false ? 1 : 0;
-            return v;
-          });
+          return r.then(
+            (v) => {
+              scriptArgs = prev;
+              lastStatus = v === false ? 1 : 0;
+              return v;
+            },
+            // an ASYNC target's `return N` rejects with ReturnSignal —
+            // swallow it here like the sync path's try/catch does, or it
+            // would leak into the CALLER's dispatch and abort it (exec
+            // would treat the callee's return as the caller's own).
+            (e) => {
+              scriptArgs = prev;
+              if (e instanceof ReturnSignal) { lastStatus = Number(e.value); return e.value; }
+              throw e;
+            }
+          );
         }
         scriptArgs = prev;
         lastStatus = r === false ? 1 : 0;
@@ -1448,11 +1479,22 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
           throw e;
         }
         if (r && typeof r.then === "function") {
-          return r.then((v) => {
-            scriptArgs = prev;
-            lastStatus = v === false ? 1 : 0;
-            return v;
-          });
+          return r.then(
+            (v) => {
+              scriptArgs = prev;
+              lastStatus = v === false ? 1 : 0;
+              return v;
+            },
+            // an ASYNC target's `return N` rejects with ReturnSignal —
+            // swallow it here like the sync path's try/catch does, or it
+            // would leak into the CALLER's dispatch and abort it (exec
+            // would treat the callee's return as the caller's own).
+            (e) => {
+              scriptArgs = prev;
+              if (e instanceof ReturnSignal) { lastStatus = Number(e.value); return e.value; }
+              throw e;
+            }
+          );
         }
         scriptArgs = prev;
         lastStatus = r === false ? 1 : 0;
