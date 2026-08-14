@@ -759,11 +759,20 @@ compute_display() {
 # stops looking like you're walking INTO the ceiling. Keyed off the
 # DISPLAY cell (where the eye actually is), so the duck happens as the
 # eye crosses into the low cell.
+crouch_hint=0           # 1 once the "Crouching, movement slowed" hint printed
 update_crouch() {
   get_cell $dpx 2 $dpz
   if [ "$gv" -eq "$AIR" ]; then
     crouched=0
   else
+    if [ "$crouched" -eq 0 ]; then
+      # just ducked under a low ceiling — movement slows to half speed
+      # (ANIM_MS_CROUCH).  Tell the player the first time it happens.
+      if [ "$crouch_hint" -eq 0 ]; then
+        echo "Crouching, movement slowed"
+        crouch_hint=1
+      fi
+    fi
     crouched=1
   fi
 }
@@ -1110,6 +1119,7 @@ emit_vertex_shader() {
   # strafe screen-shift (uCamShift·w keeps it a constant NDC-x offset),
   # and the uOverlay > 0.5 flat-quad path.
   vs_fb="attribute vec3 aPosition; attribute vec3 aShade; attribute vec2 aUv; uniform vec3 uCamPos; uniform float uCamYaw; uniform float uCamShift; uniform vec3 uObjPos; uniform vec3 uBlockColor; uniform vec3 uScale; uniform float uOverlay; varying vec4 vColor; varying vec2 vUv; void main() { vec3 p = aPosition * uScale + uObjPos; if (uOverlay > 0.5) { gl_Position = vec4(p.x + uCamShift, p.y, -0.95, 1.0); vColor = vec4(aShade * uBlockColor, 1.0); vUv = vec2(0.0); return; } vec3 cam = uCamPos + vec3(0.0, 0.5, 0.0); vec3 d = p - cam; float a = uCamYaw * 0.0174532925; float c = cos(a); float s = sin(a); vec3 rel = vec3(d.x * c + d.z * s, d.y, -d.x * s + d.z * c); float w = -rel.z; gl_Position = vec4(rel.x * 0.45 + uCamShift * w, rel.y * 0.45, w * w / 64.0, w); vColor = vec4(aShade * uBlockColor, 1.0); if (uScale.x > 1.1) { vUv = p.xz; } else { vUv = aUv; } }"
+  vs_src=hand
   # compile the bash-authored vertex program — canonical at
   # /examples/mimecroft-vertex.sh (the /examples mount serves
   # www/examples/) — with sh2glsl --vertex; fall back when the
@@ -1119,11 +1129,15 @@ emit_vertex_shader() {
     echo "$glsl" > /dev/webgl/shader/vertex
     # real-GL ground truth: if the generated shader failed to compile,
     # fall back to the hand-written one (same look, guaranteed-ES1.00).
-    # The device logs "[shader/vertex] FAILED: …" on a bad compile.
+    # The device logs "[shader/vertex] FAILED: …" on a bad compile —
+    # probe for THIS stage only (a bare FAILED scan would also catch a
+    # stale fragment/hud failure from earlier in the log).
     vs_log=$(cat /dev/webgl/log)
-    vs_probe=${vs_log%FAILED*}
+    vs_probe=${vs_log#*\[shader/vertex\] FAILED}
     if [ "$vs_probe" != "$vs_log" ]; then
       echo "$vs_fb" > /dev/webgl/shader/vertex
+    else
+      vs_src=bash
     fi
   else
     echo "$vs_fb" > /dev/webgl/shader/vertex
@@ -1230,6 +1244,7 @@ emit_fragment_shader() {
     fs_fb="$fs_fb float e = abs(gl_FragCoord.x - 400.0) + abs(gl_FragCoord.y - 300.0); if (e > 450.0) { float d = min(e - 450.0, 30.0); c *= (255.0 - d) / 255.0; }"
   fi
   fs_fb="$fs_fb gl_FragColor = vec4(c, 1.0); }"
+  fs_src=hand
   # the sh→GLSL generator hardcodes the 32×32 texel grid (uv_x = vUv*32);
   # it is only valid at the 32px resolution (the default). For the 64px
   # setting use the hand-written shader — it samples raw UVs and the
@@ -1240,11 +1255,15 @@ emit_fragment_shader() {
       echo "$glsl" > /dev/webgl/shader/fragment
       # real-GL ground truth: if the generated shader failed to compile,
       # fall back to the hand-written one (same look, guaranteed-ES1.00).
-      # The device logs "[shader/fragment] FAILED: …" on a bad compile.
+      # The device logs "[shader/fragment] FAILED: …" on a bad compile —
+      # probe for THIS stage only (the vertex probe may have logged its
+      # own FAILED earlier in the same log).
       fs_log=$(cat /dev/webgl/log)
-      fs_probe=${fs_log%FAILED*}
+      fs_probe=${fs_log#*\[shader/fragment\] FAILED}
       if [ "$fs_probe" != "$fs_log" ]; then
         echo "$fs_fb" > /dev/webgl/shader/fragment
+      else
+        fs_src=bash
       fi
     else
       echo "$fs_fb" > /dev/webgl/shader/fragment
@@ -3234,6 +3253,15 @@ main() {
   echo "  compiling the fragment shader…"
   sleep 0.02
     setup_webgl
+  # report which shader source won — the bash-authored programs compiled
+  # by sh2glsl, or the hand-written GLSL fallback (the generator was
+  # unavailable, the 64px texture setting, or ANGLE rejected the
+  # generated shader's compile)
+  if [ "$vs_src" = "bash" ] && [ "$fs_src" = "bash" ]; then
+    echo "  shaders: bash-authored (sh2glsl)"
+  else
+    echo "  shaders: hand-written GLSL fallback (vertex: $vs_src, fragment: $fs_src)"
+  fi
   gen_maze
   place_treasures
   count_map_treasures
