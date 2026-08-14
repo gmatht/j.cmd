@@ -52,10 +52,10 @@ tex_size=32           # texture resolution (1..64 px, powers of two — the
 # themselves to ≥32 px (the 2×3-font prefix + type name need the 32 canvas)
 tex_seed=20240812     # texture generation seed (drives the LCG noise)
 # texture cache version — bump when the texture GENERATORS change (e.g.
-# the mime type names) so stale /home + /tmp caches regenerate instead
+# the mime type names) so stale session caches regenerate instead
 # of uploading the old pattern
 tex_ver=9          # MIME font 2-4x bigger (64px textures)
-sm_sel=0              # settings-menu cursor (0=shift 1=size 2=seed 3=crt 4=corrupt 5=mime speed 6=mime names)
+sm_sel=0              # settings-menu cursor (0=shift 1=size 2=seed 3=crt 4=corrupt 5=mime speed 6=mime names 7=sound mode)
 sm_done=0
 sm_changed=0
 headless=1            # set from /dev/webgl/state in main()
@@ -207,9 +207,29 @@ treasures_left=0     # TREASURE cells still on the map (a claim or a
 treasures_placed=0   # TREASURE cells that WERE on the map at start
                      # (a short board can hold fewer than TREASURE_TOTAL)
 mime_count=0
+# cell → mime index lookup on the y=1 air layer (cell = z*MAP_W + x,
+# -1 = empty): the render loop probes mime_at for EVERY air cell in the
+# frustum — the old scan (all mimes × every air cell ≈ 3500 array reads
+# per render frame) was the render's hot spot. Maintained on
+# spawn/move/kill; the transpiler's loop-var array refs expand at the
+# runtime boundary, so the plain writes below work.
+mime_lookup=()
+ml_i=0
+while [ "$ml_i" -lt "$CELLS" ]; do
+  mime_lookup[$ml_i]=-1
+  ml_i=$((ml_i + 1))
+done
 frame=0
 quit=0
 sound=1
+SOUND_MODE=notes    # notes = /dev/audio oscillator blips (default);
+                    # bash = the sample-accurate examples/sounds
+                    # generators, played through /dev/audio/samples
+# CLI: `mimecroft --sounds bash|notes` — the sound backend (also
+# toggleable in the pre-game settings menu)
+if [ "$1" = "--sounds" ] || [ "$1" = "--sound" ]; then
+  if [ "$2" = "bash" ]; then SOUND_MODE=bash; fi
+fi
 anim=0              # 1 while an action glides the camera
 anim_t0=0           # wall-clock ms when the current glide started
 ANIM_MS=200         # each action completes in 0.2s of wall time
@@ -289,17 +309,93 @@ mime_color() { mc_t=$1; case $mc_t in
   *) cr=1.00; cg=0.00; cb=0.00 ;;
 esac; }
 
-# sound — off in the headless Node device (no Web Audio)
-play() { pl_note=$1; if [ "$sound" -eq 1 ]; then echo "$pl_note" > /dev/audio/note; fi; }
+# ─── sound: two backends, switched by SOUND_MODE / --sounds ───────
+# notes (default): each play() call is one /dev/audio oscillator blip
+# ("C3 0.05"). bash: the note call stands in for a sample-accurate
+# sound from examples/sounds/sound-*.sh — the game maps it to a sound
+# name, runs the generator through the REAL /bin/bash wasm once, caches
+# its TSV in /tmp, then cats it to /dev/audio/samples (which decodes
+# the int16 list and plays it as a buffer). Sound is off in the
+# headless Node device (no Web Audio).
+#
+# note → sound name. Multi-note licks (the treasure fanfare, the
+# shatter) are ONE bash sound — their extra notes map to "-" = skip
+# (the sample already contains them). "" = no bash sound → fall back
+# to the note.
+snd_of_note() { sn_n=$1
+  case $sn_n in
+    "G5 0.08") snd="kill" ;;
+    "C3 0.15") snd="damage" ;;
+    "D2 0.06") snd="shoot" ;;
+    "G2 0.10") snd="thud" ;;
+    "E3 0.06") snd="break" ;;
+    "C3 0.05") snd="hit" ;;
+    "C4 0.12") snd="shatter" ;;
+    "E2 0.18") snd="-" ;;
+    "C5 0.10") snd="treasure" ;;
+    "E5 0.10") snd="-" ;;
+    "G5 0.15") snd="-" ;;
+    *) snd="" ;;
+  esac
+}
+
+# block id → sound-hit.sh material (stone dirt wood gold gem): mining a
+# maze of different blocks *sounds* different in bash mode
+block_material() { bm_t=$1
+  case $bm_t in
+    1) bm="dirt" ;;
+    4) bm="gold" ;;
+    5) bm="gem" ;;
+    6) bm="gem" ;;
+    *) bm="stone" ;;
+  esac
+}
+
+# run one bash-generated sound. First use of a sound (or hit material)
+# generates its TSV via /bin/bash and caches it in /tmp (the cache key
+# is the name, so a settings change doesn't regenerate); every play
+# cats the cached payload to /dev/audio/samples. sound-lib.sh is staged
+# beside the generated scripts in /tmp so their $(dirname "$0")
+# sources resolve through the real bash's VFS bridge.
+play_sound() { ps_name=$1
+  if [ "$ps_name" = "-" ]; then return; fi
+  if [ "$ps_name" = "" ]; then return; fi
+  if [ ! -f /tmp/mimecroft-snd-$ps_name.tsv ]; then
+    if [ ! -f /tmp/sound-lib.sh ]; then
+      # stage the generator's shared core beside the staged scripts
+      # (cp is not a sync builtin in the transpiled shell — read + write
+      # through the async fs bridge instead)
+      sl_x=$(cat /examples/sounds/sound-lib.sh)
+      echo "$sl_x" > /tmp/sound-lib.sh
+    fi
+    ps_x=$(/bin/bash /examples/sounds/sound-$ps_name.sh --tsv)
+    ps_hdr=${ps_x%%	*}
+    if [ "$ps_hdr" != "#sound" ]; then return; fi
+    echo "$ps_x" > /tmp/mimecroft-snd-$ps_name.tsv
+  fi
+  cat /tmp/mimecroft-snd-$ps_name.tsv > /dev/audio/samples
+}
+
+play() { pl_note=$1; pl_mat=$2
+  if [ "$sound" -eq 1 ]; then
+    if [ "$SOUND_MODE" = "bash" ]; then
+      snd_of_note "$pl_note"
+      if [ "$snd" = "hit" ] && [ "$pl_mat" != "" ]; then
+        play_sound "hit-$pl_mat"
+      else
+        play_sound $snd
+      fi
+      if [ "$snd" != "" ]; then return; fi
+    fi
+    echo "$pl_note" > /dev/audio/note
+  fi
+}
 
 # ─── Mimes ───────────────────────────────────────────────────────────
-mime_at() { ma_a=$1; ma_b=$2; mf=0; mt=0; ma_i=0
-  while [ "$ma_i" -lt "$mime_count" ]; do
-    ma_ex=${mx[$ma_i]}
-    ma_ez=${mz[$ma_i]}
-    if [ "$ma_ex" -eq "$ma_a" ] && [ "$ma_ez" -eq "$ma_b" ]; then mf=1; mt=${mtype[$ma_i]}; fi
-    ma_i=$((ma_i + 1))
-  done
+mime_at() { ma_a=$1; ma_b=$2; mf=0; mt=0
+  mli=$((ma_b * MAP_W + ma_a))
+  ma_mi=${mime_lookup[$mli]}
+  if [ "$ma_mi" -ge 0 ]; then mf=1; mt=${mtype[$ma_mi]}; fi
 }
 
 kill_mime_at() { ka_a=$1; ka_b=$2; ka_i=0
@@ -329,6 +425,16 @@ kill_mime_at() { ka_a=$1; ka_b=$2; ka_i=0
       mbly[$ka_i]=${mbly[$ka_last]}
       mblw[$ka_i]=${mblw[$ka_last]}
       mblh[$ka_i]=${mblh[$ka_last]}
+      # the cell→mime lookup: the dead cell empties; if the swapped
+      # mime is a DIFFERENT one, its cell now maps to the ka_i slot
+      ka_cell=$((ka_b * MAP_W + ka_a))
+      mime_lookup[$ka_cell]=-1
+      if [ "$ka_i" -ne "$ka_last" ]; then
+        ka_lx=${mx[$ka_last]}
+        ka_lz=${mz[$ka_last]}
+        ka_lcell=$((ka_lz * MAP_W + ka_lx))
+        mime_lookup[$ka_lcell]=$ka_i
+      fi
       mime_count=$ka_last
       hud_static_dirty=1
       play "G5 0.08"
@@ -370,6 +476,8 @@ spawn_mime() {
     my[$mime_count]=0
     mtype[$mime_count]=$sm_t
     mhp[$mime_count]=1
+    sm_cell=$((sm_az * MAP_W + sm_ax))
+    mime_lookup[$sm_cell]=$mime_count
     mime_count=$((mime_count + 1))
     hud_static_dirty=1
   fi
@@ -383,14 +491,10 @@ can_step() { cs_a=$1; cs_b=$2; cs=0
   if [ "$cs_b" -ge "$BOUND_Z" ]; then return 0; fi
   get_cell $cs_a 1 $cs_b
   if [ "$gv" -ne "$AIR" ]; then return 0; fi
-  cs_j=0
+  cs_i=$((cs_b * MAP_W + cs_a))
+  cs_m=${mime_lookup[$cs_i]}
+  if [ "$cs_m" -ge 0 ]; then return 0; fi
   cs=1
-  while [ "$cs_j" -lt "$mime_count" ]; do
-    cs_jx=${mx[$cs_j]}
-    cs_jz=${mz[$cs_j]}
-    if [ "$cs_jx" -eq "$cs_a" ] && [ "$cs_jz" -eq "$cs_b" ]; then cs=0; fi
-    cs_j=$((cs_j + 1))
-  done
   return 0
 }
 
@@ -451,8 +555,12 @@ update_mimes() {
       else
         can_step $um_cx $um_cz
         if [ "$cs" -eq 1 ]; then
+          um_ocell=$((um_b * MAP_W + um_a))
+          mime_lookup[$um_ocell]=-1
           mx[$um_i]=$um_cx
           mz[$um_i]=$um_cz
+          um_ncell=$((um_cz * MAP_W + um_cx))
+          mime_lookup[$um_ncell]=$um_i
           # a mime MOVING changes the 3D view too — bump the view-cache
           # version (kill_mime_at bumps it on death; without this, the
           # cached 3D view shows mimes frozen while the radar shows them
@@ -644,7 +752,10 @@ damage_cell() { dc_a=$1; dc_b=$2; dc_t=$3
     hud_static_dirty=1
     play "E3 0.06"
   else
-    play "C3 0.05"
+    # the bash-mode hit sound is MATERIAL-dependent (sound-hit.sh:
+    # stone rings, dirt thumps, gold glints, gem pings)
+    block_material $dc_t
+    play "C3 0.05" $bm
   fi
 }
 
@@ -1028,7 +1139,7 @@ emit_fragment_shader() {
   # the ground truth). Assembled from parts so the CRT/corruption
   # effects can be disabled with CRT_ON/CORRUPT_ON (same look as the
   # generated shader: texture × colour tint + the optional effects).
-  fs_fb="precision mediump float; varying highp vec4 vColor; varying highp vec2 vUv; uniform sampler2D uTex; uniform sampler2D uCrack; uniform highp float uOverlay; uniform int uDamage; void main() { if (uOverlay > 0.5) { gl_FragColor = vec4(vColor.rgb, 1.0); return; } vec3 c = texture2D(uTex, vUv).rgb * vColor.rgb; if (uDamage > 0) { vec4 cr = texture2D(uCrack, vUv); float s = float(uDamage) / 3.0; c = mix(c, cr.rgb, cr.a * s); }"
+  fs_fb="precision mediump float; varying highp vec4 vColor; varying highp vec2 vUv; uniform sampler2D uTex; uniform sampler2D uCrack; uniform highp float uOverlay; uniform int uDamage; void main() { if (uOverlay > 0.5) { gl_FragColor = vec4(vColor.rgb, 1.0); return; } vec3 c = texture2D(uTex, fract(vUv)).rgb * vColor.rgb; if (uDamage > 0) { vec4 cr = texture2D(uCrack, fract(vUv)); float s = float(uDamage) / 3.0; c = mix(c, cr.rgb, cr.a * s); }"
   if [ "$CRT_ON" -eq 1 ]; then
     fs_fb="$fs_fb if (mod(gl_FragCoord.y, 6.0) < 1.0) { c *= 0.9; }"
   fi
@@ -1126,13 +1237,11 @@ load_tex() { lt_name=$1; lt_idx=$2
   # a macrotask yield so the preceding "    name…" line paints before
   # this texture's (transpiled) generation runs
   sleep 0.01
-  # cached payload from an earlier run (session /tmp, persistent /home);
-  # the cache key carries the resolution + seed so a settings change
-  # regenerates instead of reusing a stale texture
-  if [ -f /home/mimecroft-tex-$lt_name-$lt_ts-$tex_seed-$tex_ver ]; then
-    cat /home/mimecroft-tex-$lt_name-$lt_ts-$tex_seed-$tex_ver > /dev/webgl/texture/$lt_idx
-    return 0
-  fi
+  # cached payload from an earlier run THIS session (/tmp is RamFS —
+  # wiped on every reload, so a fresh page always regenerates from the
+  # generator instead of replaying a stale persistent payload). The
+  # cache key carries the resolution + seed so a settings change
+  # regenerates instead of reusing an old texture.
   if [ -f /tmp/mimecroft-tex-$lt_name-$lt_ts-$tex_seed-$tex_ver ]; then
     cat /tmp/mimecroft-tex-$lt_name-$lt_ts-$tex_seed-$tex_ver > /dev/webgl/texture/$lt_idx
     return 0
@@ -1189,7 +1298,8 @@ load_tex() { lt_name=$1; lt_idx=$2
 "
     lt_px=$((lt_px + 1))
   done
-  echo "$lt_payload" > /home/mimecroft-tex-$lt_name-$lt_ts-$tex_seed-$tex_ver
+  # session cache only (/tmp — RamFS, wiped on reload): a persistent
+  # /home copy could replay a stale payload from an older generator
   echo "$lt_payload" > /tmp/mimecroft-tex-$lt_name-$lt_ts-$tex_seed-$tex_ver
   echo "$lt_payload" > /dev/webgl/texture/$lt_idx
   # show the freshly generated texture on the loading screen (one swap
@@ -1414,13 +1524,10 @@ load_mime_labels() {
     sleep 0.01
     ml_name=${MIME_NAMES[$ml_t]}
     ml_idx=$((MIME_LABEL_TEX0 + ml_t - 1))
-    if [ -f /home/mimecroft-mlabel-$ml_name-64-$LABEL_VER ]; then
-      cat /home/mimecroft-mlabel-$ml_name-64-$LABEL_VER > /dev/webgl/texture/$ml_idx
-    elif [ -f /tmp/mimecroft-mlabel-$ml_name-64-$LABEL_VER ]; then
+    if [ -f /tmp/mimecroft-mlabel-$ml_name-64-$LABEL_VER ]; then
       cat /tmp/mimecroft-mlabel-$ml_name-64-$LABEL_VER > /dev/webgl/texture/$ml_idx
     else
       gen_mime_label_tex $ml_t
-      echo "$gl_payload" > /home/mimecroft-mlabel-$ml_name-64-$LABEL_VER
       echo "$gl_payload" > /tmp/mimecroft-mlabel-$ml_name-64-$LABEL_VER
       echo "$gl_payload" > /dev/webgl/texture/$ml_idx
     fi
@@ -1430,7 +1537,8 @@ load_mime_labels() {
 }
 
 
-# generate + upload all ten treasure labels (cached in /home + /tmp)
+# generate + upload all ten treasure labels (cached in /tmp only —
+# a fresh session regenerates, so a stale payload can never replay)
 load_labels() {
   build_glyph_masks
   ll_t=0
@@ -1438,13 +1546,10 @@ load_labels() {
     sleep 0.01
     ll_name=${TREASURES[$ll_t]}
     ll_idx=$((LABEL_TEX0 + ll_t))
-    if [ -f /home/mimecroft-label-$ll_name-64-$LABEL_VER ]; then
-      cat /home/mimecroft-label-$ll_name-64-$LABEL_VER > /dev/webgl/texture/$ll_idx
-    elif [ -f /tmp/mimecroft-label-$ll_name-64-$LABEL_VER ]; then
+    if [ -f /tmp/mimecroft-label-$ll_name-64-$LABEL_VER ]; then
       cat /tmp/mimecroft-label-$ll_name-64-$LABEL_VER > /dev/webgl/texture/$ll_idx
     else
       gen_label_tex $ll_t
-      echo "$gl_payload" > /home/mimecroft-label-$ll_name-64-$LABEL_VER
       echo "$gl_payload" > /tmp/mimecroft-label-$ll_name-64-$LABEL_VER
       echo "$gl_payload" > /dev/webgl/texture/$ll_idx
     fi
@@ -1576,10 +1681,33 @@ render_frame() {
   # texture repeating once per world unit — the vertex shader's
   # world-xz UV branch (usc_x > 1100) tiles it, so 256 cubes/frame
   # become one textured draw.
-  bg_p="$dpx 0.45 $dpz 40 0.1 40 1 1 1 8 0
+  # The FLOOR/CEILING are FOUR quadrant boxes each (20 wide, centred
+  # ±10 on the camera) instead of ONE 40x40 box around it: a single
+  # box's top face has the camera INSIDE its footprint, so its triangles
+  # straddle the camera plane (w<0 vertices) and the GPU's polygon
+  # clipping collapses the near ground to a sliver ("near ground shows
+  # briefly while rotating"). A quadrant box's triangles are uniformly
+  # in front or behind after the yaw rotation, so every fragment clips
+  # cleanly. The boxes MEET at the camera's axes (±10 centres, 20 wide
+  # → spans [0,20] / [-20,0]) — the w=0 corners at the camera plane are
+  # off-screen below, so there is no seam between the quadrants.
+  bg_p=""
+  for qd in 1 2 3 4; do
+    if [ "$qd" -eq 1 ]; then qdx=10000; qdz=10000; fi
+    if [ "$qd" -eq 2 ]; then qdx=10000; qdz=-10000; fi
+    if [ "$qd" -eq 3 ]; then qdx=-10000; qdz=10000; fi
+    if [ "$qd" -eq 4 ]; then qdx=-10000; qdz=-10000; fi
+    qpx=$(( dpx * 1000 + qdx ))
+    qpz=$(( dpz * 1000 + qdz ))
+    fmt_pos $qpx
+    qfx=$fv
+    fmt_pos $qpz
+    qfz=$fv
+    bg_p="${bg_p}$qfx 0.45 $qfz 20 0.1 20 1 1 1 8 0
 "
-  bg_p="${bg_p}$dpx 2.05 $dpz 40 0.1 40 0.24 0.24 0.28 0 0
+    bg_p="${bg_p}$qfx 2.05 $qfz 20 0.1 20 0.24 0.24 0.28 0 0
 "
+  done
   if [ "$dyaw" -eq 0 ]; then
     # facing -z: front = z < dpz, so FAR = smallest z — draw z
     # ascending so the far "outside" cubes hit the canvas first and
@@ -2549,6 +2677,9 @@ settings_inc() {
   if [ "$sm_sel" -eq 6 ]; then
     MIME_LABELS=1
   fi
+  if [ "$sm_sel" -eq 7 ]; then
+    SOUND_MODE=bash
+  fi
 }
 
 settings_dec() {
@@ -2599,6 +2730,9 @@ settings_dec() {
   if [ "$sm_sel" -eq 6 ]; then
     MIME_LABELS=0
   fi
+  if [ "$sm_sel" -eq 7 ]; then
+    SOUND_MODE=notes
+  fi
 }
 
 # the menu card: terminal (values + cursor) and canvas (labels, the
@@ -2631,6 +2765,9 @@ draw_settings_menu() {
   if [ "$sm_sel" -eq 6 ]; then sm_mark=">"; else sm_mark=" "; fi
   if [ "$MIME_LABELS" -eq 1 ]; then sm_mlbl="ON"; else sm_mlbl="OFF"; fi
   echo "  $sm_mark  mime names  : $sm_mlbl"
+  if [ "$sm_sel" -eq 7 ]; then sm_mark=">"; else sm_mark=" "; fi
+  if [ "$SOUND_MODE" = "bash" ]; then sm_snd="BASH"; else sm_snd="NOTES"; fi
+  echo "  $sm_mark  sound mode  : $sm_snd"
   # canvas card — the leading C must be on its OWN line (a real
   # newline) or the device never clears the layer and old rects stay
   sm_shift_s=$fv
@@ -2655,6 +2792,7 @@ draw_settings_menu() {
   if [ "$mime_speed" -ge 10 ]; then sm_splen=2; fi
   if [ "$mime_speed" -le -10 ]; then sm_splen=3; fi
   if [ "$MIME_LABELS" -eq 1 ]; then sm_mlbl_s="ON"; sm_mlbl_len=2; else sm_mlbl_s="OFF"; sm_mlbl_len=3; fi
+  if [ "$SOUND_MODE" = "bash" ]; then sm_snd_s="BASH"; sm_snd_len=4; else sm_snd_s="NOTES"; sm_snd_len=5; fi
   ov_text="C
 "
   draw_text "SETTINGS" 8 840 1750 10 14 0.95 0.85 0.30
@@ -2665,6 +2803,7 @@ draw_settings_menu() {
   draw_text "CORRUPTION" 10 560 1200 8 11 0.60 0.75 0.95
   draw_text "MIME SPEED" 10 560 1100 8 11 0.60 0.75 0.95
   draw_text "MIME NAMES" 10 560 1000 8 11 0.60 0.75 0.95
+  draw_text "SOUND MODE" 10 560 900 8 11 0.60 0.75 0.95
   draw_text $sm_shift_s 5 1000 1600 8 11 0.95 0.95 0.95
   draw_text $sm_size_s 2 1000 1500 8 11 0.95 0.95 0.95
   draw_text $sm_seed_s $sm_slen 1000 1400 8 11 0.95 0.95 0.95
@@ -2672,13 +2811,15 @@ draw_settings_menu() {
   draw_text $sm_crp_s $sm_crp_len 1000 1200 8 11 0.95 0.95 0.95
   draw_text $sm_spd_s $sm_splen 1000 1100 8 11 0.95 0.95 0.95
   draw_text $sm_mlbl_s $sm_mlbl_len 1000 1000 8 11 0.95 0.95 0.95
+  draw_text $sm_snd_s $sm_snd_len 1000 900 8 11 0.95 0.95 0.95
   if [ "$sm_sel" -eq 0 ]; then draw_rect "-0.520" "0.583" "0.016" "0.030" 1.0 0.85 0.30
   elif [ "$sm_sel" -eq 1 ]; then draw_rect "-0.520" "0.483" "0.016" "0.030" 1.0 0.85 0.30
   elif [ "$sm_sel" -eq 2 ]; then draw_rect "-0.520" "0.383" "0.016" "0.030" 1.0 0.85 0.30
   elif [ "$sm_sel" -eq 3 ]; then draw_rect "-0.520" "0.283" "0.016" "0.030" 1.0 0.85 0.30
   elif [ "$sm_sel" -eq 4 ]; then draw_rect "-0.520" "0.183" "0.016" "0.030" 1.0 0.85 0.30
   elif [ "$sm_sel" -eq 5 ]; then draw_rect "-0.520" "0.083" "0.016" "0.030" 1.0 0.85 0.30
-  else draw_rect "-0.520" "-0.017" "0.016" "0.030" 1.0 0.85 0.30; fi
+  elif [ "$sm_sel" -eq 6 ]; then draw_rect "-0.520" "-0.017" "0.016" "0.030" 1.0 0.85 0.30
+  else draw_rect "-0.520" "-0.117" "0.016" "0.030" 1.0 0.85 0.30; fi
   draw_text "UP/DOWN SELECT - LEFT/RIGHT CHANGE" 34 340 250 7 10 0.85 0.85 0.85
   draw_text "SPACE/ESC START - Q QUIT" 24 500 180 7 10 0.85 0.85 0.85
   echo "$ov_text" > /dev/webgl/hud
@@ -2727,22 +2868,22 @@ settings_menu() {
           ;;
         *ArrowUp*)
           sm_sel=$((sm_sel - 1))
-          if [ "$sm_sel" -lt 0 ]; then sm_sel=6; fi
+          if [ "$sm_sel" -lt 0 ]; then sm_sel=7; fi
           sm_changed=1
           ;;
         *ArrowDown*)
           sm_sel=$((sm_sel + 1))
-          if [ "$sm_sel" -gt 6 ]; then sm_sel=0; fi
+          if [ "$sm_sel" -gt 7 ]; then sm_sel=0; fi
           sm_changed=1
           ;;
         *w*)
           sm_sel=$((sm_sel - 1))
-          if [ "$sm_sel" -lt 0 ]; then sm_sel=6; fi
+          if [ "$sm_sel" -lt 0 ]; then sm_sel=7; fi
           sm_changed=1
           ;;
         *s*)
           sm_sel=$((sm_sel + 1))
-          if [ "$sm_sel" -gt 6 ]; then sm_sel=0; fi
+          if [ "$sm_sel" -gt 7 ]; then sm_sel=0; fi
           sm_changed=1
           ;;
         *d*)
@@ -2784,7 +2925,7 @@ settings_menu() {
     fi
   fi
   echo ""
-  echo "  settings: camera shift $fv · textures ${tex_size}px · seed $tex_seed · mime speed $mime_speed"
+  echo "  settings: camera shift $fv · textures ${tex_size}px · seed $tex_seed · mime speed $mime_speed · sound $SOUND_MODE"
 }
 
 main() {
@@ -3091,17 +3232,20 @@ main() {
     if [ "$g_other" -lt 0 ]; then g_other=0; fi
     g_ff=$(( g_total / frame ))
     if [ "$g_ff" -lt 1 ]; then g_ff=1; fi
-    fmt_gms() {
-      fg_v=$1
-      fg_ms=$(( fg_v / frame / 1000 ))
-      echo "$fg_ms"
-    }
-    fmt_gp() {
-      fp_v=$1
-      echo "$(( fp_v * 100 / g_total ))"
-    }
-    echo "#stats:   input=$(fmt_gms $g_in)ms/f($(fmt_gp $g_in)%) anim=$(fmt_gms $g_anim)ms/f($(fmt_gp $g_anim)%) disp=$(fmt_gms $g_disp)ms/f($(fmt_gp $g_disp)%) mime=$(fmt_gms $g_mime)ms/f($(fmt_gp $g_mime)%)"
-    echo "#stats:   render=$(fmt_gms $g_render)ms/f($(fmt_gp $g_render)%) hud=$(fmt_gms $g_hud)ms/f($(fmt_gp $g_hud)%) swap=$(fmt_gms $g_swap)ms/f($(fmt_gp $g_swap)%) sleep=$(fmt_gms $g_sleep)ms/f($(fmt_gp $g_sleep)%) other=$(fmt_gms $g_other)ms/f($(fmt_gp $g_other)%)"
+    # the $(…) captures hit the transpiled shell's broken captureSync —
+    # compute the values into plain vars first (direct interpolation
+    # works on both engines)
+    s_in=$((g_in / frame / 1000)); s_inp=$((g_in * 100 / g_total))
+    s_anim=$((g_anim / frame / 1000)); s_animp=$((g_anim * 100 / g_total))
+    s_disp=$((g_disp / frame / 1000)); s_dispp=$((g_disp * 100 / g_total))
+    s_mime=$((g_mime / frame / 1000)); s_mimep=$((g_mime * 100 / g_total))
+    s_render=$((g_render / frame / 1000)); s_renderp=$((g_render * 100 / g_total))
+    s_hud=$((g_hud / frame / 1000)); s_hudp=$((g_hud * 100 / g_total))
+    s_swap=$((g_swap / frame / 1000)); s_swapp=$((g_swap * 100 / g_total))
+    s_sleep=$((g_sleep / frame / 1000)); s_sleepp=$((g_sleep * 100 / g_total))
+    s_other=$((g_other / frame / 1000)); s_otherp=$((g_other * 100 / g_total))
+    echo "#stats:   input=${s_in}ms/f(${s_inp}%) anim=${s_anim}ms/f(${s_animp}%) disp=${s_disp}ms/f(${s_dispp}%) mime=${s_mime}ms/f(${s_mimep}%)"
+    echo "#stats:   render=${s_render}ms/f(${s_renderp}%) hud=${s_hud}ms/f(${s_hudp}%) swap=${s_swap}ms/f(${s_swapp}%) sleep=${s_sleep}ms/f(${s_sleepp}%) other=${s_other}ms/f(${s_otherp}%)"
   fi
   echo "GAME DONE"
 }

@@ -22,9 +22,11 @@ import { fs as vfs } from "./fs/index.js";
 // The emscripten MODULARIZE factory: browser fetches vendor/bash.js
 // relative to the page; node imports the repo copy from disk.
 async function bashFactory() {
-  if (typeof document !== "undefined") {
-    return (await import(new URL("vendor/bash.js", import.meta.url).href)).default;
-  }
+  // the module graph is served from the repo root (/src/realbash.js);
+  // the emscripten factory is vendored at www/vendor/bash.js — resolve
+  // it explicitly (the old "vendor/bash.js" resolved to /src/vendor/,
+  // which never exists: "/bin/bash: Failed to fetch dynamically
+  // imported module: http://host/src/vendor/bash.js").
   return (await import(new URL("../www/vendor/bash.js", import.meta.url).href)).default;
 }
 
@@ -179,8 +181,17 @@ function installVirtualFSMount(FS) {
 // OUTSIDE bash.wasm to the shell. The host run is async (the EM_JS
 // can't block without an asyncify build), so its output streams to the
 // shell terminal as it completes and $? may lag — the ordering caveat.
+//
+// opts.scriptPath — when the script came from a VFS file, the path to
+// write it at INSIDE bash (the caller puts it somewhere bash can
+// re-source its siblings from, e.g. /tmp/<name>.sh, so `$(dirname
+// "$0")/lib.sh` resolves through the VFS bridge). Defaults to
+// /script.sh. opts.scriptArgs — the script's positional params
+// ($1..$9, $@), forwarded as real argv[1..] (bash sets $0 from argv[0]).
 export async function runRealBash(script, opts = {}) {
   const hostRun = opts.hostRun;
+  const scriptPath = opts.scriptPath || "/script.sh";
+  const scriptArgs = opts.scriptArgs || [];
   const factory = await bashFactory();
   let out = "", err = "";
   const MARKER = "__OTRANSPILER_EXIT_";
@@ -190,7 +201,7 @@ export async function runRealBash(script, opts = {}) {
   const pendingBg = [];
   const cfg = {
     noInitialRun: false,
-    arguments: ["/script.sh"],   // auto-run passes these to main (callMain can't — it breaks asyncify)
+    arguments: [scriptPath, ...scriptArgs],   // auto-run passes these to main (callMain can't — it breaks asyncify)
     locateFile: wasmUrl,
     print: (t) => { out += t + "\n"; },
     printErr: (t) => {
@@ -259,7 +270,16 @@ export async function runRealBash(script, opts = {}) {
       // the script + a completion marker carrying the last exit status
       // (the only reliable "main has finished" signal in the asyncify
       // runtime — onExit never fires while keepRuntimeAlive is set).
-      cfg.FS.writeFile("/script.sh", String(script) + "\necho " + MARKER + "$?_\n");
+      // Written at scriptPath (a VFS-backed path like /tmp/x.sh when the
+      // caller staged the file there), so the script's own $(dirname
+      // "$0")/lib.sh sources resolve through the VFS bridge.
+      if (scriptPath !== "/script.sh") {
+        // make the PARENT dirs only — mkdir on the file path itself
+        // would create a directory where the writeFile must land
+        const parent = scriptPath.replace(/\/[^/]*$/, "");
+        try { mkdirP(cfg.FS, parent || "/"); } catch {}
+      }
+      cfg.FS.writeFile(scriptPath, String(script) + "\necho " + MARKER + "$?_\n");
     }],
   };
   const m = await factory(cfg);

@@ -28,6 +28,13 @@ async function getAstring() {
   return mod;
 }
 
+// the sh2 runtime's SYNC builtin table (src/sh2runtime.js `builtin`) —
+// the fast commands the otranspilerl renders through sh2.builtin that
+// the runtime handles synchronously. Any OTHER command the emitter
+// routes to sh2.builtin is rewritten to the async exec bridge (see
+// awaitSyncFnCalls) so it resolves through the shell like bash.
+const SYNC_BUILTINS = new Set(["echo", "printf", "true", "false", "date", "pwd", "cat", "cd", "export", "ls", "test"]);
+
 export async function estreeToJs(program) {
   return (await estreeToJsMapped(program, null, null)).js;
 }
@@ -298,19 +305,25 @@ function awaitSyncFnCalls(node, inAwait, inSync) {
   if (node.type === "CallExpression" && node.callee && node.callee.type === "MemberExpression" &&
       node.callee.object && node.callee.object.type === "Identifier" && node.callee.object.name === "sh2" &&
       node.callee.property && node.callee.property.type === "Identifier" && node.callee.property.name === "builtin" &&
-      node.arguments && node.arguments[0] && node.arguments[0].type === "Literal" && node.arguments[0].value === "." &&
+      node.arguments && node.arguments[0] && node.arguments[0].type === "Literal" &&
+      typeof node.arguments[0].value === "string" &&
+      !SYNC_BUILTINS.has(node.arguments[0].value) &&
       !inAwait) {
-    // the otranspilerl transpile renders `source`/`.` as the SYNC
-    // sh2.builtin (its builtin table has no "." — "command not found").
-    // Rewrite to the async exec bridge, which resolves the `.` builtin
-    // through the shell (the shared source implementation).
+    // the otranspilerl transpile renders SIMPLE commands as the SYNC
+    // sh2.builtin, but the sh2 runtime's sync table only carries the
+    // fast common commands (echo/cat/test/ls/…) — anything else (cp,
+    // sed, mv, …) would hit "command not found" from the sync table.
+    // Rewrite to the async exec bridge, which resolves the command
+    // through the shell (shared builtins + uutils wasm). This is the
+    // same shape as the old `.`/source-only case (source resolves via
+    // the shell's shared implementation); a bare `.` falls here too.
     return {
       type: "AwaitExpression",
       argument: {
         type: "CallExpression",
         callee: { type: "MemberExpression", computed: false, optional: false, object: { type: "Identifier", name: "sh2" }, property: { type: "Identifier", name: "exec" } },
         arguments: [
-          { type: "Literal", value: ".", raw: null },
+          { type: "Literal", value: node.arguments[0].value, raw: null },
           node.arguments[1] ? awaitSyncFnCalls(node.arguments[1], false, inSync) : { type: "ArrayExpression", elements: [] },
         ],
         optional: false,
