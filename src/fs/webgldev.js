@@ -805,8 +805,13 @@ export class WebGLDevice {
       ctx.restore();
     }
     for (const [cx, cy, size, r, g, b, deg, a] of tris) {
-      const a = (-Number(deg)) * Math.PI / 180;
-      const c = Math.cos(a), sn = Math.sin(a);
+      // `a` is the ALPHA field the game appends (radar_a — the minimap
+      // opacity); the rotation angle must use a SEPARATE name — the old
+      // `const a = …angle…` clobbered the alpha with the radian angle,
+      // so the triangle was only visible where the angle happened to be
+      // positive (deg < 0, i.e. the counter-clockwise north→west turn).
+      const rad = (-Number(deg)) * Math.PI / 180;
+      const c = Math.cos(rad), sn = Math.sin(rad);
       // rotate in NDC (y-up), then place on the canvas: px() flips the
       // CENTER, so the rotated y-offset must be SUBTRACTED (canvas y is
       // down) or the triangle renders vertically mirrored (deg 0 points
