@@ -2256,6 +2256,16 @@ main() {
       prev_view_key=$view_key
       gspan "render"
       hud_swap=1
+    elif [ "$digits_dirty" -eq 1 ] || [ "$flash_clear" -eq 1 ] || [ "$muzzle" -gt 0 ] || [ "$hud_static_dirty" -eq 1 ]; then
+      # HUD-only frame (FPS digits, muzzle flash, static rebuild): the
+      # presented frame is retained (preserveDrawingBuffer) WITH the old
+      # HUD baked in, and the HUD layer erases can't reach it — re-render
+      # the world so the floor/ceiling planes cover the stale pixels
+      # (ghost triangle / mimes / FPS / muzzle) before the new HUD draws.
+      render_frame
+      prev_view_key=$view_key
+      gspan "render"
+      hud_swap=1
     fi
     # the HUD needs presenting when the view changed, a digit group is
     # dirty (score/hp/art/fps), the muzzle flash is live, or the static
