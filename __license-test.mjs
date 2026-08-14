@@ -73,6 +73,7 @@ catch (e) { console.log("RUN ERROR:", e.message); process.exit(1); }
 const text = stdout.join("");
 const log = await fs.read("/dev/webgl/log");
 const labelTexUploads = (log.match(/\[texture\/2[1-9]\] 64x64 uploaded/g) || []).length;
+const mimeBannerUploads = (log.match(/\[texture\/3[1-4]\] 64x64 uploaded/g) || []).length;
 const imageDraws = (log.match(/images/g) || []).length;
 const shattered = (text.match(/shattered/g) || []).length;
 const checks = [
@@ -83,6 +84,7 @@ const checks = [
   ["LICENCE REVOKED game over", text.includes("LICENCE REVOKED")],
   ["no VICTORY", !text.includes("VICTORY")],
   ["label textures generated for every treasure (3 in this test)", labelTexUploads === 3],
+  ["MIME name-banner textures generated (JPEG/PNG/OCTET/TEXT)", mimeBannerUploads === 4],
   ["visible labels drawn on the HUD (image commands)", imageDraws > 0],
   ["no runtime errors", !/command not found|\[err\]/.test(text)],
 ];

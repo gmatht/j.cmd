@@ -55,7 +55,7 @@ tex_seed=20240812     # texture generation seed (drives the LCG noise)
 # the mime type names) so stale /home + /tmp caches regenerate instead
 # of uploading the old pattern
 tex_ver=9          # MIME font 2-4x bigger (64px textures)
-sm_sel=0              # settings-menu cursor (0=shift 1=size 2=seed 3=crt 4=corrupt 5=mime speed)
+sm_sel=0              # settings-menu cursor (0=shift 1=size 2=seed 3=crt 4=corrupt 5=mime speed 6=mime names)
 sm_done=0
 sm_changed=0
 headless=1            # set from /dev/webgl/state in main()
@@ -66,6 +66,9 @@ mime_speed=15         # mime step cadence (frames per step) — SIGNED:
                       # positive = hunt the player, negative = they RUN
                       # AWAY (cowardly MIMEs flee), 0 = frozen in place
 MIMES_ON=1             # the evil MIMEs hunt you (their type name is on the texture)
+MIME_LABELS=1          # 2D name banners float above each visible mime
+                       # (like a player name in an MMORPG) — ON by default
+                       # (toggle in the settings menu)
 CRT_ON=0               # 1 = CRT scanlines + vignette on the rendered view; set 0 for a clean picture
 CORRUPT_ON=0           # 1 = random corruption streaks on the view; set 0 to disable
 
@@ -129,6 +132,21 @@ ltly=(-1 -1 -1 -1 -1 -1 -1 -1 -1 -1)
 ltlw=(0 0 0 0 0 0 0 0 0 0)
 ltlh=(0 0 0 0 0 0 0 0 0 0)
 labels_dirty=1       # redraw the labels when the 3D view changes
+# MIME name banners (2D labels above the mime cubes). Banner textures at
+# MIME_LABEL_TEX0..+3 (JPEG / PNG / OCTET-STREAM / TEXT/PLAIN), indexed
+# by mime type 1..4; mbw/mbh hold each banner's text pixel size. The
+# mbl* arrays hold the LAST drawn rect per mime slot (milli NDC), with
+# slot MIME_CAP as the "graveyard" where kill_mime_at parks a dead
+# mime's orphaned banner so the next redraw erases it.
+MIME_LABEL_TEX0=31
+MIME_NAMES=(dummy "JPEG" "PNG" "OCTET-STREAM" "TEXT/PLAIN")
+MIME_NAMELEN=(dummy 4 3 12 10)
+mbw=(0 0 0 0 0)
+mbh=(0 0 0 0 0)
+mblx=(-1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1)
+mbly=(-1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1)
+mblw=(0 0 0 0 0 0 0 0 0 0 0 0 0)
+mblh=(0 0 0 0 0 0 0 0 0 0 0 0 0)
 # cos/sin of the view yaw (‰ of uCamYaw, 0..359°) — the labels project
 # with the vertex shader's rotation so they track the 3D view exactly,
 # including mid-turn glides (where the yaw is fractional)
@@ -183,6 +201,11 @@ score=0
 license=3            # your archeology licence: shooting a treasure costs
                      # one strike; three strikes revokes it (game over)
 found_count=0
+treasures_left=0     # TREASURE cells still on the map (a claim or a
+                     # shatter decrements it) — the game ends when the
+                     # board runs out of artifacts ("mined out")
+treasures_placed=0   # TREASURE cells that WERE on the map at start
+                     # (a short board can hold fewer than TREASURE_TOTAL)
 mime_count=0
 frame=0
 quit=0
@@ -295,6 +318,17 @@ kill_mime_at() { ka_a=$1; ka_b=$2; ka_i=0
       # the radar/label prev cells move with the swapped mime
       rmx[$ka_i]=${rmx[$ka_last]}
       rmz[$ka_i]=${rmz[$ka_last]}
+      # the dead mime's 2D banner would ghost on the HUD layer — park
+      # its rect in the graveyard slot (MIME_CAP) and let the swapped
+      # mime's own banner state ride along with it
+      mblx[$MIME_CAP]=${mblx[$ka_i]}
+      mbly[$MIME_CAP]=${mbly[$ka_i]}
+      mblw[$MIME_CAP]=${mblw[$ka_i]}
+      mblh[$MIME_CAP]=${mblh[$ka_i]}
+      mblx[$ka_i]=${mblx[$ka_last]}
+      mbly[$ka_i]=${mbly[$ka_last]}
+      mblw[$ka_i]=${mblw[$ka_last]}
+      mblh[$ka_i]=${mblh[$ka_last]}
       mime_count=$ka_last
       hud_static_dirty=1
       play "G5 0.08"
@@ -623,6 +657,9 @@ score_block() { sb_t=$1
 # shooting a treasure — the artifact shatters: -50 points and a licence
 # strike (three strikes revoke your archeology licence = game over)
 shot_treasure() {
+  # the shattered artifact is gone from the board — the mined-out count
+  # drops with it (a board with no treasures left ends the game)
+  treasures_left=$((treasures_left - 1))
   score=$((score - 50))
   if [ "$score" -lt 0 ]; then score=0; fi
   license=$((license - 1))
@@ -647,6 +684,7 @@ claim_treasure() { ct_a=$1; ct_b=$2; ct_t=0
       if [ "$ct_fv" -eq 0 ]; then
         found[$ct_t]=1
         found_count=$((found_count + 1))
+        treasures_left=$((treasures_left - 1))
         score=$((score + 100))
         maxhp=$((maxhp + 1))
         hp=$((hp + 1))
@@ -837,6 +875,29 @@ place_treasures() {
       set_treasure_pos $pt_t $pt_rx $pt_rz
     fi
     pt_t=$((pt_t + 1))
+  done
+}
+
+# count the TREASURE cells still on the map — the board is mined out
+# when this reaches 0 (all recovered, or shattered by shooting). The
+# map is scanned AFTER place_treasures (the tests inject fixed
+# placements that bypass the placement loop), then decremented on
+# claim/shatter.
+count_map_treasures() {
+  treasures_left=0
+  treasures_placed=0
+  cm_x=1
+  while [ "$cm_x" -lt "$BOUND_X" ]; do
+    cm_z=1
+    while [ "$cm_z" -lt "$BOUND_Z" ]; do
+      get_cell $cm_x 1 $cm_z
+      if [ "$gv" -eq "$TREASURE" ]; then
+        treasures_left=$((treasures_left + 1))
+        treasures_placed=$((treasures_placed + 1))
+      fi
+      cm_z=$((cm_z + 1))
+    done
+    cm_x=$((cm_x + 1))
   done
 }
 
@@ -1264,6 +1325,15 @@ gen_label_tex() { gl_t=$1
     lgi[$gl_i]=${GMASK[$gi]}
     gl_i=$((gl_i + 1))
   done
+  # render the 64×64 RGBA pixel payload (uses the gl_* geometry + lgi)
+  render_label_pixels
+}
+
+# render a label's pixel payload — the geometry (gl_gs/gl_tw/gl_th/
+# gl_tx0/gl_ty0/gl_tw2/gl_th2), per-char glyph masks (lgi[]) and the
+# colour scheme (gl_pcol_*/gl_tcol_*/gl_ocol_*) must be set first.
+# Shared by the treasure labels and the MIME name banners.
+render_label_pixels() {
   gl_payload="$LABEL_W"
   gl_y=0
   while [ "$gl_y" -lt "$LABEL_W" ]; do
@@ -1310,6 +1380,55 @@ gen_label_tex() { gl_t=$1
     gl_y=$((gl_y + 1))
   done
 }
+
+# ─── MIME name banners (drawn above the mime cubes) ─────────────────
+# the 2D "player name" labels: one 64×64 RGBA texture per MIME type,
+# same renderer as the treasure labels but with a red danger plate.
+gen_mime_label_tex() { gm_t=$1
+  gl_name=${MIME_NAMES[$gm_t]}
+  gl_len=${MIME_NAMELEN[$gm_t]}
+  gl_gs=$(( 56 / (gl_len * 4) ))
+  if [ "$gl_gs" -lt 1 ]; then gl_gs=1; fi
+  gl_tw=$(( gl_len * 4 * gl_gs - 1 ))
+  gl_th=$(( 5 * gl_gs + 2 ))
+  mbw[$gm_t]=$gl_tw
+  mbh[$gm_t]=$gl_th
+  gl_tx0=$(( (LABEL_W - gl_tw) / 2 ))
+  gl_ty0=$(( (LABEL_W - gl_th) / 2 ))
+  gl_tw2=$(( gl_len * 4 * gl_gs ))
+  gl_th2=$(( 5 * gl_gs ))
+  gl_i=0
+  while [ "$gl_i" -lt "$gl_len" ]; do
+    gl_ch=${gl_name:$gl_i:1}
+    glyph_index $gl_ch
+    lgi[$gl_i]=${GMASK[$gi]}
+    gl_i=$((gl_i + 1))
+  done
+  render_label_pixels
+}
+
+# generate + upload the four MIME banner textures (cached like labels)
+load_mime_labels() {
+  ml_t=1
+  while [ "$ml_t" -le 4 ]; do
+    sleep 0.01
+    ml_name=${MIME_NAMES[$ml_t]}
+    ml_idx=$((MIME_LABEL_TEX0 + ml_t - 1))
+    if [ -f /home/mimecroft-mlabel-$ml_name-64-$LABEL_VER ]; then
+      cat /home/mimecroft-mlabel-$ml_name-64-$LABEL_VER > /dev/webgl/texture/$ml_idx
+    elif [ -f /tmp/mimecroft-mlabel-$ml_name-64-$LABEL_VER ]; then
+      cat /tmp/mimecroft-mlabel-$ml_name-64-$LABEL_VER > /dev/webgl/texture/$ml_idx
+    else
+      gen_mime_label_tex $ml_t
+      echo "$gl_payload" > /home/mimecroft-mlabel-$ml_name-64-$LABEL_VER
+      echo "$gl_payload" > /tmp/mimecroft-mlabel-$ml_name-64-$LABEL_VER
+      echo "$gl_payload" > /dev/webgl/texture/$ml_idx
+    fi
+    echo "    ${MIME_NAMES[$ml_t]} banner…"
+    ml_t=$((ml_t + 1))
+  done
+}
+
 
 # generate + upload all ten treasure labels (cached in /home + /tmp)
 load_labels() {
@@ -2005,62 +2124,75 @@ draw_digits() {
 # line-of-sight check on the ray from the eye to the treasure: the
 # standing eye (1.6) sees OVER the 1.5-tall y=1 walls, so only y=2
 # blocks occlude; crouched (eye 0.75) the y=1 walls occlude too.
+# is a 2D banner at world cell (bv_x, bv_z) visible? — the block
+# renderer's frustum culling (radius / in-front / in-row) plus a
+# line-of-sight check on the ray from the eye to the cell: the standing
+# eye (1.6) sees OVER the 1.5-tall y=1 walls, so only y=2 blocks
+# occlude; crouched (eye 0.75) the y=1 walls occlude too.
+banner_visible() { bv_x=$1; bv_z=$2
+  bv=0
+  bv_ddx=$((bv_x - dpx))
+  bv_ddz=$((bv_z - dpz))
+  abs $bv_ddx
+  bv_adx=$av
+  abs $bv_ddz
+  bv_adz=$av
+  if [ "$bv_adx" -gt "$VIEW_R" ]; then return 0; fi
+  if [ "$bv_adz" -gt "$VIEW_R" ]; then return 0; fi
+  bv_infront=0
+  bv_inrow=0
+  if [ "$dyaw" -eq 0 ]; then
+    if [ "$bv_z" -lt "$dpz" ]; then bv_infront=1; fi
+    bv_fov=$((bv_adz + bv_adz / 2 + 1))
+    if [ "$bv_adx" -le "$bv_fov" ]; then bv_inrow=1; fi
+  fi
+  if [ "$dyaw" -eq 1 ]; then
+    if [ "$bv_x" -gt "$dpx" ]; then bv_infront=1; fi
+    bv_fov=$((bv_adx + bv_adx / 2 + 1))
+    if [ "$bv_adz" -le "$bv_fov" ]; then bv_inrow=1; fi
+  fi
+  if [ "$dyaw" -eq 2 ]; then
+    if [ "$bv_z" -gt "$dpz" ]; then bv_infront=1; fi
+    bv_fov=$((bv_adz + bv_adz / 2 + 1))
+    if [ "$bv_adx" -le "$bv_fov" ]; then bv_inrow=1; fi
+  fi
+  if [ "$dyaw" -eq 3 ]; then
+    if [ "$bv_x" -lt "$dpx" ]; then bv_infront=1; fi
+    bv_fov=$((bv_adx + bv_adx / 2 + 1))
+    if [ "$bv_adz" -le "$bv_fov" ]; then bv_inrow=1; fi
+  fi
+  if [ "$bv_infront" -eq 0 ]; then return 0; fi
+  if [ "$bv_inrow" -eq 0 ]; then return 0; fi
+  # line of sight: step the ray toward the cell (dominant axis)
+  bv_n=$bv_adx
+  if [ "$bv_adz" -gt "$bv_n" ]; then bv_n=$bv_adz; fi
+  bv_k=1
+  while [ "$bv_k" -lt "$bv_n" ]; do
+    bv_ix=$(( dpx + bv_ddx * bv_k / bv_n ))
+    bv_iz=$(( dpz + bv_ddz * bv_k / bv_n ))
+    if [ "$bv_ix" -ne "$dpx" ] || [ "$bv_iz" -ne "$dpz" ]; then
+      get_cell $bv_ix 2 $bv_iz
+      if [ "$gv" -ne "$AIR" ]; then return 0; fi
+      if [ "$crouched" -eq 1 ]; then
+        get_cell $bv_ix 1 $bv_iz
+        if [ "$gv" -ne "$AIR" ]; then return 0; fi
+      fi
+    fi
+    bv_k=$((bv_k + 1))
+  done
+  bv=1
+  return 0
+}
+
+# treasure label visibility: the cell must still hold the treasure
 treasure_label_visible() { tv_t=$1
   tlv=0
   tv_x=${tpx[$tv_t]}
   tv_z=${tpz[$tv_t]}
   get_cell $tv_x 1 $tv_z
   if [ "$gv" -ne "$TREASURE" ]; then return 0; fi
-  tv_ddx=$((tv_x - dpx))
-  tv_ddz=$((tv_z - dpz))
-  abs $tv_ddx
-  tv_adx=$av
-  abs $tv_ddz
-  tv_adz=$av
-  if [ "$tv_adx" -gt "$VIEW_R" ]; then return 0; fi
-  if [ "$tv_adz" -gt "$VIEW_R" ]; then return 0; fi
-  tv_infront=0
-  tv_inrow=0
-  if [ "$dyaw" -eq 0 ]; then
-    if [ "$tv_z" -lt "$dpz" ]; then tv_infront=1; fi
-    tv_fov=$((tv_adz + tv_adz / 2 + 1))
-    if [ "$tv_adx" -le "$tv_fov" ]; then tv_inrow=1; fi
-  fi
-  if [ "$dyaw" -eq 1 ]; then
-    if [ "$tv_x" -gt "$dpx" ]; then tv_infront=1; fi
-    tv_fov=$((tv_adx + tv_adx / 2 + 1))
-    if [ "$tv_adz" -le "$tv_fov" ]; then tv_inrow=1; fi
-  fi
-  if [ "$dyaw" -eq 2 ]; then
-    if [ "$tv_z" -gt "$dpz" ]; then tv_infront=1; fi
-    tv_fov=$((tv_adz + tv_adz / 2 + 1))
-    if [ "$tv_adx" -le "$tv_fov" ]; then tv_inrow=1; fi
-  fi
-  if [ "$dyaw" -eq 3 ]; then
-    if [ "$tv_x" -lt "$dpx" ]; then tv_infront=1; fi
-    tv_fov=$((tv_adx + tv_adx / 2 + 1))
-    if [ "$tv_adz" -le "$tv_fov" ]; then tv_inrow=1; fi
-  fi
-  if [ "$tv_infront" -eq 0 ]; then return 0; fi
-  if [ "$tv_inrow" -eq 0 ]; then return 0; fi
-  # line of sight: step the ray toward the treasure (dominant axis)
-  tv_n=$tv_adx
-  if [ "$tv_adz" -gt "$tv_n" ]; then tv_n=$tv_adz; fi
-  tv_k=1
-  while [ "$tv_k" -lt "$tv_n" ]; do
-    tv_ix=$(( dpx + tv_ddx * tv_k / tv_n ))
-    tv_iz=$(( dpz + tv_ddz * tv_k / tv_n ))
-    if [ "$tv_ix" -ne "$dpx" ] || [ "$tv_iz" -ne "$dpz" ]; then
-      get_cell $tv_ix 2 $tv_iz
-      if [ "$gv" -ne "$AIR" ]; then return 0; fi
-      if [ "$crouched" -eq 1 ]; then
-        get_cell $tv_ix 1 $tv_iz
-        if [ "$gv" -ne "$AIR" ]; then return 0; fi
-      fi
-    fi
-    tv_k=$((tv_k + 1))
-  done
-  tlv=1
+  banner_visible $tv_x $tv_z
+  tlv=$bv
   return 0
 }
 
@@ -2068,12 +2200,17 @@ treasure_label_visible() { tv_t=$1
 # exact perspective (uCamYaw rotation via SCOS/SSIN, 0.45 focal scale,
 # uCamShift screen shift). Outputs pndc_x_ms/pndc_y_ms (centre) and
 # pndc_w_ms/pndc_h_ms (size), all milli-NDC; pndc_x_ms = -1 = hidden.
-project_label() { pj_t=$1
+# project a 2D banner centred over world cell (pb_x, pb_z) — the
+# vertex shader's exact perspective (uCamYaw rotation via SCOS/SSIN,
+# 0.45 focal scale, uCamShift screen shift). pb_wpx×pb_hpx = the label
+# texture's text pixel size (keeps the glyph aspect undistorted),
+# pb_lw = the banner's world width (milli). Outputs pndc_x_ms/pndc_y_ms
+# (centre) and pndc_w_ms/pndc_h_ms (size), all milli-NDC; pndc_x_ms =
+# -1 = hidden.
+project_banner() { pb_x=$1; pb_z=$2; pb_wpx=$3; pb_hpx=$4; pb_lw=$5
   pndc_x_ms=-1
-  pj_x=${tpx[$pj_t]}
-  pj_z=${tpz[$pj_t]}
-  pj_dx=$(( pj_x * 1000 - dpcx_ms ))
-  pj_dz=$(( pj_z * 1000 - dpcz_ms ))
+  pj_dx=$(( pb_x * 1000 - dpcx_ms ))
+  pj_dz=$(( pb_z * 1000 - dpcz_ms ))
   if [ "$crouched" -eq 1 ]; then pj_eye=750; else pj_eye=1600; fi
   pj_dy=$(( 1650 - pj_eye ))
   pj_deg=$(( dpyw_ms / 1000 ))
@@ -2085,10 +2222,8 @@ project_label() { pj_t=$1
   if [ "$pj_w" -lt 200 ]; then return 1; fi
   pndc_x_ms=$(( pj_rx * 450 / (pj_w * 1000) + cam_shift_ms ))
   pndc_y_ms=$(( pj_dy * 450 / (pj_w * 1000) ))
-  pndc_w_ms=$(( 630000 / (pj_w * 1000) ))
-  pj_hpx=${tl_hpx[$pj_t]}
-  pj_wpx=${tl_wpx[$pj_t]}
-  pj_lh=$(( 1400 * pj_hpx / pj_wpx ))
+  pndc_w_ms=$(( 450 * pb_lw / (pj_w * 1000) ))
+  pj_lh=$(( pb_lw * pb_hpx / pb_wpx ))
   pndc_h_ms=$(( 450 * pj_lh / (pj_w * 1000) ))
   if [ "$pndc_w_ms" -lt 4 ]; then pndc_w_ms=4; fi
   if [ "$pndc_h_ms" -lt 4 ]; then pndc_h_ms=4; fi
@@ -2097,6 +2232,15 @@ project_label() { pj_t=$1
   if [ "$pndc_y_ms" -lt 0 ]; then pndc_y_ms=0; fi
   if [ "$pndc_y_ms" -gt 2000 ]; then pndc_y_ms=2000; fi
   return 0
+}
+
+# the treasure label projection — 1.4× the block's width, floating above
+project_label() { pj_t=$1
+  pj_x=${tpx[$pj_t]}
+  pj_z=${tpz[$pj_t]}
+  pj_hpx=${tl_hpx[$pj_t]}
+  pj_wpx=${tl_wpx[$pj_t]}
+  project_banner $pj_x $pj_z $pj_wpx $pj_hpx 1400
 }
 
 # a label erase punches a hole through the persistent HUD layer, which
@@ -2173,6 +2317,59 @@ draw_treasure_labels() {
   done
 }
 
+# draw the MIME name banners above every visible mime (the "player
+# name" look): erase the previous frame's banners first (healing the
+# radar), then project + draw the current ones. Runs with the treasure
+# labels on each view change (labels_dirty); the graveyard slot's
+# orphaned rect (a dead mime's banner) is erased first. MIME_LABELS=0
+# erases everything and draws nothing.
+draw_mime_labels() {
+  # erase any banner orphaned by a mime death (kill_mime_at parks it)
+  if [ "${mblx[$MIME_CAP]}" -ge 0 ]; then
+    erase_rect ${mblx[$MIME_CAP]} ${mbly[$MIME_CAP]} ${mblw[$MIME_CAP]} ${mblh[$MIME_CAP]}
+    restore_under ${mblx[$MIME_CAP]} ${mbly[$MIME_CAP]} ${mblw[$MIME_CAP]} ${mblh[$MIME_CAP]}
+    mblx[$MIME_CAP]=-1
+  fi
+  dml_i=0
+  while [ "$dml_i" -lt "$mime_count" ]; do
+    dml_px=${mblx[$dml_i]}
+    if [ "$dml_px" -ge 0 ]; then
+      erase_rect ${mblx[$dml_i]} ${mbly[$dml_i]} ${mblw[$dml_i]} ${mblh[$dml_i]}
+      restore_under ${mblx[$dml_i]} ${mbly[$dml_i]} ${mblw[$dml_i]} ${mblh[$dml_i]}
+      mblx[$dml_i]=-1
+    fi
+    if [ "$MIME_LABELS" -eq 1 ]; then
+      dml_x=${mx[$dml_i]}
+      dml_z=${mz[$dml_i]}
+      banner_visible $dml_x $dml_z
+      if [ "$bv" -eq 1 ]; then
+        dml_t=${mtype[$dml_i]}
+        dml_wpx=${mbw[$dml_t]}
+        dml_hpx=${mbh[$dml_t]}
+        project_banner $dml_x $dml_z $dml_wpx $dml_hpx 1000
+        if [ "$pndc_x_ms" -ge 0 ]; then
+          fmt_ndc $pndc_x_ms
+          dml_cx=$fv
+          fmt_ndc $pndc_y_ms
+          dml_cy=$fv
+          fmt_pos $pndc_w_ms
+          dml_w=$fv
+          fmt_pos $pndc_h_ms
+          dml_h=$fv
+          dml_idx=$((MIME_LABEL_TEX0 + dml_t - 1))
+          ov_text="${ov_text}I $dml_cx $dml_cy $dml_w $dml_h $dml_idx
+"
+          mblx[$dml_i]=$pndc_x_ms
+          mbly[$dml_i]=$pndc_y_ms
+          mblw[$dml_i]=$pndc_w_ms
+          mblh[$dml_i]=$pndc_h_ms
+        fi
+      fi
+    fi
+    dml_i=$((dml_i + 1))
+  done
+}
+
 draw_hud_canvas() {
   if [ "$hud_static_dirty" -eq 1 ]; then
     hud_build_static
@@ -2216,6 +2413,7 @@ draw_hud_canvas() {
   fi
   if [ "$labels_dirty" -eq 1 ]; then
     draw_treasure_labels
+    draw_mime_labels
     labels_dirty=0
   fi
   if [ "$ov_text" != "" ]; then
@@ -2348,6 +2546,9 @@ settings_inc() {
     else mime_speed=-30
     fi
   fi
+  if [ "$sm_sel" -eq 6 ]; then
+    MIME_LABELS=1
+  fi
 }
 
 settings_dec() {
@@ -2395,6 +2596,9 @@ settings_dec() {
     else mime_speed=30
     fi
   fi
+  if [ "$sm_sel" -eq 6 ]; then
+    MIME_LABELS=0
+  fi
 }
 
 # the menu card: terminal (values + cursor) and canvas (labels, the
@@ -2424,6 +2628,9 @@ draw_settings_menu() {
   elif [ "$mime_speed" -gt 0 ]; then sm_spd="hunt"
   else sm_spd="off"; fi
   echo "  $sm_mark  mime speed  : $mime_speed $sm_spd"
+  if [ "$sm_sel" -eq 6 ]; then sm_mark=">"; else sm_mark=" "; fi
+  if [ "$MIME_LABELS" -eq 1 ]; then sm_mlbl="ON"; else sm_mlbl="OFF"; fi
+  echo "  $sm_mark  mime names  : $sm_mlbl"
   # canvas card — the leading C must be on its OWN line (a real
   # newline) or the device never clears the layer and old rects stay
   sm_shift_s=$fv
@@ -2447,6 +2654,7 @@ draw_settings_menu() {
   if [ "$mime_speed" -lt 0 ]; then sm_splen=2; fi
   if [ "$mime_speed" -ge 10 ]; then sm_splen=2; fi
   if [ "$mime_speed" -le -10 ]; then sm_splen=3; fi
+  if [ "$MIME_LABELS" -eq 1 ]; then sm_mlbl_s="ON"; sm_mlbl_len=2; else sm_mlbl_s="OFF"; sm_mlbl_len=3; fi
   ov_text="C
 "
   draw_text "SETTINGS" 8 840 1750 10 14 0.95 0.85 0.30
@@ -2456,18 +2664,21 @@ draw_settings_menu() {
   draw_text "CRT EFFECT" 10 560 1300 8 11 0.60 0.75 0.95
   draw_text "CORRUPTION" 10 560 1200 8 11 0.60 0.75 0.95
   draw_text "MIME SPEED" 10 560 1100 8 11 0.60 0.75 0.95
+  draw_text "MIME NAMES" 10 560 1000 8 11 0.60 0.75 0.95
   draw_text $sm_shift_s 5 1000 1600 8 11 0.95 0.95 0.95
   draw_text $sm_size_s 2 1000 1500 8 11 0.95 0.95 0.95
   draw_text $sm_seed_s $sm_slen 1000 1400 8 11 0.95 0.95 0.95
   draw_text $sm_crt_s $sm_crt_len 1000 1300 8 11 0.95 0.95 0.95
   draw_text $sm_crp_s $sm_crp_len 1000 1200 8 11 0.95 0.95 0.95
   draw_text $sm_spd_s $sm_splen 1000 1100 8 11 0.95 0.95 0.95
+  draw_text $sm_mlbl_s $sm_mlbl_len 1000 1000 8 11 0.95 0.95 0.95
   if [ "$sm_sel" -eq 0 ]; then draw_rect "-0.520" "0.583" "0.016" "0.030" 1.0 0.85 0.30
   elif [ "$sm_sel" -eq 1 ]; then draw_rect "-0.520" "0.483" "0.016" "0.030" 1.0 0.85 0.30
   elif [ "$sm_sel" -eq 2 ]; then draw_rect "-0.520" "0.383" "0.016" "0.030" 1.0 0.85 0.30
   elif [ "$sm_sel" -eq 3 ]; then draw_rect "-0.520" "0.283" "0.016" "0.030" 1.0 0.85 0.30
   elif [ "$sm_sel" -eq 4 ]; then draw_rect "-0.520" "0.183" "0.016" "0.030" 1.0 0.85 0.30
-  else draw_rect "-0.520" "0.083" "0.016" "0.030" 1.0 0.85 0.30; fi
+  elif [ "$sm_sel" -eq 5 ]; then draw_rect "-0.520" "0.083" "0.016" "0.030" 1.0 0.85 0.30
+  else draw_rect "-0.520" "-0.017" "0.016" "0.030" 1.0 0.85 0.30; fi
   draw_text "UP/DOWN SELECT - LEFT/RIGHT CHANGE" 34 340 250 7 10 0.85 0.85 0.85
   draw_text "SPACE/ESC START - Q QUIT" 24 500 180 7 10 0.85 0.85 0.85
   echo "$ov_text" > /dev/webgl/hud
@@ -2516,22 +2727,22 @@ settings_menu() {
           ;;
         *ArrowUp*)
           sm_sel=$((sm_sel - 1))
-          if [ "$sm_sel" -lt 0 ]; then sm_sel=5; fi
+          if [ "$sm_sel" -lt 0 ]; then sm_sel=6; fi
           sm_changed=1
           ;;
         *ArrowDown*)
           sm_sel=$((sm_sel + 1))
-          if [ "$sm_sel" -gt 5 ]; then sm_sel=0; fi
+          if [ "$sm_sel" -gt 6 ]; then sm_sel=0; fi
           sm_changed=1
           ;;
         *w*)
           sm_sel=$((sm_sel - 1))
-          if [ "$sm_sel" -lt 0 ]; then sm_sel=5; fi
+          if [ "$sm_sel" -lt 0 ]; then sm_sel=6; fi
           sm_changed=1
           ;;
         *s*)
           sm_sel=$((sm_sel + 1))
-          if [ "$sm_sel" -gt 5 ]; then sm_sel=0; fi
+          if [ "$sm_sel" -gt 6 ]; then sm_sel=0; fi
           sm_changed=1
           ;;
         *d*)
@@ -2617,6 +2828,7 @@ main() {
     setup_webgl
   gen_maze
   place_treasures
+  count_map_treasures
     # the radar base needs the maze — build it now (after gen/placement),
   # not before, so the first static layer has the real walls/treasures
   hud_build_static
@@ -2633,12 +2845,14 @@ main() {
     load_textures
     echo "  generating treasure labels…"
     load_labels
+    echo "  generating mime banners…"
+    load_mime_labels
     echo "  ready."
   sleep 0.8
   frame=$((0))
   quit=$((0))
   dirty=1
-  while [ "$quit" -eq 0 ] && [ "$hp" -gt 0 ] && [ "$license" -gt 0 ] && [ "$found_count" -lt "$TREASURE_TOTAL" ]; do
+  while [ "$quit" -eq 0 ] && [ "$hp" -gt 0 ] && [ "$license" -gt 0 ] && [ "$treasures_left" -gt 0 ]; do
     frame=$((frame + 1))
     gtick
     g_last=$g_now
@@ -2842,6 +3056,20 @@ main() {
     echo "║  GAME OVER — LICENCE REVOKED.               ║"
     echo "║  You shot three artifacts; the Archeology   ║"
     echo "║  Board revoked your licence. Score: $score  ║"
+    echo "╚════════════════════════════════════════════╝"
+  elif [ "$treasures_left" -le 0 ]; then
+    # the board holds no more artifacts — either every one was
+    # recovered, or the rest were shattered by shooting; the dig is
+    # over either way
+    echo "╔════════════════════════════════════════════╗"
+    if [ "$found_count" -ge "$treasures_placed" ]; then
+      echo "║  ALL RECOVERED — no more artifacts to dig.  ║"
+      echo "║  The filesystem is pure again.  Score: $score ║"
+    else
+      echo "║  MINED OUT — no more artifacts on the map.  ║"
+      echo "║  At least you didn't lose.                  ║"
+      echo "║  $found_count / $TREASURE_TOTAL recovered.  Score: $score  ║"
+    fi
     echo "╚════════════════════════════════════════════╝"
   else
     echo "╔════════════════════════════════════════════╗"
