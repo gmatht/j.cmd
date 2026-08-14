@@ -69,6 +69,14 @@ if [ "$1" = "--tsv" ]; then DO_TSV=1; fi
 if [ "$2" = "--tsv" ]; then DO_TSV=1; fi
 if [ "$3" = "--tsv" ]; then DO_TSV=1; fi
 
+# ─── loop-var bridge ────────────────────────────────────────────────
+# the A1 transpiler types purely-local while-loop induction counters
+# (x/y) as int64, which then leaks BigInt into the mixed per-pixel
+# arithmetic (`dx * C1DY - dy * C1DX`) as a hard TypeError in the
+# browser. A global reference inside a function body (even uncalled)
+# unifies the counters back into the plain-number domain. No-op here.
+tex_loop_bridge() { y=$(( y + 0 )); x=$(( x + 0 )); }
+
 # ─── pseudorandom core ──────────────────────────────────────────────
 # probe printf -v support (host bash and the real-bash wasm have it;
 # the transpiled sh2 printf and external printfs don't). Without this,

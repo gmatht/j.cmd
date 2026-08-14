@@ -313,7 +313,7 @@ emit() {
     # and char-strips are used by readers. The \t/\n stay literal here
     # (printf converts them in host bash; the transpiler makes them
     # real bytes in the JS string so echo works too).
-    tsv="$tsv$r\t$g\t$b\t$a\t"
+    tsv="$tsv$r	$g	$b	$a	"
     if [ "$x" -eq "$LAST" ]; then
       tsv="$tsv
 "
@@ -373,12 +373,22 @@ $tsv"
 # both axes), fine ripple noise, and sparse sun glints.
 RB=34
 # per-pixel RGBA (transparent background)
+# the arrays are DECLARED here (empty) — the transpiler's array lift
+# needs the declaration to route the runtime writes/reads through the
+# same store; without it the writes vanish in the A1 path
+cr=()
+cg=()
+cb=()
+ca=()
+# the transpiler expands array refs ONLY when the index is a function
+# param (the game's map_set pattern); loop-var indexes collapse to
+# literal strings (`cr[$pi2]`), so every read/write goes through these
+# accessors to keep the lifted store consistent
+crack_set() { csi=$1; cr[$csi]=$2; cg[$csi]=$3; cb[$csi]=$4; ca[$csi]=$5; }
+crack_get() { cgi=$1; crv=${cr[$cgi]}; cgv=${cg[$cgi]}; cbv=${cb[$cgi]}; cav=${ca[$cgi]}; }
 pi2=0
 while [ "$pi2" -lt $((SIZE * SIZE)) ]; do
-  cr[$pi2]=0
-  cg[$pi2]=0
-  cb[$pi2]=0
-  ca[$pi2]=0
+  crack_set $pi2 0 0 0 0
   pi2=$((pi2 + 1))
 done
 
@@ -396,10 +406,7 @@ while [ "$seg" -lt 8 ]; do
   clen=$((rv + 4))
   cstep=0
   while [ "$cstep" -lt "$clen" ]; do
-    cr[$((cy * SIZE + cx))]=28
-    cg[$((cy * SIZE + cx))]=28
-    cb[$((cy * SIZE + cx))]=32
-    ca[$((cy * SIZE + cx))]=255
+    crack_set $((cy * SIZE + cx)) 28 28 32 255
     if [ "$cdir" -eq 0 ]; then cx=$((cx + 1)); fi
     if [ "$cdir" -eq 1 ]; then cy=$((cy + 1)); fi
     if [ "$cdir" -eq 2 ]; then cx=$((cx - 1)); fi
@@ -427,10 +434,11 @@ while [ "$y" -lt "$SIZE" ]; do
   x=0
   while [ "$x" -lt "$SIZE" ]; do
     pi=$((y * SIZE + x))
-    r=${cr[$pi]}
-    g=${cg[$pi]}
-    b=${cb[$pi]}
-    a=${ca[$pi]}
+    crack_get $pi
+    r=$crv
+    g=$cgv
+    b=$cbv
+    a=$cav
     clamp $r
     r=$cv
     clamp $g
