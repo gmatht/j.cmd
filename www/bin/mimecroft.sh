@@ -371,7 +371,19 @@ play_sound() { ps_name=$1
       sl_x=$(cat /examples/sounds/sound-lib.sh)
       echo "$sl_x" > /tmp/sound-lib.sh
     fi
-    ps_x=$(/bin/bash /examples/sounds/sound-$ps_name.sh --tsv)
+    # the cache key may carry the hit material: "hit-stone" →
+    # sound-hit.sh --material stone (there is no sound-hit-stone.sh —
+    # the material is a --material flag, not part of the script name)
+    ps_base=$ps_name
+    ps_mat=""
+    case $ps_name in
+      hit-*) ps_base="hit"; ps_mat=${ps_name#hit-} ;;
+    esac
+    if [ "$ps_mat" != "" ]; then
+      ps_x=$(/bin/bash /examples/sounds/sound-$ps_base.sh --tsv --material $ps_mat)
+    else
+      ps_x=$(/bin/bash /examples/sounds/sound-$ps_base.sh --tsv)
+    fi
     ps_hdr=${ps_x%%	*}
     if [ "$ps_hdr" != "#sound" ]; then return; fi
     echo "$ps_x" > /tmp/mimecroft-snd-$ps_name.tsv
@@ -668,11 +680,19 @@ start_turn() { tt=$1
 # same 0.2s regardless of the actual render rate.
 compute_display() {
   if [ "$anim" -eq 1 ]; then
-    anim_el=$((anim_now - anim_t0))
-    if [ "$anim_el" -gt "$anim_ms" ]; then anim_el=$anim_ms; fi
-    dpcx_ms=$((an[0] * 1000 + (an[3] - an[0]) * 1000 * anim_el / anim_ms))
-    dpcz_ms=$((an[1] * 1000 + (an[4] - an[1]) * 1000 * anim_el / anim_ms))
-    dpyw_raw_ms=$((an[2] * 90000 + anim_ayd * 90000 * anim_el / anim_ms))
+    # the glide clock is the sync µs g_now (the main loop's gtick); the
+    # old anim_now=$(cat /dev/time) read was removed with the
+    # sync-clock refactor, so a stale anim_now made anim_el a huge
+    # NEGATIVE µs value — the interpolation ran away and dyaw landed on
+    # -2/-3, which matches no culling axis, so every block culled and
+    # the screen showed only the ground during moves AND turns. Compare
+    # µs against anim_ms_us exactly like the loop's arrival check.
+    anim_el=$((g_now - anim_t0))
+    anim_ms_us=$((anim_ms * 1000))
+    if [ "$anim_el" -gt "$anim_ms_us" ]; then anim_el=$anim_ms_us; fi
+    dpcx_ms=$((an[0] * 1000 + (an[3] - an[0]) * 1000 * anim_el / anim_ms_us))
+    dpcz_ms=$((an[1] * 1000 + (an[4] - an[1]) * 1000 * anim_el / anim_ms_us))
+    dpyw_raw_ms=$((an[2] * 90000 + anim_ayd * 90000 * anim_el / anim_ms_us))
     dpyw_ms=$dpyw_raw_ms
     # keep the shader yaw in 0..360000: a left turn's 0→-90° arc
     # becomes a 360→270° glide (identical rotation, positive input)

@@ -83,7 +83,12 @@ async function runGame(args, keys) {
     "    load_textures\n    echo \"  generating treasure labels…\"\n    load_labels\n    echo \"  generating mime banners…\"\n    load_mime_labels\n",
     // the sounds don't depend on the block/label textures — skip the
     // slow host-bash texture generation so the run stays fast
-    "    echo \"  textures skipped (sound test)…\"\n");
+    "    echo \"  textures skipped (sound test)…\"\n").replace(
+    // a material-aware hit sound at startup: the first in-game shot
+    // always hits the obsidian border (thud), so this exercises the
+    // play_sound "hit-<material>" → sound-hit.sh --material path
+    "  frame=$((0))\n  quit=$((0))\n",
+    "  frame=$((0))\n  quit=$((0))\n  play \"C3 0.05\" stone\n");
   const { js } = await bashToJS(fs, src);
 
   let keyFrame = 0;
@@ -121,7 +126,7 @@ async function runGame(args, keys) {
       // textures (bash) and sounds (/bin/bash) both run host bash here
       const args2 = rest.split(/\s+/).map((a) => a.replace("/examples/", "examples/"));
       const name = (args2[0] || "").split("/").pop();
-      if (name.startsWith("sound-") && name.endsWith(".sh")) soundRuns.push(name);
+      if (name.startsWith("sound-") && name.endsWith(".sh")) soundRuns.push(args2.join(" "));
       try { out = execFileSync("bash", args2, { encoding: "utf8" }); } catch { out = ""; }
     }
     else if (cmd === "sh2glsl") { out = ""; }
@@ -169,9 +174,21 @@ console.log(`  [t=${((Date.now()-T0)/1000).toFixed(1)}s] game run 1 (menu toggle
   // the generator ran once per distinct sound and its TSV is cached
   const distinct = [...new Set(names)];
   check("generator invoked once per distinct sound", soundRuns.length === distinct.length, `runs=${soundRuns.length} distinct=${distinct.length}`);
-  const caches = await Promise.all(distinct.map((n) => fs.stat(`/tmp/mimecroft-snd-${n}.tsv`).then(() => true).catch(() => false)));
-  check("sound caches written to /tmp", caches.every(Boolean), distinct.join(","));
+  // the cache key is the script name + material suffix: sound-hit.sh
+  // --material stone → /tmp/mimecroft-snd-hit-stone.tsv
+  const cacheKeys = soundRuns.map((r) => {
+    const m = /sound-([a-z]+)\.sh/.exec(r);
+    const name = m ? m[1] : "";
+    const mat = /--material (\w+)/.exec(r);
+    return mat ? `${name}-${mat[1]}` : name;
+  });
+  const caches = await Promise.all(cacheKeys.map((n) => fs.stat(`/tmp/mimecroft-snd-${n}.tsv`).then(() => true).catch(() => false)));
+  check("sound caches written to /tmp", caches.every(Boolean), cacheKeys.join(","));
   check("menu printed the bash mode", stdout.join("").includes("sound mode  : BASH"));
+  // the material-aware hit: "hit-stone" ran sound-hit.sh --material stone
+  const hitRun = soundRuns.find((r) => r.includes("sound-hit.sh"));
+  check("hit material maps to sound-hit.sh --material", !!hitRun && hitRun.includes("--material stone"), hitRun || "no hit run");
+  check("material hit cache written", (await fs.stat("/tmp/mimecroft-snd-hit-stone.tsv").then(() => true).catch(() => false)));
 }
 
 // CLI-arg path: --sounds bash straight from the command line. The run
