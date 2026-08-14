@@ -1614,23 +1614,30 @@ try_draw() { td_a=$1; td_b=$2; td_c=$3
   if [ "$td_adz" -gt "$VIEW_R" ]; then return 1; fi
   td_infront=0
   td_inrow=0
+  # the camera GLIDES between cells (compute_display interpolates
+  # dpcx_ms/dpcz_ms), so "in front" compares against the FRACTIONAL
+  # position, not the rounded cell: rounding flipped the destination
+  # row to "behind" at the HALFWAY point of a move, popping the blocks
+  # the player sees immediately left/right a full half-cell early
+  td_cms=$((td_c * 1000))
+  td_ams=$((td_a * 1000))
   if [ "$dyaw" -eq 0 ]; then
-    if [ "$td_c" -lt "$dpz" ]; then td_infront=1; fi
+    if [ "$td_cms" -lt "$dpcz_ms" ]; then td_infront=1; fi
     td_fov=$((td_adz + td_adz / 2 + 1))
     if [ "$td_adx" -le "$td_fov" ]; then td_inrow=1; fi
   fi
   if [ "$dyaw" -eq 1 ]; then
-    if [ "$td_a" -gt "$dpx" ]; then td_infront=1; fi
+    if [ "$td_ams" -gt "$dpcx_ms" ]; then td_infront=1; fi
     td_fov=$((td_adx + td_adx / 2 + 1))
     if [ "$td_adz" -le "$td_fov" ]; then td_inrow=1; fi
   fi
   if [ "$dyaw" -eq 2 ]; then
-    if [ "$td_c" -gt "$dpz" ]; then td_infront=1; fi
+    if [ "$td_cms" -gt "$dpcz_ms" ]; then td_infront=1; fi
     td_fov=$((td_adz + td_adz / 2 + 1))
     if [ "$td_adx" -le "$td_fov" ]; then td_inrow=1; fi
   fi
   if [ "$dyaw" -eq 3 ]; then
-    if [ "$td_a" -lt "$dpx" ]; then td_infront=1; fi
+    if [ "$td_ams" -lt "$dpcx_ms" ]; then td_infront=1; fi
     td_fov=$((td_adx + td_adx / 2 + 1))
     if [ "$td_adz" -le "$td_fov" ]; then td_inrow=1; fi
   fi
@@ -2269,23 +2276,28 @@ banner_visible() { bv_x=$1; bv_z=$2
   if [ "$bv_adz" -gt "$VIEW_R" ]; then return 0; fi
   bv_infront=0
   bv_inrow=0
+  # same FRACTIONAL in-front test as try_draw: the banner must stay
+  # visible while its cell is still in front of the gliding camera,
+  # not vanish at the move's halfway point (rounded-cell flip)
+  bv_cms=$((bv_z * 1000))
+  bv_ams=$((bv_x * 1000))
   if [ "$dyaw" -eq 0 ]; then
-    if [ "$bv_z" -lt "$dpz" ]; then bv_infront=1; fi
+    if [ "$bv_cms" -lt "$dpcz_ms" ]; then bv_infront=1; fi
     bv_fov=$((bv_adz + bv_adz / 2 + 1))
     if [ "$bv_adx" -le "$bv_fov" ]; then bv_inrow=1; fi
   fi
   if [ "$dyaw" -eq 1 ]; then
-    if [ "$bv_x" -gt "$dpx" ]; then bv_infront=1; fi
+    if [ "$bv_ams" -gt "$dpcx_ms" ]; then bv_infront=1; fi
     bv_fov=$((bv_adx + bv_adx / 2 + 1))
     if [ "$bv_adz" -le "$bv_fov" ]; then bv_inrow=1; fi
   fi
   if [ "$dyaw" -eq 2 ]; then
-    if [ "$bv_z" -gt "$dpz" ]; then bv_infront=1; fi
+    if [ "$bv_cms" -gt "$dpcz_ms" ]; then bv_infront=1; fi
     bv_fov=$((bv_adz + bv_adz / 2 + 1))
     if [ "$bv_adx" -le "$bv_fov" ]; then bv_inrow=1; fi
   fi
   if [ "$dyaw" -eq 3 ]; then
-    if [ "$bv_x" -lt "$dpx" ]; then bv_infront=1; fi
+    if [ "$bv_ams" -lt "$dpcx_ms" ]; then bv_infront=1; fi
     bv_fov=$((bv_adx + bv_adx / 2 + 1))
     if [ "$bv_adz" -le "$bv_fov" ]; then bv_inrow=1; fi
   fi
