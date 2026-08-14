@@ -515,6 +515,33 @@ can_step() { cs_a=$1; cs_b=$2; cs=0
   return 0
 }
 
+# is map cell (vx,vz) on screen from the CURRENT (interpolated) camera?
+# The same transform as try_draw's frustum test: the cell's near face in
+# front of the camera and inside the FOV cone.  Used to decide whether a
+# mime move is VISIBLE — an off-screen move with the minimap off changes
+# nothing on screen, so the 3D re-render (and its ~768-cell scan + GL
+# dispatch) can be skipped.
+cell_visible() { cv_x=$1; cv_z=$2
+  cv_ddx=$(( cv_x * 1000 - dpcx_ms ))
+  cv_ddz=$(( cv_z * 1000 - dpcz_ms ))
+  cv_deg=$(( dpyw_ms / 1000 ))
+  cv_deg=$(( cv_deg % 360 ))
+  if [ "$cv_deg" -lt 0 ]; then cv_deg=$(( cv_deg + 360 )); fi
+  cv_cs=${SCOS[$cv_deg]}
+  cv_sn=${SSIN[$cv_deg]}
+  cv_w=$(( (cv_ddx * cv_sn - cv_ddz * cv_cs) / 1000 ))
+  if [ "$cv_cs" -lt 0 ]; then cv_csa=$((0 - cv_cs)); else cv_csa=$cv_cs; fi
+  if [ "$cv_sn" -lt 0 ]; then cv_sna=$((0 - cv_sn)); else cv_sna=$cv_sn; fi
+  cv_wext=$(( 500 * (cv_csa + cv_sna) / 1000 ))
+  cv_wfront=$(( cv_w + cv_wext ))
+  if [ "$cv_wfront" -le 0 ]; then cv=0; return 0; fi
+  cv_rx=$(( (cv_ddx * cv_cs + cv_ddz * cv_sn) / 1000 ))
+  if [ "$cv_rx" -lt 0 ]; then cv_arx=$((0 - cv_rx)); else cv_arx=$cv_rx; fi
+  cv_fov=$(( cv_w + cv_w / 2 + 1000 ))
+  if [ "$cv_arx" -gt "$cv_fov" ]; then cv=0; return 0; fi
+  cv=1
+}
+
 update_mimes() {
   # any mime actually moved this step (or died reaching the player)?
   # the loop's render is gated on this — the step render otherwise
@@ -581,8 +608,24 @@ update_mimes() {
           # a mime MOVING changes the 3D view too — bump the view-cache
           # version (kill_mime_at bumps it on death; without this, the
           # cached 3D view shows mimes frozen while the radar shows them
-          # moving)
-          mimes_ver=$((mimes_ver + 1))
+          # moving).  But only when the move is VISIBLE: the radar
+          # (minimap on) shows the blip, or the cube is on screen (old
+          # OR new cell — entering/leaving the view both need a render).
+          # An off-screen move with the minimap off changes nothing on
+          # screen, so skip the bump and the full 3D re-render it forces.
+          um_vis=0
+          if [ "$MINIMAP_MODE" -ne 0 ]; then um_vis=1; fi
+          if [ "$um_vis" -eq 0 ]; then
+            cell_visible $um_a $um_b
+            if [ "$cv" -eq 1 ]; then um_vis=1; fi
+          fi
+          if [ "$um_vis" -eq 0 ]; then
+            cell_visible $um_cx $um_cz
+            if [ "$cv" -eq 1 ]; then um_vis=1; fi
+          fi
+          if [ "$um_vis" -eq 1 ]; then
+            mimes_ver=$((mimes_ver + 1))
+          fi
           um_moved=1
           mimes_moved=1
         fi
@@ -1276,6 +1319,10 @@ load_tex() { lt_name=$1; lt_idx=$2
   # regenerates instead of reusing an old texture.
   if [ -f /tmp/mimecroft-tex-$lt_name-$lt_ts-$tex_seed-$tex_ver ]; then
     cat /tmp/mimecroft-tex-$lt_name-$lt_ts-$tex_seed-$tex_ver > /dev/webgl/texture/$lt_idx
+    if [ "$lt_menu" -eq 1 ]; then
+      sm_tex_thumb_line $lt_menu_slot $lt_idx
+      echo "$tt_line" > /dev/webgl/hud
+    fi
     return 0
   fi
   lt_s=$(bash /examples/textures/texture-$lt_name.sh --tsv --size $lt_ts --seed $tex_seed)
@@ -1290,9 +1337,11 @@ load_tex() { lt_name=$1; lt_idx=$2
   strip_tex_field
   strip_tex_field
   lt_s=${lt_s#?}
-  # loading-screen geometry: 4×2 grid of 180-milli previews, 16×16 cells
-  lt_basex=$(( 140 + (lt_idx - 1) % 4 * 470 ))
-  lt_basey=$(( 1600 - (lt_idx - 1) / 4 * 470 ))
+  if [ "$lt_menu" -ne 1 ]; then
+    # loading-screen geometry: 4×2 grid of 180-milli previews, 16×16 cells
+    lt_basex=$(( 140 + (lt_idx - 1) % 4 * 470 ))
+    lt_basey=$(( 1600 - (lt_idx - 1) / 4 * 470 ))
+  fi
   lt_cell=$(( 180 / lt_size ))
   lt_payload="$lt_size"
   lt_preview=""
@@ -1334,6 +1383,13 @@ load_tex() { lt_name=$1; lt_idx=$2
   # /home copy could replay a stale payload from an older generator
   echo "$lt_payload" > /tmp/mimecroft-tex-$lt_name-$lt_ts-$tex_seed-$tex_ver
   echo "$lt_payload" > /dev/webgl/texture/$lt_idx
+  if [ "$lt_menu" -eq 1 ]; then
+    # menu mode: ALSO draw the complete texture as one HUD image at the
+    # side slot — the menu redraw re-emits it, so the thumbs persist
+    sm_tex_thumb_line $lt_menu_slot $lt_idx
+    lt_preview="$lt_preview$tt_line
+"
+  fi
   # show the freshly generated texture on the loading screen (one swap
   # keeps the keyboard grab fresh, so keys typed during startup queue)
   echo "$lt_preview" > /dev/webgl/hud
@@ -1345,6 +1401,10 @@ load_tex4() { lt_name=$1; lt_idx=$2
   sleep 0.01
   if [ -f /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed-$tex_ver ]; then
     cat /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed-$tex_ver > /dev/webgl/texture/$lt_idx
+    if [ "$lt_menu" -eq 1 ]; then
+      sm_tex_thumb_line $lt_menu_slot $lt_idx
+      echo "$tt_line" > /dev/webgl/hud
+    fi
     return 0
   fi
   lt_s=$(bash /examples/textures/texture-$lt_name.sh --tsv --size $tex_size --seed $tex_seed)
@@ -1375,9 +1435,17 @@ load_tex4() { lt_name=$1; lt_idx=$2
   done
   echo "$lt_payload" > /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed-$tex_ver
   echo "$lt_payload" > /dev/webgl/texture/$lt_idx
+  if [ "$lt_menu" -eq 1 ]; then
+    sm_tex_thumb_line $lt_menu_slot $lt_idx
+    echo "$tt_line" > /dev/webgl/hud
+  fi
 }
 
 load_textures() {
+  # the menu's background load sets lt_menu — the post-menu replay (and
+  # any mid-game regen) uses the plain loading-screen geometry
+  lt_menu=0
+  lt_menu_slot=0
   # wipe the GL back buffer first so the loading grid builds on black
   # instead of accumulating over the menu card (the HUD composite blends
   # the layer over the preserved drawing buffer)
@@ -2830,6 +2898,45 @@ settings_dec() {
   fi
 }
 
+# ─── background texture loading (menu screen) ──────────────────────
+# While the settings menu is up, the block textures load ONE per menu
+# loop iteration (the loop's sleep yields between) and their previews
+# materialize along the MENU'S SIDES: slot n → row n/2, left column
+# (n even) at x≈170 or right column (n odd) at x≈1830. The load_tex
+# calls write /tmp cache files, so main's load_textures after the menu
+# replays every texture instantly (cache hits).
+sm_tex_total=14
+sm_tex_name=(stone sandstone water brick grass leaves wood dirt obsidian jpeg png octet text crack)
+sm_tex_idx=(1 2 3 4 5 6 7 8 10 11 12 13 14 9)
+sm_tex_rgba=(0 0 0 0 0 0 0 0 0 0 0 0 0 1)
+sm_tex_n=0
+
+# pick the side slot for the n-th texture and set the load_tex preview
+# geometry to it (the per-pixel rect grid materializes there)
+sm_tex_slot() { ts_n=$1
+  lt_menu=1
+  lt_menu_slot=$ts_n
+  ts_col=$(( ts_n % 2 ))
+  ts_row=$(( ts_n / 2 ))
+  if [ "$ts_col" -eq 0 ]; then lt_basex=170; else lt_basex=1830; fi
+  lt_basey=$(( 1700 - ts_row * 140 ))
+}
+
+# the thumb line for the n-th slot: ONE HUD image (I cx cy w h tex —
+# the complete texture, alpha blended) at the side position. load_tex
+# appends it to its preview; the menu redraw re-emits the loaded slots
+# so the thumbs survive the C-clear of a setting change.
+sm_tex_thumb_line() { tt_n=$1; tt_idx=$2
+  tt_col=$(( tt_n % 2 ))
+  tt_row=$(( tt_n / 2 ))
+  if [ "$tt_col" -eq 0 ]; then tt_bx=170; else tt_bx=1830; fi
+  tt_by=$(( 1700 - tt_row * 140 ))
+  fmt_ndc $(( tt_bx + 90 )); tt_cx=$fv
+  fmt_ndc $(( tt_by - 90 )); tt_cy=$fv
+  fmt_pos 180; tt_w=$fv
+  tt_line="I $tt_cx $tt_cy $tt_w $tt_w $tt_idx"
+}
+
 # the menu card: terminal (values + cursor) and canvas (labels, the
 # live VALUES and a bright cursor block — the pixel font needs a fixed
 # glyph count, so the variable-width seed gets its digit count computed)
@@ -2928,6 +3035,15 @@ draw_settings_menu() {
   else draw_rect "-0.520" "-0.217" "0.016" "0.030" 1.0 0.85 0.30; fi
   draw_text "UP/DOWN SELECT - LEFT/RIGHT CHANGE" 34 340 250 7 10 0.85 0.85 0.85
   draw_text "SPACE/ESC START - Q QUIT" 24 500 180 7 10 0.85 0.85 0.85
+  # the background-loaded texture thumbs: re-emit the loaded slots (as
+  # HUD images) after the C-clear so they persist across redraws
+  sm_i=0
+  while [ "$sm_i" -lt "$sm_tex_n" ]; do
+    sm_tex_thumb_line $sm_i ${sm_tex_idx[$sm_i]}
+    ov_text="${ov_text}$tt_line
+"
+    sm_i=$((sm_i + 1))
+  done
   echo "$ov_text" > /dev/webgl/hud
 }
 
@@ -2939,6 +3055,10 @@ settings_menu() {
   sm_crt_old=$CRT_ON
   sm_corrupt_old=$CORRUPT_ON
   sm_mm_old=$MINIMAP_MODE
+  # the background texture load restarts when the size/seed changes
+  # (the /tmp cache keys change → fresh generation at the new settings)
+  sm_told_size=$tex_size
+  sm_told_seed=$tex_seed
   # show the canvas first so /dev/webgl/key starts capturing. The HUD
   # composite BLENDS the layer over the back buffer and the drawing
   # buffer is preserved now (preserveDrawingBuffer:true) — so the back
@@ -3006,11 +3126,32 @@ settings_menu() {
         draw_settings_menu
       fi
     fi
+    # background texture load: one texture per loop iteration — the
+    # menu stays interactive while the thumbs materialize along the
+    # sides (each load_tex does its own yield + HUD preview + swap)
+    if [ "$tex_size" -ne "$sm_told_size" ] || [ "$tex_seed" -ne "$sm_told_seed" ]; then
+      sm_tex_n=0
+      sm_told_size=$tex_size
+      sm_told_seed=$tex_seed
+    fi
+    if [ "$sm_tex_n" -lt "$sm_tex_total" ]; then
+      sm_tex_slot $sm_tex_n
+      if [ "${sm_tex_rgba[$sm_tex_n]}" -eq 1 ]; then
+        load_tex4 ${sm_tex_name[$sm_tex_n]} ${sm_tex_idx[$sm_tex_n]}
+      else
+        load_tex ${sm_tex_name[$sm_tex_n]} ${sm_tex_idx[$sm_tex_n]}
+      fi
+      sm_tex_n=$((sm_tex_n + 1))
+    fi
     # wipe the back buffer before presenting (see above)
     echo "clear" > /dev/webgl/call
     echo "swap" > /dev/webgl/call
     sleep 0.05
   done
+  # the menu's background load is done — main's load_textures replays
+  # the /tmp cache with the plain loading-screen geometry
+  lt_menu=0
+  lt_menu_slot=0
   # push the camera shift to the GPU (setup_webgl also writes it)
   fmt_pos $cam_shift_ms
     echo "$fv" > /dev/webgl/uniform/1f/uCamShift
