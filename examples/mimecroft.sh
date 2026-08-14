@@ -120,7 +120,8 @@ ANIM_MS=200         # each action completes in 0.2s of wall time
 ANIM_MS_CROUCH=400  # a move through a 1-tall (mined) passage — half speed
 anim_ms=200         # the CURRENT glide's duration (moves slow when crouched)
 crouched=0          # 1 when the ceiling overhead is low — the eye ducks
-ax0=0; az0=0; ay0=0; ax1=0; az1=0; ay1=0; anim_ayd=0
+an=(0 0 0 0 0 0)   # the glide state: an[0..2]=start x/z/yaw, an[3..5]=target (an ARRAY — the transpiled lift desyncs scalar anim vars; arrays stay store-consistent)
+anim_ayd=0
 fps=0               # rendered frames/sec (measured over ~10-frame windows)
 fps_t0=0
 fps_rendered=0
@@ -386,10 +387,10 @@ try_move() { tm_a=$1; tm_b=$2
 # Discrete state (px/pz/yaw) updates when the glide ENDS; render_frame
 # reads the interpolated display values (dpx/dpz/dyaw + fractional milli
 # positions) so the view eases instead of snapping.
-start_anim() { ax0=$1; az0=$2; ay0=$3; ax1=$4; az1=$5; ay1=$6
+start_anim() { an[0]=$1; an[1]=$2; an[2]=$3; an[3]=$4; an[4]=$5; an[5]=$6
   anim_ms=$ANIM_MS
   # shortest yaw arc across the 0↔3 seam (3→0 turns +90°, not -270°)
-  anim_ayd=$((ay1 - ay0))
+  anim_ayd=$((an[5] - an[2]))
   if [ "$anim_ayd" -gt 2 ]; then anim_ayd=$((anim_ayd - 4)); fi
   if [ "$anim_ayd" -lt -2 ]; then anim_ayd=$((anim_ayd + 4)); fi
   anim_t0=$(cat /dev/time)
@@ -427,9 +428,9 @@ compute_display() {
   if [ "$anim" -eq 1 ]; then
     anim_el=$((anim_now - anim_t0))
     if [ "$anim_el" -gt "$anim_ms" ]; then anim_el=$anim_ms; fi
-    dpcx_ms=$((ax0 * 1000 + (ax1 - ax0) * 1000 * anim_el / anim_ms))
-    dpcz_ms=$((az0 * 1000 + (az1 - az0) * 1000 * anim_el / anim_ms))
-    dpyw_raw_ms=$((ay0 * 90000 + anim_ayd * 90000 * anim_el / anim_ms))
+    dpcx_ms=$((an[0] * 1000 + (an[3] - an[0]) * 1000 * anim_el / anim_ms))
+    dpcz_ms=$((an[1] * 1000 + (an[4] - an[1]) * 1000 * anim_el / anim_ms))
+    dpyw_raw_ms=$((an[2] * 90000 + anim_ayd * 90000 * anim_el / anim_ms))
     dpyw_ms=$dpyw_raw_ms
     # keep the shader yaw in 0..360000: a left turn's 0→-90° arc
     # becomes a 360→270° glide (identical rotation, positive input)
@@ -2205,9 +2206,9 @@ main() {
       anim_el=$((anim_now - anim_t0))
       dirty=1
       if [ "$anim_el" -ge "$anim_ms" ]; then
-        px=$ax1
-        pz=$az1
-        yaw=$ay1
+        px=${an[3]}
+        pz=${an[4]}
+        yaw=${an[5]}
         anim=0
       fi
     fi
