@@ -49,15 +49,17 @@ tex_seed=20240812     # texture generation seed (drives the LCG noise)
 # texture cache version — bump when the texture GENERATORS change (e.g.
 # the mime type names) so stale /home + /tmp caches regenerate instead
 # of uploading the old pattern
-tex_ver=5
-sm_sel=0              # settings-menu cursor (0=shift 1=size 2=seed)
+tex_ver=6
+sm_sel=0              # settings-menu cursor (0=shift 1=size 2=seed 3=crt 4=corrupt 5=mime speed)
 sm_done=0
 sm_changed=0
 headless=1            # set from /dev/webgl/state in main()
 RANGE=12                          # shoot range
 TREASURE_TOTAL=10
 MIME_CAP=12
-MIME_STEP=15          # mimes step every N frames (~6.7/sec — calmer view)
+mime_speed=15         # mime step cadence (frames per step) — SIGNED:
+                      # positive = hunt the player, negative = they RUN
+                      # AWAY (cowardly MIMEs flee), 0 = frozen in place
 MIMES_ON=1             # the evil MIMEs hunt you (their type name is on the texture)
 CRT_ON=0               # 1 = CRT scanlines + vignette on the rendered view; set 0 for a clean picture
 CORRUPT_ON=0           # 1 = random corruption streaks on the view; set 0 to disable
@@ -303,6 +305,18 @@ update_mimes() {
     fi
     um_p3x=$((um_a - um_sxp)); um_p3z=$um_b
     um_p4x=$um_a; um_p4z=$((um_b - um_szp))
+    # FLEEING mimes (mime_speed < 0) swap the pairs: the away cells
+    # come FIRST, the toward-player cells become the dead-end
+    # backtracking — so they run from the player, and only lunge when
+    # cornered (which is also the only way they can hurt you now)
+    if [ "$mime_speed" -lt 0 ]; then
+      um_tx=$um_p1x; um_tz=$um_p1z
+      um_p1x=$um_p3x; um_p1z=$um_p3z
+      um_p3x=$um_tx; um_p3z=$um_tz
+      um_tx=$um_p2x; um_tz=$um_p2z
+      um_p2x=$um_p4x; um_p2z=$um_p4z
+      um_p4x=$um_tx; um_p4z=$um_tz
+    fi
     um_moved=0
     um_n=1
     while [ "$um_n" -le 4 ] && [ "$um_moved" -eq 0 ]; do
@@ -856,7 +870,7 @@ setup_webgl() {
     echo "link" > /dev/webgl/program
   echo "f32 -0.5 0.5 0.5 0.5 0.5 0.5 0.5 0.5 -0.5 -0.5 0.5 -0.5 -0.5 -0.5 0.5 0.5 -0.5 0.5 0.5 -0.5 -0.5 -0.5 -0.5 -0.5 -0.5 0.5 0.5 0.5 0.5 0.5 0.5 -0.5 0.5 -0.5 -0.5 0.5 -0.5 -0.5 -0.5 0.5 -0.5 -0.5 0.5 0.5 -0.5 -0.5 0.5 -0.5 0.5 -0.5 0.5 0.5 0.5 0.5 0.5 0.5 -0.5 0.5 -0.5 -0.5 -0.5 -0.5 0.5 -0.5 0.5 0.5 -0.5 0.5 -0.5 -0.5 -0.5 -0.5" > /dev/webgl/buffer/aPosition
   echo "f32 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 1 1 1 1 1 1 1 1 1 1 1 1 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.95 0.95 0.95 0.95 0.95 0.95 0.95 0.95 0.95 0.95 0.95 0.95 0.85 0.85 0.85 0.85 0.85 0.85 0.85 0.85 0.85 0.85 0.85 0.85" > /dev/webgl/buffer/aShade
-  echo "f32 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1" > /dev/webgl/buffer/aUv
+  echo "f32 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1 1 1 0 1 0 0 1 0 0 1 0 0 1 0 1 1 1 1 1 0 0 0 0 1" > /dev/webgl/buffer/aUv
     echo "0" > /dev/webgl/uniform/1i/uTex
   echo "9" > /dev/webgl/uniform/1i/uCrack
   echo "0" > /dev/webgl/uniform/1i/uDamage
@@ -1527,7 +1541,7 @@ draw_minimap() {
   ov_text="${ov_text}T $dm_cxs $dm_cys 0.042 1.0 1.0 1.0 $dm_deg
 "
   # mimes — bright red blips (ring + coloured core); only MOVED cells
-  # are erased and redrawn (they step every MIME_STEP frames)
+  # are erased and redrawn (they step every |mime_speed| frames)
   mi=0
   while [ "$mi" -lt "$mime_count" ]; do
     dm_mx=${mx[$mi]}
@@ -1807,6 +1821,26 @@ settings_inc() {
   if [ "$sm_sel" -eq 4 ]; then
     CORRUPT_ON=1
   fi
+  if [ "$sm_sel" -eq 5 ]; then
+    # speed ladder: |n| = frames per step (lower = faster), sign =
+    # direction (positive = hunt, negative = flee, 0 = frozen)
+    if [ "$mime_speed" -eq 30 ]; then mime_speed=15
+    elif [ "$mime_speed" -eq 15 ]; then mime_speed=10
+    elif [ "$mime_speed" -eq 10 ]; then mime_speed=6
+    elif [ "$mime_speed" -eq 6 ]; then mime_speed=4
+    elif [ "$mime_speed" -eq 4 ]; then mime_speed=2
+    elif [ "$mime_speed" -eq 2 ]; then mime_speed=1
+    elif [ "$mime_speed" -eq 1 ]; then mime_speed=0
+    elif [ "$mime_speed" -eq 0 ]; then mime_speed=-1
+    elif [ "$mime_speed" -eq -1 ]; then mime_speed=-2
+    elif [ "$mime_speed" -eq -2 ]; then mime_speed=-4
+    elif [ "$mime_speed" -eq -4 ]; then mime_speed=-6
+    elif [ "$mime_speed" -eq -6 ]; then mime_speed=-10
+    elif [ "$mime_speed" -eq -10 ]; then mime_speed=-15
+    elif [ "$mime_speed" -eq -15 ]; then mime_speed=-30
+    else mime_speed=30
+    fi
+  fi
 }
 
 settings_dec() {
@@ -1829,6 +1863,25 @@ settings_dec() {
   fi
   if [ "$sm_sel" -eq 4 ]; then
     CORRUPT_ON=0
+  fi
+  if [ "$sm_sel" -eq 5 ]; then
+    # the ladder, reversed
+    if [ "$mime_speed" -eq -30 ]; then mime_speed=-15
+    elif [ "$mime_speed" -eq -15 ]; then mime_speed=-10
+    elif [ "$mime_speed" -eq -10 ]; then mime_speed=-6
+    elif [ "$mime_speed" -eq -6 ]; then mime_speed=-4
+    elif [ "$mime_speed" -eq -4 ]; then mime_speed=-2
+    elif [ "$mime_speed" -eq -2 ]; then mime_speed=-1
+    elif [ "$mime_speed" -eq -1 ]; then mime_speed=0
+    elif [ "$mime_speed" -eq 0 ]; then mime_speed=1
+    elif [ "$mime_speed" -eq 1 ]; then mime_speed=2
+    elif [ "$mime_speed" -eq 2 ]; then mime_speed=4
+    elif [ "$mime_speed" -eq 4 ]; then mime_speed=6
+    elif [ "$mime_speed" -eq 6 ]; then mime_speed=10
+    elif [ "$mime_speed" -eq 10 ]; then mime_speed=15
+    elif [ "$mime_speed" -eq 15 ]; then mime_speed=30
+    else mime_speed=-30
+    fi
   fi
 }
 
@@ -1854,6 +1907,11 @@ draw_settings_menu() {
   if [ "$sm_sel" -eq 4 ]; then sm_mark=">"; else sm_mark=" "; fi
   if [ "$CORRUPT_ON" -eq 1 ]; then sm_crp="ON"; else sm_crp="OFF"; fi
   echo "  $sm_mark  corruption  : $sm_crp"
+  if [ "$sm_sel" -eq 5 ]; then sm_mark=">"; else sm_mark=" "; fi
+  if [ "$mime_speed" -lt 0 ]; then sm_spd="flee"
+  elif [ "$mime_speed" -gt 0 ]; then sm_spd="hunt"
+  else sm_spd="off"; fi
+  echo "  $sm_mark  mime speed  : $mime_speed $sm_spd"
   # canvas card — the leading C must be on its OWN line (a real
   # newline) or the device never clears the layer and old rects stay
   sm_shift_s=$fv
@@ -1872,6 +1930,11 @@ draw_settings_menu() {
   fi
   if [ "$CRT_ON" -eq 1 ]; then sm_crt_s="ON"; sm_crt_len=2; else sm_crt_s="OFF"; sm_crt_len=3; fi
   if [ "$CORRUPT_ON" -eq 1 ]; then sm_crp_s="ON"; sm_crp_len=2; else sm_crp_s="OFF"; sm_crp_len=3; fi
+  sm_spd_s=$(echo "$mime_speed")
+  sm_splen=1
+  if [ "$mime_speed" -lt 0 ]; then sm_splen=2; fi
+  if [ "$mime_speed" -ge 10 ]; then sm_splen=2; fi
+  if [ "$mime_speed" -le -10 ]; then sm_splen=3; fi
   ov_text="C
 "
   draw_text "SETTINGS" 8 840 1750 10 14 0.95 0.85 0.30
@@ -1880,16 +1943,19 @@ draw_settings_menu() {
   draw_text "TEXTURE SEED" 12 560 1400 8 11 0.60 0.75 0.95
   draw_text "CRT EFFECT" 10 560 1300 8 11 0.60 0.75 0.95
   draw_text "CORRUPTION" 10 560 1200 8 11 0.60 0.75 0.95
+  draw_text "MIME SPEED" 10 560 1100 8 11 0.60 0.75 0.95
   draw_text $sm_shift_s 5 1000 1600 8 11 0.95 0.95 0.95
   draw_text $sm_size_s 2 1000 1500 8 11 0.95 0.95 0.95
   draw_text $sm_seed_s $sm_slen 1000 1400 8 11 0.95 0.95 0.95
   draw_text $sm_crt_s $sm_crt_len 1000 1300 8 11 0.95 0.95 0.95
   draw_text $sm_crp_s $sm_crp_len 1000 1200 8 11 0.95 0.95 0.95
+  draw_text $sm_spd_s $sm_splen 1000 1100 8 11 0.95 0.95 0.95
   if [ "$sm_sel" -eq 0 ]; then draw_rect "-0.520" "0.583" "0.016" "0.030" 1.0 0.85 0.30
   elif [ "$sm_sel" -eq 1 ]; then draw_rect "-0.520" "0.483" "0.016" "0.030" 1.0 0.85 0.30
   elif [ "$sm_sel" -eq 2 ]; then draw_rect "-0.520" "0.383" "0.016" "0.030" 1.0 0.85 0.30
   elif [ "$sm_sel" -eq 3 ]; then draw_rect "-0.520" "0.283" "0.016" "0.030" 1.0 0.85 0.30
-  else draw_rect "-0.520" "0.183" "0.016" "0.030" 1.0 0.85 0.30; fi
+  elif [ "$sm_sel" -eq 4 ]; then draw_rect "-0.520" "0.183" "0.016" "0.030" 1.0 0.85 0.30
+  else draw_rect "-0.520" "0.083" "0.016" "0.030" 1.0 0.85 0.30; fi
   draw_text "UP/DOWN SELECT - LEFT/RIGHT CHANGE" 34 340 250 7 10 0.85 0.85 0.85
   draw_text "SPACE/ESC START - Q QUIT" 24 500 180 7 10 0.85 0.85 0.85
   echo "$ov_text" > /dev/webgl/hud
@@ -1938,22 +2004,22 @@ settings_menu() {
           ;;
         *ArrowUp*)
           sm_sel=$((sm_sel - 1))
-          if [ "$sm_sel" -lt 0 ]; then sm_sel=4; fi
+          if [ "$sm_sel" -lt 0 ]; then sm_sel=5; fi
           sm_changed=1
           ;;
         *ArrowDown*)
           sm_sel=$((sm_sel + 1))
-          if [ "$sm_sel" -gt 4 ]; then sm_sel=0; fi
+          if [ "$sm_sel" -gt 5 ]; then sm_sel=0; fi
           sm_changed=1
           ;;
         *w*)
           sm_sel=$((sm_sel - 1))
-          if [ "$sm_sel" -lt 0 ]; then sm_sel=4; fi
+          if [ "$sm_sel" -lt 0 ]; then sm_sel=5; fi
           sm_changed=1
           ;;
         *s*)
           sm_sel=$((sm_sel + 1))
-          if [ "$sm_sel" -gt 4 ]; then sm_sel=0; fi
+          if [ "$sm_sel" -gt 5 ]; then sm_sel=0; fi
           sm_changed=1
           ;;
         *d*)
@@ -1995,7 +2061,7 @@ settings_menu() {
     fi
   fi
   echo ""
-  echo "  settings: camera shift $fv · textures ${tex_size}px · seed $tex_seed"
+  echo "  settings: camera shift $fv · textures ${tex_size}px · seed $tex_seed · mime speed $mime_speed"
 }
 
 main() {
@@ -2141,7 +2207,13 @@ main() {
       fi
     fi
     gspan "disp"
-    mstep=$((frame % MIME_STEP))
+    # mime step cadence — mime_speed is SIGNED: positive = hunt,
+    # negative = flee, 0 = frozen. The modulus uses the magnitude
+    # (frame % |speed|); the sign only steers update_mimes' direction.
+    mspeed_abs=$mime_speed
+    if [ "$mspeed_abs" -lt 0 ]; then mspeed_abs=$((0 - mspeed_abs)); fi
+    mstep=1
+    if [ "$mspeed_abs" -ne 0 ]; then mstep=$((frame % mspeed_abs)); fi
     if [ "$MIMES_ON" -eq 1 ]; then
       if [ "$mstep" -eq 0 ]; then
         update_mimes

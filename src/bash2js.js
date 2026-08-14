@@ -176,9 +176,26 @@ export async function runBash(fs, source, { stdout, stderr, runCmd, args = [], a
   // the boundary exactly like in bash.
   for (const m of markers) {
     if (!m) continue;
-    const echoCall = `sh2.exec("echo", [${JSON.stringify(m)}])`;
-    if (js.includes(echoCall)) {
-      js = js.replace(echoCall, `stdout.write(${JSON.stringify(m + "\n")})`);
+    const write = `stdout.write(${JSON.stringify(m + "\n")})`;
+    const out = JSON.stringify(m + "\n");
+    // echo forms the emitters produce: the async exec dispatch, the
+    // sync builtin, and the native process.stdout.write lowering (the
+    // last writes to the real stdout — route it through the passed
+    // stdout object like the exec form). The native statement carries
+    // `, sh2.lastExit = 0[, true]` bookkeeping that would clobber $? —
+    // the whole marker statement is replaced by the bare write so the
+    // exit status survives the boundary like in real bash.
+    // full statement forms FIRST — the bare process.stdout.write is a
+    // substring of them, and the `, sh2.lastExit = 0` tail must go too.
+    const forms = [
+      `sh2.exec("echo", [${JSON.stringify(m)}])`,
+      `sh2.builtin("echo", [${JSON.stringify(m)}])`,
+      `(process.stdout.write(${out}), sh2.lastExit = 0, true)`,
+      `(process.stdout.write(${out}), sh2.lastExit = 0)`,
+      `process.stdout.write(${out})`,
+    ];
+    for (const f of forms) {
+      if (js.includes(f)) { js = js.replace(f, write); break; }
     }
   }
   const out = stdout || { write: () => {} };

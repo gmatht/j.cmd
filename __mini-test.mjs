@@ -53,20 +53,30 @@ const replExec = async (cmdline) => {
   return { out: "", err: "", code: 0 };
 };
 const rOut = [], rErr = [];
+// the native-echo lowering writes process.stdout directly — tee it into
+// the same array the runtime's stdout object feeds (the runtime swaps
+// THAT object's write during captures; the top-level native echoes use
+// the global, which this tees).
+const rOw = process.stdout.write.bind(process.stdout);
+process.stdout.write = (s) => { rOut.push(String(s)); return true; };
 await runBash(fs, `false\necho '__pre__'\necho $?\necho '__post__'\n`, {
   runCmd: replExec,
   markers: ["__pre__", "__post__"],
   stdout: { write: (s) => rOut.push(s) },
   stderr: { write: (s) => rErr.push(s) },
 });
+process.stdout.write = rOw;
 const between = rOut.join("").split("__pre__\n")[1].split("__post__")[0];
 console.log("marker $? regression:", JSON.stringify(between), between === "1\n" ? "PASS" : "FAIL");
 
 // ─── regression: `return N` inside a function sets $? ──────────
 const fOut = [];
+const fOw = process.stdout.write.bind(process.stdout);
+process.stdout.write = (s) => { fOut.push(String(s)); return true; };
 await runBash(fs, `g() { return 7; }\ng\necho $?\nh() { false; }\nh\necho $?\n`, {
   runCmd: replExec,
   stdout: { write: (s) => fOut.push(s) },
   stderr: { write: (s) => {} },
 });
+process.stdout.write = fOw;
 console.log("function return $? regression:", JSON.stringify(fOut.join("")), fOut.join("") === "7\n1\n" ? "PASS" : "FAIL");

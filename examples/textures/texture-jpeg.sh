@@ -370,15 +370,15 @@ finish() {
 # ─── body ───────────────────────────────────────────
 tname=(J P E G)
 tgi=(0 0 0 0)
-tgi[0]=6753100060
-tgi[1]=1108854319
-tgi[2]=33321092159
-tgi[3]=32801457710
+tgi[0]=31524
+tgi[1]=4843
+tgi[2]=29391
+tgi[3]=31695
 TXT_LEN=4
-tt_cp=$(( SIZE / 6 ))
+tt_cp=$(( SIZE / 4 ))
 if [ "$tt_cp" -lt 1 ]; then tt_cp=1; fi
 tt_lines=$(( ( TXT_LEN + tt_cp - 1 ) / tt_cp ))
-tt_ty0=$(( ( SIZE - ( tt_lines * 8 - 1 ) ) / 2 ))
+tt_ty0=$(( ( SIZE - ( tt_lines * 6 - 1 ) ) / 2 ))
 if [ "$tt_ty0" -lt 0 ]; then tt_ty0=0; fi
 y=0
 while [ "$y" -lt "$SIZE" ]; do
@@ -432,22 +432,22 @@ while [ "$y" -lt "$SIZE" ]; do
     tt_py=$y
       tt_on=0
       if [ "$tt_py" -ge "$tt_ty0" ]; then
-        tt_gl=$(( ( tt_py - tt_ty0 ) / 8 ))
+        tt_gl=$(( ( tt_py - tt_ty0 ) / 6 ))
         if [ "$tt_gl" -ge 0 ] && [ "$tt_gl" -lt "$tt_lines" ]; then
-          tt_gr=$(( tt_py - tt_ty0 - tt_gl * 8 ))
-          if [ "$tt_gr" -lt 7 ]; then
+          tt_gr=$(( tt_py - tt_ty0 - tt_gl * 6 ))
+          if [ "$tt_gr" -lt 5 ]; then
             tt_rem=$(( TXT_LEN - tt_gl * tt_cp ))
             tt_llen=$tt_cp
             if [ "$tt_rem" -lt "$tt_llen" ]; then tt_llen=$tt_rem; fi
-            tt_lsx=$(( ( SIZE - ( tt_llen * 6 - 1 ) ) / 2 ))
-            tt_x1=$(( tt_lsx + tt_llen * 6 ))
+            tt_lsx=$(( ( SIZE - ( tt_llen * 4 - 1 ) ) / 2 ))
+            tt_x1=$(( tt_lsx + tt_llen * 4 ))
             if [ "$tt_px" -ge "$tt_lsx" ] && [ "$tt_px" -lt "$tt_x1" ]; then
-              tt_gc=$(( ( tt_px - tt_lsx ) / 6 ))
-              tt_gcol=$(( tt_px - tt_lsx - tt_gc * 6 ))
-              if [ "$tt_gcol" -lt 5 ]; then
+              tt_gc=$(( ( tt_px - tt_lsx ) / 4 ))
+              tt_gcol=$(( tt_px - tt_lsx - tt_gc * 4 ))
+              if [ "$tt_gcol" -lt 3 ]; then
                 tt_ci=$(( tt_gl * tt_cp + tt_gc ))
                 tt_gi=${tgi[$tt_ci]}
-                tt_bitpos=$(( tt_gr * 5 + tt_gcol ))
+                tt_bitpos=$(( tt_gr * 3 + tt_gcol ))
                 tt_bit=$(( ( tt_gi >> tt_bitpos ) & 1 ))
                 if [ "$tt_bit" -eq 1 ]; then tt_on=1; fi
               fi
@@ -468,22 +468,22 @@ while [ "$y" -lt "$SIZE" ]; do
         if [ "$tt_offx" -ne 1 ] || [ "$tt_offy" -ne 1 ]; then
       tt_on=0
       if [ "$tt_py" -ge "$tt_ty0" ]; then
-        tt_gl=$(( ( tt_py - tt_ty0 ) / 8 ))
+        tt_gl=$(( ( tt_py - tt_ty0 ) / 6 ))
         if [ "$tt_gl" -ge 0 ] && [ "$tt_gl" -lt "$tt_lines" ]; then
-          tt_gr=$(( tt_py - tt_ty0 - tt_gl * 8 ))
-          if [ "$tt_gr" -lt 7 ]; then
+          tt_gr=$(( tt_py - tt_ty0 - tt_gl * 6 ))
+          if [ "$tt_gr" -lt 5 ]; then
             tt_rem=$(( TXT_LEN - tt_gl * tt_cp ))
             tt_llen=$tt_cp
             if [ "$tt_rem" -lt "$tt_llen" ]; then tt_llen=$tt_rem; fi
-            tt_lsx=$(( ( SIZE - ( tt_llen * 6 - 1 ) ) / 2 ))
-            tt_x1=$(( tt_lsx + tt_llen * 6 ))
+            tt_lsx=$(( ( SIZE - ( tt_llen * 4 - 1 ) ) / 2 ))
+            tt_x1=$(( tt_lsx + tt_llen * 4 ))
             if [ "$tt_px" -ge "$tt_lsx" ] && [ "$tt_px" -lt "$tt_x1" ]; then
-              tt_gc=$(( ( tt_px - tt_lsx ) / 6 ))
-              tt_gcol=$(( tt_px - tt_lsx - tt_gc * 6 ))
-              if [ "$tt_gcol" -lt 5 ]; then
+              tt_gc=$(( ( tt_px - tt_lsx ) / 4 ))
+              tt_gcol=$(( tt_px - tt_lsx - tt_gc * 4 ))
+              if [ "$tt_gcol" -lt 3 ]; then
                 tt_ci=$(( tt_gl * tt_cp + tt_gc ))
                 tt_gi=${tgi[$tt_ci]}
-                tt_bitpos=$(( tt_gr * 5 + tt_gcol ))
+                tt_bitpos=$(( tt_gr * 3 + tt_gcol ))
                 tt_bit=$(( ( tt_gi >> tt_bitpos ) & 1 ))
                 if [ "$tt_bit" -eq 1 ]; then tt_on=1; fi
               fi

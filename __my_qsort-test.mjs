@@ -47,7 +47,10 @@ const { js: bashJs } = await bashToJS(fs, bashFn);
 const stdout = { _buf: "", write(s) { this._buf += s; } };
 const stderr = { _buf: "", write(s) { this._buf += s; } };
 // the estree printf path writes to process.stdout directly — tee it
-process.stdout.write = (s) => { stdout._buf += s; return true; };
+// through the runtime's stdout OBJECT (the runtime's capture swaps that
+// object's write during a capture, so the comparator's native echoes
+// land in the capture buffer, not the terminal).
+process.stdout.write = (s) => stdout.write(s);
 const shellExec = async (cmdline) => {
   const cl = cmdline.trim();
   if (cl.startsWith("echo ")) return { out: cl.slice(5) + "\n", err: "", code: 0 };

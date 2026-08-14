@@ -218,6 +218,55 @@ function markAsyncOnAwait(node) {
   return node;
 }
 
+// ─── forceAsyncFileRedirects: the runtime's `redirectSync` twin ONLY
+// handles fd-dup (`&N`) targets — a file target throws "redirection needs
+// the async redirect bridge". The wasm's sync-twin decision for redirects
+// with dynamic targets is order-dependent (hash-map ordering), so a file
+// target can slip through as `redirectSync`. Enforce the rule here: any
+// `sh2.redirectSync` whose specs contain a non-`&` target is rewritten to
+// the async `sh2.redirect` (wrapped in await), so the fs bridge handles
+// it — deterministic, regardless of the emitter's verdict.
+function forceAsyncFileRedirects(program) {
+  const rewrite = (node) => {
+    if (!node || typeof node !== "object") return node;
+    if (Array.isArray(node)) return node.map(rewrite);
+    if (node.type === "CallExpression" && node.callee && node.callee.type === "MemberExpression" &&
+        node.callee.object && node.callee.object.type === "Identifier" && node.callee.object.name === "sh2" &&
+        node.callee.property && node.callee.property.type === "Identifier" && node.callee.property.name === "redirectSync" &&
+        node.arguments && node.arguments.length === 2) {
+      const specs = node.arguments[1];
+      let fileTarget = false;
+      if (specs && specs.type === "ArrayExpression") {
+        for (const el of specs.elements) {
+          if (!el || el.type !== "ObjectExpression") continue;
+          for (const p of el.properties) {
+            const k = p.key && (p.key.name || p.key.value);
+            if (k !== "target") continue;
+            const v = p.value;
+            const lit = v && v.type === "TemplateLiteral" && v.expressions.length === 0 && v.quasis.length === 1
+              ? v.quasis[0].value.cooked : (v && v.type === "Literal" ? String(v.value) : null);
+            if (lit === null || !lit.startsWith("&")) fileTarget = true;
+          }
+        }
+      }
+      if (fileTarget) {
+        const out = {
+          type: "CallExpression",
+          callee: { ...node.callee, property: { ...node.callee.property, name: "redirect" } },
+          arguments: node.arguments.map(rewrite),
+          optional: node.optional,
+        };
+        return { type: "AwaitExpression", argument: out };
+      }
+    }
+    const out = {};
+    for (const k of Object.keys(node)) out[k] = rewrite(node[k]);
+    return out;
+  };
+  return rewrite(program);
+}
+
+
 function awaitSyncFnCalls(node, inAwait, inSync) {
   if (!node || typeof node !== "object") return node;
   if (Array.isArray(node)) return node.map((n) => awaitSyncFnCalls(n, false, inSync));
@@ -751,7 +800,8 @@ export async function estreeToJsMapped(program, stmtLines, a1Stmts) {
   // AwaitExpression here; markAsyncOnAwait then sets async on every
   // function whose body awaits (a non-async function with `await` inside
   // is a SyntaxError), and normalizeFunctions keeps the flag.
-  let normalized = normalizeFunctions(awaitAsyncDirectCalls(markAsyncOnAwait(awaitSyncFnCalls(stripProcessEnv(program), false))));
+
+  let normalized = normalizeFunctions(awaitAsyncDirectCalls(markAsyncOnAwait(forceAsyncFileRedirects(awaitSyncFnCalls(stripProcessEnv(program), false)))));
   normalized = unwrapStoreString(normalized);
   normalized = nullSentinel(normalized);
   normalized = returnInLoop(normalized, false);
