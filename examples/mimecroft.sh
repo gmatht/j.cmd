@@ -302,7 +302,7 @@ block_color() { bc_t=$1; case $bc_t in
   4) cr=0.95; cg=0.75; cb=0.10 ;;
   5) cr=0.20; cg=0.85; cb=0.85 ;;
   6) cr=0.85; cg=0.15; cb=0.20 ;;
-  7) cr=0.20; cg=1.00; cb=0.45 ;;
+  7) cr=1.00; cg=1.00; cb=1.00 ;;   # the treasure chest — white tint so the chest texture shows
   *) cr=1.00; cg=1.00; cb=1.00 ;;
 esac; }
 
@@ -1492,6 +1492,8 @@ load_textures() {
   load_tex dirt 8
   echo "    obsidian…"
   load_tex obsidian 10
+  echo "    chest…"
+  load_tex chest 15
   echo "    jpeg…"
   load_tex jpeg 11
   echo "    png…"
@@ -1699,7 +1701,7 @@ texture_of() { to_t=$1
   elif [ "$to_t" -eq 4 ]; then tx=2
   elif [ "$to_t" -eq 5 ]; then tx=3
   elif [ "$to_t" -eq 6 ]; then tx=4
-  elif [ "$to_t" -eq 7 ]; then tx=5
+  elif [ "$to_t" -eq 7 ]; then tx=15
   else tx=0; fi
 }
 
@@ -1787,7 +1789,7 @@ try_draw() { td_a=$1; td_b=$2; td_c=$3
   elif [ "$gv" -eq 4 ]; then cr=0.95; cg=0.75; cb=0.10
   elif [ "$gv" -eq 5 ]; then cr=0.20; cg=0.85; cb=0.85
   elif [ "$gv" -eq 6 ]; then cr=0.85; cg=0.15; cb=0.20
-  elif [ "$gv" -eq 7 ]; then cr=0.20; cg=1.00; cb=0.45
+  elif [ "$gv" -eq 7 ]; then cr=1.00; cg=1.00; cb=1.00
   else cr=1.00; cg=1.00; cb=1.00; fi
   # texture_of inlined
   if [ "$gv" -eq 2 ]; then tx=1
@@ -1795,7 +1797,7 @@ try_draw() { td_a=$1; td_b=$2; td_c=$3
   elif [ "$gv" -eq 4 ]; then tx=2
   elif [ "$gv" -eq 5 ]; then tx=3
   elif [ "$gv" -eq 6 ]; then tx=4
-  elif [ "$gv" -eq 7 ]; then tx=5
+  elif [ "$gv" -eq 7 ]; then tx=15
   else tx=0; fi
   # draw_block inlined (get_bhp + the batched append)
   td_bgi=$((td_b * CELLS + td_c * MAP_W + td_a))

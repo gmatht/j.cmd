@@ -23,11 +23,11 @@ if [ "$1" = "--tsv" ]; then
   if [ "$OUTDIR" = "" ]; then OUTDIR=.; fi
   echo "writing texture-*.tsv to $OUTDIR"
   # explicit list — glob expansion is unreliable in the transpiled shell
-  for t in wood grass stone brick leaves sandstone water dirt; do
+  for t in wood grass stone brick leaves sandstone water dirt chest; do
     bash "texture-$t.sh" --tsv > "$OUTDIR/texture-$t.tsv"
     echo "  texture-$t.tsv"
   done
-  echo "wrote 8 tsv files to $OUTDIR"
+  echo "wrote 9 tsv files to $OUTDIR"
 else
   # ─── PNG mode (host only) ────────────────────────────────────────
   # the transpiled sh2 printf (and external printfs) have no -v — the
@@ -60,9 +60,12 @@ else
         montage "texture-$t.png" "texture-$t.png" "texture-$t.png" "texture-$t.png" \
           -tile 2x2 -geometry +0+0 -background black "seam-$t.png"
       done
+      # the treasure chest is a one-shot picture, not a tile — convert
+      # it for the sheet but skip the seam check
+      convert "texture-chest.ppm" "texture-chest.png"
       montage texture-wood.png texture-grass.png texture-stone.png texture-brick.png \
-        texture-leaves.png texture-sandstone.png texture-water.png texture-dirt.png \
-        -tile 4x2 -geometry +6+6 -background "#1c1c1c" texture-sheet.png
+        texture-leaves.png texture-sandstone.png texture-water.png texture-dirt.png texture-chest.png \
+        -tile 5x2 -geometry +6+6 -background "#1c1c1c" texture-sheet.png
       echo "wrote: texture-{wood,grass,stone,brick,leaves,sandstone,water,dirt}.{ppm,png}  seam-{wood,grass,stone}.png  texture-sheet.png"
     fi
   fi
