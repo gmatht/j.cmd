@@ -11,6 +11,7 @@ src = src.replace("*headless*) sound=$((0)); headless=$((1)) ;;", "*headless*) s
 const { js } = await bashToJS(fs, src);
 const KEYS = ["w,", "ArrowRight,", "w,", "space,", "w,", "w,", "q,"];
 let keyFrame = 0, sleepCount = 0;
+const tStart = Date.now();
 const stdout = [];
 const shellExec = async (cmdline) => {
   const cl = cmdline.trim(); const cmd = cl.split(/\s+/)[0];
@@ -23,7 +24,7 @@ const shellExec = async (cmdline) => {
     if (p === "/dev/webgl/key") { out = (keyFrame < KEYS.length ? KEYS[keyFrame] : "q,") + "\n"; keyFrame++; }
     else { try { out = await fs.read(p); } catch { out = ""; } }
   }
-  else if (cmd === "sleep") { sleepCount++; if (sleepCount > 2000) throw new Error("test-stop"); await new Promise((r) => setTimeout(r, 0)); }
+  else if (cmd === "sleep") { sleepCount++; if (sleepCount > 2000 || (Date.now() - tStart) > 60000) throw new Error("test-stop"); await new Promise((r) => setTimeout(r, 0)); }
   else if (cmd === "sh2glsl") { out = ""; }
   else if (cmd === "true") {}
   else out = `${cmd}: command not found\n`;
@@ -31,8 +32,16 @@ const shellExec = async (cmdline) => {
 };
 const out = { write: (s) => stdout.push(s) };
 const rt = createSh2Runtime({ fs, env: {}, shellExec, stdout: out, stderr: { write: (s) => stdout.push("[err] " + s) }, args: [], argv0: "bash" });
+// wall-clock budget: the A1 path emits sleeps as NATIVE setTimeouts (no
+// shellExec), so the sleep-count stop never fires — race the run against
+// a 60s budget regardless of how the sleeps were lowered.
 const fn = new Function("args", "fs", "env", "stdout", "stderr", "__runCmd", "sh2", "return (async () => { " + js + " })();");
-try { await fn([], fs, {}, out, { write: (s) => stdout.push("[err] " + s) }, shellExec, rt.sh2); }
+try {
+  await Promise.race([
+    fn([], fs, {}, out, { write: (s) => stdout.push("[err] " + s) }, shellExec, rt.sh2),
+    new Promise((_, rej) => setTimeout(() => rej(new Error("test-stop")), 60000)),
+  ]);
+}
 catch (e) { if (e.message !== "test-stop") { console.log("RUN ERROR:", e.message); process.exit(1); } }
 const log = await fs.read("/dev/webgl/log");
 const hudLines = (log.match(/\[hud\] \d+ rects/g) || []).map((l) => Number(/(\d+) rects/.exec(l)[1]));

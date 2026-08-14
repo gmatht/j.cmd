@@ -38,7 +38,7 @@ import { a1LiteralValue } from "./shellcore/transpile.js";
 //     scan (estree-…-235901 — a typed-lifting loop desync).
 // FLIP THIS to route `.sh` execution through otranspilerl.wasm once
 // the worker lands 235901 (and keep debashcl as the throw-fallback).
-export const USE_OTRANSPILERL_BASH = false;
+export const USE_OTRANSPILERL_BASH = true;
 
 function escapeJsComment(text) {
   return text.split("\n").map((l) => "//   " + l).join("\n");
