@@ -54,10 +54,14 @@ for (const s of SCRIPTS) {
   const t = s.replace("texture-", "").replace(".sh", "");
   try {
     const ppm = execFileSync("bash", [`${DIR}/${s}`], { encoding: "buffer" });
+    // the MIME name textures (jpeg/png/octet/text) always generate at
+    // 32×32 — the prefix + type name need the 32 canvas; everything
+    // else keeps the 16×16 default
+    const size = ["jpeg", "png", "octet", "text"].includes(t) ? 32 : 16;
     const head = ppm.subarray(0, 14).toString("ascii");
-    if (!head.startsWith("P6\n16 16\n255\n")) throw new Error(`bad header: ${JSON.stringify(head)}`);
-    if (ppm.length !== expectedBytes(16)) throw new Error(`length ${ppm.length} != ${expectedBytes(16)}`);
-    ok(`${t}: 16×16 PPM, ${ppm.length} bytes`);
+    if (!head.startsWith(`P6\n${size} ${size}\n255\n`)) throw new Error(`bad header: ${JSON.stringify(head)}`);
+    if (ppm.length !== expectedBytes(size)) throw new Error(`length ${ppm.length} != ${expectedBytes(size)}`);
+    ok(`${t}: ${size}×${size} PPM, ${ppm.length} bytes`);
   } catch (e) {
     bad(`${t}: ${e.message}`);
   }

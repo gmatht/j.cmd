@@ -47,7 +47,8 @@ VIEW_R=16                         # draw radius — the whole 16x16 map (display
 RADAR_X=80                        # radar x base (milli-NDC) — the map sits top-LEFT
 # ─── settings (editable in the pre-game menu; browser only) ────────
 cam_shift_ms=0        # camera right shift (milli-NDC, ±50 per press, no limit) — 0 = the centred view; the old 500 (a quarter-screen right shift) moved the vanishing point off-centre
-tex_size=16           # texture resolution (4/8/16/32/64 px)
+tex_size=32           # texture resolution (32/64 px) — the MIME name
+# textures carry a 2×3-font prefix + type name, which need ≥32 px
 tex_seed=20240812     # texture generation seed (drives the LCG noise)
 # texture cache version — bump when the texture GENERATORS change (e.g.
 # the mime type names) so stale /home + /tmp caches regenerate instead
@@ -863,11 +864,11 @@ emit_fragment_shader() {
     fs_fb="$fs_fb float e = abs(gl_FragCoord.x - 400.0) + abs(gl_FragCoord.y - 300.0); if (e > 450.0) { float d = min(e - 450.0, 30.0); c *= (255.0 - d) / 255.0; }"
   fi
   fs_fb="$fs_fb gl_FragColor = vec4(c, 1.0); }"
-  # the sh→GLSL generator hardcodes the 16×16 texel grid (uv_x = vUv*16);
-  # it is only valid at the default resolution. For other texture sizes
-  # use the hand-written shader — it samples raw UVs and the device's
-  # NEAREST filter does the texel pick at any resolution.
-  if [ "$tex_size" -eq 16 ]; then
+  # the sh→GLSL generator hardcodes the 32×32 texel grid (uv_x = vUv*32);
+  # it is only valid at the 32px resolution (the default). For the 64px
+  # setting use the hand-written shader — it samples raw UVs and the
+  # device's NEAREST filter does the texel pick at any resolution.
+  if [ "$tex_size" -eq 32 ]; then
     glsl=$(sh2glsl /tmp/mimecroft-frag.sh)
     if [ "$glsl" != "" ]; then
       echo "$glsl" > /dev/webgl/shader/fragment
@@ -943,21 +944,26 @@ fmt_c() { fc_v=$1
 }
 
 load_tex() { lt_name=$1; lt_idx=$2
+  # every texture is generated at >=32px — the MIME name textures need
+  # the 32 canvas (the prefix + type name; "APPLICATION/OCTET-STREAM"
+  # just fits one line), and the shader's texel grid samples vUv*32
+  lt_ts=$tex_size
+  if [ "$lt_ts" -lt 32 ]; then lt_ts=32; fi
   # a macrotask yield so the preceding "    name…" line paints before
   # this texture's (transpiled) generation runs
   sleep 0.01
   # cached payload from an earlier run (session /tmp, persistent /home);
   # the cache key carries the resolution + seed so a settings change
   # regenerates instead of reusing a stale texture
-  if [ -f /home/mimecroft-tex-$lt_name-$tex_size-$tex_seed-$tex_ver ]; then
-    cat /home/mimecroft-tex-$lt_name-$tex_size-$tex_seed-$tex_ver > /dev/webgl/texture/$lt_idx
+  if [ -f /home/mimecroft-tex-$lt_name-$lt_ts-$tex_seed-$tex_ver ]; then
+    cat /home/mimecroft-tex-$lt_name-$lt_ts-$tex_seed-$tex_ver > /dev/webgl/texture/$lt_idx
     return 0
   fi
-  if [ -f /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed-$tex_ver ]; then
-    cat /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed-$tex_ver > /dev/webgl/texture/$lt_idx
+  if [ -f /tmp/mimecroft-tex-$lt_name-$lt_ts-$tex_seed-$tex_ver ]; then
+    cat /tmp/mimecroft-tex-$lt_name-$lt_ts-$tex_seed-$tex_ver > /dev/webgl/texture/$lt_idx
     return 0
   fi
-  lt_s=$(bash /examples/textures/texture-$lt_name.sh --tsv --size $tex_size --seed $tex_seed)
+  lt_s=$(bash /examples/textures/texture-$lt_name.sh --tsv --size $lt_ts --seed $tex_seed)
   lt_hdr=${lt_s%%	*}
   if [ "$lt_hdr" != "#texture" ]; then return 0; fi
   # header: strip #texture + NAME, READ SIZExSIZE, strip the rest
@@ -1009,8 +1015,8 @@ load_tex() { lt_name=$1; lt_idx=$2
 "
     lt_px=$((lt_px + 1))
   done
-  echo "$lt_payload" > /home/mimecroft-tex-$lt_name-$tex_size-$tex_seed-$tex_ver
-  echo "$lt_payload" > /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed-$tex_ver
+  echo "$lt_payload" > /home/mimecroft-tex-$lt_name-$lt_ts-$tex_seed-$tex_ver
+  echo "$lt_payload" > /tmp/mimecroft-tex-$lt_name-$lt_ts-$tex_seed-$tex_ver
   echo "$lt_payload" > /dev/webgl/texture/$lt_idx
   # show the freshly generated texture on the loading screen (one swap
   # keeps the keyboard grab fresh, so keys typed during startup queue)
@@ -1873,10 +1879,8 @@ settings_inc() {
     cam_shift_ms=$((cam_shift_ms + 50))
   fi
   if [ "$sm_sel" -eq 1 ]; then
-    if [ "$tex_size" -eq 4 ]; then tex_size=8
-    elif [ "$tex_size" -eq 8 ]; then tex_size=16
-    elif [ "$tex_size" -eq 16 ]; then tex_size=32
-    elif [ "$tex_size" -eq 32 ]; then tex_size=64
+    if [ "$tex_size" -eq 32 ]; then tex_size=64
+    elif [ "$tex_size" -eq 64 ]; then tex_size=32
     fi
   fi
   if [ "$sm_sel" -eq 2 ]; then
@@ -1917,9 +1921,7 @@ settings_dec() {
   fi
   if [ "$sm_sel" -eq 1 ]; then
     if [ "$tex_size" -eq 64 ]; then tex_size=32
-    elif [ "$tex_size" -eq 32 ]; then tex_size=16
-    elif [ "$tex_size" -eq 16 ]; then tex_size=8
-    elif [ "$tex_size" -eq 8 ]; then tex_size=4
+    elif [ "$tex_size" -eq 32 ]; then tex_size=64
     fi
   fi
   if [ "$sm_sel" -eq 2 ]; then

@@ -75,6 +75,9 @@ if [ "$TEX_SIZE" != "" ]; then SIZE=$TEX_SIZE; fi
 if [ "$SIZE" -lt 4 ]; then SIZE=4; fi
 m4=$(( SIZE % 4 ))
 if [ "$m4" -ne 0 ]; then SIZE=$(( (SIZE / 4) * 4 )); fi
+# MIME name textures: always at least 32×32 — the small font that fits
+# "APPLICATION/OCTET-STREAM" on one line needs the 32-pixel canvas
+if [ "$SIZE" -lt 32 ]; then SIZE=32; fi
 LAST=$(( SIZE - 1 ))
 
 if [ "$TEX_SEED" = "" ]; then TEX_SEED=20240812; fi
@@ -371,18 +374,31 @@ $tsv"
   print_stats
 }
 # ─── body ───────────────────────────────────────────
-tname=(T E X T)
-tgi=(0 0 0 0)
-tgi[0]=9367
-tgi[1]=29391
-tgi[2]=23213
-tgi[3]=9367
-TXT_LEN=4
-tt_cp=$(( SIZE / 4 ))
-if [ "$tt_cp" -lt 1 ]; then tt_cp=1; fi
-tt_lines=$(( ( TXT_LEN + tt_cp - 1 ) / tt_cp ))
-tt_ty0=$(( ( SIZE - ( tt_lines * 6 - 1 ) ) / 2 ))
-if [ "$tt_ty0" -lt 0 ]; then tt_ty0=0; fi
+# ─── the mime type text: the prefix (small 2×3 font) + the type name
+# (3×5 font). Small-font glyphs are 2-wide × 3-tall, 6-bit ints,
+# row-major (bitpos = row*2 + col, bit0 = top-left).
+spfx=(T E X T /)
+spfxn=5
+bnm=(P L A I N)
+bnmlen=5
+spgi=(0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
+spgi[0]=53    # T
+spgi[1]=63    # E
+spgi[2]=46    # X
+spgi[3]=53    # T
+spgi[4]=26    # /
+bngi=(0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
+bngi[0]=4843    # P
+bngi[1]=29257    # L
+bngi[2]=23535    # A
+bngi[3]=29847    # I
+bngi[4]=23421    # N
+# the prefix line: y 0..3, centered
+tt_psx=$(( ( SIZE - spfxn * 2 ) / 2 ))
+tt_pfy0=0
+# the name line: y 6..11, centered
+tt_nsx=$(( ( SIZE - bnmlen * 4 ) / 2 ))
+tt_nfy0=6
 y=0
 while [ "$y" -lt "$SIZE" ]; do
   x=0
@@ -408,34 +424,45 @@ while [ "$y" -lt "$SIZE" ]; do
     # the black outline — a glyph stroke must not outline itself.
     tt_px=$x
     tt_py=$y
-      tt_on=0
-      if [ "$tt_py" -ge "$tt_ty0" ]; then
-        tt_gl=$(( ( tt_py - tt_ty0 ) / 6 ))
-        if [ "$tt_gl" -ge 0 ] && [ "$tt_gl" -lt "$tt_lines" ]; then
-          tt_gr=$(( tt_py - tt_ty0 - tt_gl * 6 ))
-          if [ "$tt_gr" -lt 5 ]; then
-            tt_rem=$(( TXT_LEN - tt_gl * tt_cp ))
-            tt_llen=$tt_cp
-            if [ "$tt_rem" -lt "$tt_llen" ]; then tt_llen=$tt_rem; fi
-            tt_lsx=$(( ( SIZE - ( tt_llen * 4 - 1 ) ) / 2 ))
-            tt_x1=$(( tt_lsx + tt_llen * 4 ))
-            if [ "$tt_px" -ge "$tt_lsx" ] && [ "$tt_px" -lt "$tt_x1" ]; then
-              tt_gc=$(( ( tt_px - tt_lsx ) / 4 ))
-              tt_gcol=$(( tt_px - tt_lsx - tt_gc * 4 ))
-              if [ "$tt_gcol" -lt 3 ]; then
-                tt_ci=$(( tt_gl * tt_cp + tt_gc ))
-                tt_gi=${tgi[$tt_ci]}
-                tt_bitpos=$(( tt_gr * 3 + tt_gcol ))
-                tt_bit=$(( ( tt_gi >> tt_bitpos ) & 1 ))
-                if [ "$tt_bit" -eq 1 ]; then tt_on=1; fi
-              fi
-            fi
-          fi
+    # the mime type text — the prefix (small 2×3 font) on y 0..3, the
+    # name (3×5 font) on y 6..11 — both centered. INLINE, no function
+    # calls (the game runs these via the bare `bash` transpiler;
+    # unawaited per-pixel calls OOM it). Own pixel first (white), then
+    # the 8-neighbour outline (black).
+    tt_on=0
+    if [ "$tt_py" -ge "$tt_pfy0" ] && [ "$tt_py" -lt 4 ]; then
+      tt_gr=$(( tt_py - tt_pfy0 ))
+      tt_x0=$tt_psx
+      tt_x1=$(( tt_psx + spfxn * 2 ))
+      if [ "$tt_px" -ge "$tt_x0" ] && [ "$tt_px" -lt "$tt_x1" ]; then
+        tt_gc=$(( ( tt_px - tt_x0 ) / 2 ))
+        tt_gcol=$(( tt_px - tt_x0 - tt_gc * 2 ))
+        if [ "$tt_gcol" -lt 2 ]; then
+          tt_gi=${spgi[$tt_gc]}
+          tt_bitpos=$(( tt_gr * 2 + tt_gcol ))
+          tt_bit=$(( ( tt_gi >> tt_bitpos ) & 1 ))
+          if [ "$tt_bit" -eq 1 ]; then tt_on=1; fi
         fi
       fi
+    fi
+    if [ "$tt_on" -eq 0 ] && [ "$tt_py" -ge "$tt_nfy0" ] && [ "$tt_py" -lt $(( tt_nfy0 + 5 )) ]; then
+      tt_gr=$(( tt_py - tt_nfy0 ))
+      tt_x0=$tt_nsx
+      tt_x1=$(( tt_nsx + bnmlen * 4 ))
+      if [ "$tt_px" -ge "$tt_x0" ] && [ "$tt_px" -lt "$tt_x1" ]; then
+        tt_gc=$(( ( tt_px - tt_x0 ) / 4 ))
+        tt_gcol=$(( tt_px - tt_x0 - tt_gc * 4 ))
+        if [ "$tt_gcol" -lt 3 ]; then
+          tt_gi=${bngi[$tt_gc]}
+          tt_bitpos=$(( tt_gr * 3 + tt_gcol ))
+          tt_bit=$(( ( tt_gi >> tt_bitpos ) & 1 ))
+          if [ "$tt_bit" -eq 1 ]; then tt_on=1; fi
+        fi
+      fi
+    fi
     if [ "$tt_on" -eq 1 ]; then
       # 70% opaque text — blend the white glyph over the pixel's own
-      # colour (the sky/hills/photo) so the texture shows through
+      # colour so the texture shows through
       r=$(( (250 * 70 + r * 30) / 100 ))
       g=$(( (250 * 70 + g * 30) / 100 ))
       b=$(( (250 * 70 + b * 30) / 100 ))
@@ -448,31 +475,37 @@ while [ "$y" -lt "$SIZE" ]; do
         tt_px=$(( x + tt_offx - 1 ))
         tt_py=$(( y + tt_offy - 1 ))
         if [ "$tt_offx" -ne 1 ] || [ "$tt_offy" -ne 1 ]; then
-      tt_on=0
-      if [ "$tt_py" -ge "$tt_ty0" ]; then
-        tt_gl=$(( ( tt_py - tt_ty0 ) / 6 ))
-        if [ "$tt_gl" -ge 0 ] && [ "$tt_gl" -lt "$tt_lines" ]; then
-          tt_gr=$(( tt_py - tt_ty0 - tt_gl * 6 ))
-          if [ "$tt_gr" -lt 5 ]; then
-            tt_rem=$(( TXT_LEN - tt_gl * tt_cp ))
-            tt_llen=$tt_cp
-            if [ "$tt_rem" -lt "$tt_llen" ]; then tt_llen=$tt_rem; fi
-            tt_lsx=$(( ( SIZE - ( tt_llen * 4 - 1 ) ) / 2 ))
-            tt_x1=$(( tt_lsx + tt_llen * 4 ))
-            if [ "$tt_px" -ge "$tt_lsx" ] && [ "$tt_px" -lt "$tt_x1" ]; then
-              tt_gc=$(( ( tt_px - tt_lsx ) / 4 ))
-              tt_gcol=$(( tt_px - tt_lsx - tt_gc * 4 ))
+          tt_on=0
+          if [ "$tt_py" -ge "$tt_pfy0" ] && [ "$tt_py" -lt 4 ]; then
+            tt_gr=$(( tt_py - tt_pfy0 ))
+            tt_x0=$tt_psx
+            tt_x1=$(( tt_psx + spfxn * 2 ))
+            if [ "$tt_px" -ge "$tt_x0" ] && [ "$tt_px" -lt "$tt_x1" ]; then
+              tt_gc=$(( ( tt_px - tt_x0 ) / 2 ))
+              tt_gcol=$(( tt_px - tt_x0 - tt_gc * 2 ))
+              if [ "$tt_gcol" -lt 2 ]; then
+                tt_gi=${spgi[$tt_gc]}
+                tt_bitpos=$(( tt_gr * 2 + tt_gcol ))
+                tt_bit=$(( ( tt_gi >> tt_bitpos ) & 1 ))
+                if [ "$tt_bit" -eq 1 ]; then tt_on=1; fi
+              fi
+            fi
+          fi
+          if [ "$tt_on" -eq 0 ] && [ "$tt_py" -ge "$tt_nfy0" ] && [ "$tt_py" -lt $(( tt_nfy0 + 5 )) ]; then
+            tt_gr=$(( tt_py - tt_nfy0 ))
+            tt_x0=$tt_nsx
+            tt_x1=$(( tt_nsx + bnmlen * 4 ))
+            if [ "$tt_px" -ge "$tt_x0" ] && [ "$tt_px" -lt "$tt_x1" ]; then
+              tt_gc=$(( ( tt_px - tt_x0 ) / 4 ))
+              tt_gcol=$(( tt_px - tt_x0 - tt_gc * 4 ))
               if [ "$tt_gcol" -lt 3 ]; then
-                tt_ci=$(( tt_gl * tt_cp + tt_gc ))
-                tt_gi=${tgi[$tt_ci]}
+                tt_gi=${bngi[$tt_gc]}
                 tt_bitpos=$(( tt_gr * 3 + tt_gcol ))
                 tt_bit=$(( ( tt_gi >> tt_bitpos ) & 1 ))
                 if [ "$tt_bit" -eq 1 ]; then tt_on=1; fi
               fi
             fi
           fi
-        fi
-      fi
           if [ "$tt_on" -eq 1 ]; then
             # 70% outline over the background
             r=$(( (5 * 70 + r * 30) / 100 ))
