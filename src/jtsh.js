@@ -661,6 +661,7 @@ async function runEstreeProgram(program, lineAssigned, srcArgs) {
 // cc / cproc / tcc — the compilers, intercepted before resolution (the
 // shared runSegment's ctx.interceptCommand hook).
 async function interceptCompilers(cmd, args, stdin, isLast, { outputRedirect, appendRedirect }) {
+  let output = "";   // piped /bin/bash output (declared here — TDZ)
   // sh2glsl — compile a bash-authored shader to GLSL ES 1.00 via the
   // otranspilerl wasm (the MIMEcroft shader pipeline). `sh2glsl file.sh`
   // compiles a fragment shader (frag_x/frag_y/vcolor/uv/tex/crack
@@ -832,16 +833,24 @@ async function interceptCompilers(cmd, args, stdin, isLast, { outputRedirect, ap
         return h;
       };
       let script = "";
+      let scriptPath = null;   // VFS path the script came from — staged
+                               // at /tmp/<name> inside bash so its own
+                               // $(dirname "$0")/lib.sh sources resolve
+      let scriptArgs = [];
       if (args[0] === "-c") script = args.slice(1).join(" ");
       else if (args.length && !args[0].startsWith("-")) {
-        try { script = await fs.read(args[0]); } catch { script = args[0]; }
+        try {
+          script = await fs.read(args[0]);
+          scriptPath = "/tmp/" + args[0].split("/").pop();
+          scriptArgs = args.slice(1);   // the script's positional params
+        } catch { script = args[0]; }
       } else if (stdin) script = pipeText(stdin);
       if (!script.trim()) {
         process.stderr.write("/bin/bash: the real bash 5.3 — give it a script: /bin/bash -c 'echo hi' · /bin/bash script.sh · cat x | /bin/bash — sees /tmp and /home (writes sync back). Top-level external commands run synchronously in the shell (correct order, $? and stdin redirects); pipelines/subshells still need a real fork — those fail. `web <cmd>` also runs in the shell. Bare `bash` is the interactive builtin\n");
         return { ok: false, code: 2, output: "" };
       }
-      const r = await runRealBash(script, { hostRun });
-      if (outputRedirect) await writeOut(outputRedirect, r.out, appendRedirect);
+      const r = await runRealBash(script, { hostRun, scriptPath, scriptArgs });
+      if (outputRedirect) await writeOut(outputRedirect, r.outBytes !== undefined ? r.outBytes : r.out, appendRedirect);
       else if (isLast) { if (r.out) process.stdout.write(r.out); }
       else output = r.out;
       if (r.err) process.stderr.write(r.err);

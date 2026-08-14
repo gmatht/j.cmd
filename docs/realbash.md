@@ -3,7 +3,10 @@
 `/bin/bash` runs the **real bash 5.3** compiled to wasm (emscripten) via
 `src/realbash.js` → `runRealBash(script, { hostRun })`. The binary lives at
 `www/wasm-bin/bash.wasm` (loader `www/vendor/bash.js`), built by
-`build-wasm-bash.sh`.
+`build-wasm-bash.sh`. Returns `{ out, err, code, outBytes, errBytes }`:
+`out`/`err` are lossy UTF-8 decodes of the output (for the terminal),
+`outBytes`/`errBytes` are the exact bytes (shell redirects write these,
+so `/bin/bash sound-hit.sh > x.wav` produces a byte-perfect WAV).
 
 ## The problem: no fork
 
@@ -103,6 +106,21 @@ heap memory survives the unwind/rewind.
   keeps itself alive — the completion marker
   (`echo __OTRANSPILER_EXIT_$?_`) covers normal completion, and the
   runtime's "program exited (with status: N)" notice covers `exit N`.
+
+## Binary output: the UTF-8 gotcha
+
+Emscripten's TTY flushes wasm buffers to JS **strings** via
+`UTF8ArrayToString` — binary stdout (a WAV from a sound generator, raw
+PCM) was NUL-truncated, U+FFFD-replaced, and printed an "Invalid UTF-8
+leading byte" warning per bad byte. `runRealBash` now redirects the
+script's fd 1/fd 2 into VFS temp files **before** the script runs
+(`exec 1>… 2>…`); the custom-FS mount stores raw bytes, so output is
+exact and the warnings are gone. The completion marker
+(`echo __OTRANSPILER_EXIT_$?_`) goes to its own file, so a binary
+stdout can never corrupt the exit status. Host-spawned output
+(`__bash_spawn`) is appended to the same files, preserving order
+(asyncify suspends bash for the whole host run). The temp files are
+removed afterwards.
 
 ## The filesystem
 

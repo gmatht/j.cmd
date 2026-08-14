@@ -497,6 +497,7 @@ export async function runSegment(segmentText, stdin, isLast, target, ctx) {
   // /bin/bash — the REAL bash 5.3 (wasm32-emscripten), unlike the bare
   // `bash` builtin which transpiles bash → JS. Runs -c / a VFS script /
   // stdin through the actual bash binary.
+  let output = "";   // piped /bin/bash output (declared before the block — TDZ)
   if (cmd === "/bin/bash") {
     try {
       const runRealBash = ctx.runRealBash;
@@ -507,16 +508,26 @@ export async function runSegment(segmentText, stdin, isLast, target, ctx) {
         return h;
       };
       let script = "";
+      // VFS path the script came from — staged at /tmp/<name> inside
+      // bash so its own $(dirname "$0")/lib.sh sources resolve through
+      // the VFS bridge; its extra args become the script's $1..$9/$@
+      let scriptPath = null;
+      let scriptArgs = [];
       if (args[0] === "-c") script = args.slice(1).join(" ");
       else if (args.length && !args[0].startsWith("-")) {
-        try { script = await ctx.fs.read(args[0]); } catch { script = args[0]; }
+        try {
+          script = await ctx.fs.read(args[0]);
+          scriptPath = "/tmp/" + args[0].split("/").pop();
+          scriptArgs = args.slice(1);
+        } catch { script = args[0]; }
       } else if (stdin) script = pipeText(stdin);
       if (!script.trim()) {
         ctx.stderr.write("/bin/bash: the real bash 5.3 — give it a script: /bin/bash -c 'echo hi' · /bin/bash script.sh · cat x | /bin/bash — sees /tmp and /home (writes sync back). Top-level external commands run synchronously in the shell (correct order, $? and stdin redirects); pipelines/subshells still need a real fork — those fail. `web <cmd>` also runs in the shell. Bare `bash` is the interactive builtin\n");
         return { ok: false, code: 2, output: "" };
       }
-      const r = await runRealBash(script, { hostRun });
-      if (outputRedirect) await ctx.writeOut(outputRedirect, r.out, appendRedirect);
+      const r = await runRealBash(script, { hostRun, scriptPath, scriptArgs });
+
+      if (outputRedirect) await ctx.writeOut(outputRedirect, r.outBytes !== undefined ? r.outBytes : r.out, appendRedirect);
       else if (isLast) { if (r.out) ctx.stdout.write(r.out); }
       else output = r.out;
       if (r.err) ctx.stderr.write(r.err);
@@ -526,8 +537,6 @@ export async function runSegment(segmentText, stdin, isLast, target, ctx) {
       return { ok: false, code: 1, output: "" };
     }
   }
-
-  let output = "";
 
   const resolved = await ctx.resolveCommand(cmd);
   if (resolved && resolved.type === "badpath") {

@@ -15,6 +15,16 @@
 // /usr/bin, /bin into it. `cat /tmp/x` and `echo hi > /home/out.txt`
 // in bash read and write the shell's REAL files, live. External
 // commands (cat/ls/grep…) still can't run — bash.wasm can't fork.
+//
+// BYTE-EXACT stdout/stderr: the emscripten TTY path converts wasm
+// buffers to JS strings (UTF8ArrayToString), which mangles binary
+// output — a WAV from a sound generator gets NUL-truncated, U+FFFD-
+// replaced, and prints an "Invalid UTF-8 leading byte" warning per
+// bad byte. The script therefore runs with `exec 1>/tmp/… 2>/tmp/…`
+// redirected into VFS temp files (the mount stores RAW bytes), and
+// the completion marker lives in its own file. Returns { out, err,
+// code, outBytes, errBytes }: out/err are lossy-decoded for the
+// terminal, outBytes/errBytes are the exact bytes for redirects.
 // -----------------------------------------------------------------
 
 import { fs as vfs } from "./fs/index.js";
@@ -194,7 +204,44 @@ export async function runRealBash(script, opts = {}) {
   const scriptArgs = opts.scriptArgs || [];
   const factory = await bashFactory();
   let out = "", err = "";
+  let glueErr = "";
   const MARKER = "__OTRANSPILER_EXIT_";
+  // ── byte-exact stdout/stderr capture ────────────────────────────
+  // The emscripten TTY path converts wasm-heap buffers to JS STRINGS
+  // (UTF8ArrayToString) — that mangles binary output (a WAV from a
+  // sound generator: NUL truncation, U+FFFD replacement, and a
+  // "Invalid UTF-8 leading byte" warning per bad byte). Instead the
+  // script's stdout/stderr are redirected to VFS temp files through
+  // the live mount, which stores RAW bytes (stream_ops.write →
+  // vfs.writeSync). The completion marker goes to its own file so a
+  // binary stdout can never corrupt it. Host-spawned output is
+  // appended to the same files, keeping the transcript in order
+  // (asyncify suspends bash for the whole host run).
+  const rand = Math.random().toString(36).slice(2);
+  const OUT = "/tmp/.jtsh-bash-out-" + rand + ".bin";
+  const ERR = "/tmp/.jtsh-bash-err-" + rand + ".bin";
+  const DONE = "/tmp/.jtsh-bash-done-" + rand + ".bin";
+  const enc = new TextEncoder();
+  const dec = new TextDecoder("utf-8", { fatal: false });
+  const readBytes = (p) => {
+    try {
+      const b = vfs.readSync(p);
+      return b ? new Uint8Array(b) : new Uint8Array(0);
+    } catch { return new Uint8Array(0); }
+  };
+  const appendTo = (p, data) => {
+    try {
+      const cur = readBytes(p);
+      const add = typeof data === "string" ? enc.encode(data) : new Uint8Array(data);
+      const merged = new Uint8Array(cur.length + add.length);
+      merged.set(cur);
+      merged.set(add, cur.length);
+      vfs.writeSync(p, merged);
+    } catch {}
+  };
+  const doneExists = () => {
+    try { return !!vfs.statSync(DONE); } catch { return false; }
+  };
   // The asyncify build runs main via the runtime's own auto-run (a
   // manual callMain breaks the asyncify unwind/rewind — main re-runs).
   let finished = false;
@@ -203,9 +250,9 @@ export async function runRealBash(script, opts = {}) {
     noInitialRun: false,
     arguments: [scriptPath, ...scriptArgs],   // auto-run passes these to main (callMain can't — it breaks asyncify)
     locateFile: wasmUrl,
-    print: (t) => { out += t + "\n"; },
+    print: (t) => { out += t + "\n"; },   // TTY stdout is redirected away — fallback only
     printErr: (t) => {
-      err += t + "\n";
+      glueErr += t + "\n";
       // `exit N` in the script exits bash before the marker — detect the
       // runtime's exit notice (keepRuntimeAlive suppresses onExit).
       const em = /program exited \(with status: (\d+)\)/.exec(t);
@@ -224,10 +271,11 @@ export async function runRealBash(script, opts = {}) {
           // sit there) — fall back to the shell's cwd for host commands.
           const useCwd = bashCwd && bashCwd !== "/" ? bashCwd : cwd;
           const h = await hostRun(cmd, stdin || "", useCwd || "");
-          // host output goes through bash's own stdout so the execution
-          // order is preserved in the final transcript.
-          if (h && h.out) out += h.out;
-          if (h && h.err) err += h.err;
+          // host output joins bash's own stdout/stderr streams (the
+          // byte-exact files), so the execution order is preserved in
+          // the final transcript.
+          if (h && h.out) appendTo(OUT, h.out);
+          if (h && h.err) appendTo(ERR, h.err);
           return (h && typeof h.code === "number") ? h.code : 0;
         } catch {
           return 127;
@@ -279,22 +327,35 @@ export async function runRealBash(script, opts = {}) {
         const parent = scriptPath.replace(/\/[^/]*$/, "");
         try { mkdirP(cfg.FS, parent || "/"); } catch {}
       }
-      cfg.FS.writeFile(scriptPath, String(script) + "\necho " + MARKER + "$?_\n");
+      // exec FIRST so the script's own output — binary WAVs from the
+      // sound generators included — lands in the byte-exact files, not
+      // the string-mangling TTY. The marker file is written last, so
+      // even a script that floods stdout can't corrupt the exit status.
+      cfg.FS.writeFile(scriptPath,
+        "exec 1>'" + OUT + "' 2>'" + ERR + "'\n" +
+        String(script) + "\necho " + MARKER + "$?_ > '" + DONE + "'\n");
     }],
   };
   const m = await factory(cfg);
-  // wait for the completion marker (all asyncify rewinds done by then)
-  // or an explicit exit (the runtime's "program exited" notice).
+  // wait for the completion marker file (all asyncify rewinds done by
+  // then) or an explicit exit (the runtime's "program exited" notice).
   const deadline = Date.now() + 120000;
-  while (!out.includes(MARKER) && !finished) {
+  while (!finished && !doneExists()) {
     if (Date.now() > deadline) break;
     await new Promise((r) => setTimeout(r, 20));
   }
   let code = 0;
   if (cfg.__exitCode !== undefined) code = Number(cfg.__exitCode);
-  const mm = out.match(new RegExp(MARKER + "(\\d+)_"));
+  const doneText = dec.decode(readBytes(DONE));
+  const mm = doneText.match(new RegExp(MARKER + "(\\d+)_"));
   if (mm) code = Number(mm[1]);
-  out = out.replace(new RegExp(MARKER + "\\d+_", "g"), "").trim() + "\n";
+
+  const outBytes = readBytes(OUT);
+  const errBytes = readBytes(ERR);
+  out = outBytes.length
+    ? dec.decode(outBytes).trim()
+    : out.trim();   // fallback: TTY text (normally nothing — fd 1 is redirected)
+  out += "\n";
 
   // flush queued background jobs (`cmd &`) — sequential, after bash is
   // done, so the shell's runner is never reentered mid-run.
@@ -303,10 +364,18 @@ export async function runRealBash(script, opts = {}) {
   }
 
   // emscripten's runtime notices are noise — drop them.
+  err = (errBytes.length ? dec.decode(errBytes) : "") + glueErr;
   err = err.split("\n").filter((l) =>
     !/^warning: unsupported syscall/.test(l) &&
     !/^program exited \(with status/.test(l) &&
-    !/^warning: stdio streams had content/.test(l)
+    !/^warning: stdio streams had content/.test(l) &&
+    !/^warning: Invalid UTF-8/.test(l)
   ).join("\n");
-  return { out, err, code };
+
+  // the temp capture files are ours — drop them (the caller's staged
+  // /tmp files are untouched).
+  for (const p of [OUT, ERR, DONE]) {
+    try { await vfs.remove(p); } catch {}
+  }
+  return { out, err, code, outBytes, errBytes };
 }

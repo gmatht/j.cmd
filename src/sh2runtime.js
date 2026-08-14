@@ -50,6 +50,95 @@ function globToRegExp(pattern) {
   return new RegExp("^" + out + "$");
 }
 
+// ─── integer arithmetic evaluator ($((...)) core) ─────────────
+// Tokenizes the substituted expression and evaluates with bash's
+// precedence: () > unary- > * / % > + - > << >> > & > ^ > |. / and %
+// truncate toward zero (bash integer semantics); the final result is
+// truncated too. Returns 0 on malformed input (bash reports the error
+// and uses 0). No Function constructor — the sound generators call
+// $((...)) ~30K times for the treasure sound; compiling a function per
+// call was the dominant cost.
+function evalArithInt(src) {
+  const s = String(src);
+  const toks = [];
+  let i = 0;
+  const n = s.length;
+  while (i < n) {
+    const c = s[i];
+    if (c === " " || c === "\t" || c === "\n") { i++; continue; }
+    if (c >= "0" && c <= "9") {
+      let j = i;
+      while (j < n && s[j] >= "0" && s[j] <= "9") j++;
+      toks.push(Number(s.slice(i, j)));
+      i = j;
+      continue;
+    }
+    const two = s.slice(i, i + 2);
+    if (two === "<<" || two === ">>") { toks.push(two); i += 2; continue; }
+    if ("+-*/%()&|^".includes(c)) { toks.push(c); i++; continue; }
+    return 0;   // unknown token — malformed
+  }
+  if (!toks.length) return 0;
+  const PREC = (op) => op === "(" ? 0 : op === "|" ? 1 : op === "^" ? 2 : op === "&" ? 3 :
+    (op === "<<" || op === ">>") ? 4 : (op === "+" || op === "-") ? 5 :
+    (op === "*" || op === "/" || op === "%") ? 6 : 7;
+  const apply = (op, a, b) => {
+    switch (op) {
+      case "+": return a + b;
+      case "-": return a - b;
+      case "*": return a * b;
+      case "/": return b === 0 ? 0 : Math.trunc(a / b);
+      case "%": return b === 0 ? 0 : Math.trunc(a % b);
+      case "<<": return a << b;
+      case ">>": return a >> b;
+      case "&": return a & b;
+      case "|": return a | b;
+      case "^": return a ^ b;
+      case "u-": return -b;
+    }
+    return 0;
+  };
+  const vals = [];
+  const ops = [];
+  let expectVal = true;
+  for (const t of toks) {
+    if (typeof t === "number") { vals.push(t); expectVal = false; continue; }
+    if (t === "(") { ops.push("("); expectVal = true; continue; }
+    if (t === ")") {
+      while (ops.length && ops[ops.length - 1] !== "(") {
+        const op = ops.pop();
+        const b = vals.pop();
+        const a = op === "u-" ? 0 : vals.pop();
+        vals.push(apply(op, a, b));
+      }
+      ops.pop();   // the "("
+      expectVal = false;
+      continue;
+    }
+    if (expectVal) {
+      // unary minus (bash: -x); unary plus is a no-op
+      if (t === "-") { ops.push("u-"); continue; }
+      if (t === "+") continue;
+    }
+    while (ops.length && PREC(ops[ops.length - 1]) >= PREC(t)) {
+      const op = ops.pop();
+      const b = vals.pop();
+      const a = op === "u-" ? 0 : vals.pop();
+      vals.push(apply(op, a, b));
+    }
+    ops.push(t);
+    expectVal = true;
+  }
+  while (ops.length) {
+    const op = ops.pop();
+    const b = vals.pop();
+    const a = op === "u-" ? 0 : vals.pop();
+    vals.push(apply(op, a, b));
+  }
+  const r = vals.length ? vals[vals.length - 1] : 0;
+  return Number.isFinite(r) ? Math.trunc(r) : 0;
+}
+
 export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = [], argv0 = "bash" }) {
   const vars = new Map();      // script-local variables (not exported)
   let interrupted = false;     // Ctrl+C from the shell — test() throws when set
@@ -172,8 +261,21 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     if (interrupted) throw new Error("interrupted by Ctrl+C");
     // User-defined function shadows commands, like in bash.
     if (fns.has(name)) {
+      // splice array args (the `$@` listVar contract) — a single arg
+      // that is itself an array becomes separate positionals, exactly
+      // like the builtin table's flattener.
       const prevArgs = scriptArgs;
-      scriptArgs = (argsArr || []).map((v) => (v && typeof v === "object" && Array.isArray(v.arena)) ? v : String(v));
+      scriptArgs = (() => {
+        const flat = [];
+        for (const a of argsArr || []) {
+          if (Array.isArray(a)) {
+            for (const x of a) flat.push((x && typeof x === "object" && Array.isArray(x.arena)) ? x : String(x));
+          } else {
+            flat.push((a && typeof a === "object" && Array.isArray(a.arena)) ? a : String(a));
+          }
+        }
+        return flat;
+      })();
       try {
         const ret = await fns.get(name)();
         // `return N` sets the function's exit status (the transpiler
@@ -326,15 +428,19 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     const prev = mode;
     const buf = { out: "", err: "" };
     mode = { type: "redirect", buf };
+    let ret;
     try {
-      await fn();
+      ret = await fn();
     } finally {
       mode = prev;
     }
     const handled = { 1: false, 2: false };
     for (const r of redirects) {
       const fd = r.fd || 1;
-      const content = fd === 2 ? buf.err : buf.out;
+      // a sync builtin (echo/printf/cat) RETURNS its output string —
+      // use it (the async twin of redirectSync's string check); async
+      // commands write through the mode buffer and return an object.
+      const content = typeof ret === "string" ? ret : (fd === 2 ? buf.err : buf.out);
       handled[fd] = true;
       const target = String(r.target || "");
       // `>&2` / `2>&1` / `&2` — an fd-dup target (the transpiler emits
@@ -833,22 +939,57 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
   }
 
   // ─── arithmetic: $((expr)) with variables ────────────────────
+  // Integer evaluator (bash semantics): substitutes variable names from
+  // the store, then evaluates the expression with bash's operator
+  // precedence and truncating / and %. The OLD implementation stripped
+  // every char outside [0-9+-*/%().\s] — that removed `&` (so the phase
+  // accumulators in the sound generators, `(a + b) & 65535`, evaluated
+  // to a syntax error → 0 → silence) and compiled a fresh Function per
+  // call (the treasure sound's ~30K arith calls each paid a JIT
+  // compile). This version is a small shunting-yard evaluator: no
+  // Function constructor, correct bitwise ops, integer division.
   function arith(expr) {
     const substituted = String(expr)
+      // `${arr[$i]}` / `$arr[$i]` — array ELEMENT reads: expand through
+      // the store (the generated code passes the literal `${arr[$i]}`
+      // text; the generic scalar rule below would match `$arr` and read
+      // the whole array → NaN → 0 → the sound generators' phase/amp
+      // accumulators silently became zero). Order matters: the array
+      // form first, then scalars.
+      .replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*)\[([^\]]*)\]\}?/g, (m, name, idx) => {
+        const v = arrayIndex(name, idx.trim());
+        const n = Number(v);
+        return Number.isFinite(n) ? String(n) : "0";
+      })
+      // `$1`..`$9` inside arithmetic — the callee's positionals (a
+      // function body's `$(( $1 + $1 ))` must read its own args, not a
+      // shell variable named "1"). The old char-stripping evaluator
+      // happened to keep the DIGIT and evaluate `$1 + $1` as `1 + 1` —
+      // wrong for every positional whose value isn't its own index.
+      .replace(/\$\{?([1-9][0-9]*)\}?/g, (m, n) => {
+        const v = scriptArgs[Number(n) - 1];
+        const num = Number(v);
+        return Number.isFinite(num) ? String(num) : "0";
+      })
       .replace(/\$?\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g, (m, name) => {
         const v = getVar(name);
         const n = Number(v);
         return Number.isFinite(n) ? String(n) : "0";
       });
-    const cleaned = substituted.replace(/[^0-9+\-*/%().\s]/g, "");
-    if (!cleaned.trim()) return 0;
-    try {
-      // eslint-disable-next-line no-new-func
-      const val = Function(`"use strict"; return (${cleaned});`)();
-      return typeof val === "number" && Number.isFinite(val) ? Math.trunc(val) : 0;
-    } catch {
-      return 0;
-    }
+    return evalArithInt(substituted);
+  }
+
+  // `listVar("@")` — the `$@` whole-word array form the estree backend
+  // emits (core request array-flatten-positional-20260806): the array is
+  // SPLICED into the callee's positionals by exec's arg flattener (bash
+  // expands `"$@"` to separate args). `"*"` is the space-joined single
+  // arg, `"#"` the count, `"0"` the script name.
+  function listVar(spec) {
+    if (spec === "@") return scriptArgs.slice();
+    if (spec === "*") return [scriptArgs.join(" ")];
+    if (spec === "#") return String(scriptArgs.length);
+    if (spec === "0") return argv0;
+    return "";
   }
 
   // ─── parameter expansion: ${x:-default} etc. ─────────────────
@@ -1089,7 +1230,7 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       "break": breakLoop, "continue": continueLoop, "return": returnSignal,
       ReturnSignal,
       idiv, imod, not, setLastExit,
-      getVar, setVar,
+      getVar, setVar, listVar,
       // the otranspilerl estree backend reads/writes sh2.lastExit
       get lastExit() { return lastStatus; },
       set lastExit(v) { lastStatus = Number(v); },
@@ -1259,14 +1400,58 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
         switch (name) {
           case "echo": return a.join(" ") + "\n";
           case "printf": {
-            // the bash printf builtin: interpret \n \t \r \\ escapes
-            // (the emitter passes format strings with literal backslashes)
-            let out = "";
-            for (const s of a) {
-              out += s.replace(/\\n/g, "\n").replace(/\\t/g, "\t")
+            // the bash printf builtin: FORMAT [ARGS…]. The estree backend
+            // passes the format as args[0] (the sound generators' final
+            // `printf "%b" "$tsv"`, the WAV path's `printf -v oc '%03o'
+            // $n`). The OLD code concatenated ALL args — the format string
+            // leaked into the output ("%b0\t0\t…"). Minimal conversion
+            // set: %b (escape-interpret), %s, %d/%i/%u, %o/%x/%X, %c,
+            // %%, with a 0-flag + width pad.
+            const outFmt = (format, vals) => {
+              let r = "";
+              let i = 0, v = 0;
+              const s = String(format);
+              const next = () => (v < vals.length ? String(vals[v++]) : "");
+              const unesc = (x) => String(x).replace(/\\n/g, "\n").replace(/\\t/g, "\t")
                 .replace(/\\r/g, "\r").replace(/\\\\/g, "\\");
+              while (i < s.length) {
+                if (s[i] !== "%") { r += s[i++]; continue; }
+                i++;
+                if (i < s.length && s[i] === "%") { r += "%"; i++; continue; }
+                let zero = false, pad = 0;
+                while (i < s.length && "0-+ #".includes(s[i])) { if (s[i] === "0") zero = true; i++; }
+                while (i < s.length && s[i] >= "0" && s[i] <= "9") { pad = pad * 10 + (s[i].charCodeAt(0) - 48); i++; }
+                if (i >= s.length) break;
+                const conv = s[i++];
+                const val = next();
+                let piece;
+                switch (conv) {
+                  case "b": piece = unesc(val); break;
+                  case "s": piece = String(val); break;
+                  case "d": case "i": case "u": piece = String(Math.trunc(Number(val) || 0)); break;
+                  case "o": piece = (Math.trunc(Number(val) || 0) >>> 0).toString(8); break;
+                  case "x": piece = (Math.trunc(Number(val) || 0) >>> 0).toString(16); break;
+                  case "X": piece = (Math.trunc(Number(val) || 0) >>> 0).toString(16).toUpperCase(); break;
+                  case "c": piece = String(val).charAt(0); break;
+                  default: piece = "";
+                }
+                if (pad > piece.length && zero) piece = piece.padStart(pad, "0");
+                else if (pad > piece.length) piece = piece.padStart(pad, " ");
+                r += piece;
+              }
+              // bash interprets backslash escapes in the FORMAT's literal
+              // text too (printf 'a\\nb' prints a newline) — %b means the
+              // ARG's escapes get the same treatment.
+              return unesc(r);
+            };
+            // printf -v NAME FORMAT [ARGS…] — assign the formatted result
+            // to the shell variable (the WAV path's octal byte builder)
+            if (a[0] === "-v") {
+              const name = String(a[1] ?? "");
+              setVar(name, outFmt(a[2] ?? "%s", a.slice(3)));
+              return "";
             }
-            return out;
+            return outFmt(a[0] ?? "%s", a.slice(1));
           }
           case "true": return "";
           case "false": return "";
@@ -1282,7 +1467,10 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
               if (p === "-") { out += stdinData; continue; }
               try {
                 const r = fs.readSync ? fs.readSync(p) : null;
-                out += r === null || r === undefined ? "" : String(r);
+                if (r === null || r === undefined) continue;
+                // readSync returns Uint8Array on the local mounts — a
+                // raw String() would comma-join the byte codes; decode
+                out += typeof r === "string" ? r : new TextDecoder().decode(r);
               } catch { /* ENOENT → empty */ }
             }
             return out;
