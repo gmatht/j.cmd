@@ -39,6 +39,13 @@
 # Usage:
 #   ./build-wasm-tcc.sh
 #   TINYCC_DIR=/path/to/tinycc-clone ./build-wasm-tcc.sh   # reuse a clone (skips the fetch)
+#
+# SAFETY: this script NEVER deletes the fork checkout.  The default
+# TINYCC path is the LOCAL working fork (ahead of the remote mob
+# branch) — it is reused when present, and a fresh clone happens only
+# into a directory that does not exist yet (git clone itself refuses to
+# write into a non-empty dir).  To rebuild from the remote, move the
+# existing checkout aside yourself and re-run.
 # -----------------------------------------------------------------
 
 set -euo pipefail
@@ -57,15 +64,19 @@ if [ ! -x "$WASI_SDK/bin/wasm32-wasi-clang" ]; then
   echo "wasi-sdk not found at $WASI_SDK — set WASI_SDK=/path/to/wasi-sdk" >&2
   exit 1
 fi
-if [ -n "${TINYCC_DIR:-}" ]; then
-  # Reuse an existing clone (iterative work on the backend).
-  if [ ! -d "$TINYCC/.git" ]; then
-    echo "tinycc fork not found at $TINYCC — set TINYCC_DIR (see wasm32 backend)" >&2
-    exit 1
-  fi
+# Reuse the LOCAL fork checkout whenever it exists — the default path
+# carries the wasm32 backend fixes that are ahead of the remote mob
+# branch, and deleting it (the pre-2026-08-14 behaviour) destroyed 51
+# commits of local work.  A fresh clone only ever happens into a
+# directory that does not exist; git clone refuses non-empty dirs, so an
+# existing checkout is never clobbered.
+if [ -d "$TINYCC/.git" ]; then
+  echo "==> reusing local fork checkout at $TINYCC"
+elif [ -e "$TINYCC" ]; then
+  echo "error: $TINYCC exists but is not a git checkout — refusing to touch it." >&2
+  echo "       move it aside, or point TINYCC_DIR at a different path" >&2
+  exit 1
 else
-  rm -rf "$TINYCC"
-  mkdir -p "$(dirname "$TINYCC")"
   echo "==> cloning tinycc fork (wasm32 backend) from $UPSTREAM (branch mob)"
   git clone --depth 1 --branch mob "$UPSTREAM" "$TINYCC"
 fi

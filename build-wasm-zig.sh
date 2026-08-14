@@ -79,6 +79,16 @@ TRIPLE=x86_64-linux-gnu
 # (stage1/2 chain); the script also builds a final stage3 elsewhere, but
 # this one is what we cross-compile with.
 if [ ! -x "$WORK/out/build-zig-host/stage3/bin/zig" ]; then
+  if [ -n "${ZB_DIR:-}" ] && [ -e "$WORK" ]; then
+    echo "error: ZB_DIR=$WORK exists but lacks the stage3 binary — refusing" >&2
+    echo "       to delete a user-provided directory (local patches would be lost)." >&2
+    echo "       point ZB_DIR at an existing zig-bootstrap, or move it aside." >&2
+    exit 1
+  fi
+  if [ -e "$WORK" ] && [ ! -d "$WORK/.git" ]; then
+    echo "error: $WORK exists but is not a git checkout — refusing to delete it." >&2
+    exit 1
+  fi
   echo "==> bootstrapping native zig ($TRIPLE) with zig-bootstrap"
   rm -rf "$WORK"
   git clone --depth 1 https://github.com/ziglang/zig-bootstrap "$WORK"

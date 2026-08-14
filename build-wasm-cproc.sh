@@ -28,8 +28,20 @@ CC="$WASI_SDK/bin/wasm32-wasi-clang"
 UPSTREAM="https://github.com/gmatht/cproc.git"   # our fork of michaelforney/cproc
 
 BUILD="$REPO/build/cproc-wasm"
+
+# Never delete an existing checkout outright: clone into a fresh temp
+# first, then swap it in only after the clone succeeds.  A BUILD that
+# exists but is not a git checkout (local edits) is refused entirely.
+if [ -e "$BUILD" ] && [ ! -d "$BUILD/.git" ]; then
+  echo "error: $BUILD exists but is not a git checkout — refusing to delete it." >&2
+  echo "       move it aside if you want a fresh build" >&2
+  exit 1
+fi
+TMPCLONE="$(mktemp -d /tmp/cproc-clone.XXXXXX)"
+git clone --depth 1 "$UPSTREAM" "$TMPCLONE"
 rm -rf "$BUILD"
-git clone --depth 1 "$UPSTREAM" "$BUILD"
+mkdir -p "$(dirname "$BUILD")"
+mv "$TMPCLONE" "$BUILD"
 
 echo "== Building cproc-qbe (wasm32-wasi) =="
 cd "$BUILD"
