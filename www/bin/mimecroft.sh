@@ -10,8 +10,11 @@
 # Controls:  WASD move · ←/→ turn · SPACE shoot · Q quit
 #
 # The y=0 layer is a solid dirt floor (never mined); mining breaks the
-# y=1 wall block — a mined passage is the same 1-tall opening as a
-# corridor, so the eye stays at standing height throughout.
+# y=1 wall block. Corridors are 2-tall (the drunkard's walk carves both
+# y=1 and y=2); a mined passage keeps the y=2 block, so its opening is
+# 1-tall and the eye ducks under it (crouch crawl). The standing eye at
+# 1.6 sits above the y=1 block tops (1.5), so the corridor walls read as
+# stacked blocks instead of flat planes.
 #
 # Renders through the /dev/webgl device (src/fs/webgldev.js) and plays
 # notes through /dev/audio (audiodev.js). Runs in the browser via the
@@ -407,9 +410,11 @@ try_anim_move() { ta_dx=$1; ta_dz=$2
   get_cell $ta_nx 1 $ta_nz
   if [ "$gv" -eq "$AIR" ]; then
     start_anim $px $pz $yaw $ta_nx $ta_nz $yaw
-    # a mined passage is the same 1-tall opening as a corridor (mining
-    # breaks the y=1 wall), so every move is upright
-    anim_ms=$ANIM_MS
+    # corridors are 2-tall, so an upright walk is the norm; a MINED
+    # passage keeps its y=2 block (the 1-tall opening) — slow the glide
+    # so the crouch reads as ducking under the low ceiling
+    get_cell $ta_nx 2 $ta_nz
+    if [ "$gv" -eq "$AIR" ]; then anim_ms=$ANIM_MS; else anim_ms=$ANIM_MS_CROUCH; fi
     return 0
   fi
   return 1
@@ -447,13 +452,13 @@ compute_display() {
 }
 
 # the eye ducks (and the walk slows) when the ceiling overhead is low:
-# mining breaks only the y=0 block, so a mined passage keeps the y=1
-# block and its 1-tall opening — the camera drops below it so it stops
-# looking like you're walking INTO the ceiling. Keyed off the DISPLAY
-# cell (where the eye actually is), so the duck happens as the eye
-# crosses into the low cell.
+# mining breaks only the y=1 wall block, so a mined passage keeps the
+# y=2 block and its 1-tall opening — the camera drops below it so it
+# stops looking like you're walking INTO the ceiling. Keyed off the
+# DISPLAY cell (where the eye actually is), so the duck happens as the
+# eye crosses into the low cell.
 update_crouch() {
-  get_cell $dpx 1 $dpz
+  get_cell $dpx 2 $dpz
   if [ "$gv" -eq "$AIR" ]; then
     crouched=0
   else
@@ -562,13 +567,14 @@ claim_treasure() { ct_a=$1; ct_b=$2; ct_t=0
 
 # ─── World generation ────────────────────────────────────────────────
 gen_maze() {
-  # fill the whole maze with 2-tall stone walls
+  # fill the whole maze: a dirt floor under 2-tall stone walls
   gm_x=0
   while [ "$gm_x" -lt "$MAP_W" ]; do
     gm_z=0
     while [ "$gm_z" -lt "$MAP_D" ]; do
       set_cell $gm_x 0 $gm_z $DIRT
       set_cell $gm_x 1 $gm_z $STONE
+      set_cell $gm_x 2 $gm_z $STONE
       gm_z=$((gm_z + 1))
     done
     gm_x=$((gm_x + 1))
@@ -580,6 +586,7 @@ gen_maze() {
     gm_sz=1
     while [ "$gm_sz" -le 3 ]; do
       set_cell $gm_sx 1 $gm_sz $AIR
+      set_cell $gm_sx 2 $gm_sz $AIR
       gm_sz=$((gm_sz + 1))
     done
     gm_sx=$((gm_sx + 1))
@@ -592,6 +599,7 @@ gen_maze() {
   gm_total=$((MAP_W * MAP_D * 55 / 100))
   while [ "$gm_steps" -lt "$gm_total" ]; do
     set_cell $gm_cx 1 $gm_cz $AIR
+    set_cell $gm_cx 2 $gm_cz $AIR
     rand 4
     if [ "$rv" -eq 0 ]; then gm_cx=$((gm_cx + 1)); fi
     if [ "$rv" -eq 1 ]; then gm_cx=$((gm_cx - 1)); fi
@@ -619,15 +627,18 @@ gen_maze() {
       gm_placed=$((gm_placed + 1))
     fi
   done
-  # floating gems at y=2 for depth
+  # floating gems at y=2 for depth — they cap the 2-TALL maze walls (a
+  # y=1 stone wall below), so they read as bright blocks atop the walls
+  # instead of floating in the corridor air (where the standing eye
+  # would walk INTO them — and never over the spawn pocket)
   gm_placed=0
   while [ "$gm_placed" -lt 12 ]; do
     rand 14
     gm_rx=$((rv + 1))
     rand 14
     gm_rz=$((rv + 1))
-    get_cell $gm_rx 2 $gm_rz
-    if [ "$gv" -eq "$AIR" ]; then
+    get_cell $gm_rx 1 $gm_rz
+    if [ "$gv" -eq "$STONE" ]; then
       rand 3
       if [ "$rv" -eq 0 ]; then set_cell $gm_rx 2 $gm_rz $DIAMOND; fi
       if [ "$rv" -eq 1 ]; then set_cell $gm_rx 2 $gm_rz $RUBY; fi
@@ -650,6 +661,7 @@ gen_maze() {
       if [ "$gm_x" -eq 0 ] || [ "$gm_x" -eq "$gm_bx" ] || [ "$gm_z" -eq 0 ] || [ "$gm_z" -eq "$gm_bz" ]; then
         set_cell $gm_x 0 $gm_z $OBSIDIAN
         set_cell $gm_x 1 $gm_z $OBSIDIAN
+        set_cell $gm_x 2 $gm_z $OBSIDIAN
       fi
       gm_z=$((gm_z + 1))
     done
@@ -666,6 +678,10 @@ gen_maze() {
     set_cell $gm_x 1 $gm_ci $AIR
     set_cell 1 1 $gm_x $AIR
     set_cell $gm_ci 1 $gm_x $AIR
+    set_cell $gm_x 2 1 $AIR
+    set_cell $gm_x 2 $gm_ci $AIR
+    set_cell 1 2 $gm_x $AIR
+    set_cell $gm_ci 2 $gm_x $AIR
     gm_x=$((gm_x + 1))
   done
 }
@@ -1177,13 +1193,12 @@ render_frame() {
   czs=$fv
   fmt_pos $dpyw_ms
   yws=$fv
-  # the eye height: standing 1.0 (the shader adds 0.5 to uCamPos.y, so
-  # cy_ms 500 → the eye at mid-height of the 2-tall space — the wall
-  # faces then extend BELOW the horizon into the bottom half of the
-  # screen, bounding the floor between them instead of the ground
-  # filling the whole bottom); crouched −0.4 → the eye ducks to 0.1
-  # under a mined 1-tall opening
-  if [ "$crouched" -eq 1 ]; then cy_ms=-400; else cy_ms=500; fi
+  # the eye height: standing 1.6 (the shader adds 0.5 to uCamPos.y, so
+  # cy_ms 1100 → the eye at 1.6 — ABOVE the y=1 block tops (1.5), so the
+  # lower wall layer's top faces are visible and the corridor walls read
+  # as stacked 3D blocks instead of flat planes); crouched 0.75 → the eye
+  # ducks under the 1.5 ceiling of a mined 1-tall opening
+  if [ "$crouched" -eq 1 ]; then cy_ms=250; else cy_ms=1100; fi
   fmt_pos $cy_ms
   cys=$fv
   echo "$cxs $cys $czs" > /dev/webgl/uniform/3f/uCamPos
@@ -1195,7 +1210,7 @@ render_frame() {
   # camera-following patches (span 40 = ±20 cells) so the coverage is
   # ROTATION-INVARIANT — a fixed 16-wide slab ended at the map edge, so
   # mid-turn the plane's boundary swept across the view and the clear
-  # colour (blackness) showed past the 2-tall obsidian border
+  # colour (blackness) showed past the obsidian border
   bg_p="$dpx -0.05 $dpz 40 0.1 40 0.45 0.40 0.34 0 0
 "
   bg_p="${bg_p}$dpx 2.05 $dpz 40 0.1 40 0.24 0.24 0.28 0 0
@@ -1551,6 +1566,29 @@ draw_minimap() {
     prev_px=$dpx
     prev_pz=$dpz
     prev_deg=$dm_deg
+  fi
+  # the player square must be clear BEFORE each turn animation frame:
+  # the rotating triangle leaves ghost pixels when the cell it is about
+  # to be drawn in still carries the previous frame's orientation (the
+  # state-change erase above targets the PREVIOUS cell, which can differ
+  # from the display cell the triangle is drawn at). Erase the current
+  # square + restore its base/mimes, then draw the triangle.
+  if [ "$anim" -eq 1 ]; then
+    erase_rect $((RADAR_X + dpx*44)) $((1720 - dpz*60)) 62 60
+    draw_radar_cell $((dpx - 1)) $dpz
+    draw_radar_cell $dpx $dpz
+    draw_radar_cell $((dpx + 1)) $dpz
+    dm_bi=0
+    while [ "$dm_bi" -lt "$mime_count" ]; do
+      dm_mx=${mx[$dm_bi]}
+      dm_mz=${mz[$dm_bi]}
+      if [ "$dm_mz" -eq "$dpz" ]; then
+        if [ "$dm_mx" -eq "$dpx" ] || [ "$dm_mx" -eq "$((dpx - 1))" ] || [ "$dm_mx" -eq "$((dpx + 1))" ]; then
+          draw_mime_blip $dm_bi
+        fi
+      fi
+      dm_bi=$((dm_bi + 1))
+    done
   fi
   dm_cxm=$((RADAR_X + dpx*44))
   dm_cym=$((1720 - dpz*60))

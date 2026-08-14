@@ -1,6 +1,7 @@
-// __corr6.mjs — drive the real game, capture the actual blocks payload
-// of a frame, and render it with the exact shader math to see what the
-// user sees (the spawn pocket: walls 2 cells to the immediate left/right).
+// __corr9.mjs — walk the RING CORRIDOR (walls 1 cell to the immediate
+// left/right of the player) and render the real captured frames with the
+// exact shader math + the real aShade face shading, to judge whether the
+// side blocks read 3D or flat ("2d look").
 import { readFileSync } from "fs";
 import { fs } from "./src/fs/index.js";
 import { bashToJS } from "./src/bash2js.js";
@@ -10,27 +11,22 @@ const W = 140, H = 46;
 const aPos = new Float32Array("-0.5 0.5 0.5 0.5 0.5 0.5 0.5 0.5 -0.5 -0.5 0.5 -0.5 -0.5 -0.5 0.5 0.5 -0.5 0.5 0.5 -0.5 -0.5 -0.5 -0.5 -0.5 -0.5 0.5 0.5 0.5 0.5 0.5 0.5 -0.5 0.5 -0.5 -0.5 0.5 -0.5 0.5 -0.5 0.5 0.5 -0.5 0.5 -0.5 -0.5 -0.5 -0.5 -0.5 0.5 0.5 -0.5 0.5 -0.5 -0.5 0.5 -0.5 0.5 0.5 0.5 0.5 0.5 -0.5 0.5 -0.5 -0.5 0.5 -0.5 0.5 -0.5 0.5 -0.5 -0.5".split(/\s+/).map(Number));
 const cubeI = [0,1,2,0,2,3,4,5,6,4,6,7,8,9,10,8,10,11,12,13,14,12,14,15,16,17,18,16,18,19,20,21,22,20,22,23];
 const P = 0.45;
+// the game's /dev/webgl/buffer/aShade (face groups: top 1.0, bottom 0.5,
+// +z 0.6, -z 0.8, +x 0.8, -x 0.6)
+const aShade = [1,1,1, 0.5,0.5,0.5, 0.6,0.6,0.6, 0.8,0.8,0.8, 0.8,0.8,0.8, 0.6,0.6,0.6];
 
 function render(blocks, camPos, yawDeg) {
   const depth = new Float32Array(W * H).fill(1.0);
   const pix = new Array(W * H).fill(".");
   const a = yawDeg * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
   const eye = [camPos[0], camPos[1] + 0.5, camPos[2]];   // shader adds 0.5 to uCamPos.y
-  const chOf = (line) => {
-    const n = line.trim().split(/\s+/).map(Number);
-    const tx = n[9], b = n[3];
-    if (b === 40) return "=";
-    if (tx === 1) return "#";
-    if (tx === 10) return "O";
-    return "d";
-  };
   const draw = (payload, writeDepth) => {
     for (const line of payload.split("\n")) {
       const n = line.trim().split(/\s+/).map(Number);
-      if (n.length < 3) continue;
-      const ch = chOf(line);
-      const [x, y, z, sx, sy, sz] = n;
+      if (n.length < 11) continue;
+      const [x, y, z, sx, sy, sz, r, g, b, tx] = n;
       for (let t = 0; t < 12; t++) {
+        const shade = aShade[Math.floor(t / 2) * 3];
         const i0 = cubeI[t*3], i1 = cubeI[t*3+1], i2 = cubeI[t*3+2];
         const clip = [[i0],[i1],[i2]].map(([v]) => {
           const px = aPos[v*3]*sx + x, py = aPos[v*3+1]*sy + y, pz = aPos[v*3+2]*sz + z;
@@ -71,33 +67,33 @@ function render(blocks, camPos, yawDeg) {
               if (s0 < -1e-6 || s1 < -1e-6 || s2 < -1e-6) continue;
               const dd = s0 * ndc[0].d + s1 * ndc[1].d + s2 * ndc[2].d;
               const idx = py * W + px;
-              if (dd <= depth[idx]) { if (writeDepth) depth[idx] = dd; pix[idx] = ch; }
+              if (dd <= depth[idx]) {
+                if (writeDepth) depth[idx] = dd;
+                // brightness digit = face shade × block colour (r channel)
+                const ch = "0123456789"[Math.max(0, Math.min(9, Math.round(shade * r * 9)))];
+                pix[idx] = ch;
+              }
             }
           }
         }
       }
     }
   };
-  for (const l of blocks.split("\n")) {
-    const n = l.trim().split(/\s+/).map(Number);
-    if (n[3] === 40) draw(l, false);
-  }
-  for (const l of blocks.split("\n")) {
-    const n = l.trim().split(/\s+/).map(Number);
-    if (n[3] !== 40) draw(l, true);
-  }
+  draw(blocks, true);
   return pix;
 }
 
-// ── drive the game, capture the first frame ─────────────────────────
+// ── drive the game ────────────────────────────────────────────────
 const src = readFileSync("examples/mimecroft.sh", "utf8");
 const { js } = await bashToJS(fs, src);
-// let the game render the spawn view (frame 1 idle), then quit
-const KEYS = ["", "q,"];
+// walk along the ring corridor (z=1): face +x (ArrowRight once), then walk
+const KEYS = [
+  "", "ArrowRight,", "w,", "w,", "w,", "w,", "w,", "w,", "w,", "w,",
+  "", "w,", "w,", "w,", "w,", "w,", "w,", "w,", "w,", "w,",
+  "q,",
+];
 let keyFrame = 0, sleepCount = 0;
 const stdout = [];
-let curBlocks = null, curPos = null, curYaw = null;
-const frames = [];
 const shellExec = async (cmdline) => {
   const cl = cmdline.trim(); const cmd = cl.split(/\s+/)[0];
   let rest = cl.slice(cmd.length).trim();
@@ -106,32 +102,28 @@ const shellExec = async (cmdline) => {
   if (cmd === "echo") out = rest + "\n";
   else if (cmd === "cat") {
     const p = fs._resolve(rest.split(/\s+/)[0]);
-    if (p === "/dev/webgl/key") { out = (keyFrame === 0 ? "q," : ""); keyFrame++; }
+    if (p === "/dev/webgl/key") { out = (keyFrame < KEYS.length ? KEYS[keyFrame] : "q,"); keyFrame++; }
     else { try { out = await fs.read(p); } catch { out = ""; } }
   }
-  else if (cmd === "sleep") { sleepCount++; if (sleepCount > 250) throw new Error("test-stop"); await new Promise((r) => setTimeout(r, 0)); }
+  else if (cmd === "sleep") { sleepCount++; if (sleepCount > 6000) throw new Error("test-stop"); await new Promise((r) => setTimeout(r, 0)); }
   else if (cmd === "bash") { out = ""; }
   else if (cmd === "sh2glsl") { out = ""; }
   else if (cmd === "true") {}
   else out = `${cmd}: command not found\n`;
   return { out, err: "", code: 0 };
 };
+const frames = [];
 const origWrite = fs.write.bind(fs);
 fs.write = async (path, content) => {
   const p = fs._resolve(path);
   const s = String(content);
-  if (p === "/dev/webgl/blocks") curBlocks = s;
-  else if (p === "/dev/webgl/uniform/3f/uCamPos") { const v = s.trim().split(/\s+/); curPos = [Number(v[0]), Number(v[1]), Number(v[2])]; }
-  else if (p === "/dev/webgl/uniform/1f/uCamYaw") curYaw = Number(s.trim());
-  else if (p === "/dev/webgl/call" && s.trim() === "swap") {
-    if (curBlocks && curPos && curYaw !== null) frames.push({ blocks: curBlocks, pos: curPos, yaw: curYaw });
-  }
+  if (p === "/dev/webgl/blocks") frames.push(s);
+  else if (p.includes("uCamPos")) { const v = s.trim().split(/\s+/); frames.push({ pos: [Number(v[0]), Number(v[1]), Number(v[2])] }); }
+  else if (p.includes("uCamYaw")) { frames.push({ yaw: Number(s.trim()) }); }
   return origWrite(path, content);
 };
 const out = { write: (s) => stdout.push(s) };
 const rt = createSh2Runtime({ fs, env: {}, shellExec, stdout: out, stderr: { write: (s) => stdout.push("[err] " + s) }, args: [], argv0: "bash" });
-// the wasm reads `keys=$(cat /dev/webgl/key)` as a DIRECT device read
-// (`sh2.fs.readFile`) — feed the scripted keys through that bridge
 const origReadFile = rt.sh2.fs.readFile.bind(rt.sh2.fs);
 rt.sh2.fs.readFile = async (p, enc) => {
   if (String(p) === "/dev/webgl/key") {
@@ -145,9 +137,21 @@ const fn = new Function("args", "fs", "env", "stdout", "stderr", "__runCmd", "sh
 try { await fn([], fs, {}, out, { write: (s) => stdout.push("[err] " + s) }, shellExec, rt.sh2); }
 catch (e) { if (e.message !== "test-stop") { console.log("RUN ERROR:", e.message); process.exit(1); } }
 
-console.log(`${frames.length} frames captured`);
-const f = frames[0];
-console.log(`frame: cam (${f.pos[0]}, ${f.pos[1]}, ${f.pos[2]}) yaw ${f.yaw}° blocks:`);
-console.log(f.blocks);
-const pix = render(f.blocks, f.pos, f.yaw);
-for (let py = 0; py < H; py++) console.log(pix.slice(py*W, (py+1)*W).join(""));
+// collect cam positions/yaws interleaved with block payloads
+const camPos = [];
+for (const f of frames) if (f.pos) camPos.push(f.pos);
+console.log(`events: ${frames.length}, camPos: ${camPos.length}`);
+// pair each blocks payload with the cam pos+yaw written just before it
+const renders = [];
+let cur = null;
+for (const f of frames) {
+  if (f.pos) cur = f.pos;
+  else if (f.yaw !== undefined) cur = [cur[0], cur[1], cur[2], f.yaw];
+  else if (typeof f === "string" && cur) renders.push({ blocks: f, pos: cur.slice() });
+}
+console.log(`renders: ${renders.length}`);
+for (const [i, r] of renders.entries()) {
+  const pix = render(r.blocks, [r.pos[0], r.pos[1], r.pos[2]], r.pos[3]);
+  console.log(`\n── frame ${i}: cam (${r.pos[0]}, ${r.pos[1]}, ${r.pos[2]}) yaw ${r.pos[3]}° — ${r.blocks.trim().split("\n").length} blocks`);
+  for (let py = 0; py < H; py++) console.log(pix.slice(py*W, (py+1)*W).join(""));
+}

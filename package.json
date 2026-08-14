@@ -29,5 +29,8 @@
     "wasm-diff": "^1.1.1",
     "wasmoon": "^1.16.0",
     "xterm": "^5.3.0"
+  },
+  "allowScripts": {
+    "gl@8.1.6": true
   }
 }
