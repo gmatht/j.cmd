@@ -39,6 +39,18 @@ const shellExec = async (cmdline) => {
 };
 const out = { write: (s) => stdout.push(s) };
 const rt = createSh2Runtime({ fs, env: {}, shellExec, stdout: out, stderr: { write: (s) => stdout.push("[err] " + s) }, args: [], argv0: "bash" });
+// the current wasm lowers `keys=$(cat /dev/webgl/key)` to a DIRECT device
+// read (`sh2.fs.readFile("/dev/webgl/key")`) — feed the scripted keys
+// through the same bridge the browser's keyboard uses.
+const origSh2ReadFile = rt.sh2.fs.readFile.bind(rt.sh2.fs);
+rt.sh2.fs.readFile = async (p, enc) => {
+  if (String(p) === "/dev/webgl/key") {
+    const k = keyFrame < KEYS.length ? KEYS[keyFrame] : "q,";
+    keyFrame++;
+    return k;
+  }
+  return origSh2ReadFile(p, enc);
+};
 const fn = new Function("args", "fs", "env", "stdout", "stderr", "__runCmd", "sh2", "return (async () => { " + js + " })();");
 try { await fn([], fs, {}, out, { write: (s) => stdout.push("[err] " + s) }, shellExec, rt.sh2); }
 catch (e) { if (e.message !== "test-stop") { console.log("RUN ERROR:", e.message); process.exit(1); } }

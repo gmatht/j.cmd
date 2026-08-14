@@ -1412,7 +1412,21 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
             continue;
           }
           if (!target.startsWith("&")) {
-            throw new Error("redirection needs the async redirect bridge; try `bash` for this construct");
+            // FILE target: the fs backends (RamFS/LocalStorageFS/device
+            // mounts) write synchronously under the hood — route the
+            // sync builtin's content the same way the async redirect
+            // bridge does (`>>` appends). The game's load_tex cache
+            // read (`cat /home/... > /dev/webgl/texture/N`) lands here
+            // on the cache-hit path.
+            const content = typeof ret === "string" ? ret : (fd === 2 ? buf.err : buf.out);
+            if (r.mode === "a") {
+              let existing = "";
+              try { existing = String(fs.readSync ? fs.readSync(target) : ""); } catch { /* new file */ }
+              fs.write(target, existing + content);
+            } else {
+              fs.write(target, content);
+            }
+            continue;
           }
           // the sync builtin returns its output string (echo/printf);
           // fall back to the mode buffer for other writers
@@ -1446,7 +1460,7 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
           return r.then(
             (v) => {
               scriptArgs = prev;
-              lastStatus = v === false ? 1 : 0;
+              lastStatus = (typeof v === "string" || typeof v === "number") ? Number(v) : (v === false ? 1 : 0);
               return v;
             },
             // an ASYNC target's `return N` rejects with ReturnSignal —
@@ -1461,7 +1475,9 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
           );
         }
         scriptArgs = prev;
-        lastStatus = r === false ? 1 : 0;
+        // `return N` gives a string/number result — record it as $? like
+        // the exec dispatch does; booleans are the status verdicts.
+        lastStatus = (typeof r === "string" || typeof r === "number") ? Number(r) : (r === false ? 1 : 0);
         return r;
       },
       // `f …` — invoke a DIRECT-registered function body (the estree's
@@ -1482,7 +1498,7 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
           return r.then(
             (v) => {
               scriptArgs = prev;
-              lastStatus = v === false ? 1 : 0;
+              lastStatus = (typeof v === "string" || typeof v === "number") ? Number(v) : (v === false ? 1 : 0);
               return v;
             },
             // an ASYNC target's `return N` rejects with ReturnSignal —
@@ -1497,7 +1513,9 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
           );
         }
         scriptArgs = prev;
-        lastStatus = r === false ? 1 : 0;
+        // `return N` gives a string/number result — record it as $? like
+        // the exec dispatch does; booleans are the status verdicts.
+        lastStatus = (typeof r === "string" || typeof r === "number") ? Number(r) : (r === false ? 1 : 0);
         return r;
       },
     },

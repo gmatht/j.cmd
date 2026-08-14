@@ -275,6 +275,10 @@ can_step() { cs_a=$1; cs_b=$2; cs=0
 }
 
 update_mimes() {
+  # any mime actually moved this step (or died reaching the player)?
+  # the loop's render is gated on this — the step render otherwise
+  # redraws an identical frame 6-7×/sec (the observed "FPS 7/8" idle)
+  mimes_moved=0
   um_i=0
   while [ "$um_i" -lt "$mime_count" ]; do
     um_a=${mx[$um_i]}
@@ -311,12 +315,14 @@ update_mimes() {
         hurt $um_dmg
         kill_mime_at $um_a $um_b
         um_moved=1
+        mimes_moved=1
       else
         can_step $um_cx $um_cz
         if [ "$cs" -eq 1 ]; then
           mx[$um_i]=$um_cx
           mz[$um_i]=$um_cz
           um_moved=1
+          mimes_moved=1
         fi
       fi
       um_n=$((um_n + 1))
@@ -1574,8 +1580,8 @@ hud_build_static() {
   # ART line
   draw_text "ART" 3 760 1840 8 11 0.60 0.75 0.95
   draw_char 37 952 1840 8 11 0.60 0.75 0.95
-  # fps label
-  draw_text "FPS" 3 60 1778 8 11 0.55 0.95 0.95
+  # fps label (right of the ART digits, same line)
+  draw_text "FPS" 3 1130 1840 8 11 0.55 0.95 0.95
   # instructions (bottom centre)
   draw_text "WASD MOVE ARROWS TURN SPACE SHOOT" 33 538 100 7 10 0.85 0.85 0.85
   # radar base: walls + treasure cells (air stays dark; the player and
@@ -1624,7 +1630,7 @@ draw_digits() {
   erase_rect 296 1812 96 60
   erase_rect 572 1812 160 60
   erase_rect 964 1812 160 60
-  erase_rect 240 1750 96 60
+  erase_rect 1302 1812 96 60
   # score digits
   dh_a=$((score/100%10+26))
   dh_b=$((score/10%10+26))
@@ -1650,13 +1656,13 @@ draw_digits() {
   dh_b=$((TREASURE_TOTAL%10+26))
   draw_char $dh_a 984 1840 8 11 0.60 0.75 0.95
   draw_char $dh_b 1016 1840 8 11 0.60 0.75 0.95
-  # fps digits (second line, below the score)
+  # fps digits (right of the ART total, same line as the score/hp/art)
   dh_a=$((fps/100+26))
   dh_b=$((fps/10%10+26))
   dh_c=$((fps%10+26))
-  draw_char $dh_a 196 1778 8 11 0.55 0.95 0.95
-  draw_char $dh_b 228 1778 8 11 0.55 0.95 0.95
-  draw_char $dh_c 260 1778 8 11 0.55 0.95 0.95
+  draw_char $dh_a 1258 1840 8 11 0.55 0.95 0.95
+  draw_char $dh_b 1290 1840 8 11 0.55 0.95 0.95
+  draw_char $dh_c 1322 1840 8 11 0.55 0.95 0.95
 }
 
 draw_hud_canvas() {
@@ -2139,7 +2145,7 @@ main() {
     if [ "$MIMES_ON" -eq 1 ]; then
       if [ "$mstep" -eq 0 ]; then
         update_mimes
-        dirty=1
+        if [ "$mimes_moved" -eq 1 ]; then dirty=1; fi
       fi
     fi
     gspan "mime"
