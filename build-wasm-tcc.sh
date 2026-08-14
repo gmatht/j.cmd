@@ -51,7 +51,7 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
-UPSTREAM="https://github.com/gmatht/tinycc.git"   # our fork of TinyCC/tinycc — wasm32 backend
+UPSTREAM="https://github.com/gmatht/tcc-wasm.git"   # our fork of TinyCC/tinycc — wasm32 backend
 # default to the LOCAL fork checkout (carries the wasm32 backend fixes
 # that are ahead of the remote mob branch)
 TINYCC="${TINYCC_DIR:-/root/src/tinycc-wasm}"
