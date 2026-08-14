@@ -31,12 +31,13 @@ if (fresh === committed) {
 
 // 2. the quality properties
 const checks = [
-  // the texture layer's `r = r * tex_r / 255` has an intermediate of
-  // 255×255 = 65025 > ±2^15 — mediump int CANNOT hold it, so the proof
-  // correctly refuses (highp int is the honest verdict; a lying proof
-  // would miscompile on old mobile GPUs that lack highp int in fragment).
-  ["highp int (texture multiply exceeds ±2^15 — proof honest)", fresh.includes("precision highp int;")],
-  ["no mediump int (the proof correctly refuses)", !fresh.includes("precision mediump int;")],
+  // 0..127 colour scale: the tint r·tex_r/128 ≤ 127·255 = 32385, the
+  // blend (r-cr_r)·mix/256 ≤ 228·127 = 28956 and every other product
+  // stays inside ±2^15 — so the interval proof fires and the ES 1.00
+  // MANDATORY mediump int is emitted (the mandatory precision is what
+  // keeps the shader compiling on old GPUs without highp int in fragment).
+  ["ES 1.00 mediump int (0..127 scale provable)", fresh.includes("precision mediump int;")],
+  ["no highp int (the proof fired)", !fresh.includes("precision highp int;")],
   ["ES 1.00 mediump float (800≤2048 canvas)", fresh.includes("precision mediump float;")],
   ["program vars are main() locals", !/^int g_[a-z_]+;$/m.test(fresh.split("void main()")[0] ?? "")],
   ["no dead g_pa param array", !fresh.includes("g_pa")],

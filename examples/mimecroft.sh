@@ -727,19 +727,18 @@ emit_fragment_shader() {
   echo 'r=$((vcolor_r))' >> /tmp/mimecroft-frag.sh
   echo 'g=$((vcolor_g))' >> /tmp/mimecroft-frag.sh
   echo 'b=$((vcolor_b))' >> /tmp/mimecroft-frag.sh
-  # the block texture sampled per pixel (bridged by the generator)
-  echo 'r=$((r * tex_r / 255))' >> /tmp/mimecroft-frag.sh
-  echo 'g=$((g * tex_g / 255))' >> /tmp/mimecroft-frag.sh
-  echo 'b=$((b * tex_b / 255))' >> /tmp/mimecroft-frag.sh
-  # crack overlay: the transparent crack texture (cr_r/g/b/a bridges),
-  # mixed in by the damage level (uDamage bridge) — layered over ANY
-  # block texture so damaged blocks show cracks
-  echo 'if [ "$damage" -gt 0 ]; then' >> /tmp/mimecroft-frag.sh
-  echo '  mix=$((damage * cr_a / 3))' >> /tmp/mimecroft-frag.sh
-  echo '  r=$((r * (255 - mix) / 255 + cr_r * mix / 255))' >> /tmp/mimecroft-frag.sh
-  echo '  g=$((g * (255 - mix) / 255 + cr_g * mix / 255))' >> /tmp/mimecroft-frag.sh
-  echo '  b=$((b * (255 - mix) / 255 + cr_b * mix / 255))' >> /tmp/mimecroft-frag.sh
-  echo 'fi' >> /tmp/mimecroft-frag.sh
+  # the block texture sampled per pixel (bridged by the generator).
+  # 0..127 colour scale + /128: the tint intermediate r·tex_r ≤ 127·255
+  # fits mediump int (±2^15), and 127/128 ≈ 255/255 keeps the output
+  # range (max 253 ≈ 255) — the game looks identical.
+  echo 'r=$((r * tex_r / 128))' >> /tmp/mimecroft-frag.sh
+  echo 'g=$((g * tex_g / 128))' >> /tmp/mimecroft-frag.sh
+  echo 'b=$((b * tex_b / 128))' >> /tmp/mimecroft-frag.sh
+  # CRT scanline BEFORE the damage blend: the tint is r ≤ 254 here, so
+  # r·90/100 stays provably inside mediump int; blending AFTER the dim
+  # keeps the blend's r ≤ 228 (the (r-cr_r)·mix intermediate then fits).
+  # (The scanline now dims the texture but not the crack — a 1-step
+  # visual difference on damaged blocks.)
   if [ "$CRT_ON" -eq 1 ]; then
     echo 'scan=$((fy % 6))' >> /tmp/mimecroft-frag.sh
     echo 'if [ "$scan" -eq 0 ]; then' >> /tmp/mimecroft-frag.sh
@@ -748,6 +747,18 @@ emit_fragment_shader() {
     echo '  b=$((b * 90 / 100))' >> /tmp/mimecroft-frag.sh
     echo 'fi' >> /tmp/mimecroft-frag.sh
   fi
+  # crack overlay: the transparent crack texture (cr_r/g/b/a bridges),
+  # mixed in by the damage level (uDamage bridge) — layered over ANY
+  # block texture so damaged blocks show cracks. The blend is written as
+  # r - (r-cr_r)·mix/256 (≡ r·(1-mix/256) + cr_r·mix/256 — same value,
+  # weights sum to 1) so the intermediate (r-cr_r)·mix ≤ 228·127 stays
+  # inside mediump int; /256 is a power-of-two shift.
+  echo 'if [ "$damage" -gt 0 ]; then' >> /tmp/mimecroft-frag.sh
+  echo '  mix=$((damage * cr_a / 3))' >> /tmp/mimecroft-frag.sh
+  echo '  r=$((r - (r - cr_r) * mix / 256))' >> /tmp/mimecroft-frag.sh
+  echo '  g=$((g - (g - cr_g) * mix / 256))' >> /tmp/mimecroft-frag.sh
+  echo '  b=$((b - (b - cr_b) * mix / 256))' >> /tmp/mimecroft-frag.sh
+  echo 'fi' >> /tmp/mimecroft-frag.sh
   if [ "$CORRUPT_ON" -eq 1 ]; then
     echo 'hash=$((fx * 7 + fy * 13))' >> /tmp/mimecroft-frag.sh
     echo 'corrupt=$((hash % 97))' >> /tmp/mimecroft-frag.sh
@@ -766,12 +777,12 @@ emit_fragment_shader() {
     echo 'if [ "$edge" -gt 450 ]; then' >> /tmp/mimecroft-frag.sh
     echo '  dim=$((edge - 450))' >> /tmp/mimecroft-frag.sh
     echo '  if [ "$dim" -gt 30 ]; then dim=30; fi' >> /tmp/mimecroft-frag.sh
-    # multiplicative dim (r - r·dim/255): scales toward dark instead of
+    # multiplicative dim (r - r·dim/256): scales toward dark instead of
     # subtracting — dark pixels can never hard-clip to black. r·dim ≤
-    # 255·30 fits mediump int, so the fragment stays ES 1.00 portable.
-    echo '  r=$((r - r * dim / 255))' >> /tmp/mimecroft-frag.sh
-    echo '  g=$((g - g * dim / 255))' >> /tmp/mimecroft-frag.sh
-    echo '  b=$((b - b * dim / 255))' >> /tmp/mimecroft-frag.sh
+    # 255·30 fits mediump int (the /256 is a power-of-two shift).
+    echo '  r=$((r - r * dim / 256))' >> /tmp/mimecroft-frag.sh
+    echo '  g=$((g - g * dim / 256))' >> /tmp/mimecroft-frag.sh
+    echo '  b=$((b - b * dim / 256))' >> /tmp/mimecroft-frag.sh
     echo 'fi' >> /tmp/mimecroft-frag.sh
   fi
   echo 'if [ "$r" -lt 0 ]; then r=0; fi' >> /tmp/mimecroft-frag.sh
@@ -1126,9 +1137,13 @@ render_frame() {
   czs=$fv
   fmt_pos $dpyw_ms
   yws=$fv
-  # the eye height: standing 0.5 (the shader adds 0.5 to uCamPos.y);
-  # crouched −0.4 → the eye ducks to 0.1 under a 1-tall opening
-  if [ "$crouched" -eq 1 ]; then cy_ms=-400; else cy_ms=0; fi
+  # the eye height: standing 1.0 (the shader adds 0.5 to uCamPos.y, so
+  # cy_ms 500 → the eye at mid-height of the 2-tall space — the wall
+  # faces then extend BELOW the horizon into the bottom half of the
+  # screen, bounding the floor between them instead of the ground
+  # filling the whole bottom); crouched −0.4 → the eye ducks to 0.1
+  # under a mined 1-tall opening
+  if [ "$crouched" -eq 1 ]; then cy_ms=-400; else cy_ms=500; fi
   fmt_pos $cy_ms
   cys=$fv
   echo "$cxs $cys $czs" > /dev/webgl/uniform/3f/uCamPos
