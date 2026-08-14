@@ -404,7 +404,7 @@ const FRONTEND_STATUS = {
   c:    { pass: 31, total: 31, name: "c-sh-go",    corpus: "c", note: "0 fragments skipped" },
   bat:  { pass: 0,  total: 0,  name: "bat-sh-go",  corpus: "bat", note: "no native cmd.exe reference for the stdout gate, and no browser cmd.exe either — pill coloured by the cross-product triage" },
   cpp:  { pass: 0,  total: 0,  name: "cpp-sh-go",  corpus: "cpp", note: "frontend→js gate not run yet — pill coloured by the cross-product triage (parses in-browser via the merged busybox)" },
-  powershell: { pass: 0, total: 0, name: "powershell-sh-go", corpus: "powershell", note: "frontend→js gate not run yet (live pwsh oracle is fleet-side); the triage worker does not sweep powershell-sh-go either" },
+  powershell: { pass: 0, total: 0, name: "powershell-sh-go", corpus: "powershell", note: "frontend→js gate not run yet (live pwsh oracle is fleet-side); the triage worker sweeps the corpus (pwsh is installed on the fleet box)" },
   rust: { pass: 0,  total: 0,  name: "rust-frontend", corpus: "rust", note: "frontend→js gate not run yet; parses in-browser (the real fleet binary built to wasm32-wasip1)" },
   zig:  { pass: 0,  total: 0,  name: "zig-sh-go",  corpus: "zig", note: "frontend→js gate not run yet — pill coloured by the cross-product triage (parses in-browser via the merged busybox)" },
 };
