@@ -457,13 +457,27 @@ export class WebGLDevice {
     if (op === "clear") {
       gl.clearColor(this._clearColor[0], this._clearColor[1],
                     this._clearColor[2], this._clearColor[3]);
+      // the world renders into the persistent FBO (the presented frame
+      // is rebuilt from it at swap) — clear the FBO's colour + depth.
+      const wf = this._ensureWorldFbo();
+      if (wf) gl.bindFramebuffer(gl.FRAMEBUFFER, wf);
       // depth too — the per-frame depth buffer must reset or fragments
       // from the previous frame stay "nearer" and blocks vanish
       gl.clear(gl.COLOR_BUFFER_BIT | (gl.DEPTH_BUFFER_BIT || 0x100));
+      if (wf) gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       this._lastCall = raw.trim();
       return;
     }
     if (op === "swap") {
+      // Rebuild the presented frame from the persistent WORLD framebuffer
+      // (the 3D view — cached, drawn into the FBO on view changes), then
+      // composite the transparent HUD layer on top. The back buffer's
+      // HUD is therefore TRANSIENT: with preserveDrawingBuffer the
+      // presented frame is retained, and without this rebuild the old
+      // HUD pixels would bake into the retained buffer — the layer
+      // erases can't remove them ("stale triangle / mimes / FPS / muzzle
+      // flash" — the ghost deg-0 arrow that never turns).
+      this._presentWorld();
       // Composite the transparent HUD layer (one textured quad) onto
       // the back buffer, then present. The layer persists across
       // frames, so bash only re-writes the changed cells.
@@ -566,13 +580,125 @@ export class WebGLDevice {
       const bytesPer = isU8 ? 1 : 2;
       const n = count !== undefined ? count : entry.arr.length;
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, entry.buffer);
+      // the world draws into the persistent FBO (rebuilt at swap) — so
+      // the retained presented buffer never bakes the HUD on top
+      const wf = this._ensureWorldFbo();
+      if (wf) gl.bindFramebuffer(gl.FRAMEBUFFER, wf);
       gl.drawElements(glMode, n, glIndexType, offset * bytesPer);
+      if (wf) gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     } else {
       const n = count !== undefined ? count : maxVerts;
       if (n <= 0) throw new Error("no vertices to draw (are buffers bound to attributes?)");
+      const wf = this._ensureWorldFbo();
+      if (wf) gl.bindFramebuffer(gl.FRAMEBUFFER, wf);
       gl.drawArrays(glMode, offset, n);
+      if (wf) gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     }
     this._log += `[call] draw ${kind} ${mode} count=${count !== undefined ? count : "auto"} offset=${offset}\n`;
+  }
+
+  // The persistent WORLD framebuffer: the 3D view renders here (on view
+  // changes); at swap it is drawn fullscreen to the default framebuffer
+  // BEFORE the HUD layer, so the presented frame's HUD is transient —
+  // erasing the HUD layer actually works (the stale pixels were never
+  // baked into the retained back buffer). Lazily created at canvas size;
+  // null in headless / on GL failure (the game falls back to drawing
+  // directly to the default framebuffer).
+  _ensureWorldFbo() {
+    if (this._worldFbo) return this._worldFbo;
+    const gl = this._gl;
+    if (!gl || !this._canvas || typeof gl.createFramebuffer !== "function") return null;
+    try {
+      const w = this._canvas.width, h = this._canvas.height;
+      const tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      const rb = gl.createRenderbuffer();
+      gl.bindRenderbuffer(gl.RENDERBUFFER, rb);
+      gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, w, h);
+      const fbo = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+      gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, rb);
+      const st = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.bindRenderbuffer(gl.RENDERBUFFER, null);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+      if (st !== gl.FRAMEBUFFER_COMPLETE) {
+        this._log += `[world] FBO incomplete (${st}) — falling back to direct drawing\n`;
+        return null;
+      }
+      this._worldTex = tex;
+      this._worldFbo = fbo;
+      this._log += "[world] persistent FBO ready\n";
+      return fbo;
+    } catch (e) {
+      this._log += `[world] FBO setup failed: ${e && e.message ? e.message : e}\n`;
+      return null;
+    }
+  }
+
+  // Draw the persistent world texture fullscreen (opaque, no blend) to
+  // the default framebuffer — the presented frame starts from a clean
+  // world, so the HUD composited after it is never baked into the
+  // retained buffer.
+  _presentWorld() {
+    const gl = this._gl;
+    if (this._null || !this._worldFbo || !gl) return;
+    try { this._presentWorldImpl(); }
+    catch (e) { this._log += `[world] present FAILED: ${e && e.message ? e.message : e}\n`; }
+  }
+
+  _presentWorldImpl() {
+    const gl = this._gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    // the world texture is GL-rendered (y-up): v=0 is the BOTTOM row, so
+    // the fullscreen quad's top (clip y=+1) samples v=1 — flip V.
+    this._drawTextureQuad(this._worldTex, false, true);
+  }
+
+  // Fullscreen textured quad (the pattern _compositeHudImpl uses): draws
+  // `tex` as one quad. blend=true → src-alpha over (the HUD layer);
+  // flipV=true → the quad's top samples v=1 (for GL-rendered textures).
+  _drawTextureQuad(tex, blend, flipV) {
+    const gl = this._gl;
+    if (!this._quadProg) this._quadProg = this._linkHudProgram();
+    if (!this._quadProg) return;
+    gl.useProgram(this._quadProg);
+    if (!this._hudVerts) this._hudVerts = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this._hudVerts);
+    // fullscreen quad (2 triangles): position + uv; canvas top → screen top
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(
+      flipV
+        ? [-1, 1, 0, 1,   1, 1, 1, 1,   1, -1, 1, 0,
+            1, -1, 1, 0,  -1, -1, 0, 0,  -1, 1, 0, 1]
+        : [-1, 1, 0, 0,   1, 1, 1, 0,   1, -1, 1, 1,
+            1, -1, 1, 1,  -1, -1, 0, 1,  -1, 1, 0, 0],
+    ), gl.STATIC_DRAW);
+    const aPos = gl.getAttribLocation(this._quadProg, "aPosition");
+    const aUv = gl.getAttribLocation(this._quadProg, "aUv");
+    gl.enableVertexAttribArray(aPos);
+    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 16, 0);
+    gl.enableVertexAttribArray(aUv);
+    gl.vertexAttribPointer(aUv, 2, gl.FLOAT, false, 16, 8);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.uniform1i(gl.getUniformLocation(this._quadProg, "uTex"), 0);
+    const depthOn = gl.isEnabled(gl.DEPTH_TEST);
+    gl.disable(gl.DEPTH_TEST);
+    if (blend) {
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    }
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    if (blend) gl.disable(gl.BLEND);
+    if (depthOn) gl.enable(gl.DEPTH_TEST);
   }
 
   // Binds every active attribute to a same-named buffer (or an explicit
@@ -825,32 +951,9 @@ export class WebGLDevice {
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       this._hudDirty = false;
     }
-    if (!this._hudProg) this._hudProg = this._linkHudProgram();
-    if (!this._hudProg) return;
-    gl.useProgram(this._hudProg);
-    if (!this._hudVerts) this._hudVerts = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, this._hudVerts);
-    // fullscreen quad (2 triangles): position + uv; canvas top → screen top
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
-      -1,  1, 0, 0,    1,  1, 1, 0,    1, -1, 1, 1,
-       1, -1, 1, 1,   -1, -1, 0, 1,   -1,  1, 0, 0,
-    ]), gl.STATIC_DRAW);
-    const aPos = gl.getAttribLocation(this._hudProg, "aPosition");
-    const aUv = gl.getAttribLocation(this._hudProg, "aUv");
-    gl.enableVertexAttribArray(aPos);
-    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 16, 0);
-    gl.enableVertexAttribArray(aUv);
-    gl.vertexAttribPointer(aUv, 2, gl.FLOAT, false, 16, 8);
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this._hudTex);
-    gl.uniform1i(gl.getUniformLocation(this._hudProg, "uTex"), 0);
-    const depthOn = gl.isEnabled(gl.DEPTH_TEST);
-    gl.disable(gl.DEPTH_TEST);
-    gl.enable(gl.BLEND);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-    gl.drawArrays(gl.TRIANGLES, 0, 6);
-    gl.disable(gl.BLEND);
-    if (depthOn) gl.enable(gl.DEPTH_TEST);
+    // the HUD layer is a 2D canvas (y-down): uv v=0 is the top row, so
+    // the quad's top samples v=0 — no flip.
+    this._drawTextureQuad(this._hudTex, true, false);
     this._log += "[hud] composited texture quad\n";
   }
 
