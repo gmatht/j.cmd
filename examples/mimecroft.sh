@@ -86,6 +86,9 @@ CAM_YAW=(0 90 180 270)
 
 # the lost operating systems
 TREASURES=("GNU Hurd" "Linux" "FreeBSD" "NetBSD" "OpenBSD" "Plan 9" "Minix" "Solaris" "macOS Darwin" "Unix")
+# each treasure name's length (${#…} doesn't expand in this pipeline, so
+# the label-texture generator reads this parallel table)
+TRLEN=(8 5 7 6 7 6 5 7 12 4)
 
 # mime damage by type: 1=jpeg 2=png 3=octet-stream 4=text/plain
 MIME_DMG=(0 2 1 1 1)
@@ -106,6 +109,69 @@ mhp=(0 0 0 0 0 0 0 0 0 0 0 0)
 # found artifacts (10)
 found=(0 0 0 0 0 0 0 0 0 0)
 
+# ─── treasure name labels ───────────────────────────────────────────
+# Each treasure gets a 64×64 RGBA texture with its OS name in the pixel
+# font (GFONT), generated ONCE at startup (load_labels) and cached like
+# the block textures. Every frame the visible treasures' labels are
+# drawn onto the HUD layer at their projected position/size (the vertex
+# shader's exact perspective), scaled to the treasure's projected size.
+LABEL_TEX0=21        # /dev/webgl/texture index of the first label
+LABEL_W=64           # label texture resolution (square, power of two)
+LABEL_VER=2          # label-generator version (cache key)
+lgi=(0 0 0 0 0 0 0 0 0 0 0 0)   # per-character glyph indices (max name 12)
+tl_wpx=(0 0 0 0 0 0 0 0 0 0)   # label text pixel width  (aspect)
+tl_hpx=(0 0 0 0 0 0 0 0 0 0)   # label text pixel height (aspect)
+# the LAST drawn label rect per treasure (milli NDC), so the next view
+# change erases it (and heals the radar underneath); -1 = not drawn
+ltlx=(-1 -1 -1 -1 -1 -1 -1 -1 -1 -1)
+ltly=(-1 -1 -1 -1 -1 -1 -1 -1 -1 -1)
+ltlw=(0 0 0 0 0 0 0 0 0 0)
+ltlh=(0 0 0 0 0 0 0 0 0 0)
+labels_dirty=1       # redraw the labels when the 3D view changes
+# cos/sin of the view yaw (‰ of uCamYaw, 0..359°) — the labels project
+# with the vertex shader's rotation so they track the 3D view exactly,
+# including mid-turn glides (where the yaw is fractional)
+SCOS=(1000 1000 999 999 998 996 995 993 990 988 985 982 978 974 970 966 961 956
+951 946 940 934 927 921 914 906 899 891 883 875 866 857 848 839 829 819
+809 799 788 777 766 755 743 731 719 707 695 682 669 656 643 629 616 602
+588 574 559 545 530 515 500 485 469 454 438 423 407 391 375 358 342 326
+309 292 276 259 242 225 208 191 174 156 139 122 105 87 70 52 35 17
+0 -17 -35 -52 -70 -87 -105 -122 -139 -156 -174 -191 -208 -225 -242 -259 -276 -292
+-309 -326 -342 -358 -375 -391 -407 -423 -438 -454 -469 -485 -500 -515 -530 -545 -559 -574
+-588 -602 -616 -629 -643 -656 -669 -682 -695 -707 -719 -731 -743 -755 -766 -777 -788 -799
+-809 -819 -829 -839 -848 -857 -866 -875 -883 -891 -899 -906 -914 -921 -927 -934 -940 -946
+-951 -956 -961 -966 -970 -974 -978 -982 -985 -988 -990 -993 -995 -996 -998 -999 -999 -1000
+-1000 -1000 -999 -999 -998 -996 -995 -993 -990 -988 -985 -982 -978 -974 -970 -966 -961 -956
+-951 -946 -940 -934 -927 -921 -914 -906 -899 -891 -883 -875 -866 -857 -848 -839 -829 -819
+-809 -799 -788 -777 -766 -755 -743 -731 -719 -707 -695 -682 -669 -656 -643 -629 -616 -602
+-588 -574 -559 -545 -530 -515 -500 -485 -469 -454 -438 -423 -407 -391 -375 -358 -342 -326
+-309 -292 -276 -259 -242 -225 -208 -191 -174 -156 -139 -122 -105 -87 -70 -52 -35 -17
+0 17 35 52 70 87 105 122 139 156 174 191 208 225 242 259 276 292
+309 326 342 358 375 391 407 423 438 454 469 485 500 515 530 545 559 574
+588 602 616 629 643 656 669 682 695 707 719 731 743 755 766 777 788 799
+809 819 829 839 848 857 866 875 883 891 899 906 914 921 927 934 940 946
+951 956 961 966 970 974 978 982 985 988 990 993 995 996 998 999 999 1000)
+SSIN=(0 17 35 52 70 87 105 122 139 156 174 191 208 225 242 259 276 292
+309 326 342 358 375 391 407 423 438 454 469 485 500 515 530 545 559 574
+588 602 616 629 643 656 669 682 695 707 719 731 743 755 766 777 788 799
+809 819 829 839 848 857 866 875 883 891 899 906 914 921 927 934 940 946
+951 956 961 966 970 974 978 982 985 988 990 993 995 996 998 999 999 1000
+1000 1000 999 999 998 996 995 993 990 988 985 982 978 974 970 966 961 956
+951 946 940 934 927 921 914 906 899 891 883 875 866 857 848 839 829 819
+809 799 788 777 766 755 743 731 719 707 695 682 669 656 643 629 616 602
+588 574 559 545 530 515 500 485 469 454 438 423 407 391 375 358 342 326
+309 292 276 259 242 225 208 191 174 156 139 122 105 87 70 52 35 17
+0 -17 -35 -52 -70 -87 -105 -122 -139 -156 -174 -191 -208 -225 -242 -259 -276 -292
+-309 -326 -342 -358 -375 -391 -407 -423 -438 -454 -469 -485 -500 -515 -530 -545 -559 -574
+-588 -602 -616 -629 -643 -656 -669 -682 -695 -707 -719 -731 -743 -755 -766 -777 -788 -799
+-809 -819 -829 -839 -848 -857 -866 -875 -883 -891 -899 -906 -914 -921 -927 -934 -940 -946
+-951 -956 -961 -966 -970 -974 -978 -982 -985 -988 -990 -993 -995 -996 -998 -999 -999 -1000
+-1000 -1000 -999 -999 -998 -996 -995 -993 -990 -988 -985 -982 -978 -974 -970 -966 -961 -956
+-951 -946 -940 -934 -927 -921 -914 -906 -899 -891 -883 -875 -866 -857 -848 -839 -829 -819
+-809 -799 -788 -777 -766 -755 -743 -731 -719 -707 -695 -682 -669 -656 -643 -629 -616 -602
+-588 -574 -559 -545 -530 -515 -500 -485 -469 -454 -438 -423 -407 -391 -375 -358 -342 -326
+-309 -292 -276 -259 -242 -225 -208 -191 -174 -156 -139 -122 -105 -87 -70 -52 -35 -17)
+
 # ─── Player / game state ────────────────────────────────────────────
 px=2
 pz=2
@@ -113,6 +179,8 @@ yaw=0
 hp=10
 maxhp=10
 score=0
+license=3            # your archeology licence: shooting a treasure costs
+                     # one strike; three strikes revokes it (game over)
 found_count=0
 mime_count=0
 frame=0
@@ -384,6 +452,13 @@ try_move() { tm_a=$1; tm_b=$2
       return 0
     fi
   fi
+  # a HIDDEN treasure is claimed by WALKING into it
+  if [ "$gv" -eq "$TREASURE" ]; then
+    px=$tm_nx
+    pz=$tm_nz
+    claim_treasure $tm_nx $tm_nz
+    return 0
+  fi
   return 1
 }
 
@@ -416,6 +491,14 @@ try_anim_move() { ta_dx=$1; ta_dz=$2
     # so the crouch reads as ducking under the low ceiling
     get_cell $ta_nx 2 $ta_nz
     if [ "$gv" -eq "$AIR" ]; then anim_ms=$ANIM_MS; else anim_ms=$ANIM_MS_CROUCH; fi
+    return 0
+  fi
+  # a HIDDEN treasure is claimed by WALKING into it — the claim fires
+  # when the glide ends (main checks the arrival cell); treasure cells
+  # are always 2-tall (place_treasures guarantees it), so walk upright
+  if [ "$gv" -eq "$TREASURE" ]; then
+    start_anim $px $pz $yaw $ta_nx $ta_nz $yaw
+    anim_ms=$ANIM_MS
     return 0
   fi
   return 1
@@ -513,8 +596,11 @@ damage_cell() { dc_a=$1; dc_b=$2; dc_t=$3
   get_bhp $dc_a 1 $dc_b
   if [ "$bh" -ge "$h" ]; then
     if [ "$dc_t" -eq "$TREASURE" ]; then
+      # shooting an artifact SHATTERS it — it is NOT claimed (you must
+      # WALK into a hidden treasure): -50 score and the Board takes a
+      # licence strike (three strikes = licence revoked = game over)
       set_cell $dc_a 1 $dc_b $AIR
-      claim_treasure $dc_a $dc_b
+      shot_treasure
     else
       set_cell $dc_a 1 $dc_b $AIR
       score_block $dc_t
@@ -533,6 +619,24 @@ score_block() { sb_t=$1
   if [ "$sb_t" -eq "$RUBY" ]; then score=$((score + 50)); digits_dirty=1; echo "  mined RUBY  +50"; fi
 }
 
+# shooting a treasure — the artifact shatters: -50 points and a licence
+# strike (three strikes revoke your archeology licence = game over)
+shot_treasure() {
+  score=$((score - 50))
+  if [ "$score" -lt 0 ]; then score=0; fi
+  license=$((license - 1))
+  if [ "$license" -lt 0 ]; then license=0; fi
+  digits_dirty=1
+  play "C4 0.12"
+  play "E2 0.18"
+  echo ""
+  echo "  !!! You SHOT an artifact — it shattered into dust!"
+  echo "  !!! -50 score · archeology licence $license / 3"
+  if [ "$license" -le 0 ]; then
+    echo "  !!! LICENCE REVOKED — the game is over."
+  fi
+}
+
 claim_treasure() { ct_a=$1; ct_b=$2; ct_t=0
   while [ "$ct_t" -lt "$TREASURE_TOTAL" ]; do
     ct_txv=${tpx[$ct_t]}
@@ -546,6 +650,10 @@ claim_treasure() { ct_a=$1; ct_b=$2; ct_t=0
         maxhp=$((maxhp + 1))
         hp=$((hp + 1))
         digits_dirty=1
+        # the recovered artifact is dug out — the block vanishes so the
+        # label/radar stop showing it
+        set_cell $ct_a 1 $ct_b $AIR
+        hud_static_dirty=1
         echo ""
         echo "=============================================="
         echo "  TREASURE FOUND: ${TREASURES[$ct_t]}"
@@ -707,14 +815,19 @@ place_treasures() {
       pt_rz=$((rv + 1))
       get_cell $pt_rx 1 $pt_rz
       if [ "$gv" -eq "$AIR" ]; then
-        pt_ddx=$((pt_rx - px))
-        pt_ddz=$((pt_rz - pz))
-        abs $pt_ddx
-        pt_adx=$av
-        abs $pt_ddz
-        pt_adz=$av
-        if [ "$pt_adx" -ge 3 ]; then pt_placed=1; fi
-        if [ "$pt_adz" -ge 3 ]; then pt_placed=1; fi
+        # only 2-TALL cells: the treasure must be claimable by walking
+        # in (and its name label must be visible, not buried in a wall)
+        get_cell $pt_rx 2 $pt_rz
+        if [ "$gv" -eq "$AIR" ]; then
+          pt_ddx=$((pt_rx - px))
+          pt_ddz=$((pt_rz - pz))
+          abs $pt_ddx
+          pt_adx=$av
+          abs $pt_ddz
+          pt_adz=$av
+          if [ "$pt_adx" -ge 3 ]; then pt_placed=1; fi
+          if [ "$pt_adz" -ge 3 ]; then pt_placed=1; fi
+        fi
       fi
       pt_tries=$((pt_tries + 1))
     done
@@ -1101,6 +1214,124 @@ load_textures() {
   load_tex png 12
   load_tex octet 13
   load_tex text 14
+}
+
+# ─── treasure-name labels ───────────────────────────────────────────
+# Each treasure gets a 64×64 RGBA texture with its OS name in the pixel
+# font (GFONT), generated ONCE at startup and cached like the block
+# textures. The game draws these as 2D labels on the HUD layer at each
+# visible treasure's projected position (draw_treasure_labels).
+build_glyph_masks() {
+  GMASK=(0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
+  bg_g=0
+  while [ "$bg_g" -lt 66 ]; do
+    bg_m=0
+    bg_k=0
+    while [ "$bg_k" -lt 15 ]; do
+      bg_i=$((bg_g * 15 + bg_k))
+      bg_px=${GFONT[$bg_i]}
+      if [ "$bg_px" -eq 1 ]; then bg_m=$((bg_m | (1 << bg_k))); fi
+      bg_k=$((bg_k + 1))
+    done
+    GMASK[$bg_g]=$bg_m
+    bg_g=$((bg_g + 1))
+  done
+}
+
+# render treasure $1's name into a 64×64 RGBA payload (LABEL_W) and set
+# gl_payload + the text's pixel size (tl_wpx/tl_hpx — the on-screen
+# label aspect mirrors the text block, so the glyphs never stretch)
+gen_label_tex() { gl_t=$1
+  gl_name=${TREASURES[$gl_t]}
+  gl_len=${TRLEN[$gl_t]}
+  # glyph scale so the text spans ~88% of the texture width (cell 4px)
+  gl_gs=$(( 56 / (gl_len * 4) ))
+  if [ "$gl_gs" -lt 1 ]; then gl_gs=1; fi
+  gl_tw=$(( gl_len * 4 * gl_gs - 1 ))
+  gl_th=$(( 5 * gl_gs + 2 ))
+  tl_wpx[$gl_t]=$gl_tw
+  tl_hpx[$gl_t]=$gl_th
+  gl_tx0=$(( (LABEL_W - gl_tw) / 2 ))
+  gl_ty0=$(( (LABEL_W - gl_th) / 2 ))
+  gl_tw2=$(( gl_len * 4 * gl_gs ))
+  gl_th2=$(( 5 * gl_gs ))
+  gl_i=0
+  while [ "$gl_i" -lt "$gl_len" ]; do
+    gl_ch=${gl_name:$gl_i:1}
+    glyph_index $gl_ch
+    # store the glyph's BITMASK (build_glyph_masks built GMASK from
+    # GFONT) — the per-pixel test shifts the mask, not the index
+    lgi[$gl_i]=${GMASK[$gi]}
+    gl_i=$((gl_i + 1))
+  done
+  gl_payload="$LABEL_W"
+  gl_y=0
+  while [ "$gl_y" -lt "$LABEL_W" ]; do
+    gl_x=0
+    while [ "$gl_x" -lt "$LABEL_W" ]; do
+      # the semi-transparent nameplate panel behind the text
+      gl_r=14; gl_g=12; gl_b=18; gl_a=120
+      if [ "$gl_x" -ge $((gl_tx0 - 2)) ] && [ "$gl_x" -le $((gl_tx0 + gl_tw + 1)) ] && [ "$gl_y" -ge $((gl_ty0 - 2)) ] && [ "$gl_y" -le $((gl_ty0 + gl_th + 1)) ]; then
+        gl_r=10; gl_g=9; gl_b=14; gl_a=160
+      fi
+      # glyph stroke + 1px outline — only inside the text block
+      gl_ot=0
+      gl_cx=$(( gl_x - gl_tx0 ))
+      gl_cy=$(( gl_y - gl_ty0 ))
+      if [ "$gl_cx" -ge 0 ] && [ "$gl_cx" -lt "$gl_tw2" ] && [ "$gl_cy" -ge 0 ] && [ "$gl_cy" -lt "$gl_th2" ]; then
+        gl_ci=$(( gl_cx / (4 * gl_gs) ))
+        gl_col=$(( (gl_cx - gl_ci * 4 * gl_gs) / gl_gs ))
+        gl_row=$(( gl_cy / gl_gs ))
+        gl_gi2=${lgi[$gl_ci]}
+        gl_bit=$(( (gl_gi2 >> (gl_row * 3 + gl_col)) & 1 ))
+        if [ "$gl_bit" -eq 1 ]; then gl_ot=1; fi
+      fi
+      if [ "$gl_ot" -eq 0 ]; then
+        gl_n=0
+        while [ "$gl_n" -lt 8 ] && [ "$gl_ot" -eq 0 ]; do
+          gl_ox=$(( gl_cx + (gl_n % 3) - 1 ))
+          gl_oy=$(( gl_cy + (gl_n / 3) - 1 ))
+          if [ "$gl_ox" -ge 0 ] && [ "$gl_ox" -lt "$gl_tw2" ] && [ "$gl_oy" -ge 0 ] && [ "$gl_oy" -lt "$gl_th2" ]; then
+            gl_ci2=$(( gl_ox / (4 * gl_gs) ))
+            gl_col2=$(( (gl_ox - gl_ci2 * 4 * gl_gs) / gl_gs ))
+            gl_row2=$(( gl_oy / gl_gs ))
+            gl_gi3=${lgi[$gl_ci2]}
+            gl_bit2=$(( (gl_gi3 >> (gl_row2 * 3 + gl_col2)) & 1 ))
+            if [ "$gl_bit2" -eq 1 ]; then gl_ot=2; fi
+          fi
+          gl_n=$((gl_n + 1))
+        done
+      fi
+      if [ "$gl_ot" -eq 1 ]; then gl_r=248; gl_g=244; gl_b=214; gl_a=255; fi
+      if [ "$gl_ot" -eq 2 ]; then gl_r=8; gl_g=6; gl_b=12; gl_a=255; fi
+      gl_payload="$gl_payload $gl_r $gl_g $gl_b $gl_a"
+      gl_x=$((gl_x + 1))
+    done
+    gl_y=$((gl_y + 1))
+  done
+}
+
+# generate + upload all ten treasure labels (cached in /home + /tmp)
+load_labels() {
+  build_glyph_masks
+  ll_t=0
+  while [ "$ll_t" -lt "$TREASURE_TOTAL" ]; do
+    sleep 0.01
+    ll_name=${TREASURES[$ll_t]}
+    ll_idx=$((LABEL_TEX0 + ll_t))
+    if [ -f /home/mimecroft-label-$ll_name-64-$LABEL_VER ]; then
+      cat /home/mimecroft-label-$ll_name-64-$LABEL_VER > /dev/webgl/texture/$ll_idx
+    elif [ -f /tmp/mimecroft-label-$ll_name-64-$LABEL_VER ]; then
+      cat /tmp/mimecroft-label-$ll_name-64-$LABEL_VER > /dev/webgl/texture/$ll_idx
+    else
+      gen_label_tex $ll_t
+      echo "$gl_payload" > /home/mimecroft-label-$ll_name-64-$LABEL_VER
+      echo "$gl_payload" > /tmp/mimecroft-label-$ll_name-64-$LABEL_VER
+      echo "$gl_payload" > /dev/webgl/texture/$ll_idx
+    fi
+    echo "    ${TREASURES[$ll_t]}…"
+    ll_t=$((ll_t + 1))
+  done
 }
 
 # the world is drawn as ONE batched payload per frame (/dev/webgl/blocks:
@@ -1660,6 +1891,8 @@ hud_build_static() {
   draw_char 37 952 1840 8 11 0.60 0.75 0.95
   # fps label (right of the ART digits, same line)
   draw_text "FPS" 3 1130 1840 8 11 0.55 0.95 0.95
+  # licence label (right of FPS — strikes remaining)
+  draw_text "LIC" 3 1370 1840 8 11 0.95 0.60 0.30
   # instructions (bottom centre)
   draw_text "WASD MOVE ARROWS TURN SPACE SHOOT" 33 538 100 7 10 0.85 0.85 0.85
   # radar base: walls + treasure cells (air stays dark; the player and
@@ -1714,6 +1947,7 @@ draw_digits() {
   erase_rect 572 1818 160 62
   erase_rect 964 1818 160 62
   erase_rect 1302 1818 96 62
+  erase_rect 1490 1818 48 62
   # score digits
   dh_a=$((score/100%10+26))
   dh_b=$((score/10%10+26))
@@ -1751,6 +1985,183 @@ draw_digits() {
   draw_char $dh_a 1258 1840 8 11 0.55 0.95 0.95
   draw_char $dh_b 1290 1840 8 11 0.55 0.95 0.95
   draw_char $dh_c 1322 1840 8 11 0.55 0.95 0.95
+  # licence digits (right of FPS — strikes remaining)
+  dh_a=$((license+26))
+  draw_char $dh_a 1490 1840 8 11 0.95 0.60 0.30
+}
+
+# ─── treasure name labels ───────────────────────────────────────────
+# is treasure $1's label visible in the current view? Same frustum
+# culling as the block renderer (radius / in-front / in-row), plus a
+# line-of-sight check on the ray from the eye to the treasure: the
+# standing eye (1.6) sees OVER the 1.5-tall y=1 walls, so only y=2
+# blocks occlude; crouched (eye 0.75) the y=1 walls occlude too.
+treasure_label_visible() { tv_t=$1
+  tlv=0
+  tv_x=${tpx[$tv_t]}
+  tv_z=${tpz[$tv_t]}
+  get_cell $tv_x 1 $tv_z
+  if [ "$gv" -ne "$TREASURE" ]; then return 0; fi
+  tv_ddx=$((tv_x - dpx))
+  tv_ddz=$((tv_z - dpz))
+  abs $tv_ddx
+  tv_adx=$av
+  abs $tv_ddz
+  tv_adz=$av
+  if [ "$tv_adx" -gt "$VIEW_R" ]; then return 0; fi
+  if [ "$tv_adz" -gt "$VIEW_R" ]; then return 0; fi
+  tv_infront=0
+  tv_inrow=0
+  if [ "$dyaw" -eq 0 ]; then
+    if [ "$tv_z" -lt "$dpz" ]; then tv_infront=1; fi
+    tv_fov=$((tv_adz + tv_adz / 2 + 1))
+    if [ "$tv_adx" -le "$tv_fov" ]; then tv_inrow=1; fi
+  fi
+  if [ "$dyaw" -eq 1 ]; then
+    if [ "$tv_x" -gt "$dpx" ]; then tv_infront=1; fi
+    tv_fov=$((tv_adx + tv_adx / 2 + 1))
+    if [ "$tv_adz" -le "$tv_fov" ]; then tv_inrow=1; fi
+  fi
+  if [ "$dyaw" -eq 2 ]; then
+    if [ "$tv_z" -gt "$dpz" ]; then tv_infront=1; fi
+    tv_fov=$((tv_adz + tv_adz / 2 + 1))
+    if [ "$tv_adx" -le "$tv_fov" ]; then tv_inrow=1; fi
+  fi
+  if [ "$dyaw" -eq 3 ]; then
+    if [ "$tv_x" -lt "$dpx" ]; then tv_infront=1; fi
+    tv_fov=$((tv_adx + tv_adx / 2 + 1))
+    if [ "$tv_adz" -le "$tv_fov" ]; then tv_inrow=1; fi
+  fi
+  if [ "$tv_infront" -eq 0 ]; then return 0; fi
+  if [ "$tv_inrow" -eq 0 ]; then return 0; fi
+  # line of sight: step the ray toward the treasure (dominant axis)
+  tv_n=$tv_adx
+  if [ "$tv_adz" -gt "$tv_n" ]; then tv_n=$tv_adz; fi
+  tv_k=1
+  while [ "$tv_k" -lt "$tv_n" ]; do
+    tv_ix=$(( dpx + tv_ddx * tv_k / tv_n ))
+    tv_iz=$(( dpz + tv_ddz * tv_k / tv_n ))
+    if [ "$tv_ix" -ne "$dpx" ] || [ "$tv_iz" -ne "$dpz" ]; then
+      get_cell $tv_ix 2 $tv_iz
+      if [ "$gv" -ne "$AIR" ]; then return 0; fi
+      if [ "$crouched" -eq 1 ]; then
+        get_cell $tv_ix 1 $tv_iz
+        if [ "$gv" -ne "$AIR" ]; then return 0; fi
+      fi
+    fi
+    tv_k=$((tv_k + 1))
+  done
+  tlv=1
+  return 0
+}
+
+# project treasure $1's label onto the screen — the vertex shader's
+# exact perspective (uCamYaw rotation via SCOS/SSIN, 0.45 focal scale,
+# uCamShift screen shift). Outputs pndc_x_ms/pndc_y_ms (centre) and
+# pndc_w_ms/pndc_h_ms (size), all milli-NDC; pndc_x_ms = -1 = hidden.
+project_label() { pj_t=$1
+  pndc_x_ms=-1
+  pj_x=${tpx[$pj_t]}
+  pj_z=${tpz[$pj_t]}
+  pj_dx=$(( pj_x * 1000 - dpcx_ms ))
+  pj_dz=$(( pj_z * 1000 - dpcz_ms ))
+  if [ "$crouched" -eq 1 ]; then pj_eye=750; else pj_eye=1600; fi
+  pj_dy=$(( 1650 - pj_eye ))
+  pj_deg=$(( dpyw_ms / 1000 ))
+  pj_c=${SCOS[$pj_deg]}
+  pj_s=${SSIN[$pj_deg]}
+  pj_rx=$(( (pj_dx * pj_c + pj_dz * pj_s) / 1000 ))
+  pj_rz=$(( (pj_dz * pj_c - pj_dx * pj_s) / 1000 ))
+  pj_w=$(( 0 - pj_rz ))
+  if [ "$pj_w" -lt 200 ]; then return 1; fi
+  pndc_x_ms=$(( pj_rx * 450 / (pj_w * 1000) + cam_shift_ms ))
+  pndc_y_ms=$(( pj_dy * 450 / (pj_w * 1000) ))
+  pndc_w_ms=$(( 630000 / (pj_w * 1000) ))
+  pj_hpx=${tl_hpx[$pj_t]}
+  pj_wpx=${tl_wpx[$pj_t]}
+  pj_lh=$(( 1400 * pj_hpx / pj_wpx ))
+  pndc_h_ms=$(( 450 * pj_lh / (pj_w * 1000) ))
+  if [ "$pndc_w_ms" -lt 4 ]; then pndc_w_ms=4; fi
+  if [ "$pndc_h_ms" -lt 4 ]; then pndc_h_ms=4; fi
+  if [ "$pndc_x_ms" -lt 0 ]; then pndc_x_ms=0; fi
+  if [ "$pndc_x_ms" -gt 2000 ]; then pndc_x_ms=2000; fi
+  if [ "$pndc_y_ms" -lt 0 ]; then pndc_y_ms=0; fi
+  if [ "$pndc_y_ms" -gt 2000 ]; then pndc_y_ms=2000; fi
+  return 0
+}
+
+# a label erase punches a hole through the persistent HUD layer, which
+# also contains the static radar base — redraw the radar cells (and any
+# mime blips) under a milli-NDC rect so no ghosts remain
+restore_under() { ru_cx=$1; ru_cy=$2; ru_w=$3; ru_h=$4
+  ru_rx=$(( ru_cx - ru_w / 2 - 30 ))
+  ru_rx2=$(( ru_cx + ru_w / 2 + 30 ))
+  ru_ry=$(( ru_cy - ru_h / 2 - 30 ))
+  ru_ry2=$(( ru_cy + ru_h / 2 + 30 ))
+  ru_gx=$(( (ru_rx - RADAR_X) / 44 ))
+  if [ "$ru_gx" -lt 0 ]; then ru_gx=0; fi
+  ru_gx2=$(( (ru_rx2 - RADAR_X) / 44 ))
+  if [ "$ru_gx2" -ge "$MAP_W" ]; then ru_gx2=$((MAP_W - 1)); fi
+  while [ "$ru_gx" -le "$ru_gx2" ]; do
+    ru_gz=$(( (1720 - ru_ry2) / 60 ))
+    if [ "$ru_gz" -lt 0 ]; then ru_gz=0; fi
+    ru_gz2=$(( (1720 - ru_ry) / 60 ))
+    if [ "$ru_gz2" -ge "$MAP_D" ]; then ru_gz2=$((MAP_D - 1)); fi
+    while [ "$ru_gz" -le "$ru_gz2" ]; do
+      draw_radar_cell $ru_gx $ru_gz
+      ru_gz=$((ru_gz + 1))
+    done
+    ru_gx=$((ru_gx + 1))
+  done
+  ru_m=0
+  while [ "$ru_m" -lt "$mime_count" ]; do
+    ru_mx=${mx[$ru_m]}
+    ru_mz=${mz[$ru_m]}
+    ru_mcx=$(( RADAR_X + ru_mx * 44 ))
+    ru_mcy=$(( 1720 - ru_mz * 60 ))
+    if [ "$ru_mcx" -ge "$ru_rx" ] && [ "$ru_mcx" -le "$ru_rx2" ] && [ "$ru_mcy" -ge "$ru_ry" ] && [ "$ru_mcy" -le "$ru_ry2" ]; then
+      draw_mime_blip $ru_m
+    fi
+    ru_m=$((ru_m + 1))
+  done
+}
+
+# draw every visible treasure's name label on the HUD layer: erase the
+# previous frame's labels first (healing the radar), then project and
+# draw the current ones. Runs only when the 3D view changed
+# (labels_dirty — the layer is persistent otherwise).
+draw_treasure_labels() {
+  dtl_t=0
+  while [ "$dtl_t" -lt "$TREASURE_TOTAL" ]; do
+    dtl_px=${ltlx[$dtl_t]}
+    if [ "$dtl_px" -ge 0 ]; then
+      erase_rect ${ltlx[$dtl_t]} ${ltly[$dtl_t]} ${ltlw[$dtl_t]} ${ltlh[$dtl_t]}
+      restore_under ${ltlx[$dtl_t]} ${ltly[$dtl_t]} ${ltlw[$dtl_t]} ${ltlh[$dtl_t]}
+      ltlx[$dtl_t]=-1
+    fi
+    treasure_label_visible $dtl_t
+    if [ "$tlv" -eq 1 ]; then
+      project_label $dtl_t
+      if [ "$pndc_x_ms" -ge 0 ]; then
+        fmt_ndc $pndc_x_ms
+        dtl_cx=$fv
+        fmt_ndc $pndc_y_ms
+        dtl_cy=$fv
+        fmt_pos $pndc_w_ms
+        dtl_w=$fv
+        fmt_pos $pndc_h_ms
+        dtl_h=$fv
+        dtl_idx=$((LABEL_TEX0 + dtl_t))
+        ov_text="${ov_text}I $dtl_cx $dtl_cy $dtl_w $dtl_h $dtl_idx
+"
+        ltlx[$dtl_t]=$pndc_x_ms
+        ltly[$dtl_t]=$pndc_y_ms
+        ltlw[$dtl_t]=$pndc_w_ms
+        ltlh[$dtl_t]=$pndc_h_ms
+      fi
+    fi
+    dtl_t=$((dtl_t + 1))
+  done
 }
 
 draw_hud_canvas() {
@@ -1769,6 +2180,8 @@ draw_hud_canvas() {
       dm_i=$((dm_i + 1))
     done
     digits_dirty=1
+    # the rebuild's C-wipe cleared the labels too — redraw them
+    labels_dirty=1
   fi
   ov_text=""
   # the muzzle flash fades: erase the whole rotated flash (its 0.22 box
@@ -1792,6 +2205,10 @@ draw_hud_canvas() {
     draw_digits
     digits_dirty=0
   fi
+  if [ "$labels_dirty" -eq 1 ]; then
+    draw_treasure_labels
+    labels_dirty=0
+  fi
   if [ "$ov_text" != "" ]; then
     echo "$ov_text" > /dev/webgl/hud
   fi
@@ -1801,7 +2218,7 @@ print_map_once() {
   if [ -f /tmp/mimecroft-map-shown ]; then return 0; fi
   echo "shown" > /tmp/mimecroft-map-shown
   echo ""
-  echo "MIMEcroft  artifacts $found_count/$TREASURE_TOTAL  hp $hp/$maxhp  score $score  mimes $mime_count"
+  echo "MIMEcroft  artifacts $found_count/$TREASURE_TOTAL  hp $hp/$maxhp  score $score  mimes $mime_count  licence $license"
   po_z=0
   while [ "$po_z" -lt "$MAP_D" ]; do
     po_line=""
@@ -2150,9 +2567,11 @@ main() {
   # them every startup message appears at once when the game loop
   # starts instead of streaming as it loads.
     echo "╔══════════════════════════════════════════════════╗"
-  echo "║  MIMEcrofT v5.9 — 3D treasure hunt written in bash ║"
+  echo "║  MIMEcrofT v6.1 — 3D treasure hunt written in bash ║"
   echo "║  The filesystem is infested with evil MIMEs.     ║"
   echo "║  Recover the lost operating systems.             ║"
+  echo "║  Walk INTO the green treasures to recover them.  ║"
+  echo "║  Shooting one: -50 score and a licence strike.   ║"
   echo "║  WASD move · arrows turn · SPACE shoot · q quit  ║"
   echo "╚══════════════════════════════════════════════════╝"
   echo ""
@@ -2187,12 +2606,14 @@ main() {
   echo "  loading block textures…"
   sleep 0.02
     load_textures
+    echo "  generating treasure labels…"
+    load_labels
     echo "  ready."
   sleep 0.8
   frame=$((0))
   quit=$((0))
   dirty=1
-  while [ "$quit" -eq 0 ] && [ "$hp" -gt 0 ] && [ "$found_count" -lt "$TREASURE_TOTAL" ]; do
+  while [ "$quit" -eq 0 ] && [ "$hp" -gt 0 ] && [ "$license" -gt 0 ] && [ "$found_count" -lt "$TREASURE_TOTAL" ]; do
     frame=$((frame + 1))
     gtick
     g_last=$g_now
@@ -2212,6 +2633,9 @@ main() {
         *Escape*)
           settings_menu live
           dirty=1
+          # the menu's C-wipe cleared the HUD layer (static + labels) —
+          # rebuild the base and redraw the labels next frame
+          hud_static_dirty=1
           ;;
         *space*)
           shoot
@@ -2260,6 +2684,12 @@ main() {
         pz=${an[4]}
         yaw=${an[5]}
         anim=0
+        # arrived: if the destination cell holds a hidden treasure, the
+        # walk-in claims it (shooting one never does)
+        get_cell $px 1 $pz
+        if [ "$gv" -eq "$TREASURE" ]; then
+          claim_treasure $px $pz
+        fi
       fi
     fi
     gspan "anim"
@@ -2304,6 +2734,8 @@ main() {
     if [ "$view_key" != "$prev_view_key" ]; then
       render_frame
       prev_view_key=$view_key
+      # the 3D view moved — the treasure labels must track it
+      labels_dirty=1
       gspan "render"
       hud_swap=1
     elif [ "$digits_dirty" -eq 1 ] || [ "$flash_clear" -eq 1 ] || [ "$muzzle" -gt 0 ] || [ "$hud_static_dirty" -eq 1 ]; then
@@ -2380,6 +2812,12 @@ main() {
     echo "▒  VICTORY — all $TREASURE_TOTAL operating systems recovered!  ▒"
     echo "▒  The filesystem is pure again.  Final score: $score         ▒"
     echo "▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒"
+  elif [ "$license" -le 0 ]; then
+    echo "╔════════════════════════════════════════════╗"
+    echo "║  GAME OVER — LICENCE REVOKED.               ║"
+    echo "║  You shot three artifacts; the Archeology   ║"
+    echo "║  Board revoked your licence. Score: $score  ║"
+    echo "╚════════════════════════════════════════════╝"
   else
     echo "╔════════════════════════════════════════════╗"
     echo "║  GAME OVER — the MIMEs got you.             ║"

@@ -65,6 +65,7 @@ function makeNullGL() {
     VERTEX_SHADER: 0x8b31, FRAGMENT_SHADER: 0x8b30,
     TEXTURE_2D: 0x0de1, TEXTURE_MIN_FILTER: 0x2801, TEXTURE_MAG_FILTER: 0x2800,
     TEXTURE_WRAP_S: 0x2802, TEXTURE_WRAP_T: 0x2803, CLAMP_TO_EDGE: 0x812f,
+    REPEAT: 0x2901, MIRRORED_REPEAT: 0x8370,
     NEAREST: 0x2600, RGB: 0x1907, RGBA: 0x1908, UNPACK_ALIGNMENT: 0x0cf5,
     TEXTURE0: 0x84c0, TEXTURE1: 0x84c1,
     ARRAY_BUFFER: 0x8892, ELEMENT_ARRAY_BUFFER: 0x8893,
@@ -138,6 +139,11 @@ export class WebGLDevice {
     this._log = "WebGL device ready.\n";
     this._buffers = new Map();    // name → { buffer, arr, type }
     this._textures = new Map();   // texture index → WebGLTexture (R G B …)
+    this._texPixels = new Map();  // texture index → { size, rgba } raw pixels
+                                  // (kept so the 2D HUD layer can drawImage
+                                  // a texture as a scaled label/image)
+    this._texImages = new Map();  // texture index → small canvas (built lazily
+                                  // from _texPixels for the HUD rasterizer)
     this._texSize = 0;            // texture dimension (square, e.g. 16)
     this._bindings = new Map();   // attribute → { buffer, size }
     this._uniforms = new Map();   // name → { type, value: number[] }
@@ -148,6 +154,8 @@ export class WebGLDevice {
     this._hudRects = null;           // overlay rect list (batched /dev/webgl/hud)
     this._hudTris = null;           // overlay triangles (T … lines)
     this._hudRectsR = null;         // overlay rotated rects (R … lines)
+    this._hudImages = null;         // overlay images (I cx cy w h tex — a
+                                    // texture drawn scaled into the layer)
     this._hudLayer = null;          // offscreen 2D layer — the transparent
                                     // HUD texture, persists across frames;
                                     // composited onto the back buffer at swap
@@ -311,8 +319,13 @@ export class WebGLDevice {
   }
 
   // a 16×16 (or N×N) RGB texture: write "SIZE R G B R G B …" (0..255)
-  // to /dev/webgl/texture/<index>. NEAREST + CLAMP_TO_EDGE → the
-  // Minecraft-style chunky pixel look.
+  // to /dev/webgl/texture/<index>. NEAREST + REPEAT → the
+  // Minecraft-style chunky pixel look, with the wrap mode mimecroft's
+  // floor/ceiling planes rely on: the vertex shader passes WORLD-xz UVs
+  // for the background planes, so REPEAT tiles the texture once per
+  // world unit. REPEAT is legal in WebGL1 because every game texture is
+  // a power of two (4..64) and no mipmaps are generated (NEAREST min
+  // filter); cubes keep 0..1 per-face UVs, where repeat ≡ clamp.
   // a 1x1 opaque white texture — the flat-colour fallback for uTex=0
   _makeWhiteTexture() {
     const gl = this._ensureGL();
@@ -320,8 +333,8 @@ export class WebGLDevice {
     gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, 1, 1, 0, gl.RGB, gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255]));
     return tex;
   }
@@ -343,12 +356,27 @@ export class WebGLDevice {
       return;
     }
     const bytes = new Uint8Array(rgb.slice(0, need));
+    // keep the raw pixels (RGBA) so the 2D HUD layer can draw this
+    // texture as a scaled image (treasure-name labels). Built eagerly:
+    // the games that use /dev/webgl/texture upload at startup, and the
+    // conversion is a flat copy.
+    {
+      const px = new Uint8ClampedArray(size * size * 4);
+      const step = rgba ? 4 : 3;
+      for (let i = 0; i < size * size; i++) {
+        const o = i * 4, s = i * step;
+        px[o] = bytes[s]; px[o + 1] = bytes[s + 1]; px[o + 2] = bytes[s + 2];
+        px[o + 3] = rgba ? bytes[s + 3] : 255;
+      }
+      this._texPixels.set(Number(idx), { size, rgba: px });
+      this._texImages.delete(Number(idx));
+    }
     const tex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     const fmt = rgba ? gl.RGBA : gl.RGB;
     gl.texImage2D(gl.TEXTURE_2D, 0, fmt, size, size, 0, fmt, gl.UNSIGNED_BYTE, bytes);
@@ -721,11 +749,13 @@ export class WebGLDevice {
     const tris = this._hudTris || [];
     const rrects = this._hudRectsR || [];
     const erases = this._hudErase || [];
+    const images = this._hudImages || [];
     this._hudRects = null;
     this._hudTris = null;
     this._hudRectsR = null;
     this._hudErase = null;
-    this._log += `[hud] ${rects.length} rects ${rrects.length} rrects ${tris.length} tris ${erases.length} erases\n`;
+    this._hudImages = null;
+    this._log += `[hud] ${rects.length} rects ${rrects.length} rrects ${tris.length} tris ${erases.length} erases ${images.length} images\n`;
     if (!ctx) return;                       // headless: nothing to rasterize
     const W = this._hudLayer.width, H = this._hudLayer.height;
     const px = (x) => ((Number(x) + 1) / 2) * W;    // NDC → canvas x
@@ -741,6 +771,22 @@ export class WebGLDevice {
     for (const [cx, cy, w, h, r, g, b] of rects) {
       ctx.fillStyle = col(r, g, b);
       ctx.fillRect(px(cx) - pw(w) / 2, py(cy) - ph(h) / 2, pw(w), ph(h));
+    }
+    for (const [cx, cy, w, h, idx] of images) {
+      let img = this._texImages.get(idx);
+      if (!img) {
+        const pxd = this._texPixels.get(idx);
+        if (!pxd) continue;             // unknown texture index: skip
+        const c = document.createElement("canvas");
+        c.width = pxd.size; c.height = pxd.size;
+        const c2 = c.getContext("2d");
+        const id = c2.createImageData(pxd.size, pxd.size);
+        id.data.set(pxd.rgba);
+        c2.putImageData(id, 0, 0);
+        this._texImages.set(idx, c);
+        img = c;
+      }
+      ctx.drawImage(img, px(cx) - pw(w) / 2, py(cy) - ph(h) / 2, pw(w), ph(h));
     }
     for (const [cx, cy, w, h, deg, r, g, b] of rrects) {
       ctx.save();
@@ -968,6 +1014,9 @@ export class WebGLDevice {
     if (parts[0] === "hud") {
       // 2D overlay: newline-separated commands (NDC coordinates).
       //   cx cy w h r g b      opaque rect
+      //   I cx cy w h tex      draw /dev/webgl/texture/<tex> scaled into
+      //                        the layer at NDC cx,cy size w×h (alpha
+      //                        blended — treasure-name labels)
       //   R cx cy w h deg r g b   rotated quad (viewmodel gun)
       //   T cx cy size r g b deg  triangle (player facing marker)
       //   E cx cy w h           erase (make transparent — ghost-free
@@ -981,11 +1030,21 @@ export class WebGLDevice {
       this._hudTris = [];
       this._hudRectsR = [];
       this._hudErase = [];
+      this._hudImages = [];
       this._hudClearAll = false;
       for (const line of String(content).split("\n")) {
         const t = line.trim();
         if (t === "C" || t === "c") {
           this._hudClearAll = true;
+        } else if (t.startsWith("I ")) {
+          // image: I cx cy w h tex — draw a /dev/webgl/texture/<tex>
+          // (its alpha included) scaled into the layer at NDC cx,cy
+          // with NDC size w×h. Used for the treasure-name labels the
+          // game floats over its 3D view.
+          const nums = t.slice(2).trim().split(/[\s,]+/).filter(Boolean).map(Number);
+          if (nums.length >= 5 && nums.every((n) => Number.isFinite(n))) {
+            this._hudImages.push(nums.slice(0, 5));
+          }
         } else if (t.startsWith("R ")) {
           // rotated rect: R cx cy w h deg r g b — a quad rotated deg
           const nums = t.slice(2).trim().split(/[\s,]+/).filter(Boolean).map(Number);

@@ -1,5 +1,6 @@
-// ─── Win-path test: TREASURE_TOTAL=1, treasure at (2,0,1) — the cell
-// straight ahead of spawn (2,2) facing -z. One SPACE press claims it.
+// ─── Win-path test: TREASURE_TOTAL=1, treasure at (2,1,1) — the cell
+// straight ahead of spawn (2,2) facing -z. One W press walks into it
+// (hidden treasures are claimed by WALKING IN, not by shooting).
 import { readFileSync } from "fs";
 import { fs } from "./src/fs/index.js";
 import { bashToJS } from "./src/bash2js.js";
@@ -24,7 +25,7 @@ const shellExec = async (cmdline, stdin) => {
   if (cmd === "echo") out = rest + "\n";
   else if (cmd === "cat") {
     const p = fs._resolve(rest.split(/\s+/)[0]);
-    if (p === "/dev/webgl/key") { out = (keyFrame === 0 ? "space," : "q,") + "\n"; keyFrame++; }
+    if (p === "/dev/webgl/key") { out = (keyFrame === 0 ? "w," : "q,") + "\n"; keyFrame++; }
     else { try { out = await fs.read(p); } catch (e) { out = ""; } }
   }
   else if (cmd === "sleep") { sleepCount++; if (sleepCount > 200) throw new Error("test-stop"); await new Promise((r) => setTimeout(r, 0)); }
@@ -47,7 +48,7 @@ const rt = createSh2Runtime({ fs, env: { HOME: "/home" }, shellExec, stdout: out
 const origSh2ReadFile = rt.sh2.fs.readFile.bind(rt.sh2.fs);
 rt.sh2.fs.readFile = async (p, enc) => {
   if (String(p) === "/dev/webgl/key") {
-    const k = keyFrame === 0 ? "space," : "q,";
+    const k = keyFrame === 0 ? "w," : "q,";
     keyFrame++;
     return k;
   }
