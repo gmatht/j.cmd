@@ -220,11 +220,17 @@ export class WebGLDevice {
       // is presenting: capture keys into a queue readable at
       // /dev/webgl/key. Keys flow back to the shell ~2s after the last
       // swap, so an abandoned game can't lock the terminal.
+      // MODIFIER combos (Ctrl/Meta/Alt) are the terminal's, not the
+      // game's: the game only uses plain keys (wasd/arrows/space/q/
+      // Escape). Swallowing every keydown preventDefault'd the browser
+      // copy shortcut (the j.cmd terminal copies a mouse selection on
+      // Ctrl+C), so let modified keydowns fall through untouched.
       if (!this._keyListener) {
         this._keyListener = (e) => {
           const visible = this._canvas && this._canvas.style.display !== "none";
           const fresh = Date.now() - this._lastSwapAt < 2000;
           if (!visible || !fresh) return;
+          if (e.ctrlKey || e.metaKey || e.altKey) return;
           if (this._keys.length < 64) this._keys.push(e.key === " " ? "space" : e.key);
           e.preventDefault();
           e.stopPropagation();
@@ -762,14 +768,16 @@ export class WebGLDevice {
     const py = (y) => ((1 - Number(y)) / 2) * H;    // NDC → canvas y (flip)
     const pw = (w) => (Number(w) / 2) * W;
     const ph = (h) => (Number(h) / 2) * H;
-    const col = (r, g, b) => `rgb(${Math.round(Number(r) * 255)},${Math.round(Number(g) * 255)},${Math.round(Number(b) * 255)})`;
+    const col = (r, g, b, a) => a === undefined
+      ? `rgb(${Math.round(Number(r) * 255)},${Math.round(Number(g) * 255)},${Math.round(Number(b) * 255)})`
+      : `rgba(${Math.round(Number(r) * 255)},${Math.round(Number(g) * 255)},${Math.round(Number(b) * 255)},${a})`;
     if (this._hudClearAll) ctx.clearRect(0, 0, W, H);
     this._hudClearAll = false;
     for (const [cx, cy, w, h] of erases) {
       ctx.clearRect(px(cx) - pw(w) / 2, py(cy) - ph(h) / 2, pw(w), ph(h));
     }
-    for (const [cx, cy, w, h, r, g, b] of rects) {
-      ctx.fillStyle = col(r, g, b);
+    for (const [cx, cy, w, h, r, g, b, a] of rects) {
+      ctx.fillStyle = col(r, g, b, a);
       ctx.fillRect(px(cx) - pw(w) / 2, py(cy) - ph(h) / 2, pw(w), ph(h));
     }
     for (const [cx, cy, w, h, idx] of images) {
@@ -796,7 +804,7 @@ export class WebGLDevice {
       ctx.fillRect(-pw(w) / 2, -ph(h) / 2, pw(w), ph(h));
       ctx.restore();
     }
-    for (const [cx, cy, size, r, g, b, deg] of tris) {
+    for (const [cx, cy, size, r, g, b, deg, a] of tris) {
       const a = (-Number(deg)) * Math.PI / 180;
       const c = Math.cos(a), sn = Math.sin(a);
       // rotate in NDC (y-up), then place on the canvas: px() flips the
@@ -805,7 +813,7 @@ export class WebGLDevice {
       // down instead of up). x needs no flip.
       const v = (vx, vy) => [px(cx) + pw(size) * (vx * c - vy * sn), py(cy) - ph(size) * (vx * sn + vy * c)];
       const p0 = v(0, 0.5), p1 = v(-0.5, -0.5), p2 = v(0.5, -0.5);
-      ctx.fillStyle = col(r, g, b);
+      ctx.fillStyle = col(r, g, b, a);
       ctx.beginPath();
       ctx.moveTo(p0[0], p0[1]);
       ctx.lineTo(p1[0], p1[1]);
@@ -1052,10 +1060,10 @@ export class WebGLDevice {
             this._hudRectsR.push(nums.slice(0, 8));
           }
         } else if (t.startsWith("T ")) {
-          // triangle: T cx cy size r g b deg
+          // triangle: T cx cy size r g b deg [a]  (a = 0..1 alpha, opt)
           const nums = t.slice(2).trim().split(/[\s,]+/).filter(Boolean).map(Number);
           if (nums.length >= 7 && nums.every((n) => Number.isFinite(n))) {
-            this._hudTris.push(nums.slice(0, 7));
+            this._hudTris.push(nums.slice(0, 8));
           }
         } else if (t.startsWith("E ")) {
           // erase rect: E cx cy w h
@@ -1064,9 +1072,11 @@ export class WebGLDevice {
             this._hudErase.push(nums.slice(0, 4));
           }
         } else {
+          // rect: cx cy w h r g b [a]  (a = 0..1 alpha, optional — the
+          // minimap's 50% mode uses it)
           const nums = t.split(/[\s,]+/).filter(Boolean).map(Number);
           if (nums.length >= 7 && nums.every((n) => Number.isFinite(n))) {
-            this._hudRects.push(nums.slice(0, 7));
+            this._hudRects.push(nums.slice(0, 8));
           }
         }
       }
