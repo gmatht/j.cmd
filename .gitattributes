@@ -1,0 +1,47 @@
+# ─── .gitattributes — Windows-safe checkouts ─────────────────────
+# Without this, a Windows clone (git autocrlf=true) converts every
+# .sh/.js/... file to CRLF. The game's bash generators then die in the
+# real bash wasm with "syntax error near unexpected token $'{\r'"
+# (the shell only hears silence — no sound plays), and mimecroft's
+# transpiled runtime misbehaves. Force LF for text, mark binaries so
+# git never line-ending-converts the wasm/wav payloads.
+* text=auto
+*.sh text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.c text eol=lf
+*.cc text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.glsl text eol=lf
+*.yml text eol=lf
+*.go text eol=lf
+*.rs text eol=lf
+*.zig text eol=lf
+*.py text eol=lf
+*.pl text eol=lf
+*.zsh text eol=lf
+*.fish text eol=lf
+*.bat text eol=lf
+*.ps1 text eol=lf
+*.mod text eol=lf
+*.patch text eol=lf
+
+# binaries — never touch their bytes
+*.wasm binary
+*.wav binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.bmp binary
+*.cast binary
+*.pdf binary
+*.gz binary
+*.zip binary
+*.tgz binary
+*.dat binary
