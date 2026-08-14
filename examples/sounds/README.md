@@ -45,7 +45,7 @@ bash sound-thud.sh --seed 7 > thud-7.wav
 # the list of ints, as text (works everywhere incl. the browser shell)
 bash sound-hit.sh --tsv            # header + tab-separated ints
 bash sound-hit.sh --material gold --tsv
-bash make-sounds.sh --tsv /tmp     # all nine sounds
+bash make-sounds.sh --tsv /tmp     # all ten sounds
 
 # ASCII oscilloscope + stats (no file I/O, no printf -v)
 bash sound-walk.sh --preview
