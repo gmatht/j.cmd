@@ -4062,7 +4062,17 @@ function getJobScheduler() {
   return globalThis.__jtshJobs;
 }
 
-async function runNestedCommand(cmdLine, stdin = "") {
+async function runNestedCommand(cmdLine, stdin = "", modeType = "") {
+  // A top-level (plain) dispatch — a command the transpiled line runs
+  // just to show its output — must STREAM, not capture: holding the
+  // output until the command completes is what made long-running
+  // commands (mimecroft.sh) appear to print nothing until they quit.
+  // Only substitutions/pipes/redirects (capture/pipe/redirect modes)
+  // need the output returned.
+  if (modeType === "plain") {
+    const code = (await handleLine(cmdLine, stdin)) ?? 0;
+    return { out: "", err: "", code };
+  }
   let captured = "";
   let capturedErr = "";
   const origWrite = stdout.write;

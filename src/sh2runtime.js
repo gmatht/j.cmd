@@ -193,7 +193,7 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     const cmdline = quoteWord(name) + (argsArr && argsArr.length
       ? " " + flattenArgs(argsArr).map(quoteWord).join(" ")
       : "");
-    const res = await shellExec(cmdline, mode.type === "pipe" ? mode.buf.stdin : "");
+    const res = await shellExec(cmdline, mode.type === "pipe" ? mode.buf.stdin : "", mode.type);
     lastStatus = res.code;
     if (mode.type === "capture" || mode.type === "pipe") mode.buf.out += res.out;
     else if (mode.type === "redirect") mode.buf.out += res.out;

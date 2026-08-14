@@ -887,7 +887,14 @@ async function runPythonCmd(args, stdin, isLast, outputRedirect, appendRedirect)
 // rt.pipe / rt.pipeCond in the generated JS call: sh2perl shells out
 // to 'bash -c "..."' for pipes, and we route that back through the
 // shell's own pipeline machinery.
-async function runNestedCommand(cmdLine, stdin = "") {
+async function runNestedCommand(cmdLine, stdin = "", modeType = "") {
+  // Top-level (plain) dispatches stream straight through — capturing
+  // would hold a long command's output until it completes (the
+  // mimecroft.sh 'nothing until quit' symptom).
+  if (modeType === "plain") {
+    const code = (await handleLine(cmdLine, stdin)) ?? 0;
+    return { out: "", err: "", code };
+  }
   let captured = "";
   let capturedErr = "";
   const origWrite = process.stdout.write;
