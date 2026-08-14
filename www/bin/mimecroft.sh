@@ -1644,44 +1644,34 @@ try_draw() { td_a=$1; td_b=$2; td_c=$3
     fi
     return 1
   fi
-  td_ddx=$((td_a - dpx))
-  td_ddz=$((td_c - dpz))
-  # abs inlined ×2
+  td_ddx=$((td_a * 1000 - dpcx_ms))
+  td_ddz=$((td_c * 1000 - dpcz_ms))
+  # abs inlined ×2 (radius: the whole 16×16 map fits VIEW_R)
   if [ "$td_ddx" -lt 0 ]; then td_adx=$((0 - td_ddx)); else td_adx=$td_ddx; fi
   if [ "$td_ddz" -lt 0 ]; then td_adz=$((0 - td_ddz)); else td_adz=$td_ddz; fi
-  if [ "$td_adx" -gt "$VIEW_R" ]; then return 1; fi
-  if [ "$td_adz" -gt "$VIEW_R" ]; then return 1; fi
-  td_infront=0
-  td_inrow=0
-  # the camera GLIDES between cells (compute_display interpolates
-  # dpcx_ms/dpcz_ms), so "in front" compares against the FRACTIONAL
-  # position, not the rounded cell: rounding flipped the destination
-  # row to "behind" at the HALFWAY point of a move, popping the blocks
-  # the player sees immediately left/right a full half-cell early
-  td_cms=$((td_c * 1000))
-  td_ams=$((td_a * 1000))
-  if [ "$dyaw" -eq 0 ]; then
-    if [ "$td_cms" -lt "$dpcz_ms" ]; then td_infront=1; fi
-    td_fov=$((td_adz + td_adz / 2 + 1))
-    if [ "$td_adx" -le "$td_fov" ]; then td_inrow=1; fi
-  fi
-  if [ "$dyaw" -eq 1 ]; then
-    if [ "$td_ams" -gt "$dpcx_ms" ]; then td_infront=1; fi
-    td_fov=$((td_adx + td_adx / 2 + 1))
-    if [ "$td_adz" -le "$td_fov" ]; then td_inrow=1; fi
-  fi
-  if [ "$dyaw" -eq 2 ]; then
-    if [ "$td_cms" -gt "$dpcz_ms" ]; then td_infront=1; fi
-    td_fov=$((td_adz + td_adz / 2 + 1))
-    if [ "$td_adx" -le "$td_fov" ]; then td_inrow=1; fi
-  fi
-  if [ "$dyaw" -eq 3 ]; then
-    if [ "$td_ams" -lt "$dpcx_ms" ]; then td_infront=1; fi
-    td_fov=$((td_adx + td_adx / 2 + 1))
-    if [ "$td_adz" -le "$td_fov" ]; then td_inrow=1; fi
-  fi
-  if [ "$td_infront" -eq 0 ]; then return 1; fi
-  if [ "$td_inrow" -eq 0 ]; then return 1; fi
+  td_vr=$((VIEW_R * 1000))
+  if [ "$td_adx" -gt "$td_vr" ]; then return 1; fi
+  if [ "$td_adz" -gt "$td_vr" ]; then return 1; fi
+  # ── continuous frustum culling ── the view rotates with the
+  # interpolated dpyw_ms (the shader's uCamYaw), so the culling must
+  # follow the ACTUAL camera angle: the discrete dyaw axis flips at the
+  # 45° midpoint of a turn, and the new axis's frustum culled half the
+  # world while the camera was only half-rotated. Same rotation as the
+  # vertex shader, with the per-degree SCOS/SSIN tables (‰):
+  #   rx = ddx·cs + ddz·sn   (screen-right, milli)
+  #   w  = ddx·sn − ddz·cs   (depth; w > 0 = in front)
+  td_deg=$((dpyw_ms / 1000))
+  td_cs=${SCOS[$td_deg]}
+  td_sn=${SSIN[$td_deg]}
+  td_w=$(( (td_ddx * td_sn - td_ddz * td_cs) / 1000 ))
+  if [ "$td_w" -le 0 ]; then return 1; fi
+  td_rx=$(( (td_ddx * td_cs + td_ddz * td_sn) / 1000 ))
+  if [ "$td_rx" -lt 0 ]; then td_arx=$((0 - td_rx)); else td_arx=$td_rx; fi
+  # the cone keeps |rx| ≤ w + w/2 + 1 cell (the old axis-FOV shape,
+  # at any angle) — at axis-aligned yaws this reduces exactly to the
+  # old radius / in-front / in-row tests
+  td_fov=$(( td_w + td_w / 2 + 1000 ))
+  if [ "$td_arx" -gt "$td_fov" ]; then return 1; fi
   # block_color inlined
   if [ "$gv" -eq 1 ]; then cr=0.55; cg=0.35; cb=0.20
   elif [ "$gv" -eq 2 ]; then cr=0.55; cg=0.55; cb=0.58
@@ -2332,35 +2322,20 @@ banner_visible() { bv_x=$1; bv_z=$2
   bv_adz=$av
   if [ "$bv_adx" -gt "$VIEW_R" ]; then return 0; fi
   if [ "$bv_adz" -gt "$VIEW_R" ]; then return 0; fi
-  bv_infront=0
-  bv_inrow=0
-  # same FRACTIONAL in-front test as try_draw: the banner must stay
-  # visible while its cell is still in front of the gliding camera,
-  # not vanish at the move's halfway point (rounded-cell flip)
-  bv_cms=$((bv_z * 1000))
-  bv_ams=$((bv_x * 1000))
-  if [ "$dyaw" -eq 0 ]; then
-    if [ "$bv_cms" -lt "$dpcz_ms" ]; then bv_infront=1; fi
-    bv_fov=$((bv_adz + bv_adz / 2 + 1))
-    if [ "$bv_adx" -le "$bv_fov" ]; then bv_inrow=1; fi
-  fi
-  if [ "$dyaw" -eq 1 ]; then
-    if [ "$bv_ams" -gt "$dpcx_ms" ]; then bv_infront=1; fi
-    bv_fov=$((bv_adx + bv_adx / 2 + 1))
-    if [ "$bv_adz" -le "$bv_fov" ]; then bv_inrow=1; fi
-  fi
-  if [ "$dyaw" -eq 2 ]; then
-    if [ "$bv_cms" -gt "$dpcz_ms" ]; then bv_infront=1; fi
-    bv_fov=$((bv_adz + bv_adz / 2 + 1))
-    if [ "$bv_adx" -le "$bv_fov" ]; then bv_inrow=1; fi
-  fi
-  if [ "$dyaw" -eq 3 ]; then
-    if [ "$bv_ams" -lt "$dpcx_ms" ]; then bv_infront=1; fi
-    bv_fov=$((bv_adx + bv_adx / 2 + 1))
-    if [ "$bv_adz" -le "$bv_fov" ]; then bv_inrow=1; fi
-  fi
-  if [ "$bv_infront" -eq 0 ]; then return 0; fi
-  if [ "$bv_inrow" -eq 0 ]; then return 0; fi
+  # same continuous frustum as try_draw: the discrete dyaw axis flips
+  # at the 45° midpoint of a turn and would pop the banner a half-turn
+  # early — cull with the interpolated dpyw_ms instead
+  bv_ddx_ms=$((bv_x * 1000 - dpcx_ms))
+  bv_ddz_ms=$((bv_z * 1000 - dpcz_ms))
+  bv_deg=$((dpyw_ms / 1000))
+  bv_cs=${SCOS[$bv_deg]}
+  bv_sn=${SSIN[$bv_deg]}
+  bv_w=$(( (bv_ddx_ms * bv_sn - bv_ddz_ms * bv_cs) / 1000 ))
+  if [ "$bv_w" -le 0 ]; then return 0; fi
+  bv_rx=$(( (bv_ddx_ms * bv_cs + bv_ddz_ms * bv_sn) / 1000 ))
+  if [ "$bv_rx" -lt 0 ]; then bv_arx=$((0 - bv_rx)); else bv_arx=$bv_rx; fi
+  bv_fov=$(( bv_w + bv_w / 2 + 1000 ))
+  if [ "$bv_arx" -gt "$bv_fov" ]; then return 0; fi
   # line of sight: step the ray toward the cell (dominant axis)
   bv_n=$bv_adx
   if [ "$bv_adz" -gt "$bv_n" ]; then bv_n=$bv_adz; fi
@@ -3175,15 +3150,17 @@ main() {
       fi
     fi
     gspan "mime"
-    # The 3D view is a pure function of the camera cell/yaw/crouch + the
-    # map + the mime positions, so it is CACHED: re-render (the ~768
-    # cell scan + GL dispatch) only when one of those changed. Otherwise
-    # the double-buffered canvas keeps showing the last 3D view and we
-    # only re-present the HUD layer (fresh digits, radar blips, muzzle
-    # flash) over it — a couple of rects instead of the full frame.
-    # map_ver bumps on every cell write, mimes_ver on every mime
-    # move/die.
-    view_key="$dpx $dpz $dyaw $crouched $map_ver $mimes_ver"
+    # The 3D view is a pure function of the camera pose + the map + the
+    # mime positions, so it is CACHED: re-render (the ~768 cell scan +
+    # GL dispatch) only when one of those changed. The key carries the
+    # CONTINUOUS pose (dpcx_ms/dpcz_ms/dpyw_ms, not the rounded
+    # dpx/dpz/dyaw): during a glide every frame advances the camera, so
+    # every animation frame re-renders and the world eases instead of
+    # freezing until the discrete cell/yaw flips at the halfway point.
+    # Idle frames keep a constant key (px·1000 / yaw·90000), so the
+    # static view still caches. map_ver bumps on every cell write,
+    # mimes_ver on every mime move/die.
+    view_key="$dpcx_ms $dpcz_ms $dpyw_ms $crouched $map_ver $mimes_ver"
     hud_swap=0
     if [ "$view_key" != "$prev_view_key" ]; then
       render_frame
@@ -3226,16 +3203,25 @@ main() {
         echo "swap" > /dev/webgl/call
       fi
     fi
-    # fps: rendered frames per wall-second, sampled every 10 frames
-    fps_w=$((frame % 10))
+    # fps: rendered frames per wall-second, sampled once per second
+    # (100 frames at the 10ms cap), and the digits only REDRAW when the
+    # value actually changed. The old 10-frame sample set digits_dirty
+    # every ~100ms, and a digit redraw forces a FULL world re-render —
+    # the retained back buffer bakes the old HUD in and the HUD erases
+    # can't reach it — so the FPS readout alone re-rendered the whole
+    # maze ~10x/sec while idle.
+    fps_w=$((frame % 100))
     if [ "$fps_w" -eq 0 ]; then
       gtick
       fps_t=$g_now
       if [ "$fps_t0" -gt 0 ]; then
         fps_dt=$((fps_t - fps_t0))
         if [ "$fps_dt" -gt 0 ] && [ "$fps_rendered" -gt 0 ]; then
-          fps=$((fps_rendered * 1000000 / fps_dt))
-          digits_dirty=1
+          fps_nv=$((fps_rendered * 1000000 / fps_dt))
+          if [ "$fps_nv" -ne "$fps" ]; then
+            fps=$fps_nv
+            digits_dirty=1
+          fi
         fi
         fps_rendered=0
       fi
@@ -3245,12 +3231,15 @@ main() {
     # YIELD on a slow frame — the browser CANNOT paint (terminal or
     # canvas) while the transpiled script runs its microtask chain, so a
     # frame that never yields freezes the display until the game exits.
-    # A 0.001 yield costs ~10ms here (the event loop clamps 1ms timeouts
-    # to ~4ms+); setTimeout(0) still yields to the compositor for ~1.5ms.
+    # The browser clamps <4ms timeouts up to ~4ms+, so a 1-3ms leftover
+    # sleep actually costs ~4-10ms (measured 10ms here) — for those,
+    # yield with setTimeout(0) (~1.5ms) instead; the compositor still
+    # gets its paint window and the cap only paces 4ms+ leftovers.
     gtick
     fp_el=$((g_now - fp_t0))
     if [ "$fp_el" -lt 10000 ]; then
       fp_wait=$(((10000 - fp_el + 999) / 1000))
+      if [ "$fp_wait" -le 3 ]; then fp_wait=0; fi
     else
       fp_wait=0
     fi
