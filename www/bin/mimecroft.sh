@@ -1592,12 +1592,22 @@ try_draw() { td_a=$1; td_b=$2; td_c=$3
   # the y=0 layer is a STATIC solid dirt floor (never mined, never
   # AIR) — one textured bg plane replaces all its per-cell cubes
   if [ "$td_b" -eq 0 ]; then return 1; fi
-  get_cell $td_a $td_b $td_c
+  # get_cell inlined — the A1 fnCall dispatch is the render hot spot
+  # (~768 cells × ~7 calls each per render); the map read is identical
+  td_gi=$((td_b * CELLS + td_c * MAP_W + td_a))
+  gv=${map[$td_gi]}
   if [ "$gv" -eq "$AIR" ]; then
     if [ "$td_b" -eq 1 ]; then
-      mime_at $td_a $td_c
-      if [ "$mf" -eq 1 ]; then
-        mime_tex_of $mt
+      # mime_at inlined — the cell→mime lookup (one array read)
+      td_mli=$((td_c * MAP_W + td_a))
+      td_mi=${mime_lookup[$td_mli]}
+      if [ "$td_mi" -ge 0 ]; then
+        td_mt=${mtype[$td_mi]}
+        # mime_tex_of inlined (1=jpeg 2=png 3=octet 4=text)
+        if [ "$td_mt" -eq 1 ]; then tx=11
+        elif [ "$td_mt" -eq 2 ]; then tx=12
+        elif [ "$td_mt" -eq 3 ]; then tx=13
+        else tx=14; fi
         blk_p="${blk_p}$td_a $td_b $td_c 0.7 0.7 0.7 1 1 1 $tx 0
 "
       fi
@@ -1606,39 +1616,64 @@ try_draw() { td_a=$1; td_b=$2; td_c=$3
   fi
   td_ddx=$((td_a - dpx))
   td_ddz=$((td_c - dpz))
-  abs $td_ddx
-  td_adx=$av
-  abs $td_ddz
-  td_adz=$av
+  # abs inlined ×2
+  if [ "$td_ddx" -lt 0 ]; then td_adx=$((0 - td_ddx)); else td_adx=$td_ddx; fi
+  if [ "$td_ddz" -lt 0 ]; then td_adz=$((0 - td_ddz)); else td_adz=$td_ddz; fi
   if [ "$td_adx" -gt "$VIEW_R" ]; then return 1; fi
   if [ "$td_adz" -gt "$VIEW_R" ]; then return 1; fi
   td_infront=0
   td_inrow=0
+  # the camera GLIDES between cells (compute_display interpolates
+  # dpcx_ms/dpcz_ms), so "in front" compares against the FRACTIONAL
+  # position, not the rounded cell: rounding flipped the destination
+  # row to "behind" at the HALFWAY point of a move, popping the blocks
+  # the player sees immediately left/right a full half-cell early
+  td_cms=$((td_c * 1000))
+  td_ams=$((td_a * 1000))
   if [ "$dyaw" -eq 0 ]; then
-    if [ "$td_c" -lt "$dpz" ]; then td_infront=1; fi
+    if [ "$td_cms" -lt "$dpcz_ms" ]; then td_infront=1; fi
     td_fov=$((td_adz + td_adz / 2 + 1))
     if [ "$td_adx" -le "$td_fov" ]; then td_inrow=1; fi
   fi
   if [ "$dyaw" -eq 1 ]; then
-    if [ "$td_a" -gt "$dpx" ]; then td_infront=1; fi
+    if [ "$td_ams" -gt "$dpcx_ms" ]; then td_infront=1; fi
     td_fov=$((td_adx + td_adx / 2 + 1))
     if [ "$td_adz" -le "$td_fov" ]; then td_inrow=1; fi
   fi
   if [ "$dyaw" -eq 2 ]; then
-    if [ "$td_c" -gt "$dpz" ]; then td_infront=1; fi
+    if [ "$td_cms" -gt "$dpcz_ms" ]; then td_infront=1; fi
     td_fov=$((td_adz + td_adz / 2 + 1))
     if [ "$td_adx" -le "$td_fov" ]; then td_inrow=1; fi
   fi
   if [ "$dyaw" -eq 3 ]; then
-    if [ "$td_a" -lt "$dpx" ]; then td_infront=1; fi
+    if [ "$td_ams" -lt "$dpcx_ms" ]; then td_infront=1; fi
     td_fov=$((td_adx + td_adx / 2 + 1))
     if [ "$td_adz" -le "$td_fov" ]; then td_inrow=1; fi
   fi
   if [ "$td_infront" -eq 0 ]; then return 1; fi
   if [ "$td_inrow" -eq 0 ]; then return 1; fi
-  block_color $gv
-  texture_of $gv
-  draw_block $td_a $td_b $td_c $cr $cg $cb $tx
+  # block_color inlined
+  if [ "$gv" -eq 1 ]; then cr=0.55; cg=0.35; cb=0.20
+  elif [ "$gv" -eq 2 ]; then cr=0.55; cg=0.55; cb=0.58
+  elif [ "$gv" -eq 3 ]; then cr=0.55; cg=0.50; cb=0.70
+  elif [ "$gv" -eq 4 ]; then cr=0.95; cg=0.75; cb=0.10
+  elif [ "$gv" -eq 5 ]; then cr=0.20; cg=0.85; cb=0.85
+  elif [ "$gv" -eq 6 ]; then cr=0.85; cg=0.15; cb=0.20
+  elif [ "$gv" -eq 7 ]; then cr=0.20; cg=1.00; cb=0.45
+  else cr=1.00; cg=1.00; cb=1.00; fi
+  # texture_of inlined
+  if [ "$gv" -eq 2 ]; then tx=1
+  elif [ "$gv" -eq 3 ]; then tx=10
+  elif [ "$gv" -eq 4 ]; then tx=2
+  elif [ "$gv" -eq 5 ]; then tx=3
+  elif [ "$gv" -eq 6 ]; then tx=4
+  elif [ "$gv" -eq 7 ]; then tx=5
+  else tx=0; fi
+  # draw_block inlined (get_bhp + the batched append)
+  td_bgi=$((td_b * CELLS + td_c * MAP_W + td_a))
+  bh=${bhp[$td_bgi]}
+  blk_p="${blk_p}$td_a $td_b $td_c 1 1 1 $cr $cg $cb $tx $bh
+"
   return 0
 }
 
@@ -2269,23 +2304,28 @@ banner_visible() { bv_x=$1; bv_z=$2
   if [ "$bv_adz" -gt "$VIEW_R" ]; then return 0; fi
   bv_infront=0
   bv_inrow=0
+  # same FRACTIONAL in-front test as try_draw: the banner must stay
+  # visible while its cell is still in front of the gliding camera,
+  # not vanish at the move's halfway point (rounded-cell flip)
+  bv_cms=$((bv_z * 1000))
+  bv_ams=$((bv_x * 1000))
   if [ "$dyaw" -eq 0 ]; then
-    if [ "$bv_z" -lt "$dpz" ]; then bv_infront=1; fi
+    if [ "$bv_cms" -lt "$dpcz_ms" ]; then bv_infront=1; fi
     bv_fov=$((bv_adz + bv_adz / 2 + 1))
     if [ "$bv_adx" -le "$bv_fov" ]; then bv_inrow=1; fi
   fi
   if [ "$dyaw" -eq 1 ]; then
-    if [ "$bv_x" -gt "$dpx" ]; then bv_infront=1; fi
+    if [ "$bv_ams" -gt "$dpcx_ms" ]; then bv_infront=1; fi
     bv_fov=$((bv_adx + bv_adx / 2 + 1))
     if [ "$bv_adz" -le "$bv_fov" ]; then bv_inrow=1; fi
   fi
   if [ "$dyaw" -eq 2 ]; then
-    if [ "$bv_z" -gt "$dpz" ]; then bv_infront=1; fi
+    if [ "$bv_cms" -gt "$dpcz_ms" ]; then bv_infront=1; fi
     bv_fov=$((bv_adz + bv_adz / 2 + 1))
     if [ "$bv_adx" -le "$bv_fov" ]; then bv_inrow=1; fi
   fi
   if [ "$dyaw" -eq 3 ]; then
-    if [ "$bv_x" -lt "$dpx" ]; then bv_infront=1; fi
+    if [ "$bv_ams" -lt "$dpcx_ms" ]; then bv_infront=1; fi
     bv_fov=$((bv_adx + bv_adx / 2 + 1))
     if [ "$bv_adz" -le "$bv_fov" ]; then bv_inrow=1; fi
   fi
@@ -2584,9 +2624,12 @@ print_map_once() {
 # fine for relative deltas). g_now = integer microseconds.
 gtick() {
   g_now=$EPOCHREALTIME
-  if [ "$g_now" != "" ]; then
-    g_now=${g_now%.*}${g_now#*.}
-  else
+  # the transpiled shell returns Date.now()*1000 (integer µs, no dot) —
+  # only host bash / the real-bash wasm carry the "secs.micros" form
+  case $g_now in
+    *.*) g_now=${g_now%.*}${g_now#*.} ;;
+  esac
+  if [ "$g_now" = "" ]; then
     g_now=$(date +%s%N 2>/dev/null)
     if [ "$g_now" != "" ]; then g_now=$(( g_now / 1000 )); fi
   fi
