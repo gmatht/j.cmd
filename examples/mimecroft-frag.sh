@@ -50,7 +50,8 @@ if [ "$scan" -eq 0 ]; then
   b=$((b * 90 / 100))
 fi
 if [ "$damage" -gt 0 ]; then
-  mix=$((damage * cr_a / 3))
+  mix=$((damage * cr_a / 2))
+  if [ "$mix" -gt 127 ]; then mix=127; fi
   r=$((r - (r - cr_r) * mix / 256))
   g=$((g - (g - cr_g) * mix / 256))
   b=$((b - (b - cr_b) * mix / 256))
