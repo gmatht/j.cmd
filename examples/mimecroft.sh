@@ -1698,14 +1698,16 @@ hud_build_static() {
 # changed (digits_dirty); the digits are small, so the per-frame cost is
 # zero most frames
 draw_digits() {
-  # erase the four groups (score / HP / ART / FPS) — one pixel (2.5
-  # milli) ABOVE the glyph's top row and one below, so the previous
-  # digit's pixels never survive into the redraw (the glyph spans
-  # 1796..1840; the rects are 1810±31 = 1779..1841)
-  erase_rect 296 1810 96 62
-  erase_rect 572 1810 160 62
-  erase_rect 964 1810 160 62
-  erase_rect 1302 1810 96 62
+  # erase the four groups (score / HP / ART / FPS) — the glyph's 3×5
+  # pixels are 8×11 rects centered on their grid points, so the true
+  # ink span is 1790.5..1845.5; the rects sit one canvas pixel (3.33
+  # milli) beyond that, at 1818±31 = 1787..1849, so the previous
+  # digit's pixels (including the top row the early rects left behind)
+  # never survive into the redraw
+  erase_rect 296 1818 96 62
+  erase_rect 572 1818 160 62
+  erase_rect 964 1818 160 62
+  erase_rect 1302 1818 96 62
   # score digits
   dh_a=$((score/100%10+26))
   dh_b=$((score/10%10+26))
