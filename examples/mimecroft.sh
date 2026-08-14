@@ -47,13 +47,14 @@ VIEW_R=16                         # draw radius — the whole 16x16 map (display
 RADAR_X=80                        # radar x base (milli-NDC) — the map sits top-LEFT
 # ─── settings (editable in the pre-game menu; browser only) ────────
 cam_shift_ms=0        # camera right shift (milli-NDC, ±50 per press, no limit) — 0 = the centred view; the old 500 (a quarter-screen right shift) moved the vanishing point off-centre
-tex_size=32           # texture resolution (32/64 px) — the MIME name
-# textures carry a 2×3-font prefix + type name, which need ≥32 px
+tex_size=32           # texture resolution (1..64 px, powers of two — the
+# menu ladder; 1x1 = flat colours). The MIME name textures clamp
+# themselves to ≥32 px (the 2×3-font prefix + type name need the 32 canvas)
 tex_seed=20240812     # texture generation seed (drives the LCG noise)
 # texture cache version — bump when the texture GENERATORS change (e.g.
 # the mime type names) so stale /home + /tmp caches regenerate instead
 # of uploading the old pattern
-tex_ver=7
+tex_ver=9          # MIME font 2-4x bigger (64px textures)
 sm_sel=0              # settings-menu cursor (0=shift 1=size 2=seed 3=crt 4=corrupt 5=mime speed)
 sm_done=0
 sm_changed=0
@@ -117,7 +118,7 @@ found=(0 0 0 0 0 0 0 0 0 0)
 # shader's exact perspective), scaled to the treasure's projected size.
 LABEL_TEX0=21        # /dev/webgl/texture index of the first label
 LABEL_W=64           # label texture resolution (square, power of two)
-LABEL_VER=2          # label-generator version (cache key)
+LABEL_VER=3          # label-generator version (cache key)
 lgi=(0 0 0 0 0 0 0 0 0 0 0 0)   # per-character glyph indices (max name 12)
 tl_wpx=(0 0 0 0 0 0 0 0 0 0)   # label text pixel width  (aspect)
 tl_hpx=(0 0 0 0 0 0 0 0 0 0)   # label text pixel height (aspect)
@@ -861,7 +862,7 @@ emit_vertex_shader() {
   # yaw rotation, the fake perspective + the
   # strafe screen-shift (uCamShift·w keeps it a constant NDC-x offset),
   # and the uOverlay > 0.5 flat-quad path.
-  vs_fb="attribute vec3 aPosition; attribute vec3 aShade; attribute vec2 aUv; uniform vec3 uCamPos; uniform float uCamYaw; uniform float uCamShift; uniform vec3 uObjPos; uniform vec3 uBlockColor; uniform vec3 uScale; uniform float uOverlay; varying vec4 vColor; varying vec2 vUv; void main() { vec3 p = aPosition * uScale + uObjPos; if (uOverlay > 0.5) { gl_Position = vec4(p.x + uCamShift, p.y, -0.95, 1.0); vColor = vec4(aShade * uBlockColor, 1.0); vUv = vec2(0.0); return; } vec3 cam = uCamPos + vec3(0.0, 0.5, 0.0); vec3 d = p - cam; float a = uCamYaw * 0.0174532925; float c = cos(a); float s = sin(a); vec3 rel = vec3(d.x * c + d.z * s, d.y, -d.x * s + d.z * c); float w = -rel.z; gl_Position = vec4(rel.x * 0.45 + uCamShift * w, rel.y * 0.45, w * w / 64.0, w); vColor = vec4(aShade * uBlockColor, 1.0); vUv = aUv; }"
+  vs_fb="attribute vec3 aPosition; attribute vec3 aShade; attribute vec2 aUv; uniform vec3 uCamPos; uniform float uCamYaw; uniform float uCamShift; uniform vec3 uObjPos; uniform vec3 uBlockColor; uniform vec3 uScale; uniform float uOverlay; varying vec4 vColor; varying vec2 vUv; void main() { vec3 p = aPosition * uScale + uObjPos; if (uOverlay > 0.5) { gl_Position = vec4(p.x + uCamShift, p.y, -0.95, 1.0); vColor = vec4(aShade * uBlockColor, 1.0); vUv = vec2(0.0); return; } vec3 cam = uCamPos + vec3(0.0, 0.5, 0.0); vec3 d = p - cam; float a = uCamYaw * 0.0174532925; float c = cos(a); float s = sin(a); vec3 rel = vec3(d.x * c + d.z * s, d.y, -d.x * s + d.z * c); float w = -rel.z; gl_Position = vec4(rel.x * 0.45 + uCamShift * w, rel.y * 0.45, w * w / 64.0, w); vColor = vec4(aShade * uBlockColor, 1.0); if (uScale.x > 1.1) { vUv = p.xz; } else { vUv = aUv; } }"
   # compile the bash-authored vertex program — canonical at
   # /examples/mimecroft-vertex.sh (the /examples mount serves
   # www/examples/) — with sh2glsl --vertex; fall back when the
@@ -1057,11 +1058,10 @@ fmt_c() { fc_v=$1
 }
 
 load_tex() { lt_name=$1; lt_idx=$2
-  # every texture is generated at >=32px — the MIME name textures need
-  # the 32 canvas (the prefix + type name; "APPLICATION/OCTET-STREAM"
-  # just fits one line), and the shader's texel grid samples vUv*32
+  # the selected resolution; the generators handle their own minimums
+  # (the MIME name textures clamp themselves to 32px — the 2x3 font's
+  # "APPLICATION/OCTET-STREAM" needs the 32 canvas)
   lt_ts=$tex_size
-  if [ "$lt_ts" -lt 32 ]; then lt_ts=32; fi
   # a macrotask yield so the preceding "    name…" line paints before
   # this texture's (transpiled) generation runs
   sleep 0.01
@@ -1365,6 +1365,9 @@ mime_tex_of() { mtt=$1
 
 # cull + draw one cell (or a mime standing in it)
 try_draw() { td_a=$1; td_b=$2; td_c=$3
+  # the y=0 layer is a STATIC solid dirt floor (never mined, never
+  # AIR) — one textured bg plane replaces all its per-cell cubes
+  if [ "$td_b" -eq 0 ]; then return 1; fi
   get_cell $td_a $td_b $td_c
   if [ "$gv" -eq "$AIR" ]; then
     if [ "$td_b" -eq 1 ]; then
@@ -1447,8 +1450,14 @@ render_frame() {
   # camera-following patches (span 40 = ±20 cells) so the coverage is
   # ROTATION-INVARIANT — a fixed 16-wide slab ended at the map edge, so
   # mid-turn the plane's boundary swept across the view and the clear
-  # colour (blackness) showed past the obsidian border
-  bg_p="$dpx -0.05 $dpz 40 0.1 40 0.45 0.40 0.34 0 0
+  # colour (blackness) showed past the obsidian border.
+  # The FLOOR plane IS the ground: the whole y=0 dirt layer in ONE quad
+  # (the per-cell y=0 cubes are skipped in try_draw). It sits at the
+  # wall-base level (top 0.5 = the old y=0 cube tops) with the DIRT
+  # texture repeating once per world unit — the vertex shader's
+  # world-xz UV branch (usc_x > 1100) tiles it, so 256 cubes/frame
+  # become one textured draw.
+  bg_p="$dpx 0.45 $dpz 40 0.1 40 1 1 1 8 0
 "
   bg_p="${bg_p}$dpx 2.05 $dpz 40 0.1 40 0.24 0.24 0.28 0 0
 "
@@ -2296,8 +2305,13 @@ settings_inc() {
     cam_shift_ms=$((cam_shift_ms + 50))
   fi
   if [ "$sm_sel" -eq 1 ]; then
-    if [ "$tex_size" -eq 32 ]; then tex_size=64
-    elif [ "$tex_size" -eq 64 ]; then tex_size=32
+    if [ "$tex_size" -eq 1 ]; then tex_size=2
+    elif [ "$tex_size" -eq 2 ]; then tex_size=4
+    elif [ "$tex_size" -eq 4 ]; then tex_size=8
+    elif [ "$tex_size" -eq 8 ]; then tex_size=16
+    elif [ "$tex_size" -eq 16 ]; then tex_size=32
+    elif [ "$tex_size" -eq 32 ]; then tex_size=64
+    else tex_size=1
     fi
   fi
   if [ "$sm_sel" -eq 2 ]; then
@@ -2312,47 +2326,11 @@ settings_inc() {
   fi
   if [ "$sm_sel" -eq 5 ]; then
     # speed ladder: |n| = frames per step (lower = faster), sign =
-    # direction (positive = hunt, negative = flee, 0 = frozen)
-    if [ "$mime_speed" -eq 30 ]; then mime_speed=15
-    elif [ "$mime_speed" -eq 15 ]; then mime_speed=10
-    elif [ "$mime_speed" -eq 10 ]; then mime_speed=6
-    elif [ "$mime_speed" -eq 6 ]; then mime_speed=4
-    elif [ "$mime_speed" -eq 4 ]; then mime_speed=2
-    elif [ "$mime_speed" -eq 2 ]; then mime_speed=1
-    elif [ "$mime_speed" -eq 1 ]; then mime_speed=0
-    elif [ "$mime_speed" -eq 0 ]; then mime_speed=-1
-    elif [ "$mime_speed" -eq -1 ]; then mime_speed=-2
-    elif [ "$mime_speed" -eq -2 ]; then mime_speed=-4
-    elif [ "$mime_speed" -eq -4 ]; then mime_speed=-6
-    elif [ "$mime_speed" -eq -6 ]; then mime_speed=-10
-    elif [ "$mime_speed" -eq -10 ]; then mime_speed=-15
-    elif [ "$mime_speed" -eq -15 ]; then mime_speed=-30
-    else mime_speed=30
-    fi
-  fi
-}
-
-settings_dec() {
-  if [ "$sm_sel" -eq 0 ]; then
-    cam_shift_ms=$((cam_shift_ms - 50))
-  fi
-  if [ "$sm_sel" -eq 1 ]; then
-    if [ "$tex_size" -eq 64 ]; then tex_size=32
-    elif [ "$tex_size" -eq 32 ]; then tex_size=64
-    fi
-  fi
-  if [ "$sm_sel" -eq 2 ]; then
-    sm_nv=$((tex_seed - 1000))
-    if [ "$sm_nv" -ge 1 ]; then tex_seed=$sm_nv; fi
-  fi
-  if [ "$sm_sel" -eq 3 ]; then
-    CRT_ON=0
-  fi
-  if [ "$sm_sel" -eq 4 ]; then
-    CORRUPT_ON=0
-  fi
-  if [ "$sm_sel" -eq 5 ]; then
-    # the ladder, reversed
+    # direction (positive = hunt, negative = flee, 0 = frozen). The
+    # RIGHT arrow / d INCREASES the value — the same direction as the
+    # other menu items (camera shift, texture size, seed, toggles):
+    # 30 (slowest hunt) → 1 (fastest hunt) → 0 (frozen) → −1..−30
+    # (fleeing, faster). Wrap: 30 → −30.
     if [ "$mime_speed" -eq -30 ]; then mime_speed=-15
     elif [ "$mime_speed" -eq -15 ]; then mime_speed=-10
     elif [ "$mime_speed" -eq -10 ]; then mime_speed=-6
@@ -2368,6 +2346,53 @@ settings_dec() {
     elif [ "$mime_speed" -eq 10 ]; then mime_speed=15
     elif [ "$mime_speed" -eq 15 ]; then mime_speed=30
     else mime_speed=-30
+    fi
+  fi
+}
+
+settings_dec() {
+  if [ "$sm_sel" -eq 0 ]; then
+    cam_shift_ms=$((cam_shift_ms - 50))
+  fi
+  if [ "$sm_sel" -eq 1 ]; then
+    if [ "$tex_size" -eq 64 ]; then tex_size=32
+    elif [ "$tex_size" -eq 32 ]; then tex_size=16
+    elif [ "$tex_size" -eq 16 ]; then tex_size=8
+    elif [ "$tex_size" -eq 8 ]; then tex_size=4
+    elif [ "$tex_size" -eq 4 ]; then tex_size=2
+    elif [ "$tex_size" -eq 2 ]; then tex_size=1
+    else tex_size=64
+    fi
+  fi
+  if [ "$sm_sel" -eq 2 ]; then
+    sm_nv=$((tex_seed - 1000))
+    if [ "$sm_nv" -ge 1 ]; then tex_seed=$sm_nv; fi
+  fi
+  if [ "$sm_sel" -eq 3 ]; then
+    CRT_ON=0
+  fi
+  if [ "$sm_sel" -eq 4 ]; then
+    CORRUPT_ON=0
+  fi
+  if [ "$sm_sel" -eq 5 ]; then
+    # the ladder, reversed: the LEFT arrow / a DECREASES the value
+    # (−30 fastest flee → −1 slowest flee → 0 frozen → 1 fastest hunt
+    # → 30 slowest hunt). Wrap: −30 → 30.
+    if [ "$mime_speed" -eq 30 ]; then mime_speed=15
+    elif [ "$mime_speed" -eq 15 ]; then mime_speed=10
+    elif [ "$mime_speed" -eq 10 ]; then mime_speed=6
+    elif [ "$mime_speed" -eq 6 ]; then mime_speed=4
+    elif [ "$mime_speed" -eq 4 ]; then mime_speed=2
+    elif [ "$mime_speed" -eq 2 ]; then mime_speed=1
+    elif [ "$mime_speed" -eq 1 ]; then mime_speed=0
+    elif [ "$mime_speed" -eq 0 ]; then mime_speed=-1
+    elif [ "$mime_speed" -eq -1 ]; then mime_speed=-2
+    elif [ "$mime_speed" -eq -2 ]; then mime_speed=-4
+    elif [ "$mime_speed" -eq -4 ]; then mime_speed=-6
+    elif [ "$mime_speed" -eq -6 ]; then mime_speed=-10
+    elif [ "$mime_speed" -eq -10 ]; then mime_speed=-15
+    elif [ "$mime_speed" -eq -15 ]; then mime_speed=-30
+    else mime_speed=30
     fi
   fi
 }

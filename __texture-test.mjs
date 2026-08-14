@@ -55,9 +55,10 @@ for (const s of SCRIPTS) {
   try {
     const ppm = execFileSync("bash", [`${DIR}/${s}`], { encoding: "buffer" });
     // the MIME name textures (jpeg/png/octet/text) always generate at
-    // 32×32 — the prefix + type name need the 32 canvas; everything
+    // 64×64 — the type name is drawn at a glyph scale that fills the
+    // width (2-4px strokes, readable on the mime cubes); everything
     // else keeps the 16×16 default
-    const size = ["jpeg", "png", "octet", "text"].includes(t) ? 32 : 16;
+    const size = ["jpeg", "png", "octet", "text"].includes(t) ? 64 : 16;
     const head = ppm.subarray(0, 14).toString("ascii");
     if (!head.startsWith(`P6\n${size} ${size}\n255\n`)) throw new Error(`bad header: ${JSON.stringify(head)}`);
     if (ppm.length !== expectedBytes(size)) throw new Error(`length ${ppm.length} != ${expectedBytes(size)}`);

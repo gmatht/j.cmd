@@ -72,12 +72,13 @@ SHADE=" .:-=+*#%@"
 # clobber any value exported by the caller.
 SIZE=16
 if [ "$TEX_SIZE" != "" ]; then SIZE=$TEX_SIZE; fi
-if [ "$SIZE" -lt 4 ]; then SIZE=4; fi
+if [ "$SIZE" -lt 1 ]; then SIZE=1; fi
 m4=$(( SIZE % 4 ))
-if [ "$m4" -ne 0 ]; then SIZE=$(( (SIZE / 4) * 4 )); fi
-# MIME name textures: always at least 32×32 — the small font that fits
-# "APPLICATION/OCTET-STREAM" on one line needs the 32-pixel canvas
-if [ "$SIZE" -lt 32 ]; then SIZE=32; fi
+if [ "$m4" -ne 0 ] && [ "$SIZE" -gt 4 ]; then SIZE=$(( (SIZE / 4) * 4 )); fi
+# MIME name textures: always at least 64×64 — the type name is drawn
+# at a glyph scale that fills the width (2-4px strokes instead of 1px),
+# so it stays readable on the 0.7-unit mime cubes
+if [ "$SIZE" -lt 64 ]; then SIZE=64; fi
 LAST=$(( SIZE - 1 ))
 
 if [ "$TEX_SEED" = "" ]; then TEX_SEED=20240812; fi
@@ -88,6 +89,7 @@ noise_seed=$TEX_SEED
 # value-noise lattice geometry, derived from SIZE so the textures
 # scale up without changing their character
 LOW_CELL=$(( SIZE / 4 ))
+if [ "$LOW_CELL" -lt 1 ]; then LOW_CELL=1; fi
 HIGH_CELL=$(( SIZE / 8 ))
 if [ "$HIGH_CELL" -lt 1 ]; then HIGH_CELL=1; fi
 LOW_WRAP=4
@@ -401,12 +403,15 @@ bngi[1]=29257    # L
 bngi[2]=23535    # A
 bngi[3]=29847    # I
 bngi[4]=23421    # N
-# the prefix line: y 0..3, centered
-tt_psx=$(( ( SIZE - spfxn * 2 ) / 2 ))
-tt_pfy0=0
-# the name line: y 6..11, centered
-tt_nsx=$(( ( SIZE - bnmlen * 4 ) / 2 ))
-tt_nfy0=6
+# the prefix line: the 2×3 font at 2× scale — a small tag above the name
+tt_pgs=2
+tt_pfy0=$(( SIZE / 5 ))
+tt_psx=$(( ( SIZE - spfxn * 2 * tt_pgs ) / 2 ))
+# the name line: the 3×5 font scaled so it spans ~90% of the width
+tt_ngs=$(( ( SIZE * 9 / 10 ) / ( bnmlen * 4 ) ))
+if [ "$tt_ngs" -lt 2 ]; then tt_ngs=2; fi
+tt_nfy0=$(( SIZE / 2 ))
+tt_nsx=$(( ( SIZE - bnmlen * 4 * tt_ngs ) / 2 ))
 y=0
 while [ "$y" -lt "$SIZE" ]; do
   x=0
@@ -438,13 +443,13 @@ while [ "$y" -lt "$SIZE" ]; do
     # unawaited per-pixel calls OOM it). Own pixel first (white), then
     # the 8-neighbour outline (black).
     tt_on=0
-    if [ "$tt_py" -ge "$tt_pfy0" ] && [ "$tt_py" -lt 4 ]; then
-      tt_gr=$(( tt_py - tt_pfy0 ))
+    if [ "$tt_py" -ge "$tt_pfy0" ] && [ "$tt_py" -lt $(( tt_pfy0 + 3 * tt_pgs )) ]; then
+      tt_gr=$(( ( tt_py - tt_pfy0 ) / tt_pgs ))
       tt_x0=$tt_psx
-      tt_x1=$(( tt_psx + spfxn * 2 ))
+      tt_x1=$(( tt_psx + spfxn * 2 * tt_pgs ))
       if [ "$tt_px" -ge "$tt_x0" ] && [ "$tt_px" -lt "$tt_x1" ]; then
-        tt_gc=$(( ( tt_px - tt_x0 ) / 2 ))
-        tt_gcol=$(( tt_px - tt_x0 - tt_gc * 2 ))
+        tt_gc=$(( ( tt_px - tt_x0 ) / ( 2 * tt_pgs ) ))
+        tt_gcol=$(( ( tt_px - tt_x0 - tt_gc * 2 * tt_pgs ) / tt_pgs ))
         if [ "$tt_gcol" -lt 2 ]; then
           tt_gi=${spgi[$tt_gc]}
           tt_bitpos=$(( tt_gr * 2 + tt_gcol ))
@@ -453,13 +458,13 @@ while [ "$y" -lt "$SIZE" ]; do
         fi
       fi
     fi
-    if [ "$tt_on" -eq 0 ] && [ "$tt_py" -ge "$tt_nfy0" ] && [ "$tt_py" -lt $(( tt_nfy0 + 5 )) ]; then
-      tt_gr=$(( tt_py - tt_nfy0 ))
+    if [ "$tt_on" -eq 0 ] && [ "$tt_py" -ge "$tt_nfy0" ] && [ "$tt_py" -lt $(( tt_nfy0 + 5 * tt_ngs )) ]; then
+      tt_gr=$(( ( tt_py - tt_nfy0 ) / tt_ngs ))
       tt_x0=$tt_nsx
-      tt_x1=$(( tt_nsx + bnmlen * 4 ))
+      tt_x1=$(( tt_nsx + bnmlen * 4 * tt_ngs ))
       if [ "$tt_px" -ge "$tt_x0" ] && [ "$tt_px" -lt "$tt_x1" ]; then
-        tt_gc=$(( ( tt_px - tt_x0 ) / 4 ))
-        tt_gcol=$(( tt_px - tt_x0 - tt_gc * 4 ))
+        tt_gc=$(( ( tt_px - tt_x0 ) / ( 4 * tt_ngs ) ))
+        tt_gcol=$(( ( tt_px - tt_x0 - tt_gc * 4 * tt_ngs ) / tt_ngs ))
         if [ "$tt_gcol" -lt 3 ]; then
           tt_gi=${bngi[$tt_gc]}
           tt_bitpos=$(( tt_gr * 3 + tt_gcol ))
@@ -484,13 +489,13 @@ while [ "$y" -lt "$SIZE" ]; do
         tt_py=$(( y + tt_offy - 1 ))
         if [ "$tt_offx" -ne 1 ] || [ "$tt_offy" -ne 1 ]; then
           tt_on=0
-          if [ "$tt_py" -ge "$tt_pfy0" ] && [ "$tt_py" -lt 4 ]; then
-            tt_gr=$(( tt_py - tt_pfy0 ))
+          if [ "$tt_py" -ge "$tt_pfy0" ] && [ "$tt_py" -lt $(( tt_pfy0 + 3 * tt_pgs )) ]; then
+            tt_gr=$(( ( tt_py - tt_pfy0 ) / tt_pgs ))
             tt_x0=$tt_psx
-            tt_x1=$(( tt_psx + spfxn * 2 ))
+            tt_x1=$(( tt_psx + spfxn * 2 * tt_pgs ))
             if [ "$tt_px" -ge "$tt_x0" ] && [ "$tt_px" -lt "$tt_x1" ]; then
-              tt_gc=$(( ( tt_px - tt_x0 ) / 2 ))
-              tt_gcol=$(( tt_px - tt_x0 - tt_gc * 2 ))
+              tt_gc=$(( ( tt_px - tt_x0 ) / ( 2 * tt_pgs ) ))
+              tt_gcol=$(( ( tt_px - tt_x0 - tt_gc * 2 * tt_pgs ) / tt_pgs ))
               if [ "$tt_gcol" -lt 2 ]; then
                 tt_gi=${spgi[$tt_gc]}
                 tt_bitpos=$(( tt_gr * 2 + tt_gcol ))
@@ -499,13 +504,13 @@ while [ "$y" -lt "$SIZE" ]; do
               fi
             fi
           fi
-          if [ "$tt_on" -eq 0 ] && [ "$tt_py" -ge "$tt_nfy0" ] && [ "$tt_py" -lt $(( tt_nfy0 + 5 )) ]; then
-            tt_gr=$(( tt_py - tt_nfy0 ))
+          if [ "$tt_on" -eq 0 ] && [ "$tt_py" -ge "$tt_nfy0" ] && [ "$tt_py" -lt $(( tt_nfy0 + 5 * tt_ngs )) ]; then
+            tt_gr=$(( ( tt_py - tt_nfy0 ) / tt_ngs ))
             tt_x0=$tt_nsx
-            tt_x1=$(( tt_nsx + bnmlen * 4 ))
+            tt_x1=$(( tt_nsx + bnmlen * 4 * tt_ngs ))
             if [ "$tt_px" -ge "$tt_x0" ] && [ "$tt_px" -lt "$tt_x1" ]; then
-              tt_gc=$(( ( tt_px - tt_x0 ) / 4 ))
-              tt_gcol=$(( tt_px - tt_x0 - tt_gc * 4 ))
+              tt_gc=$(( ( tt_px - tt_x0 ) / ( 4 * tt_ngs ) ))
+              tt_gcol=$(( ( tt_px - tt_x0 - tt_gc * 4 * tt_ngs ) / tt_ngs ))
               if [ "$tt_gcol" -lt 3 ]; then
                 tt_gi=${bngi[$tt_gc]}
                 tt_bitpos=$(( tt_gr * 3 + tt_gcol ))

@@ -211,7 +211,7 @@ check("block textures uploaded to the device",
   (log.match(/\[texture\/\d+\] \d+x\d+ uploaded/g) || []).length >= 8, "");
 check("MIME type textures uploaded (11=jpeg 12=png 13=octet 14=text)",
   [11, 12, 13, 14].every((n) =>
-    log.includes("[texture/" + n + "] 32x32 uploaded")),
+    log.includes("[texture/" + n + "] 64x64 uploaded")),
   log.split("\n").filter((l) => l.includes("texture/1")).slice(0, 6).join(" | "));
 check("no MIME name tags on the HUD (labels removed, blips kept)",
   !log.includes("mime_label_pos") && /\[hud\] \d+ rects/.test(log),
