@@ -17,8 +17,11 @@
 # stacked blocks instead of flat planes.
 #
 # Renders through the /dev/webgl device (src/fs/webgldev.js) and plays
-# notes through /dev/audio (audiodev.js). Runs in the browser via the
-# sh2perl transpiler and headless in the Node CLI (NullGL device).
+# sound through /dev/audio (audiodev.js): plain oscillator notes by
+# default, or — `mimecroft --sounds bash` / the settings menu's SOUND
+# MODE row — the sample-accurate examples/sounds/sound-*.sh generators
+# through /dev/audio/samples. Runs in the browser via the sh2perl
+# transpiler and headless in the Node CLI (NullGL device).
 #
 # Language discipline (verified against bash2js + sh2runtime):
 #   • arrays are declared with a literal (name=(...)) before any element
@@ -615,7 +618,14 @@ start_anim() { an[0]=$1; an[1]=$2; an[2]=$3; an[3]=$4; an[4]=$5; an[5]=$6
   anim_ayd=$((an[5] - an[2]))
   if [ "$anim_ayd" -gt 2 ]; then anim_ayd=$((anim_ayd - 4)); fi
   if [ "$anim_ayd" -lt -2 ]; then anim_ayd=$((anim_ayd + 4)); fi
-  anim_t0=$(cat /dev/time)
+  # the glide clock: the sync g_now (µs). A gtick CALL here would make
+  # the A1 type this body sync (the direct call) yet still emit `await`
+  # — a SyntaxError; inline the clock instead
+  g_now=$EPOCHREALTIME
+  case $g_now in
+    *.*) g_now=${g_now%.*}${g_now#*.} ;;
+  esac
+  anim_t0=$g_now
   anim=1
 }
 
@@ -3099,10 +3109,11 @@ main() {
     # advance the camera glide by wall time; snap the discrete state
     # when the 0.2s action completes (keys unlock for the next action)
     if [ "$anim" -eq 1 ]; then
-      anim_now=$(cat /dev/time)
-      anim_el=$((anim_now - anim_t0))
+      gtick
+      anim_el=$((g_now - anim_t0))
       dirty=1
-      if [ "$anim_el" -ge "$anim_ms" ]; then
+      anim_ms_us=$((anim_ms * 1000))
+      if [ "$anim_el" -ge "$anim_ms_us" ]; then
         px=${an[3]}
         pz=${an[4]}
         yaw=${an[5]}
@@ -3198,11 +3209,12 @@ main() {
     # fps: rendered frames per wall-second, sampled every 10 frames
     fps_w=$((frame % 10))
     if [ "$fps_w" -eq 0 ]; then
-      fps_t=$(cat /dev/time)
+      gtick
+      fps_t=$g_now
       if [ "$fps_t0" -gt 0 ]; then
         fps_dt=$((fps_t - fps_t0))
         if [ "$fps_dt" -gt 0 ] && [ "$fps_rendered" -gt 0 ]; then
-          fps=$((fps_rendered * 1000 / fps_dt))
+          fps=$((fps_rendered * 1000000 / fps_dt))
           digits_dirty=1
         fi
         fps_rendered=0
@@ -3210,15 +3222,17 @@ main() {
       fps_t0=$fps_t
     fi
     # fps cap 100 (10ms/frame): sleep the leftover budget, or a minimum
-    # 1ms yield on a slow frame — the browser CANNOT paint (terminal or
+    # YIELD on a slow frame — the browser CANNOT paint (terminal or
     # canvas) while the transpiled script runs its microtask chain, so a
-    # frame that never sleeps freezes the display until the game exits.
+    # frame that never yields freezes the display until the game exits.
+    # A 0.001 yield costs ~10ms here (the event loop clamps 1ms timeouts
+    # to ~4ms+); setTimeout(0) still yields to the compositor for ~1.5ms.
     gtick
     fp_el=$((g_now - fp_t0))
     if [ "$fp_el" -lt 10000 ]; then
       fp_wait=$(((10000 - fp_el + 999) / 1000))
     else
-      fp_wait=1
+      fp_wait=0
     fi
     fmt3 $fp_wait
     sleep 0.$fv
