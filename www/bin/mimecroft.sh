@@ -1698,11 +1698,14 @@ hud_build_static() {
 # changed (digits_dirty); the digits are small, so the per-frame cost is
 # zero most frames
 draw_digits() {
-  # erase the four groups (score / HP / ART / FPS)
-  erase_rect 296 1812 96 60
-  erase_rect 572 1812 160 60
-  erase_rect 964 1812 160 60
-  erase_rect 1302 1812 96 60
+  # erase the four groups (score / HP / ART / FPS) — one pixel (2.5
+  # milli) ABOVE the glyph's top row and one below, so the previous
+  # digit's pixels never survive into the redraw (the glyph spans
+  # 1796..1840; the rects are 1810±31 = 1779..1841)
+  erase_rect 296 1810 96 62
+  erase_rect 572 1810 160 62
+  erase_rect 964 1810 160 62
+  erase_rect 1302 1810 96 62
   # score digits
   dh_a=$((score/100%10+26))
   dh_b=$((score/10%10+26))
@@ -1719,6 +1722,10 @@ draw_digits() {
   dh_b=$((maxhp%10+26))
   draw_char $dh_a 592 1840 8 11 0.35 0.90 0.40
   draw_char $dh_b 624 1840 8 11 0.35 0.90 0.40
+  # the slash between current and max — the group's erase rect spans
+  # 492..652, which CLEARS the static slash (x=560), so redraw it with
+  # the digits (the ART group's erase does the same to x=952)
+  draw_char 37 560 1840 8 11 0.35 0.90 0.40
   # ART digits (found / total)
   dh_a=$((found_count/10+26))
   dh_b=$((found_count%10+26))
@@ -1728,6 +1735,7 @@ draw_digits() {
   dh_b=$((TREASURE_TOTAL%10+26))
   draw_char $dh_a 984 1840 8 11 0.60 0.75 0.95
   draw_char $dh_b 1016 1840 8 11 0.60 0.75 0.95
+  draw_char 37 952 1840 8 11 0.60 0.75 0.95
   # fps digits (right of the ART total, same line as the score/hp/art)
   dh_a=$((fps/100+26))
   dh_b=$((fps/10%10+26))
