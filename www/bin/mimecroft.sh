@@ -49,7 +49,7 @@ tex_seed=20240812     # texture generation seed (drives the LCG noise)
 # texture cache version — bump when the texture GENERATORS change (e.g.
 # the mime type names) so stale /home + /tmp caches regenerate instead
 # of uploading the old pattern
-tex_ver=6
+tex_ver=7
 sm_sel=0              # settings-menu cursor (0=shift 1=size 2=seed 3=crt 4=corrupt 5=mime speed)
 sm_done=0
 sm_changed=0
@@ -138,6 +138,15 @@ rand() { rd_m=$1; seed=$(((seed * 48271) % 2147483647)); rv=$((seed % rd_m)); }
 
 abs() { ab_v=$1; if [ "$ab_v" -lt 0 ]; then ab_v=$((0 - ab_v)); fi; av=$ab_v; }
 
+# 3D-view invalidation: the rendered view is a pure function of the
+# camera cell/yaw/crouch + the map + the mime positions. map_ver bumps
+# on every cell write (mining/destruction), mimes_ver on every mime
+# move/die — the loop caches the previous view and skips the full
+# re-render when nothing the 3D shows changed.
+map_ver=0
+mimes_ver=0
+prev_view_key=""
+
 # cell access — the flat index (y*CELLS + z*MAP_W + x) is computed by
 # the caller and passed as an ARG to the store helpers. `$1` arg copies
 # are always runtime-store writes, so `map[$mi]` reads them back
@@ -145,7 +154,7 @@ abs() { ab_v=$1; if [ "$ab_v" -lt 0 ]; then ab_v=$((0 - ab_v)); fi; av=$ab_v; }
 # store-read string can't see, and `idx=$(fn …)` command substitution
 # hits a broken captureSync in the shell's transpiler — arguments dodge
 # both traps.
-map_set() { mi=$1; mv=$2; map[$mi]=$mv; bhp[$mi]=0; }
+map_set() { mi=$1; mv=$2; map[$mi]=$mv; bhp[$mi]=0; map_ver=$((map_ver + 1)); }
 map_get() { gi=$1; gv=${map[$gi]}; }
 bhp_get() { gi=$1; bh=${bhp[$gi]}; }
 bhp_inc() { gi=$1; old=${bhp[$gi]}; bhp[$gi]=$((old + 1)); }
@@ -197,6 +206,7 @@ mime_at() { ma_a=$1; ma_b=$2; mf=0; mt=0; ma_i=0
 }
 
 kill_mime_at() { ka_a=$1; ka_b=$2; ka_i=0
+  mimes_ver=$((mimes_ver + 1))
   while [ "$ka_i" -lt "$mime_count" ]; do
     ka_ex=${mx[$ka_i]}
     ka_ez=${mz[$ka_i]}
@@ -869,7 +879,11 @@ setup_webgl() {
   emit_fragment_shader
     echo "link" > /dev/webgl/program
   echo "f32 -0.5 0.5 0.5 0.5 0.5 0.5 0.5 0.5 -0.5 -0.5 0.5 -0.5 -0.5 -0.5 0.5 0.5 -0.5 0.5 0.5 -0.5 -0.5 -0.5 -0.5 -0.5 -0.5 0.5 0.5 0.5 0.5 0.5 0.5 -0.5 0.5 -0.5 -0.5 0.5 -0.5 -0.5 -0.5 0.5 -0.5 -0.5 0.5 0.5 -0.5 -0.5 0.5 -0.5 0.5 -0.5 0.5 0.5 0.5 0.5 0.5 0.5 -0.5 0.5 -0.5 -0.5 -0.5 -0.5 0.5 -0.5 0.5 0.5 -0.5 0.5 -0.5 -0.5 -0.5 -0.5" > /dev/webgl/buffer/aPosition
-  echo "f32 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 0.9 1 1 1 1 1 1 1 1 1 1 1 1 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.95 0.95 0.95 0.95 0.95 0.95 0.95 0.95 0.95 0.95 0.95 0.95 0.85 0.85 0.85 0.85 0.85 0.85 0.85 0.85 0.85 0.85 0.85 0.85" > /dev/webgl/buffer/aShade
+  # face brightness (aShade) — the classic directional light: the TOP
+  # brightest (light from above), the bottom darkest, and the four
+  # sides graded so a cube's adjacent faces differ enough to read as
+  # 3D (the old near-uniform 0.85–0.95 made side blocks look flat)
+  echo "f32 1 1 1 1 1 1 1 1 1 1 1 1 0.5 0.5 0.5 0.5 0.5 0.5 0.5 0.5 0.5 0.5 0.5 0.5 0.6 0.6 0.6 0.6 0.6 0.6 0.6 0.6 0.6 0.6 0.6 0.6 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.8 0.6 0.6 0.6 0.6 0.6 0.6 0.6 0.6 0.6 0.6 0.6 0.6" > /dev/webgl/buffer/aShade
   echo "f32 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1 1 1 0 1 0 0 1 0 0 1 0 0 1 0 1 1 1 1 1 0 0 0 0 1" > /dev/webgl/buffer/aUv
     echo "0" > /dev/webgl/uniform/1i/uTex
   echo "9" > /dev/webgl/uniform/1i/uCrack
@@ -2221,20 +2235,32 @@ main() {
       fi
     fi
     gspan "mime"
-    # Render only when the world changed (key action or mime step): a
-    # complete frame — world + HUD + swap — is produced atomically, and
-    # the canvas (double-buffered by the browser) keeps showing the last
-    # presented frame in between. The 100fps loop stays for input
-    # latency; rendering every frame at ~48ms of async dispatches would
-    # cap the game at ~20fps and waste the static frames.
-    if [ "$dirty" -eq 1 ]; then
+    # The 3D view is a pure function of the camera cell/yaw/crouch + the
+    # map + the mime positions, so it is CACHED: re-render (the ~768
+    # cell scan + GL dispatch) only when one of those changed. Otherwise
+    # the double-buffered canvas keeps showing the last 3D view and we
+    # only re-present the HUD layer (fresh digits, radar blips, muzzle
+    # flash) over it — a couple of rects instead of the full frame.
+    # map_ver bumps on every cell write, mimes_ver on every mime
+    # move/die.
+    view_key="$dpx $dpz $dyaw $crouched $map_ver $mimes_ver"
+    hud_swap=0
+    if [ "$view_key" != "$prev_view_key" ]; then
       render_frame
+      prev_view_key=$view_key
       gspan "render"
+      hud_swap=1
+    fi
+    # the HUD needs presenting when the view changed, a digit group is
+    # dirty (score/hp/art/fps), the muzzle flash is live, or the static
+    # radar base was rebuilt — otherwise nothing on screen changed and
+    # the frame is fully static (no swap; the keyboard heartbeat below
+    # keeps the grab alive)
+    if [ "$hud_swap" -eq 1 ] || [ "$digits_dirty" -eq 1 ] || [ "$flash_clear" -eq 1 ] || [ "$muzzle" -gt 0 ] || [ "$hud_static_dirty" -eq 1 ]; then
       draw_hud_canvas
       gspan "hud"
       echo "swap" > /dev/webgl/call
       gspan "swap"
-      dirty=0
       fps_rendered=$((fps_rendered + 1))
     else
       # keyboard heartbeat: the device releases keys 2s after the last

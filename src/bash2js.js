@@ -209,11 +209,41 @@ export async function runBash(fs, source, { stdout, stderr, runCmd, args = [], a
   // pipe input → the transpiled code's read_line/getline bridge (the c
   // frontend's sh2.stdin cursor)
   if (stdin !== undefined) { try { rt.sh2.stdin = stdin; } catch {} }
-  const fn = new Function("args", "fs", "env", "stdout", "stderr", "__runCmd", "sh2", `
+  // The generated JS (the native estree backend) writes echo/error
+  // output and implements `exit N` through `process` — the shared
+  // runShellScript path passes its shim; runBash must too, or a script
+  // crashes in the browser, where there is no node `process` at all
+  // (the go.js shim, when present, is env-less and stdout-less). The
+  // shim is used EVERYWHERE (Node included): it routes output through
+  // the passed stdout/stderr — so the shell's capture/redirect/pipe
+  // machinery sees .sh output — and `exit N` becomes the thrown
+  // __otranspiler_exit__ code instead of killing the host.
+  const proc = {
+    stdout: out,
+    stderr: err,
+    pid: 1,
+    argv: [argv0, ...args],
+    env: env || {},
+    cwd: () => (fs.cwd !== undefined ? fs.cwd : "/"),
+    chdir(p) {
+      if (fs && fs.cwd !== undefined) {
+        fs.cwd = String(p).replace(/\/+$/, "") || "/";
+        try { env.PWD = fs.cwd; } catch {}
+      }
+    },
+    exit(code) { const e = new Error("__otranspiler_exit__" + code); e.exitCode = Number(code) || 0; throw e; },
+  };
+  const fn = new Function("args", "fs", "env", "stdout", "stderr", "__runCmd", "sh2", "process", `
     return (async () => {
       ${js}
     })();
   `);
-  const code = await fn([], fs, env, out, err, runCmd, rt.sh2);
+  let code;
+  try {
+    code = await fn([], fs, env, out, err, runCmd, rt.sh2, proc);
+  } catch (e) {
+    if (e && e.exitCode !== undefined) return e.exitCode;  // `exit N`
+    throw e;
+  }
   return typeof code === "number" ? code : 0;
 }

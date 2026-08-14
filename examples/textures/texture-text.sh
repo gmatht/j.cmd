@@ -431,7 +431,11 @@ while [ "$y" -lt "$SIZE" ]; do
         fi
       fi
     if [ "$tt_on" -eq 1 ]; then
-      r=250; g=250; b=250
+      # 70% opaque text — blend the white glyph over the pixel's own
+      # colour (the sky/hills/photo) so the texture shows through
+      r=$(( (250 * 70 + r * 30) / 100 ))
+      g=$(( (250 * 70 + g * 30) / 100 ))
+      b=$(( (250 * 70 + b * 30) / 100 ))
     else
       tt_done=0
       tt_cand=0
@@ -467,7 +471,10 @@ while [ "$y" -lt "$SIZE" ]; do
         fi
       fi
           if [ "$tt_on" -eq 1 ]; then
-            r=5; g=5; b=5
+            # 70% outline over the background
+            r=$(( (5 * 70 + r * 30) / 100 ))
+            g=$(( (5 * 70 + g * 30) / 100 ))
+            b=$(( (5 * 70 + b * 30) / 100 ))
             tt_done=1
           fi
         fi

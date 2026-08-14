@@ -1,15 +1,19 @@
 // ─── __mime-speed-test.mjs — mime_speed is SIGNED ─────────────────
 // Positive = the MIMEs hunt the player; negative = they RUN AWAY;
-// 0 = frozen. This test runs the REAL game twice with the same idle
-// key stream (claim the fixed treasure → two MIMEs spawn → stand
-// still while they act):
+// 0 = frozen. This test runs the REAL game three times with the same
+// key stream (claim the fixed treasure at frame 1 → three initial
+// MIMEs + two spawned act; idle ~50 frames; then q to quit):
 //
-//   control  mime_speed=+15  the MIMEs converge, reach the player,
-//                            deal damage (hp drops) and die on contact
-//   flee     mime_speed=-15  the MIMEs flee — hp stays at max and the
-//                            mime count is untouched
+//   control  mime_speed=+2   the MIMEs converge, reach the player
+//                            (contact = "MIME sanitised" + score),
+//                            deal damage and die on contact
+//   flee     mime_speed=-2   the MIMEs move (draws happen) but NEVER
+//                            reach the player — no contact, score 100
+//   frozen   mime_speed=0    the MIMEs never step — no movement draws
 //
-// The hp/frame/mime_count come from the runtime store after the run.
+// Observations: stdout text (authoritative — hp/score are plain JS
+// lets the store never sees), the live mime_count store var, and the
+// /dev/webgl draw-count delta per run (mime movement renders).
 //
 //   node __mime-speed-test.mjs   → "mime speed sign test: PASS"
 import { readFileSync } from "fs";
@@ -28,7 +32,8 @@ async function play(speed) {
     "place_treasures() {\n  pt_t=0\n  set_cell 2 1 1 $TREASURE\n  set_treasure_pos 0 2 1\n  pt_t=$((pt_t + 1))\n  while [ \"$pt_t\" -lt \"$TREASURE_TOTAL\" ]; do"
   );
   const { js } = await bashToJS(fs, src);
-  let keyFrame = 0, sleepCount = 0;
+  const draws0 = (await fs.read("/dev/webgl/log")).match(/\[call\] draw /g) || [];
+  let keyFrame = 0;
   const stdout = [];
   const shellExec = async (cmdline, stdin) => {
     const cl = cmdline.trim();
@@ -39,10 +44,10 @@ async function play(speed) {
     if (cmd === "echo") out = rest + "\n";
     else if (cmd === "cat") {
       const p = fs._resolve(rest.split(/\s+/)[0]);
-      if (p === "/dev/webgl/key") { out = (keyFrame === 0 ? "space," : "") + "\n"; keyFrame++; }
+      if (p === "/dev/webgl/key") { out = (keyFrame === 0 ? "space," : keyFrame > 55 ? "q," : "") + "\n"; keyFrame++; }
       else { try { out = await fs.read(p); } catch (e) { out = ""; } }
     }
-    else if (cmd === "sleep") { sleepCount++; if (sleepCount % 25 === 0) process.stderr.write("s=" + sleepCount + " @" + Date.now() + "\n"); if (sleepCount > 150) throw new Error("test-stop"); await new Promise((r) => setTimeout(r, 0)); }
+    else if (cmd === "sleep") {} // native-lowered; nothing to stub
     else if (cmd === "true") {}
     else out = `${cmd}: command not found\n`;
     return { out, err: "", code: 0 };
@@ -55,40 +60,40 @@ async function play(speed) {
   const origSh2ReadFile = rt.sh2.fs.readFile.bind(rt.sh2.fs);
   rt.sh2.fs.readFile = async (p, enc) => {
     if (String(p) === "/dev/webgl/key") {
-      const k = keyFrame === 0 ? "space," : "";
+      const k = keyFrame === 0 ? "space," : keyFrame > 55 ? "q," : "";
       keyFrame++;
       return k;
     }
     return origSh2ReadFile(p, enc);
   };
   const fn = new Function("args", "fs", "env", "stdout", "stderr", "__runCmd", "sh2", "return (async () => { " + js + " })();");
-  try { await fn([], fs, { HOME: "/home" }, out, errOut, shellExec, rt.sh2); }
-  catch (e) { if (e.message !== "test-stop") { console.log("RUN ERROR:", e.message); process.exit(1); } }
-  const num = (v) => { try { return Number(rt.sh2.getVar(v)); } catch { return NaN; } };
+  await fn([], fs, { HOME: "/home" }, out, errOut, shellExec, rt.sh2);
+  const log = await fs.read("/dev/webgl/log");
+  const draws1 = log.match(/\[call\] draw /g) || [];
+  const text = stdout.join("");
   return {
-    hp: num("hp"),
-    frame: num("frame"),
-    mimes: num("mime_count"),
-    score: num("score"),
-    text: stdout.join(""),
+    text,
+    draws: draws1.length - draws0.length,
+    mimes: (() => { try { return Number(rt.sh2.getVar("mime_count")); } catch { return NaN; } })(),
   };
 }
 
-const hunt = await play(15);
-console.log("── run 2: flee −15");
-const flee = await play(-15);
+const hunt = await play(2);
+console.log("── run 2: flee −2");
+const flee = await play(-2);
 console.log("── run 3: frozen 0");
 const frozen = await play(0);
-console.log("hunt(+15):   hp=" + hunt.hp + " mimes=" + hunt.mimes + " frame=" + hunt.frame + " score=" + hunt.score);
-console.log("flee(-15):   hp=" + flee.hp + " mimes=" + flee.mimes + " frame=" + flee.frame + " score=" + flee.score);
-console.log("frozen(0):   hp=" + frozen.hp + " mimes=" + frozen.mimes + " frame=" + frozen.frame + " score=" + frozen.score);
-console.log("(text checks: flee saw the treasure banner —", flee.text.includes("TREASURE FOUND:"), ")");
+
+const has = (r, s) => r.text.includes(s);
+const kills = (r) => (r.text.match(/MIME sanitised/g) || []).length;
+console.log("hunt(+2):   contact-kills=" + kills(hunt) + " mimes=" + hunt.mimes + " draws=" + hunt.draws + " score-line=" + (hunt.text.match(/Quit. Score [0-9]+/) || ["?"])[0]);
+console.log("flee(−2):   contact-kills=" + kills(flee) + " mimes=" + flee.mimes + " draws=" + flee.draws + " score-line=" + (flee.text.match(/Quit. Score [0-9]+/) || ["?"])[0]);
+console.log("frozen(0):  contact-kills=" + kills(frozen) + " mimes=" + frozen.mimes + " draws=" + frozen.draws + " score-line=" + (frozen.text.match(/Quit. Score [0-9]+/) || ["?"])[0]);
 
 const ok =
-  flee.hp === 10 && flee.mimes === 2 &&          // fleeing MIMEs never touch you
-  hunt.hp < 10 && hunt.mimes < 2 &&              // control: they converge, hurt, die
-  frozen.hp === 10 && frozen.mimes === 2 &&      // speed 0 = frozen in place
-  flee.text.includes("TREASURE FOUND:") &&
-  hunt.text.includes("TREASURE FOUND:");
+  kills(hunt) > 0 && hunt.mimes < 5 &&                      // control: converged + contact
+  kills(flee) === 0 && flee.mimes === 5 && flee.draws > frozen.draws && // moved but never reached
+  kills(frozen) === 0 && frozen.mimes === 5 &&              // frozen: untouched, still alive
+  has(hunt, "TREASURE FOUND:") && has(flee, "TREASURE FOUND:") && has(frozen, "TREASURE FOUND:");
 console.log("mime speed sign test:", ok ? "PASS" : "FAIL");
 process.exit(ok ? 0 : 1);
