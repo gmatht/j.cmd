@@ -1888,13 +1888,8 @@ fmt_ndc() { fm=$1
 # cost ~90ms of async writes per frame and blink, because it was drawn
 # after the swap and wiped by the next clear)
 draw_rect() { dr_cx=$1; dr_cy=$2; dr_w=$3; dr_h=$4
-  if [ "$8" = "" ]; then
-    ov_text="${ov_text}$dr_cx $dr_cy $dr_w $dr_h $5 $6 $7
+  ov_text="${ov_text}$dr_cx $dr_cy $dr_w $dr_h $5 $6 $7
 "
-  else
-    ov_text="${ov_text}$dr_cx $dr_cy $dr_w $dr_h $5 $6 $7 $8
-"
-  fi
 }
 
 # an erase rect — the device clears this area of the PERSISTENT HUD
@@ -2049,11 +2044,6 @@ draw_text() { dt_t=$1; dt_len=$2; dt_x=$3; dt_y=$4; dt_px=$5; dt_py=$6
 # cells) is prebuilt into hud_static once — this draws only the DYNAMIC
 # part: the player triangle and the living MIMEs (they move). Air cells
 # stay dark (the base skips them), so nothing overlaps.
-# the radar's alpha: 1.0 normally, 0.5 in the 50%-transparent mode
-# (the HUD-layer rects get an optional 8th field the device rasterizes
-# as rgba — the 3D view shows through the radar at half strength).
-radar_a=1.0
-if [ "$MINIMAP_MODE" -eq 2 ]; then radar_a=0.5; fi
 # the radar base cell (wall grey / treasure green) at a map cell —
 # used to restore cells that a wide rotate-erase wiped from the static
 # layer. Air cells draw nothing (they are transparent).
@@ -2071,7 +2061,7 @@ draw_radar_cell() { rc_x=$1; rc_z=$2
   rc_cxs=$fv
   fmt_ndc $rc_cym
   rc_cys=$fv
-  draw_rect $rc_cxs $rc_cys $CELL_W $CELL_H $rc_r $rc_g $rc_b $radar_a
+  draw_rect $rc_cxs $rc_cys $CELL_W $CELL_H $rc_r $rc_g $rc_b
 }
 
 # the mime's radar blip (ring + coloured core) at its current cell
@@ -2091,12 +2081,11 @@ draw_mime_blip() { mb_i=$1
   mb_cys=$fv
   # blip must fit the radar cell box (44×60 milli): ring 36×48,
   # core 24×32 — the old 75×100/50×70 overflowed into neighbour cells
-  draw_rect $mb_cxs $mb_cys 0.036 0.048 0.10 0.10 0.12 $radar_a
-  draw_rect $mb_cxs $mb_cys 0.024 0.032 $cr $cg $cb $radar_a
+  draw_rect $mb_cxs $mb_cys 0.036 0.048 0.10 0.10 0.12
+  draw_rect $mb_cxs $mb_cys 0.024 0.032 $cr $cg $cb
 }
 
 draw_minimap() {
-  if [ "$MINIMAP_MODE" -eq 0 ]; then return 0; fi
   # the radar BASE (walls + treasure cells) is in the static layer —
   # per frame only the CHANGED squares update: erase the old cell, draw
   # the new. The player is a triangle pointing the way they face
@@ -2169,7 +2158,7 @@ draw_minimap() {
   dm_cxs=$fv
   fmt_ndc $dm_cym
   dm_cys=$fv
-  ov_text="${ov_text}T $dm_cxs $dm_cys 0.042 1.0 1.0 1.0 $dm_deg $radar_a
+  ov_text="${ov_text}T $dm_cxs $dm_cys 0.042 1.0 1.0 1.0 $dm_deg
 "
   # mimes — bright red blips (ring + coloured core); only MOVED cells
   # are erased and redrawn (they step every |mime_speed| frames)
@@ -2232,11 +2221,7 @@ hud_build_static() {
   # instructions (bottom centre)
   draw_text "WASD MOVE ARROWS TURN SPACE SHOOT" 33 538 100 7 10 0.85 0.85 0.85
   # radar base: walls + treasure cells (air stays dark; the player and
-  # MIMEs are air cells, drawn dynamically over this base each frame).
-  # The whole base is skipped when the minimap is OFF; the 50% mode
-  # draws it at half alpha.
-  radar_a=1.0
-  if [ "$MINIMAP_MODE" -eq 2 ]; then radar_a=0.5; fi
+  # MIMEs are air cells, drawn dynamically over this base each frame)
   dm_x=0
   while [ "$dm_x" -lt "$MAP_W" ]; do
     dm_z=0
@@ -2249,15 +2234,13 @@ hud_build_static() {
       elif [ "$gv" -ne "$AIR" ]; then dm_r=0.42; dm_g=0.42; dm_b=0.47; dm_draw=1
       fi
       if [ "$dm_draw" -eq 1 ]; then
-        if [ "$MINIMAP_MODE" -ne 0 ]; then
-          dm_cxm=$((RADAR_X + dm_x*44))
-          dm_cym=$((1720 - dm_z*60))
-          fmt_ndc $dm_cxm
-          dm_cxs=$fv
-          fmt_ndc $dm_cym
-          dm_cys=$fv
-          draw_rect $dm_cxs $dm_cys $CELL_W $CELL_H $dm_r $dm_g $dm_b $radar_a
-        fi
+        dm_cxm=$((RADAR_X + dm_x*44))
+        dm_cym=$((1720 - dm_z*60))
+        fmt_ndc $dm_cxm
+        dm_cxs=$fv
+        fmt_ndc $dm_cym
+        dm_cys=$fv
+        draw_rect $dm_cxs $dm_cys $CELL_W $CELL_H $dm_r $dm_g $dm_b
       fi
       dm_z=$((dm_z + 1))
     done
@@ -2847,11 +2830,6 @@ draw_settings_menu() {
   if [ "$sm_sel" -eq 7 ]; then sm_mark=">"; else sm_mark=" "; fi
   if [ "$SOUND_MODE" = "bash" ]; then sm_snd="BASH"; else sm_snd="NOTES"; fi
   echo "  $sm_mark  sound mode  : $sm_snd"
-  if [ "$sm_sel" -eq 8 ]; then sm_mark=">"; else sm_mark=" "; fi
-  if [ "$MINIMAP_MODE" -eq 0 ]; then sm_mm="OFF"
-  elif [ "$MINIMAP_MODE" -eq 2 ]; then sm_mm="50%"
-  else sm_mm="ON"; fi
-  echo "  $sm_mark  minimap     : $sm_mm"
   # canvas card — the leading C must be on its OWN line (a real
   # newline) or the device never clears the layer and old rects stay
   sm_shift_s=$fv
@@ -2877,9 +2855,6 @@ draw_settings_menu() {
   if [ "$mime_speed" -le -10 ]; then sm_splen=3; fi
   if [ "$MIME_LABELS" -eq 1 ]; then sm_mlbl_s="ON"; sm_mlbl_len=2; else sm_mlbl_s="OFF"; sm_mlbl_len=3; fi
   if [ "$SOUND_MODE" = "bash" ]; then sm_snd_s="BASH"; sm_snd_len=4; else sm_snd_s="NOTES"; sm_snd_len=5; fi
-  if [ "$MINIMAP_MODE" -eq 0 ]; then sm_mm_s="OFF"; sm_mm_len=3
-  elif [ "$MINIMAP_MODE" -eq 2 ]; then sm_mm_s="50%"; sm_mm_len=3
-  else sm_mm_s="ON"; sm_mm_len=2; fi
   ov_text="C
 "
   draw_text "SETTINGS" 8 840 1750 10 14 0.95 0.85 0.30
@@ -2891,7 +2866,6 @@ draw_settings_menu() {
   draw_text "MIME SPEED" 10 560 1100 8 11 0.60 0.75 0.95
   draw_text "MIME NAMES" 10 560 1000 8 11 0.60 0.75 0.95
   draw_text "SOUND MODE" 10 560 900 8 11 0.60 0.75 0.95
-  draw_text "MINIMAP" 7 560 800 8 11 0.60 0.75 0.95
   draw_text $sm_shift_s 5 1000 1600 8 11 0.95 0.95 0.95
   draw_text $sm_size_s 2 1000 1500 8 11 0.95 0.95 0.95
   draw_text $sm_seed_s $sm_slen 1000 1400 8 11 0.95 0.95 0.95
@@ -2900,7 +2874,6 @@ draw_settings_menu() {
   draw_text $sm_spd_s $sm_splen 1000 1100 8 11 0.95 0.95 0.95
   draw_text $sm_mlbl_s $sm_mlbl_len 1000 1000 8 11 0.95 0.95 0.95
   draw_text $sm_snd_s $sm_snd_len 1000 900 8 11 0.95 0.95 0.95
-  draw_text $sm_mm_s $sm_mm_len 1000 800 8 11 0.95 0.95 0.95
   if [ "$sm_sel" -eq 0 ]; then draw_rect "-0.520" "0.583" "0.016" "0.030" 1.0 0.85 0.30
   elif [ "$sm_sel" -eq 1 ]; then draw_rect "-0.520" "0.483" "0.016" "0.030" 1.0 0.85 0.30
   elif [ "$sm_sel" -eq 2 ]; then draw_rect "-0.520" "0.383" "0.016" "0.030" 1.0 0.85 0.30
@@ -2908,8 +2881,7 @@ draw_settings_menu() {
   elif [ "$sm_sel" -eq 4 ]; then draw_rect "-0.520" "0.183" "0.016" "0.030" 1.0 0.85 0.30
   elif [ "$sm_sel" -eq 5 ]; then draw_rect "-0.520" "0.083" "0.016" "0.030" 1.0 0.85 0.30
   elif [ "$sm_sel" -eq 6 ]; then draw_rect "-0.520" "-0.017" "0.016" "0.030" 1.0 0.85 0.30
-  elif [ "$sm_sel" -eq 7 ]; then draw_rect "-0.520" "-0.117" "0.016" "0.030" 1.0 0.85 0.30
-  else draw_rect "-0.520" "-0.217" "0.016" "0.030" 1.0 0.85 0.30; fi
+  else draw_rect "-0.520" "-0.117" "0.016" "0.030" 1.0 0.85 0.30; fi
   draw_text "UP/DOWN SELECT - LEFT/RIGHT CHANGE" 34 340 250 7 10 0.85 0.85 0.85
   draw_text "SPACE/ESC START - Q QUIT" 24 500 180 7 10 0.85 0.85 0.85
   echo "$ov_text" > /dev/webgl/hud
@@ -2922,7 +2894,6 @@ settings_menu() {
   sm_seed_old=$tex_seed
   sm_crt_old=$CRT_ON
   sm_corrupt_old=$CORRUPT_ON
-  sm_mm_old=$MINIMAP_MODE
   # show the canvas first so /dev/webgl/key starts capturing. The HUD
   # composite BLENDS the layer over the back buffer and the drawing
   # buffer is preserved now (preserveDrawingBuffer:true) — so the back
@@ -3014,20 +2985,6 @@ settings_menu() {
       # and the radar/triangle/mimes/digits return next frame
       hud_static_dirty=1
     fi
-    if [ "$MINIMAP_MODE" -ne "$sm_mm_old" ]; then
-      # the minimap toggle: rebuild the radar base (skip/dim it) and
-      # force the dynamic parts (triangle + blips) to redraw fresh
-      hud_static_dirty=1
-      prev_px=-1
-      prev_pz=-1
-      prev_deg=-1
-      dm_bi=0
-      while [ "$dm_bi" -lt "$mime_count" ]; do
-        rmx[$dm_bi]=-1
-        rmz[$dm_bi]=-1
-        dm_bi=$((dm_bi + 1))
-      done
-    fi
   fi
   echo ""
   echo "  settings: camera shift $fv · textures ${tex_size}px · seed $tex_seed · mime speed $mime_speed · sound $SOUND_MODE"
@@ -3058,6 +3015,8 @@ main() {
   echo "╚══════════════════════════════════════════════════╝"
   echo ""
   sleep 0.02
+    print_map_once
+  sleep 0.02
     if [ "$headless" -eq 0 ]; then
     settings_menu
     if [ "$quit" -eq 1 ]; then
@@ -3073,10 +3032,6 @@ main() {
   gen_maze
   place_treasures
   count_map_treasures
-  # the maze exists now — print the REAL map (walls + treasures + the
-  # player), not the empty pre-generation grid
-  sleep 0.02
-    print_map_once
     # the radar base needs the maze — build it now (after gen/placement),
   # not before, so the first static layer has the real walls/treasures
   hud_build_static
