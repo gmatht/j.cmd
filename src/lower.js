@@ -478,6 +478,125 @@ export function lowerPureFunctions(program) {
   return program;
 }
 
+// The three shell→function call forms the A1 emitter can emit for a
+// user function call:
+//   sh2.exec("f", [args])            (async, legacy)
+//   sh2.fnCall("f", [args])          (async or sync — the A1's common form)
+//   sh2.callDirect("f", __fn_f, [args])  (sync direct — fn ref as arg 2)
+// Returns { name, args } (the ArrayExpression elements) or null.
+function shellFnCallInfo(call) {
+  if (!call || call.type !== "CallExpression" || !call.callee || call.callee.type !== "MemberExpression" ||
+      !call.callee.object || call.callee.object.type !== "Identifier" || call.callee.object.name !== "sh2" ||
+      !call.callee.property || call.callee.property.type !== "Identifier" ||
+      (call.callee.property.name !== "exec" && call.callee.property.name !== "fnCall" && call.callee.property.name !== "callDirect")) {
+    return null;
+  }
+  if (!call.arguments || call.arguments.length < 2 || !call.arguments[0] ||
+      call.arguments[0].type !== "Literal" || typeof call.arguments[0].value !== "string") return null;
+  const argIdx = call.callee.property.name === "callDirect" ? 2 : 1;
+  const argsArr = call.arguments[argIdx];
+  if (argsArr && argsArr.type !== "ArrayExpression") return null;
+  return { name: String(call.arguments[0].value), args: argsArr ? argsArr.elements : [] };
+}
+
+// ── directShellFnCalls: rewrite dispatch call sites of the NORMALIZED
+// shell functions to direct JS calls ─────────────────────────────────
+//
+// normalizeFunctions (estree.js) converts `sh2.functions.set("f",
+// arrow)` registrations into native `function f(...)` declarations — but
+// leaves every CALL SITE as `await sh2.fnCall("f", [args])` (or the
+// sync `sh2.callDirect("f", __fn_f, [args])`), which pays the runtime
+// dispatch (function-table lookup, scriptArgs save/restore, argument
+// stringifying, a Promise) per call. The texture generators call the
+// pure helpers (lat_hash / smooth_w / vnoise2) thousands of times per
+// texture; the dispatch is the measured hot cost.
+//
+// The pass collects the FunctionDeclaration names + async flags and
+// rewrites every exec/fnCall/callDirect of a known function to a direct
+// call: `await f(args)` for async targets, `f(args)` for sync. Output
+// vars stay module-level (normalizeFunctions' design), so the direct
+// call is semantically identical to the dispatch+adapter path.
+// Functions whose body has an explicit `return N` keep the dispatch
+// (the adapter propagates $? — the conservative fallback).
+export function directShellFnCalls(program) {
+  if (!program || program.type !== "Program" || !Array.isArray(program.body)) return program;
+  const fns = new Map(); // name → { async, hasReturn }
+  for (const st of program.body) {
+    if (!st || st.type !== "FunctionDeclaration" || !st.id || st.id.type !== "Identifier") continue;
+    let hasReturn = false;
+    const scan = (n) => {
+      if (!n || typeof n !== "object") return;
+      if (Array.isArray(n)) { for (const x of n) scan(x); return; }
+      if (n.type === "ReturnStatement") hasReturn = true;
+      for (const k of Object.keys(n)) if (k !== "loc") scan(n[k]);
+    };
+    scan(st.body);
+    fns.set(st.id.name, { async: !!st.async, hasReturn });
+  }
+  if (!fns.size) return program;
+
+  const isCall = (n, obj, fn) =>
+    n && n.type === "CallExpression" && n.callee && n.callee.type === "MemberExpression" &&
+    n.callee.object && n.callee.object.type === "Identifier" && n.callee.object.name === obj &&
+    n.callee.property && n.callee.property.type === "Identifier" && n.callee.property.name === fn;
+  // The dispatch's args are word-LIST coerced (`X.split(/\s+/)
+  // .filter(w => w.length > 0)` — the shell's unquoted-expansion split);
+  // the native function's params are plain STRINGS (the adapter passes
+  // sh2.positional[N]), so unwrap the split back to the raw string.
+  // `String(x).split(...)` → x; `(sh2.vars.x ?? "").split(...)` → the
+  // store read.
+  const unwrapWordList = (n) => {
+    if (!n || n.type !== "CallExpression" || !n.callee || n.callee.type !== "MemberExpression" ||
+        !n.callee.property || n.callee.property.type !== "Identifier" || n.callee.property.name !== "filter" ||
+        !n.arguments || n.arguments.length !== 1) return n;
+    const split = n.callee.object;
+    if (!split || split.type !== "CallExpression" || !split.callee || split.callee.type !== "MemberExpression" ||
+        !split.callee.property || split.callee.property.type !== "Identifier" || split.callee.property.name !== "split" ||
+        !split.arguments || !split.arguments.length) return n;
+    let base = split.callee.object;
+    // String(x).split(...) → x
+    if (base && base.type === "CallExpression" && base.callee && base.callee.type === "Identifier" &&
+        base.callee.name === "String" && base.arguments && base.arguments.length === 1) base = base.arguments[0];
+    return base;
+  };
+  const directStmt = (info) => {
+    const f = fns.get(info.name);
+    const callExpr = {
+      type: "CallExpression",
+      callee: { type: "Identifier", name: info.name },
+      arguments: info.args.map((a) => rewrite(unwrapWordList(a))),
+      optional: false,
+    };
+    if (f.async) return { type: "ExpressionStatement", expression: { type: "AwaitExpression", argument: callExpr } };
+    return { type: "ExpressionStatement", expression: callExpr };
+  };
+  const rewrite = (node) => {
+    if (!node || typeof node !== "object") return node;
+    if (Array.isArray(node)) return node.map(rewrite);
+    if (node.type === "ExpressionStatement" && node.expression) {
+      let e = node.expression;
+      if (isCall(e, "sh2", "guard") && e.arguments && e.arguments.length === 1) e = e.arguments[0];
+      if (e && e.type === "AwaitExpression") {
+        const inner = rewrite(e);
+        if (inner && inner.type === "ExpressionStatement") return inner;
+        return { type: "ExpressionStatement", expression: inner };
+      }
+      const info = shellFnCallInfo(e);
+      if (info && fns.has(info.name) && !fns.get(info.name).hasReturn) return directStmt(info);
+      return { type: "ExpressionStatement", expression: rewrite(node.expression) };
+    }
+    if (node.type === "AwaitExpression" && node.argument && node.argument.type === "CallExpression") {
+      const info = shellFnCallInfo(node.argument);
+      if (info && fns.has(info.name) && !fns.get(info.name).hasReturn) return directStmt(info);
+    }
+    const out = {};
+    for (const k of Object.keys(node)) out[k] = rewrite(node[k]);
+    return out;
+  };
+  program.body = program.body.map(rewrite);
+  return program;
+}
+
 function lowerPureRound(program) {
   if (!program || program.type !== "Program") return 0;
   const body = program.body || [];
@@ -522,14 +641,17 @@ function lowerPureRound(program) {
         if (a && a.type === "CallExpression" && a.callee && a.callee.type === "MemberExpression" &&
             a.callee.object && a.callee.object.type === "Identifier" && a.callee.object.name === "fs") {
           isAsync = true; // device op — stays async, but callable directly
-        } else if (a && a.type === "CallExpression" && a.callee && a.callee.type === "MemberExpression" &&
-            a.callee.object && a.callee.object.type === "Identifier" && a.callee.object.name === "sh2" &&
-            a.callee.property && a.callee.property.type === "Identifier" && a.callee.property.name === "exec" &&
-            a.arguments && a.arguments[0] && a.arguments[0].type === "Literal" &&
-            lowered.has(String(a.arguments[0].value))) {
-          // exec of a lowered fn — becomes a direct call
         } else {
-          lowerable = false;
+          // exec/fnCall/callDirect of an ALREADY-lowered fn — the call
+          // site becomes a direct call; the A1 emits fnCall/callDirect
+          // for most user-function calls (the texture generators' pure
+          // chain is fnCall all the way down), so match all three forms
+          const info = shellFnCallInfo(a);
+          if (info && lowered.has(info.name)) {
+            // lowered callee — becomes a direct call
+          } else {
+            lowerable = false;
+          }
         }
         return;
       }
@@ -702,11 +824,9 @@ function lowerPureRound(program) {
       let callsAsync = false;
       walk(p.rest, (n) => {
         if (callsAsync) return;
-        if (n.type === "CallExpression" && n.callee && n.callee.type === "MemberExpression" &&
-            n.callee.object && n.callee.object.type === "Identifier" && n.callee.object.name === "sh2" &&
-            n.callee.property && n.callee.property.type === "Identifier" && n.callee.property.name === "exec" &&
-            n.arguments && n.arguments[0] && n.arguments[0].type === "Literal") {
-          const g = planByName.get(String(n.arguments[0].value));
+        const info = shellFnCallInfo(n);
+        if (info) {
+          const g = planByName.get(info.name);
           if (g && g.isAsync) callsAsync = true;
         }
       });
@@ -794,7 +914,66 @@ function lowerPureRound(program) {
   }
   program.body = newBody;
 
-  // 4. rewrite call sites: await sh2.exec("f", [args]) → f(args)
+  // 4. rewrite call sites: await sh2.exec/fnCall/callDirect("f", …)
+  //    → f(args) — and the BARE (non-awaited) sync forms too
+  const directCallStmt = (info) => {
+    const fname = info.name;
+    const callExpr = {
+      type: "CallExpression",
+      callee: { type: "Identifier", name: fname },
+      arguments: info.args.map((a) => rewriteCalls(a)),
+      optional: false,
+    };
+    // a function with a body-level `return N` sets $? through the exec
+    // contract — the direct call must propagate the value the same way
+    const p = plan.find((x) => x.name === fname);
+    const asyncFn = !!(p && p.isAsync);
+    if (p && p.hasReturn) {
+      const ret = { type: "Identifier", name: "__ret" };
+      const typeofCmp = (t) => ({
+        type: "BinaryExpression", operator: "===",
+        left: { type: "UnaryExpression", operator: "typeof", prefix: true, argument: ret },
+        right: { type: "Literal", value: t, raw: null },
+      });
+      const inner = asyncFn
+        ? { type: "AwaitExpression", argument: callExpr }
+        : callExpr;
+      return {
+        type: "ExpressionStatement",
+        expression: {
+          type: "CallExpression",
+          callee: {
+            type: "ArrowFunctionExpression", params: [],
+            body: {
+              type: "BlockStatement",
+              body: [
+                { type: "VariableDeclaration", kind: "const", declarations: [{ type: "VariableDeclarator", id: { type: "Identifier", name: "__ret" }, init: inner }] },
+                {
+                  type: "IfStatement",
+                  test: { type: "LogicalExpression", operator: "||", left: typeofCmp("string"), right: typeofCmp("number") },
+                  consequent: {
+                    type: "ExpressionStatement",
+                    expression: {
+                      type: "CallExpression",
+                      callee: { type: "MemberExpression", computed: false, optional: false, object: { type: "Identifier", name: "sh2" }, property: { type: "Identifier", name: "setLastExit" } },
+                      arguments: [{ type: "CallExpression", callee: { type: "Identifier", name: "Number" }, arguments: [ret], optional: false }],
+                      optional: false,
+                    },
+                  },
+                },
+              ],
+            },
+            expression: false, async: asyncFn,
+          },
+          arguments: [], optional: false,
+        },
+      };
+    }
+    if (asyncFn) {
+      return { type: "ExpressionStatement", expression: { type: "AwaitExpression", argument: callExpr } };
+    }
+    return { type: "ExpressionStatement", expression: callExpr };
+  };
   const rewriteCalls = (node) => {
     if (!node || typeof node !== "object") return node;
     if (Array.isArray(node)) return node.map(rewriteCalls);
@@ -808,70 +987,16 @@ function lowerPureRound(program) {
         if (inner && inner.type === "ExpressionStatement") return inner;
         return { type: "ExpressionStatement", expression: inner };
       }
+      // a BARE shell-fn call (the sync forms — callDirect/fnCall without
+      // await) of a lowered fn → direct call
+      const info = shellFnCallInfo(e);
+      if (info && lowered.has(info.name)) return directCallStmt(info);
       const out = { type: "ExpressionStatement", expression: rewriteCalls(node.expression) };
       return out;
     }
-    if (node.type === "AwaitExpression" && node.argument && node.argument.type === "CallExpression" &&
-        isCall(node.argument, "sh2", "exec") && node.argument.arguments && node.argument.arguments[0] &&
-        node.argument.arguments[0].type === "Literal" && lowered.has(String(node.argument.arguments[0].value))) {
-      const args = node.argument.arguments[1] && node.argument.arguments[1].type === "ArrayExpression"
-        ? node.argument.arguments[1].elements : [];
-      const fname = String(node.argument.arguments[0].value);
-      const callExpr = {
-        type: "CallExpression",
-        callee: { type: "Identifier", name: fname },
-        arguments: args.map((a) => rewriteCalls(a)),
-        optional: false,
-      };
-      // a function with a body-level `return N` sets $? through the exec
-      // contract — the direct call must propagate the value the same way
-      const p = plan.find((x) => x.name === fname);
-      const asyncFn = !!(p && p.isAsync);
-      if (p && p.hasReturn) {
-        const ret = { type: "Identifier", name: "__ret" };
-        const typeofCmp = (t) => ({
-          type: "BinaryExpression", operator: "===",
-          left: { type: "UnaryExpression", operator: "typeof", prefix: true, argument: ret },
-          right: { type: "Literal", value: t, raw: null },
-        });
-        const inner = asyncFn
-          ? { type: "AwaitExpression", argument: callExpr }
-          : callExpr;
-        return {
-          type: "ExpressionStatement",
-          expression: {
-            type: "CallExpression",
-            callee: {
-              type: "ArrowFunctionExpression", params: [],
-              body: {
-                type: "BlockStatement",
-                body: [
-                  { type: "VariableDeclaration", kind: "const", declarations: [{ type: "VariableDeclarator", id: { type: "Identifier", name: "__ret" }, init: inner }] },
-                  {
-                    type: "IfStatement",
-                    test: { type: "LogicalExpression", operator: "||", left: typeofCmp("string"), right: typeofCmp("number") },
-                    consequent: {
-                      type: "ExpressionStatement",
-                      expression: {
-                        type: "CallExpression",
-                        callee: { type: "MemberExpression", computed: false, optional: false, object: { type: "Identifier", name: "sh2" }, property: { type: "Identifier", name: "setLastExit" } },
-                        arguments: [{ type: "CallExpression", callee: { type: "Identifier", name: "Number" }, arguments: [ret], optional: false }],
-                        optional: false,
-                      },
-                    },
-                  },
-                ],
-              },
-              expression: false, async: asyncFn,
-            },
-            arguments: [], optional: false,
-          },
-        };
-      }
-      if (asyncFn) {
-        return { type: "ExpressionStatement", expression: { type: "AwaitExpression", argument: callExpr } };
-      }
-      return { type: "ExpressionStatement", expression: callExpr };
+    if (node.type === "AwaitExpression" && node.argument && node.argument.type === "CallExpression") {
+      const info = shellFnCallInfo(node.argument);
+      if (info && lowered.has(info.name)) return directCallStmt(info);
     }
     const out = {};
     for (const k of Object.keys(node)) out[k] = rewriteCalls(node[k]);

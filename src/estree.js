@@ -35,8 +35,99 @@ async function getAstring() {
 // awaitSyncFnCalls) so it resolves through the shell like bash.
 const SYNC_BUILTINS = new Set(["echo", "printf", "true", "false", "date", "pwd", "cat", "cd", "export", "ls", "test"]);
 
-export async function estreeToJs(program) {
-  return (await estreeToJsMapped(program, null, null)).js;
+// the sync builtins whose return value IS their output (echo/printf
+// format the args, date/pwd/cat/ls print state) — a statement-level
+// sh2.builtin call for these must stream the return to stdout. Commands
+// with no output (true/false/cd/export/test) are not in the set: their
+// return is "" and the discard is harmless.
+const OUTPUT_BUILTINS = new Set(["echo", "printf", "date", "pwd", "cat", "ls"]);
+
+export async function estreeToJs(program, { repl = true } = {}) {
+  return (await estreeToJsMapped(program, null, null, { repl })).js;
+}
+
+// ─── writeBuiltinOutput: the otranspilerl/debashcl estree backends
+// inline echo/printf with CONSTANT formats to process.stdout.write, but
+// a printf whose FORMAT contains a variable lands as a bare
+// `sh2.builtin("printf", [fmt])` statement whose return is DISCARDED —
+// the transpiled texture generators' TSV header (`printf "#texture\t
+// $NAME\t${SIZE}x${SIZE}…"`) emitted EMPTY stdout, so load_tex never
+// saw a payload and blocks rendered flat. Rewrite statement-level
+// sh2.builtin calls for the OUTPUT builtins so the formatted return
+// reaches stdout — the same SequenceExpression shape the renderer uses
+// for the native write (write → lastExit = 0 → true). The node is
+// MUTATED in place (same statement object, one statement → one
+// statement), so the source↔generated line map stays aligned.
+export function writeBuiltinOutput(node) {
+  if (!node || typeof node !== "object") return node;
+  if (Array.isArray(node)) return node.map(writeBuiltinOutput);
+  const isOutBuiltin = (call) =>
+    call && call.type === "CallExpression" &&
+    call.callee && call.callee.type === "MemberExpression" &&
+    call.callee.object && call.callee.object.type === "Identifier" &&
+    call.callee.object.name === "sh2" &&
+    call.callee.property && call.callee.property.type === "Identifier" &&
+    call.callee.property.name === "builtin" &&
+    call.arguments && call.arguments[0] &&
+    call.arguments[0].type === "Literal" &&
+    typeof call.arguments[0].value === "string" &&
+    OUTPUT_BUILTINS.has(call.arguments[0].value);
+  const isVarAssign = (call) =>
+    // `printf -v NAME …` assigns to a variable and prints NOTHING —
+    // wrapping it would both stream the return to stdout (wrong) and
+    // break the var-assignment path (the PPM byte builder). Only the
+    // non -v form has output to capture.
+    call.arguments[0].value === "printf" &&
+    call.arguments[1] && call.arguments[1].type === "ArrayExpression" &&
+    call.arguments[1].elements && call.arguments[1].elements[0] &&
+    call.arguments[1].elements[0].type === "Literal" &&
+    call.arguments[1].elements[0].value === "-v";
+  if (node.type === "ExpressionStatement" && node.expression) {
+    // the awaited form (`await sh2.builtin("printf", [fmt])` — the
+    // async-region lowering adds the await around the sync builtin):
+    // unwrap it so the bare-call wrap below applies (the builtin is
+    // sync, so the await is redundant once the return is streamed).
+    let inner = node.expression;
+    if (inner.type === "AwaitExpression" && inner.argument && inner.argument.type === "CallExpression" &&
+        isOutBuiltin(inner.argument) && !isVarAssign(inner.argument)) {
+      inner = inner.argument;
+    }
+    if (isOutBuiltin(inner) && !isVarAssign(inner)) {
+      node.expression = {
+        type: "SequenceExpression",
+        expressions: [
+          {
+            type: "CallExpression",
+            callee: {
+              type: "MemberExpression", computed: false, optional: false,
+              object: {
+                type: "MemberExpression", computed: false, optional: false,
+                object: { type: "Identifier", name: "process" },
+                property: { type: "Identifier", name: "stdout" },
+              },
+              property: { type: "Identifier", name: "write" },
+            },
+            arguments: [inner],
+            optional: false,
+          },
+          {
+            type: "AssignmentExpression", operator: "=",
+            left: {
+              type: "MemberExpression", computed: false, optional: false,
+              object: { type: "Identifier", name: "sh2" },
+              property: { type: "Identifier", name: "lastExit" },
+            },
+            right: { type: "Literal", value: 0, raw: null },
+          },
+          { type: "Literal", value: true, raw: null },
+        ],
+      };
+      return node;
+    }
+  }
+  const out = {};
+  for (const k of Object.keys(node)) out[k] = writeBuiltinOutput(node[k]);
+  return out;
 }
 
 // ─── stripProcessEnv: make the generated code process-free ──────────
@@ -805,9 +896,9 @@ export function normalizeFunctions(program) {
 // statement ORDER doesn't line up: A1 Assigns map to the declarations,
 // every other A1 stmt maps to the meaningful statements, each in order).
 // Returns { js, map } where map[i] = { jsStart, jsEnd, sourceLine }.
-export async function estreeToJsMapped(program, stmtLines, a1Stmts) {
+export async function estreeToJsMapped(program, stmtLines, a1Stmts, { repl = true } = {}) {
   const lowerMod = await import("./lower.js");
-  const { lowerNativeArrays, hoistLoopLastExit, hoistCommonLastExit, dropDeadFlags, mergeInitAssignments, pushLastExitToEnd, nativeForLoops, lowerPureFunctions, flattenAndOrAll, lowerDeviceRedirects } = lowerMod;
+  const { lowerNativeArrays, hoistLoopLastExit, hoistCommonLastExit, dropDeadFlags, mergeInitAssignments, pushLastExitToEnd, nativeForLoops, lowerPureFunctions, flattenAndOrAll, lowerDeviceRedirects, directShellFnCalls } = lowerMod;
   // awaitSyncFnCalls must run BEFORE normalizeFunctions: the sync-fnCall
   // form (a fnCall the frontend believes is await-free) becomes an
   // AwaitExpression here; markAsyncOnAwait then sets async on every
@@ -818,6 +909,17 @@ export async function estreeToJsMapped(program, stmtLines, a1Stmts) {
   normalized = unwrapStoreString(normalized);
   normalized = nullSentinel(normalized);
   normalized = returnInLoop(normalized, false);
+  // normalizeFunctions made the shell functions native declarations but
+  // left their CALL SITES as sh2.fnCall/callDirect dispatches — direct
+  // them now (the texture generators' per-pixel helper calls are the
+  // measured hot cost; output vars are module-level so the direct call
+  // is identical).
+  normalized = directShellFnCalls(normalized);
+  // directShellFnCalls can insert awaits into a body the frontend typed
+  // SYNC (an async target's direct call is awaited wherever it sits) —
+  // reclassify the sync loop twins + async flags so the JS stays valid
+  // (see reclassAsyncLoops).
+  normalized = reclassAsyncLoops(normalized);
   // keepVariables (the A1 path's array pre-seeding) must run for the
   // debashcl path too: the wasm lowers `a=(...)` to `sh2.setArray` only
   // for the arrays it flags, and the game's module arrays (DIR_X, DIR_Z,
@@ -826,7 +928,7 @@ export async function estreeToJsMapped(program, stmtLines, a1Stmts) {
   // store (facing vectors "" → the shot ray went (0,0) → shots missed).
   // The pass collects `let a = [...]` declarators, splits them out of
   // the multi-declarator statement and syncs them into the store.
-  keepVariables(normalized);
+  keepVariables(normalized, [], { repl });
   const lowered = lowerNativeArrays(normalized);
   hoistLoopLastExit(lowered);
   hoistCommonLastExit(lowered);
@@ -848,6 +950,64 @@ export async function estreeToJsMapped(program, stmtLines, a1Stmts) {
   else console.warn("[estree] lowerDeviceRedirects missing from lower.js (stale cache?) — skipping the device-redirect lowering");
   if (typeof lowerPureFunctions === "function") lowerPureFunctions(lowered);
   else console.warn("[estree] lowerPureFunctions missing from lower.js (stale cache?) — skipping the pure-helper lowering");
+  // ─── reclassAsyncLoops: the direct-call rewrite (directShellFnCalls)
+// can inject an AwaitExpression into a body the frontend classified
+// SYNC — a direct call of an async target is awaited wherever it sits,
+// including inside a `sh2.whileLoopSync(cond, () => …)` body (the
+// sync-direct-call-await regression: a stderr redirect makes the callee
+// async, the direct call is awaited, and the non-async arrow carrying
+// that `await` is a SyntaxError). The sync twin would ALSO spin without
+// awaiting the async body — so flip such loops to the async
+// `sh2.whileLoop`, await the loop at its call site, and mark every
+// enclosing function whose body now awaits as async.
+function reclassAsyncLoops(program) {
+  const hasAwaitOwn = (n) => {
+    if (!n || typeof n !== "object") return false;
+    if (Array.isArray(n)) return n.some(hasAwaitOwn);
+    if (n.type === "AwaitExpression") return true;
+    // an await inside a NESTED function belongs to that function — the
+    // outer body doesn't need the flag for it
+    if (n.type === "ArrowFunctionExpression" || n.type === "FunctionExpression" || n.type === "FunctionDeclaration") return false;
+    for (const k of Object.keys(n)) {
+      if (k === "loc" || k === "range" || k === "start" || k === "end") continue;
+      if (hasAwaitOwn(n[k])) return true;
+    }
+    return false;
+  };
+  const isWhileLoopSync = (n) =>
+    n && n.type === "CallExpression" && n.callee && n.callee.type === "MemberExpression" &&
+    n.callee.object && n.callee.object.type === "Identifier" && n.callee.object.name === "sh2" &&
+    n.callee.property && n.callee.property.type === "Identifier" && n.callee.property.name === "whileLoopSync";
+  const visit = (n, parent) => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) { for (const c of n) visit(c, n); return; }
+    for (const k of Object.keys(n)) {
+      if (k === "loc" || k === "range" || k === "start" || k === "end") continue;
+      visit(n[k], n);
+    }
+    if (isWhileLoopSync(n)) {
+      const body = n.arguments && n.arguments[1];
+      if (body && body.type === "ArrowFunctionExpression" && hasAwaitOwn(body.body)) {
+        n.callee.property.name = "whileLoop";
+        body.async = true;
+        if (parent && parent.type === "ExpressionStatement") {
+          parent.expression = { type: "AwaitExpression", argument: n };
+        }
+      }
+    }
+    if ((n.type === "ArrowFunctionExpression" || n.type === "FunctionExpression" || n.type === "FunctionDeclaration") && n.body && hasAwaitOwn(n.body)) {
+      n.async = true;
+    }
+  };
+  visit(program, null);
+  return program;
+}
+
+// statement-level sh2.builtin calls for the OUTPUT builtins must stream
+  // their return to stdout (a printf with a variable in its format is
+  // otherwise emitted as a bare call whose value is discarded — the
+  // texture generators' TSV header vanished and blocks rendered flat)
+  writeBuiltinOutput(lowered);
   const { generate } = await getAstring();
   const js = generate(lowered);
 
@@ -894,7 +1054,15 @@ export async function estreeToJsMapped(program, stmtLines, a1Stmts) {
 // `knownArrays` = persistent array variable names (from the REPL state).
 // Loop variables (`for (let i…)`) are nested, not program-body
 // declarations, and are left alone.
-export function keepVariables(program, knownArrays = []) {
+export function keepVariables(program, knownArrays = [], { repl = true } = {}) {
+  // `repl: false` — a WHOLE SCRIPT (one eval, fresh runtime — no
+  // cross-line persistence needed). The wasm's lowerNativeArrays output
+  // (`let a = [...]`) is a valid native binding for the script; the REPL
+  // re-routes those arrays through the store so the value survives to the
+  // NEXT transpiled line (seed/harvest) — but for a script that routing
+  // would only undo the native lowering and slow every read (the game's
+  // per-frame DIR_X/DIR_Z reads). So in script mode we detect the native
+  // declarators and LEAVE them native.
   const known = new Set(knownArrays);
   const id = (name) => ({ type: "Identifier", name });
   const member = (obj, prop) => ({ type: "MemberExpression", object: obj, property: prop, computed: false, optional: false });
@@ -920,12 +1088,19 @@ export function keepVariables(program, knownArrays = []) {
     for (const k of Object.keys(node)) collect(node[k]);
   };
   collect(program.body || []);
-  // also accept lowered `let a = […]` declarations (other pipelines)
+  // The wasm's lowerNativeArrays output — `let a = […]` declarators —
+  // is a NATIVE binding valid inside this eval. The REPL re-routes them
+  // through the store (the value must survive to the next line); a whole
+  // script (repl: false) keeps them native (the reads are already native
+  // — routing them to sh2.arrayIndex would be pure overhead). "other
+  // pipelines" that emit the same `let` form get the same treatment.
+  const nativeArrays = new Set();
   for (const st of program.body || []) {
     if (st.type === "VariableDeclaration" && st.declarations) {
       for (const d of st.declarations) {
         if (d.id && d.id.type === "Identifier" && d.init && d.init.type === "ArrayExpression") {
-          known.add(d.id.name);
+          if (repl) known.add(d.id.name);
+          else nativeArrays.add(d.id.name);
         }
       }
     }
@@ -941,7 +1116,7 @@ export function keepVariables(program, knownArrays = []) {
     if (node.type === "MemberExpression" &&
         node.object && node.object.type === "Identifier" &&
         node.object.name !== "sh2" && node.object.name !== "process" &&
-        known.has(node.object.name)) {
+        known.has(node.object.name) && !nativeArrays.has(node.object.name)) {
       const name = node.object.name;
       if (node.computed) {
         Object.assign(node, {
@@ -995,7 +1170,7 @@ export function keepVariables(program, knownArrays = []) {
     // a seeded name would re-declare and throw.
     if (st.type === "VariableDeclaration" && st.declarations && st.declarations.length === 1) {
       const d = st.declarations[0];
-      if (d && d.id && d.id.type === "Identifier" && d.init && d.init.type === "ArrayExpression" && known.has(d.id.name)) {
+      if (d && d.id && d.id.type === "Identifier" && d.init && d.init.type === "ArrayExpression" && known.has(d.id.name) && !nativeArrays.has(d.id.name)) {
         out.push({
           type: "ExpressionStatement",
           expression: { type: "AssignmentExpression", operator: "=", left: id(d.id.name), right: d.init },
@@ -1020,7 +1195,7 @@ export function keepVariables(program, knownArrays = []) {
       const arrayDecls = [];
       const rest = [];
       for (const d of st.declarations) {
-        if (d && d.id && d.id.type === "Identifier" && d.init && d.init.type === "ArrayExpression" && known.has(d.id.name)) {
+        if (d && d.id && d.id.type === "Identifier" && d.init && d.init.type === "ArrayExpression" && known.has(d.id.name) && !nativeArrays.has(d.id.name)) {
           arrayDecls.push(d);
         } else {
           rest.push(d);
@@ -1064,29 +1239,29 @@ export function keepVariables(program, knownArrays = []) {
     out.push(st);
   }
   program.body = out;
-  // runtime-valued SCALAR assignments (`x = $(cmd)` — the RHS is awaited,
-  // so the emitter lifted it to a native binding): sync the value into the
-  // store (`sh2.setVar("x", x)`) so it survives to the next transpiled
-  // line — the shell's A1 harvest only captures literal assignment values.
-  const out2 = [];
-  for (const st of out) {
-    if (st.type === "ExpressionStatement" && st.expression &&
-        st.expression.type === "AssignmentExpression" && st.expression.operator === "=" &&
-        st.expression.left && st.expression.left.type === "Identifier" &&
-        exprHasAwait(st.expression.right)) {
+  // REPL-only: a whole script has no next line.
+  let out2 = out;
+  if (repl) {
+    out2 = [];
+    for (const st of out) {
+      if (st.type === "ExpressionStatement" && st.expression &&
+          st.expression.type === "AssignmentExpression" && st.expression.operator === "=" &&
+          st.expression.left && st.expression.left.type === "Identifier" &&
+          exprHasAwait(st.expression.right)) {
+        out2.push(st);
+        out2.push(Object.assign({
+          type: "ExpressionStatement",
+          expression: {
+            type: "CallExpression",
+            callee: member(id("sh2"), id("setVar")),
+            arguments: [lit(st.expression.left.name), id(st.expression.left.name)],
+            optional: false,
+          },
+        }, { _sh2Sync: true }));
+        continue;
+      }
       out2.push(st);
-      out2.push(Object.assign({
-        type: "ExpressionStatement",
-        expression: {
-          type: "CallExpression",
-          callee: member(id("sh2"), id("setVar")),
-          arguments: [lit(st.expression.left.name), id(st.expression.left.name)],
-          optional: false,
-        },
-      }, { _sh2Sync: true }));
-      continue;
     }
-    out2.push(st);
   }
   program.body = out2;
   return program;
