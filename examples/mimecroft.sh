@@ -345,6 +345,11 @@ update_mimes() {
         if [ "$cs" -eq 1 ]; then
           mx[$um_i]=$um_cx
           mz[$um_i]=$um_cz
+          # a mime MOVING changes the 3D view too — bump the view-cache
+          # version (kill_mime_at bumps it on death; without this, the
+          # cached 3D view shows mimes frozen while the radar shows them
+          # moving)
+          mimes_ver=$((mimes_ver + 1))
           um_moved=1
           mimes_moved=1
         fi
