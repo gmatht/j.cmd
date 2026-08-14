@@ -313,9 +313,10 @@ emit() {
     # and char-strips are used by readers. The \t/\n stay literal here
     # (printf converts them in host bash; the transpiler makes them
     # real bytes in the JS string so echo works too).
-    tsv="$tsv$r\t$g\t$b\t"
+    tsv="$tsv$r	$g	$b	"
     if [ "$x" -eq "$LAST" ]; then
-      tsv="$tsv\n"
+      tsv="$tsv
+"
     fi
   else
     printf -v oc '%03o' "$r"
@@ -346,9 +347,11 @@ finish() {
     # (printf converts them in host bash; the transpiler makes them
     # real bytes in the JS string so echo works too).
     if [ "$probe_ok" = "x" ]; then
-      printf "#texture\t$NAME\t${SIZE}x${SIZE}\tseed\t$TEX_SEED\t\n$tsv"
+      printf "#texture	$NAME	${SIZE}x${SIZE}	seed	$TEX_SEED	
+$tsv"
     else
-      echo "#texture\t$NAME\t${SIZE}x${SIZE}\tseed\t$TEX_SEED\t\n$tsv"
+      echo "#texture	$NAME	${SIZE}x${SIZE}	seed	$TEX_SEED	
+$tsv"
     fi
     print_stats
     return 0
