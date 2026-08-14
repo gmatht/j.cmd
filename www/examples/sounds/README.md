@@ -22,6 +22,9 @@ sounds/
   sound-kill.sh      a MIME is sanitised: descending vibrato wail
   sound-damage.sh    the player is hurt: dissonant detuned saws + noise
   sound-treasure.sh  an OS artifact is recovered: C5-E5-G5-C6 fanfare
+  sound-shatter.sh   shooting an artifact destroys it: crystal crack +
+                     three detuned glass shards (the licence-strike
+                     mistake sound)
   sound-walk.sh      a footstep: heel thump + toe scuff (mimecroft has
                      no step sound yet — this is the candidate)
   sound-mime.sh      a nearby MIME: throbbing 55 Hz saw drone (also new)
@@ -89,13 +92,11 @@ this) and you have a playable file.
 
 ## Wiring into mimecroft.sh
 
-Two bridges, one for today and one for tomorrow:
+Two bridges — one live, one for development:
 
-1. **`--notes` (today)** — `/dev/audio` only plays oscillator notes
-   (`play "A4 0.1"`), so a sample-accurate wav has no device yet. The
-   `--notes` output is the closest approximation the current device
-   can play, ready to paste into `play()` calls. E.g. the treasure
-   fanfare would become three `play` lines instead of one:
+1. **`--notes` (development)** — the closest the current oscillator
+   device can get, printed as ready-to-paste `play()` calls. E.g. the
+   treasure fanfare is three `play` lines instead of one:
 
    ```bash
    # sound-treasure.sh --notes
@@ -113,16 +114,22 @@ Two bridges, one for today and one for tomorrow:
    play "A1 0.40"
    ```
 
-2. **`--tsv` / WAV (tomorrow)** — the int lists are the payload for a
-   future `/dev/audio/samples` write (same idea as `/dev/webgl/blocks`:
-   the game writes a big string, the device schedules the buffer). The
-   scripts already emit the exact int16/22050 contract
-   `renderWavDataUrl` uses, so the device-side player can be
-   identical to the existing renderer's sample loop. To test a sound
-   in the game today without touching the device: render the WAV
-   ahead of time and play it with a `<audio>` element via the
-   downloadfs/`/pc` mount — `cp /dev/audio/frame /pc/tone.wav` already
-   works that way.
+2. **`--tsv` + `/dev/audio/samples` (live)** — the game plays the real
+   sounds. `mimecroft --sounds bash` (or the settings menu's
+   SOUND MODE row) switches the backend: each in-game `play "C5 0.10"`
+   note call is mapped to a sound name, the generator is run once
+   through the real bash wasm (`/bin/bash /examples/sounds/sound-X.sh
+   --tsv`), its TSV is cached in `/tmp/mimecroft-snd-<name>.tsv`, and
+   every subsequent play cats the cache to `/dev/audio/samples` — the
+   device parses the int16 list and plays it as an AudioBuffer
+   (`src/fs/audiodev.js parseSamplesPayload`, the same int16/22050
+   contract `renderWavDataUrl` uses). Multi-note licks (the treasure
+   fanfare, the shatter) are ONE sound; the material-aware `hit`
+   sound gets the block type so stone/dirt/wood/gold/gem each ring
+   differently. The default is `--sounds notes` — plain oscillator
+   blips. To audition a sound outside the game: render the WAV and
+   play it with an `<audio>` element via the downloadfs/`/pc` mount —
+   `cp /dev/audio/frame /pc/tone.wav` already works that way.
 
 ## How the sounds are made (the DSP)
 
@@ -153,6 +160,7 @@ Two bridges, one for today and one for tomorrow:
 | kill | mime death `G5 0.08` | saw 700→110 Hz wail with 7 Hz vibrato + noise gasp |
 | damage | hurt `C3 0.15` | 220+233 Hz detuned saws sweeping down, noise bleeding in |
 | treasure | fanfare `C5 E5 G5` | 4-note arpeggio with overlap + octave shimmer |
+| shatter | shot treasure `C4 0.12` `E2 0.18` | 1 ms crack + three detuned glass shards (2350/2790/3520 Hz) + low body thump |
 | walk | *(none — new)* | heel thump + toe scuff, seeded |
 | mime | *(none — new)* | 55 Hz saw drone, 8 Hz tremolo, detuned 57 Hz beating |
 

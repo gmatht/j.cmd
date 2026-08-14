@@ -23,7 +23,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-TESTS=(__mini-test.mjs __my_qsort-test.mjs __linked-list-test.mjs __qsort-builtin-test.mjs __shell-regression.mjs __shader-test.mjs)
+TESTS=(__mini-test.mjs __my_qsort-test.mjs __linked-list-test.mjs __qsort-builtin-test.mjs __shell-regression.mjs __shader-test.mjs __sound-test.mjs)
 ALLOW_DIRTY=false
 SKIP_TESTS=false
 for a in "$@"; do
@@ -48,7 +48,12 @@ if [ "$SKIP_TESTS" != true ]; then
   for t in "${TESTS[@]}"; do
     log="/tmp/deploy-$(basename "$t" .mjs).log"
     printf '  %-26s ' "$t"
-    if timeout 150 node "$t" > "$log" 2>&1; then
+    # __sound-test.mjs boots mimecroft twice and synthesises every
+    # sound under real bash (per-sample DSP — the 460 ms treasure is
+    # ~10K samples) — give it a longer window than the unit tests
+    tl=150
+    if [ "$t" = "__sound-test.mjs" ]; then tl=240; fi
+    if timeout $tl node "$t" > "$log" 2>&1; then
       echo "PASS"
     else
       echo "FAIL — refusing to deploy (log: $log)"
