@@ -287,7 +287,7 @@
         <button id="run-btn">Transpile</button>
         <button id="auto-update-toggle" class="auto-update-toggle">Auto: ON</button>
       </div>
-      <div class="gate-legend">gate: 🟢 ≥90% · 🟡 &gt;50% · 🔴 ≤50% — hover a target for its sh2loop backend pass/total, a source pill for its frontend→js pass/total<br>example: 🟢 passes on the selected backend · 🔴 fails · ⚪ not measured (frontend corpora are gated for the js render)</div>
+      <div class="gate-legend">gate: 🟢 ≥90% · 🟡 &gt;50% · 🔴 ≤50% — hover a target for its sh2loop backend pass/total, a source pill for its frontend→js pass/total<br>example: 🟢 passes on the selected backend · 🟡 renders only / refuses / unverifiable · 🔴 fails · ⚪ not measured (frontend corpora: cross-product triage colours every target)</div>
     </div>
 
     <div class="status" id="status"></div>
@@ -332,7 +332,7 @@ import { GoRunner } from "../src/go.js";
 import { WasmRunner } from "../src/wasm.js";
 import { ensureBusyboxWasm, busyboxA1, BUSYBOX_VERSION } from "../src/busybox.js";
 import { pyExec } from "../src/py.js";
-import { LANGS, getExamples } from "./otranspiler-examples.js?v=12";  // v=12: added cpp/powershell/rust/zig frontends (bump on example changes)
+import { LANGS, getExamples } from "./otranspiler-examples.js?v=13";  // v=12: added cpp/powershell/rust/zig frontends (bump on example changes)
 
 // ─── state ──────────────────────────────────────────────────────
 let srcLang = "sh";
@@ -395,24 +395,50 @@ function backendGrade(lang) {
 // `total` = runnable programs only (pass + fail); `skip` = parse-only
 // testdata fragments whose translation isn't observable via output.
 const FRONTEND_STATUS = {
-  sh:   { pass: 77, total: 78, name: "posix-sh-go", note: "0 fragments skipped" },
-  go:   { pass: 2,  total: 12, name: "go-sh",      note: "64 parse-only fragments skipped; 2/12 runnable pass" },
-  py:   { pass: 67, total: 70, name: "py-sh-go",   note: "1 fragment skipped" },
-  fish: { pass: 70, total: 73, name: "fish-sh-go", note: "2 fragments skipped" },
-  zsh:  { pass: 73, total: 75, name: "zsh-sh-go",  note: "0 fragments skipped" },
-  pl:   { pass: 65, total: 65, name: "perl-sh-go", note: "1 fragment skipped" },
-  c:    { pass: 31, total: 31, name: "c-sh-go",    note: "0 fragments skipped" },
-  bat:  { pass: 0,  total: 0,  name: "bat-sh-go",  note: "not gated — no native cmd.exe reference for the stdout gate, and no browser cmd.exe either" },
-  cpp:  { pass: 0,  total: 0,  name: "cpp-sh-go",  note: "frontend→js gate not run yet — cross-product triage colours the cpp corpus instead" },
-  powershell: { pass: 0, total: 0, name: "powershell-sh-go", note: "frontend→js gate not run yet (live pwsh oracle is fleet-side)" },
-  rust: { pass: 0,  total: 0,  name: "rust-frontend", note: "frontend→js gate not run yet — cross-product triage does not cover rust-frontend either" },
-  zig:  { pass: 0,  total: 0,  name: "zig-sh-go",  note: "frontend→js gate not run yet — cross-product triage does not cover zig-sh-go either" },
+  sh:   { pass: 77, total: 78, name: "posix-sh-go", corpus: "sh-posix", note: "0 fragments skipped" },
+  go:   { pass: 2,  total: 12, name: "go-sh",      corpus: "go", note: "64 parse-only fragments skipped; 2/12 runnable pass" },
+  py:   { pass: 67, total: 70, name: "py-sh-go",   corpus: "py", note: "1 fragment skipped" },
+  fish: { pass: 70, total: 73, name: "fish-sh-go", corpus: "fish", note: "2 fragments skipped" },
+  zsh:  { pass: 73, total: 75, name: "zsh-sh-go",  corpus: "zsh", note: "0 fragments skipped" },
+  pl:   { pass: 65, total: 65, name: "perl-sh-go", corpus: "pl", note: "1 fragment skipped" },
+  c:    { pass: 31, total: 31, name: "c-sh-go",    corpus: "c", note: "0 fragments skipped" },
+  bat:  { pass: 0,  total: 0,  name: "bat-sh-go",  corpus: "bat", note: "no native cmd.exe reference for the stdout gate, and no browser cmd.exe either — pill coloured by the cross-product triage" },
+  cpp:  { pass: 0,  total: 0,  name: "cpp-sh-go",  corpus: "cpp", note: "frontend→js gate not run yet — pill coloured by the cross-product triage (parses in-browser via the merged busybox)" },
+  powershell: { pass: 0, total: 0, name: "powershell-sh-go", corpus: "powershell", note: "frontend→js gate not run yet (live pwsh oracle is fleet-side); the triage worker does not sweep powershell-sh-go either" },
+  rust: { pass: 0,  total: 0,  name: "rust-frontend", corpus: "rust", note: "frontend→js gate not run yet; parses in-browser (the real fleet binary built to wasm32-wasip1)" },
+  zig:  { pass: 0,  total: 0,  name: "zig-sh-go",  corpus: "zig", note: "frontend→js gate not run yet — pill coloured by the cross-product triage (parses in-browser via the merged busybox)" },
 };
 // Same thresholds as the backend gate (defined once in the legend).
+// Frontends without a frontend→js gate (no native browser oracle — bat,
+// cpp) fall back to the cross-validation worker's cross-product triage:
+// its js-backend verdicts measure the same frontend → A1 → js-render
+// path, so the pill is coloured from them (PASS / PASS-RENDER = render
+// OK; SKIP-* = refused; FAIL-* = fails). Rust/zig/powershell have no
+// triage coverage either → neutral pill.
 function frontendGrade(lang) {
   const s = FRONTEND_STATUS[lang];
   if (!s) return { cls: null, label: "no frontend gate data" };
-  if (s.total === 0) return { cls: null, label: s.name + " — " + s.note };  // ungated → neutral pill
+  if (s.total === 0) {
+    if (GATE && GATE.triage && GATE.triage.frontends && s.corpus) {
+      const fe = GATE.triage.frontends[s.corpus];
+      if (fe) {
+        let pass = 0, fail = 0, skip = 0;
+        for (const bes of Object.values(fe)) {
+          const v = bes.js;
+          if (v === "PASS" || v === "PASS-RENDER") pass++;
+          else if (v && v.startsWith("FAIL")) fail++;
+          else if (v) skip++;
+        }
+        if (pass + fail > 0) {
+          const pct = pass / (pass + fail);
+          const cls = pct >= 0.9 ? "green" : pct > 0.5 ? "yellow" : "red";
+          const note = s.note ? " — " + s.note : "";
+          return { cls, label: s.name + " → js (triage): " + Math.round(pct * 100) + "% (" + pass + "/" + (pass + fail) + " render OK" + (skip ? ", " + skip + " skip" : "") + ")" + note };
+        }
+      }
+    }
+    return { cls: null, label: s.name + " — " + s.note };  // no cross-validation coverage either → neutral pill
+  }
   const pct = s.pass / s.total;
   const cls = pct >= 0.9 ? "green" : pct > 0.5 ? "yellow" : "red";
   return { cls, label: s.name + " → js: " + Math.round(pct * 100) + "% (" + s.pass + "/" + s.total + ")" + (s.note ? " — " + s.note : "") };
@@ -427,15 +453,27 @@ function frontendGrade(lang) {
 //               render + run vs native, frontend-js-gate.sh); only
 //               measures the DEFAULT js render, so it colours the
 //               non-sh corpora when the target is js.
+//   triage    — the cross-validation worker's cross-product verdicts
+//               (~llm/sh2loop/triage/verdicts.tsv, run_triage_worker.sh:
+//               every frontend corpus × every backend) — colours the
+//               frontend corpora for ANY target, js included.
 // Each sidebar example button is coloured 🟢 (passes on the
-// currently selected backend) / 🔴 (fails) / ⚪ (no cached gate).
+// currently selected backend) / 🟡 (renders-only / refuses /
+// unverifiable) / 🔴 (fails) / ⚪ (no cached gate).
 let GATE = null;              // { backends:{…}, frontends:{ dir: {total,pass,results} }, triage:{…} }
 const GATE_SETS = {};         // backend → { pass:Set, corpus:Set }
 // cross-product triage (sh2loop harness/triage.sh): frontend corpus × backend.
 // The GUI's target keys (pl/py/rs) differ from the triage backend names
 // (perl/python/rust) — map them. Triage verdict per (dir, example, backend):
-// PASS | PASS-RENDER | FAIL-FRONTEND(-EMIT) | FAIL-BACKEND | SKIP-REFUSE.
+// PASS | PASS-RENDER | FAIL-FRONTEND(-EMIT) | FAIL-BACKEND |
+// SKIP-REFUSE | SKIP-ESTREE-REF (estree reference failed — unverifiable).
 const TRIAGE_BACKEND = { pl: "perl", py: "python", rs: "rust" }; // identity otherwise
+// www corpus dir → FRONTEND_STATUS key (the pills' live source)
+const FRONTEND_DIR_TO_LANG = {
+  "sh-posix": "sh", go: "go", py: "py", fish: "fish", zsh: "zsh",
+  pl: "pl", c: "c", bat: "bat", cpp: "cpp",
+  powershell: "powershell", rust: "rust", zig: "zig",
+};
 // corpus dir → the backend-gate relative path prefix (sh-source
 // corpora only — the frontend corpora are gated per-file instead).
 const GATE_DIR_PREFIX = {
@@ -460,7 +498,20 @@ async function loadGate() {
       BACKEND_STATUS[lang].total = info.total;
     }
   }
+  // keep the SOURCE pills honest too — refresh pass/total from the
+  // fleet's frontend→js gate verdicts (the hardcoded FRONTEND_STATUS is
+  // the boot snapshot; the workers re-gate continuously). total stays
+  // runnable-only (pass + fail); skips are noted separately.
+  if (GATE.frontends) for (const [dir, info] of Object.entries(GATE.frontends)) {
+    const s = FRONTEND_DIR_TO_LANG[dir] && FRONTEND_STATUS[FRONTEND_DIR_TO_LANG[dir]];
+    if (s && info.pass + info.fail > 0) {
+      s.pass = info.pass;
+      s.total = info.pass + info.fail;
+      if (info.skip > 0 && s.note && !/skip/i.test(s.note)) s.note += " · " + info.skip + " skipped";
+    }
+  }
   renderTargets();
+  renderLangPills();          // pill colours can depend on GATE (triage fallback)
   colourExamples();
 }
 // gate status of one example — { cls, label } | null (no cached gate)
@@ -497,6 +548,7 @@ function gateStatus(dir, name) {
       if (v === "FAIL-FRONTEND" || v === "FAIL-FRONTEND-EMIT") return { cls: "gate-red", label: "the " + srcLang + " A1 fails the cross-product gate" };
       if (v === "PASS-RENDER") return { cls: "gate-yellow", label: tgtLang + " renders the A1 (execution needs the sh2 " + tgtLang + " runtime)" };
       if (v === "SKIP-REFUSE") return { cls: "gate-yellow", label: tgtLang + " refuses the construct (documented REFUSE > GUESS)" };
+      if (v === "SKIP-ESTREE-REF") return { cls: "gate-yellow", label: "unverifiable — the estree reference failed for this " + srcLang + " A1 (" + tgtLang + " cross-product pair)" };
     }
   }
   return null;                         // no cached gate for this example
@@ -505,7 +557,7 @@ function gateStatus(dir, name) {
 function colourExamples() {
   document.querySelectorAll(".example-btn[data-gate-dir]").forEach((btn) => {
     const g = gateStatus(btn.dataset.gateDir, btn.dataset.gateName);
-    btn.classList.remove("gate-green", "gate-red");
+    btn.classList.remove("gate-green", "gate-red", "gate-yellow");
     if (g) btn.classList.add(g.cls);
     btn.title = btn.dataset.gateHint + (g ? " — " + g.label : " — no cached gate result");
   });
@@ -536,10 +588,13 @@ function corpusCountText(dir) {
 // (java/rs/zig render code but have no browser runtime — the diff notes it.)
 const RUNNABLE = { sh: 1, zsh: 1, fish: 1, go: 1, py: 1, c: 1, pl: 1, js: 1 };
 // Frontends merged into the browser busybox (www/bin + otranspiler-busybox.wasm).
-// cpp/powershell/rust/zig frontends exist in the sh2loop fleet but are NOT
-// ported to the browser wasm yet (tree-sitter cgo / a Rust binary) — their
-// corpora are browsable, transpile throws the clear message below.
-const FRONTEND_PORTED = { sh: 1, zsh: 1, fish: 1, go: 1, py: 1, c: 1, pl: 1, bat: 1, js: 1 };
+// cpp/zig joined the merge (2026-08-14): their frontends lower onto the shared
+// clib (c-sh-go) with a pure-Go tokenizer — no cgo, so they build to wasm like
+// the other eight. rust runs the REAL fleet binary (syn + serde_json, no cgo)
+// built to wasm32-wasip1 via src/rustfrontend.js. powershell stays out (a
+// tree-sitter CST walker via cgo); its corpus is browsable, transpile throws
+// the message below.
+const FRONTEND_PORTED = { sh: 1, zsh: 1, fish: 1, go: 1, py: 1, c: 1, pl: 1, bat: 1, cpp: 1, zig: 1, rust: 1, js: 1 };
 const RUNTIME_LABEL = {
   sh: "bash.wasm", zsh: "zsh.wasm", fish: "fish.wasm",
   go: "go.wasm (toolchain)", py: "micropython.wasm", c: "tcc.wasm",
@@ -547,20 +602,20 @@ const RUNTIME_LABEL = {
   bat: "none (no cmd.exe in the browser)",
   glsl: "sh2glsl — in-process GLSL ES 1.00 compiler (fragment shader, not runnable)",
   glslv: "sh2glsl --vertex — in-process GLSL ES 1.00 vertex shader compiler (not runnable)",
-  cpp: "none (no browser C++ frontend wasm yet — transpile works fleet-side only)",
+  cpp: "none (no browser C++ runtime — the cpp frontend parses in-browser, executing the generated target needs g++)",
   powershell: "none (no browser pwsh/frontend wasm yet)",
-  rust: "none (no browser Rust frontend wasm yet)",
-  zig: "none (no browser Zig frontend wasm yet)",
+  rust: "none (no browser Rust runtime — the rust frontend parses in-browser, executing the generated target needs rustc)",
+  zig: "none (no browser Zig runtime — the zig frontend parses in-browser, executing the generated target needs zig)",
 };
 const CAVEAT = {
   py: "micropython is an older build — f-strings / some imports in generated code may fail (syntax error shows below)",
   pl: "zeroperl is a subset — some core modules (IPC::Open3 …) may be missing from generated code",
   go: "first run downloads the Go toolchain (~50 MB) and compiles — be patient",
   c: "first run stages tcc.wasm + libc headers",
-  cpp: "the cpp-sh-go frontend is not ported to the browser wasm yet (tree-sitter-cpp, cgo) — source loads and the target buttons render, but transpile needs the sh2loop fleet",
+  cpp: "the cpp-sh-go frontend parses in-browser (pure-Go tokenizer onto the shared C lowering); the generated target needs a C++ toolchain to execute",
   powershell: "the powershell-sh-go frontend is not ported to the browser wasm yet (tree-sitter-powershell, cgo)",
-  rust: "the rust-frontend is not ported to the browser wasm yet (syn + serde_json, a Rust binary)",
-  zig: "the zig-sh-go frontend is not ported to the browser wasm yet (tree-sitter-zig, cgo)",
+  rust: "the rust-frontend parses in-browser (the real fleet binary, syn-based, built to wasm32-wasip1); the generated target needs a Rust toolchain to execute",
+  zig: "the zig-sh-go frontend parses in-browser (pure-Go tokenizer onto the shared C lowering); the generated target needs a Zig toolchain to execute",
 };
 
 // ─── small DOM helpers ──────────────────────────────────────────
@@ -709,10 +764,17 @@ async function transpile(source, srcLang, tgt) {
       text = lib.transpile(String(source), "sh", tgt);
       try { a1 = JSON.parse(lib.shir(String(source))); } catch {}
     }
+  } else if (srcLang === "rust") {
+    // the REAL fleet frontend (syn-based Rust binary) built to
+    // wasm32-wasip1 — run it through the shared WASI runner with the
+    // source staged into the VFS (the busybox merge is Go-only)
+    const { rustfrontendA1 } = await import("../src/rustfrontend.js");
+    a1 = await rustfrontendA1(String(source), fs, (m) => showStatus(m, "info"));
+    text = lib.render(JSON.stringify(a1), tgt);
   } else if (!FRONTEND_PORTED[srcLang]) {
-    // cpp / powershell / rust / zig frontends are not in the browser
-    // busybox yet (tree-sitter cgo / a Rust binary) — the corpora are
-    // browsable, but the A1 pipeline needs the sh2loop fleet.
+    // powershell is not in the browser yet (tree-sitter CST walker via
+    // cgo — no wasm target) — the corpus is browsable, but the A1
+    // pipeline needs the sh2loop fleet.
     throw new Error(srcLang + " frontend not ported to the browser wasm yet — " +
       "load it in the sh2loop fleet (" + (FRONTEND_STATUS[srcLang] || {}).name + ") to transpile");
   } else {
@@ -1251,9 +1313,13 @@ function renderExamples() {
     corpCat.appendChild(list);
     container.appendChild(corpCat);
     getCorpus(dir).then((names) => {
+      // only the frontend's own extension — a stray .sh in a go/ps1/…
+      // corpus manifest must not show as an example for that frontend
+      const ext = LANGS[srcLang].ext;
+      const own = names.filter((n) => String(n).endsWith("." + ext));
       const c = document.getElementById(id);
-      if (c) { c.textContent = names.length; c.dataset.gateDir = dir; }
-      renderCorpusList(dir, names);
+      if (c) { c.textContent = own.length; c.dataset.gateDir = dir; }
+      renderCorpusList(dir, own);
     }).catch((e) => {
       list.textContent = "corpus unavailable: " + e.message;
     });

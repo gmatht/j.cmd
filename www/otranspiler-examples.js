@@ -531,18 +531,18 @@ int main() {
 
 // Language metadata for the sidebar pills.
 export const LANGS = {
-  sh:   { label: "sh",   full: "POSIX shell",  runtime: "bash.wasm" },
-  zsh:  { label: "zsh",  full: "Z shell",      runtime: "zsh.wasm" },
-  fish: { label: "fish", full: "Friendly shell", runtime: "fish.wasm" },
-  go:   { label: "go",   full: "Go",           runtime: "go.wasm (toolchain)" },
-  py:   { label: "py",   full: "Python",       runtime: "micropython.wasm" },
-  c:    { label: "c",    full: "C",            runtime: "tcc.wasm" },
-  pl:   { label: "pl",   full: "Perl",         runtime: "zeroperl.wasm (Perl 5.42)" },
-  bat:  { label: "bat",  full: "Windows batch", runtime: "none (no cmd.exe in browser)" },
-  cpp:  { label: "cpp",  full: "C++",           runtime: "none (no browser C++ frontend wasm yet)" },
-  powershell: { label: "ps1", full: "PowerShell", runtime: "none (no browser pwsh/frontend wasm yet)" },
-  rust: { label: "rs",   full: "Rust",          runtime: "none (no browser Rust frontend wasm yet)" },
-  zig:  { label: "zig",  full: "Zig",           runtime: "none (no browser Zig frontend wasm yet)" },
+  sh:   { label: "sh",   full: "POSIX shell",  runtime: "bash.wasm", ext: "sh" },
+  zsh:  { label: "zsh",  full: "Z shell",      runtime: "zsh.wasm", ext: "zsh" },
+  fish: { label: "fish", full: "Friendly shell", runtime: "fish.wasm", ext: "fish" },
+  go:   { label: "go",   full: "Go",           runtime: "go.wasm (toolchain)", ext: "go" },
+  py:   { label: "py",   full: "Python",       runtime: "micropython.wasm", ext: "py" },
+  c:    { label: "c",    full: "C",            runtime: "tcc.wasm", ext: "c" },
+  pl:   { label: "pl",   full: "Perl",         runtime: "zeroperl.wasm (Perl 5.42)", ext: "pl" },
+  bat:  { label: "bat",  full: "Windows batch", runtime: "none (no cmd.exe in browser)", ext: "bat" },
+  cpp:  { label: "cpp",  full: "C++",           runtime: "none (no browser C++ frontend wasm yet)", ext: "cc" },
+  powershell: { label: "ps1", full: "PowerShell", runtime: "none (no browser pwsh/frontend wasm yet)", ext: "ps1" },
+  rust: { label: "rs",   full: "Rust",          runtime: "none (no browser Rust frontend wasm yet)", ext: "rs" },
+  zig:  { label: "zig",  full: "Zig",           runtime: "none (no browser Zig frontend wasm yet)", ext: "zig" },
 };
 
 export function getExamples(lang) {
