@@ -1246,17 +1246,19 @@ emit_fragment_shader() {
   # crack overlay: the transparent crack texture (cr_r/g/b/a bridges),
   # mixed in by the damage level (uDamage bridge) — layered over ANY
   # block texture so damaged blocks show cracks. The blend is written as
-  # r - (r-cr_r)·mix/256 (≡ r·(1-mix/256) + cr_r·mix/256 — same value,
-  # weights sum to 1) so the intermediate (r-cr_r)·mix ≤ 228·127 stays
-  # inside mediump int. The /128 divisor (vs the old /256) doubles the
-  # effective weight — mix ≤ 127 → the crack texel takes 49% at damage 1
-  # and ~99% at damage 2+, so the crack COLOUR dominates the blend and
-  # a damaged gold/diamond/ruby block shows a dark GRAY crack instead of
-  # a dark tint of the block's own hue (the /256 blend kept (1-mix/256)
-  # of the block colour — cracks on the gems read olive/teal/maroon).
-  # The cap keeps (r-cr_r)·mix ≤ 253·127 = 32131 ≤ 32767.
+  # r - (r-cr_r)·mix/128 (≡ r·(1-mix/128) + cr_r·mix/128 — same value,
+  # weights sum to 1) so the intermediate (r-cr_r)·mix ≤ 253·127 =
+  # 32131 stays inside mediump int. mix = damage·cr_a (no /2) caps at
+  # 127 on the FIRST hit — the crack texel takes ~99% of the blend at
+  # ANY damage level, so the dark GRAY crack colour dominates from the
+  # first shot and a damaged grass/gold/diamond/ruby block shows a
+  # neutral crack instead of a green/olive/teal/maroon tint of the
+  # block's own hue (a partial blend keeps (1-mix/128) of the block
+  # colour — the damage-1 49% state still read as pure-ish coloured
+  # pixels on the gems). The crack no longer scales with damage — it
+  # appears fully at the first hit and the block breaks at its hardness.
   echo 'if [ "$damage" -gt 0 ]; then' >> /tmp/mimecroft-frag.sh
-  echo '  mix=$((damage * cr_a / 2))' >> /tmp/mimecroft-frag.sh
+  echo '  mix=$((damage * cr_a))' >> /tmp/mimecroft-frag.sh
   echo '  if [ "$mix" -gt 127 ]; then mix=127; fi' >> /tmp/mimecroft-frag.sh
   echo '  r=$((r - (r - cr_r) * mix / 128))' >> /tmp/mimecroft-frag.sh
   echo '  g=$((g - (g - cr_g) * mix / 128))' >> /tmp/mimecroft-frag.sh
@@ -1303,7 +1305,7 @@ emit_fragment_shader() {
   # the ground truth). Assembled from parts so the CRT/corruption
   # effects can be disabled with CRT_ON/CORRUPT_ON (same look as the
   # generated shader: texture × colour tint + the optional effects).
-  fs_fb="precision mediump float; varying highp vec4 vColor; varying highp vec2 vUv; uniform sampler2D uTex; uniform sampler2D uCrack; uniform highp float uOverlay; uniform int uDamage; void main() { if (uOverlay > 0.5) { gl_FragColor = vec4(vColor.rgb, 1.0); return; } vec3 c = texture2D(uTex, fract(vUv)).rgb * vColor.rgb; if (uDamage > 0) { vec4 cr = texture2D(uCrack, fract(vUv)); float s = float(uDamage) / 2.0; c = mix(c, cr.rgb, cr.a * s); }"
+  fs_fb="precision mediump float; varying highp vec4 vColor; varying highp vec2 vUv; uniform sampler2D uTex; uniform sampler2D uCrack; uniform highp float uOverlay; uniform int uDamage; void main() { if (uOverlay > 0.5) { gl_FragColor = vec4(vColor.rgb, 1.0); return; } vec3 c = texture2D(uTex, fract(vUv)).rgb * vColor.rgb; if (uDamage > 0) { vec4 cr = texture2D(uCrack, fract(vUv)); float s = float(uDamage); c = mix(c, cr.rgb, cr.a * s); }"
   if [ "$CRT_ON" -eq 1 ]; then
     fs_fb="$fs_fb if (mod(gl_FragCoord.y, 6.0) < 1.0) { c *= 0.9; }"
   fi

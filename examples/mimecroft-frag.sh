@@ -22,9 +22,11 @@
 #   tint  r·tex_r/128:  r ≤ 127, tex_r ≤ 255  → 32385
 #   CRT   r·90/100:  r ≤ 254  → 22860   (runs BEFORE the blend)
 #   blend (r-cr_r)·mix/128:  |r-cr_r| ≤ 228, mix ≤ 127  → 28956
-#   (the /128 divisor doubles the crack's blend weight — damage 1 ≈ 49%
-#   of the crack texel, damage 2+ ≈ 99% — so the dark crack colour
-#   dominates and the block's own hue fades out of the crack lines)
+#   (mix = damage·cr_a caps at 127 on the FIRST hit, so the crack texel
+#   takes ~99% of the blend at ANY damage level — the dark GRAY crack
+#   colour dominates from the first shot and the block's own hue never
+#   tints the crack lines; the crack appears fully at damage 1 and the
+#   block breaks at its hardness)
 #   vig   r·dim/256:  r ≤ 342, dim ≤ 30  → 10260
 # 127/128 ≈ 255/255 keeps the output range (tint max 253 ≈ 255), so
 # the 0..127 colour scale is visually identical to the old 0..255.
@@ -53,7 +55,7 @@ if [ "$scan" -eq 0 ]; then
   b=$((b * 90 / 100))
 fi
 if [ "$damage" -gt 0 ]; then
-  mix=$((damage * cr_a / 2))
+  mix=$((damage * cr_a))
   if [ "$mix" -gt 127 ]; then mix=127; fi
   r=$((r - (r - cr_r) * mix / 128))
   g=$((g - (g - cr_g) * mix / 128))

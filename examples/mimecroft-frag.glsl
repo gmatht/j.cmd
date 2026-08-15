@@ -69,7 +69,7 @@ void main() {
         g_cr_g = int(_crack.g * 127.0);
         g_cr_b = int(_crack.b * 127.0);
         g_cr_a = int(_crack.a * 127.0);
-        g_mix = (((g_damage * g_cr_a)) / 2);
+        g_mix = (g_damage * g_cr_a);
         if ((g_mix > 127)) {
             g_mix = 127;
         }
