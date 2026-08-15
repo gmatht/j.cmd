@@ -74,7 +74,7 @@ MIME_LABELS=1          # 2D name banners float above each visible mime
                        # (toggle in the settings menu)
 CRT_ON=0               # 1 = CRT scanlines + vignette on the rendered view; set 0 for a clean picture
 CORRUPT_ON=0           # 1 = random corruption streaks on the view; set 0 to disable
-MINIMAP_MODE=1         # the on-screen radar: 0 = off, 1 = full, 2 = 50% transparent
+MINIMAP_MODE=0         # the on-screen radar: 0 = off (default), 1 = full, 2 = 50% transparent
                        # (the HUD layer rects get a 0.5 alpha — the 3D view shows through)
 
 # block ids

@@ -7,6 +7,8 @@ import { bashToJS } from "./src/bash2js.js";
 import { createSh2Runtime } from "./src/sh2runtime.js";
 let src = readFileSync("www/bin/mimecroft.sh", "utf8");
 src = src.replace("MIMES_ON=0", "MIMES_ON=1");
+// the radar is OFF by default now — this test asserts blips/erases on it
+src = src.replace("MINIMAP_MODE=0         # the on-screen radar: 0 = off (default), 1 = full, 2 = 50% transparent", "MINIMAP_MODE=1         # the on-screen radar: 0 = off (default), 1 = full, 2 = 50% transparent");
 const { js } = await bashToJS(fs, src);
 // keep the game running a while so mimes spawn and move on the radar
 const KEYS = [];
