@@ -27,13 +27,18 @@
 #   - WASM_SKIP_HARVEST=<lib dir> tells the runner not to harvest the
 #     read-only lib back (it is seeded but never modified).
 #
-# KNOWN LIMITATION: the shell's wasmer-wasi runtime mangles data written via
-# fd_pwrite (a wasmer-wasi bug — the only wasm command using pwrite today is
-# zig). `zig version`/`zig help` work; `zig build-exe` runs but the emitted
-# binary is corrupted by the runtime's write path. Under a V8-based WASI
-# (node:wasi, wasmtime) the same compiler produces correct binaries
-# (verified: version, build-exe, and the compiled program runs). Fixing the
-# shell integration needs the fd_pwrite issue addressed in wasmer-wasi.
+# KNOWN LIMITATION: the shell's wasmer-wasi runtime mangles binary FILE
+# writes (fd_pwrite AND fd_write — the write path routes data through a
+# lossy UTF-8 string: bytes >= 0x80 become U+FFFD; verified with a
+# 256-byte 0x00-0xFF pattern keeping only its 128 ASCII bytes). `zig
+# version`/`zig help` work; `zig build-exe` runs (with the matching lib
+# from .zig-bootstrap/zig/lib + absolute-input/relative-output paths) but
+# the emitted binary is corrupt. Under a V8-based WASI (node:wasi,
+# wasmtime) the same compiler produces correct binaries (verified at
+# build time). The fix belongs in wasmer-wasi's write path (the Rust
+# crate's from_utf8_lossy-style string conversion), not the JS boundary:
+# the guest's fd table lives inside the wasmer wasm, so a JS wrapper
+# cannot reach the file to bypass it.
 #
 # Runtime quirks found while verifying this build (2026-08):
 #   * node:wasi (uvwasi) and @wasmer/wasi 1.2.2 BOTH reject path_open of an

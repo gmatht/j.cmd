@@ -718,11 +718,24 @@ DESCRIPTION
      and sets ZIG_LIB_DIR / ZIG_LOCAL_CACHE_DIR / ZIG_GLOBAL_CACHE_DIR.
 
 LIMITATIONS
-     The shell's wasmer-wasi runtime currently mangles data written via
-     fd_pwrite (which zig's file writes use), so emitted binaries are
-     corrupt in the browser shell. Under a V8-based WASI (node:wasi,
-     wasmtime) the same compiler produces correct output. 'zig version'
-     and 'zig help' work everywhere.
+     The shell's wasmer-wasi runtime mangles binary FILE writes (both
+     fd_pwrite AND fd_write): the write path routes the data through a
+     lossy UTF-8 string, so bytes >= 0x80 become U+FFFD replacement
+     chars (verified: a 256-byte 0x00-0xFF pattern round-trips only its
+     first 128 ASCII bytes). Emitted binaries are therefore corrupt in
+     the browser shell. Under a V8-based WASI (node:wasi, wasmtime) the
+     same compiler produces correct output (verified at build time).
+     'zig version' and 'zig help' work everywhere.
+
+     The compiler also needs the EXACT lib it was built from: the
+     wasm's version string (0.16.0) is not enough — a newer 0.16.0
+     snap's std uses builtins (@Pointer) the wasm build predates.  The
+     matching lib lives in the zig-bootstrap checkout the build used
+     (.zig-bootstrap/zig/lib) — stage it to the WASI sandbox and set
+     ZIG_LIB_DIR.  Two path quirks (wasmer-wasi): absolute paths with
+     O_CREAT are NOTCAPABLE, so emit to a relative -femit-bin (lands
+     in the sandbox root, e.g. /hello.wasm) and read sources from an
+     absolute path.
 
 SEE ALSO
      cc, qbe2wasm, wat2wasm

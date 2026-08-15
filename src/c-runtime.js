@@ -404,6 +404,15 @@ export function createCRuntime({ getMem, memory, out, err, table }) {
       writeStr(dst, s.join(""));
       return s.join("").length;
     },
+    "$snprintf": (dst, size, fmt, ...args) => { dst = Ptr(dst); size = Ptr(size);
+      // like sprintf but bounded: at most size-1 chars + the NUL
+      const s = [];
+      doPrintf(fmt, args, (t) => s.push(t));
+      const full = s.join("");
+      const cut = size > 0 ? full.slice(0, size - 1) : "";
+      writeStr(dst, cut);
+      return cut.length;
+    },
 
     "$malloc": (size) => growHeap(Ptr(size)),
     "$calloc": (n, size) => { n = Ptr(n); size = Ptr(size);
