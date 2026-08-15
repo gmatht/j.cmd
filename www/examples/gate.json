@@ -3397,7 +3397,7 @@
 },
 "cpp": {
 "fail": 0,
-"pass": 11,
+"pass": 12,
 "results": {
 "t01_hello.cc": "PASS",
 "t02_bool.cc": "PASS",
@@ -3416,10 +3416,11 @@
 "t15_switch.cc": "PASS",
 "t16_cond.cc": "PASS",
 "t17_continue.cc": "PASS",
-"t18_funcptr_abstract.cc": "PASS"
+"t18_funcptr_abstract.cc": "PASS",
+"t19_nullptr.cc": "PASS"
 },
 "skip": 7,
-"total": 18
+"total": 19
 },
 "fish": {
 "fail": 0,
@@ -4074,54 +4075,54 @@
 "total": 91
 }
 },
-"generated": "2026-08-15T06:18:46+00:00",
+"generated": "2026-08-15T07:44:15+00:00",
 "source": "/home/llm/sh2loop",
 "triage": {
 "backends": {
 "c": {
-"fail": 20,
-"pass": 1187,
-"total": 1207
-},
-"go": {
-"fail": 20,
-"pass": 1186,
-"total": 1206
-},
-"java": {
-"fail": 20,
-"pass": 696,
-"total": 1206
-},
-"js": {
-"fail": 22,
-"pass": 1122,
+"fail": 26,
+"pass": 1168,
 "total": 1211
 },
+"go": {
+"fail": 36,
+"pass": 1169,
+"total": 1210
+},
+"java": {
+"fail": 22,
+"pass": 687,
+"total": 1209
+},
+"js": {
+"fail": 37,
+"pass": 1105,
+"total": 1215
+},
 "perl": {
-"fail": 64,
+"fail": 63,
 "pass": 575,
-"total": 1208
+"total": 1209
 },
 "python": {
-"fail": 20,
-"pass": 1186,
-"total": 1206
+"fail": 35,
+"pass": 1170,
+"total": 1210
 },
 "rust": {
-"fail": 20,
-"pass": 1165,
-"total": 1206
+"fail": 35,
+"pass": 1149,
+"total": 1210
 },
 "sh": {
-"fail": 118,
-"pass": 532,
-"total": 1207
+"fail": 121,
+"pass": 529,
+"total": 1208
 },
 "zig": {
 "fail": 20,
-"pass": 1174,
-"total": 1206
+"pass": 1175,
+"total": 1207
 }
 },
 "frontends": {
@@ -5825,68 +5826,68 @@
 },
 "cpp": {
 "t01_hello.cc": {
-"c": "PASS-RENDER",
-"go": "PASS-RENDER",
-"java": "PASS-RENDER",
-"js": "PASS-RENDER",
-"perl": "PASS",
-"python": "PASS-RENDER",
-"rust": "PASS-RENDER",
-"sh": "PASS",
+"c": "SKIP-ESTREE-REF",
+"go": "SKIP-ESTREE-REF",
+"java": "SKIP-ESTREE-REF",
+"js": "SKIP-ESTREE-REF",
+"perl": "SKIP-ESTREE-REF",
+"python": "SKIP-ESTREE-REF",
+"rust": "SKIP-ESTREE-REF",
+"sh": "SKIP-ESTREE-REF",
 "zig": "PASS-RENDER"
 },
 "t02_bool.cc": {
-"c": "PASS-RENDER",
-"go": "PASS-RENDER",
-"java": "PASS-RENDER",
-"js": "PASS-RENDER",
+"c": "PASS",
+"go": "FAIL-BACKEND",
+"java": "FAIL-BACKEND",
+"js": "FAIL-BACKEND",
 "perl": "PASS",
-"python": "PASS-RENDER",
-"rust": "PASS-RENDER",
+"python": "FAIL-BACKEND",
+"rust": "FAIL-BACKEND",
 "sh": "PASS",
 "zig": "PASS-RENDER"
 },
 "t03_new_delete.cc": {
-"c": "PASS-RENDER",
-"go": "PASS-RENDER",
+"c": "SKIP-ESTREE-REF",
+"go": "SKIP-ESTREE-REF",
 "java": "SKIP-REFUSE",
-"js": "PASS-RENDER",
-"perl": "FAIL-BACKEND",
-"python": "PASS-RENDER",
-"rust": "PASS-RENDER",
+"js": "SKIP-ESTREE-REF",
+"perl": "SKIP-ESTREE-REF",
+"python": "SKIP-ESTREE-REF",
+"rust": "SKIP-ESTREE-REF",
 "sh": "FAIL-BACKEND",
 "zig": "PASS-RENDER"
 },
 "t04_comment.cc": {
-"c": "PASS-RENDER",
-"go": "PASS-RENDER",
+"c": "PASS",
+"go": "FAIL-BACKEND",
 "java": "SKIP-REFUSE",
-"js": "PASS-RENDER",
+"js": "FAIL-BACKEND",
 "perl": "PASS",
-"python": "PASS-RENDER",
-"rust": "PASS-RENDER",
+"python": "FAIL-BACKEND",
+"rust": "FAIL-BACKEND",
 "sh": "PASS",
 "zig": "PASS-RENDER"
 },
 "t05_arith_loop.cc": {
-"c": "PASS-RENDER",
-"go": "PASS-RENDER",
+"c": "PASS",
+"go": "FAIL-BACKEND",
 "java": "SKIP-REFUSE",
-"js": "PASS-RENDER",
+"js": "FAIL-BACKEND",
 "perl": "PASS",
-"python": "PASS-RENDER",
-"rust": "PASS-RENDER",
-"sh": "PASS",
+"python": "FAIL-BACKEND",
+"rust": "FAIL-BACKEND",
+"sh": "FAIL-BACKEND",
 "zig": "PASS-RENDER"
 },
 "t06_struct.cc": {
-"c": "PASS-RENDER",
-"go": "PASS-RENDER",
+"c": "FAIL-BACKEND",
+"go": "FAIL-BACKEND",
 "java": "SKIP-REFUSE",
-"js": "PASS-RENDER",
+"js": "FAIL-BACKEND",
 "perl": "PASS",
-"python": "PASS-RENDER",
-"rust": "PASS-RENDER",
+"python": "FAIL-BACKEND",
+"rust": "FAIL-BACKEND",
 "sh": "FAIL-BACKEND",
 "zig": "PASS-RENDER"
 },
@@ -5968,58 +5969,69 @@
 "zig": "FAIL-FRONTEND-EMIT"
 },
 "t14_break.cc": {
-"c": "PASS-RENDER",
-"go": "PASS-RENDER",
+"c": "PASS",
+"go": "FAIL-BACKEND",
 "java": "SKIP-REFUSE",
-"js": "PASS-RENDER",
+"js": "FAIL-BACKEND",
 "perl": "PASS",
-"python": "PASS-RENDER",
-"rust": "PASS-RENDER",
-"sh": "PASS",
+"python": "FAIL-BACKEND",
+"rust": "FAIL-BACKEND",
+"sh": "FAIL-BACKEND",
 "zig": "PASS-RENDER"
 },
 "t15_switch.cc": {
-"c": "PASS-RENDER",
-"go": "PASS-RENDER",
-"java": "PASS-RENDER",
-"js": "PASS-RENDER",
+"c": "PASS",
+"go": "FAIL-BACKEND",
+"java": "FAIL-BACKEND",
+"js": "FAIL-BACKEND",
 "perl": "PASS",
-"python": "PASS-RENDER",
-"rust": "PASS-RENDER",
+"python": "FAIL-BACKEND",
+"rust": "FAIL-BACKEND",
 "sh": "PASS",
 "zig": "PASS-RENDER"
 },
 "t16_cond.cc": {
-"c": "PASS-RENDER",
-"go": "PASS-RENDER",
+"c": "FAIL-BACKEND",
+"go": "FAIL-BACKEND",
 "java": "SKIP-REFUSE",
-"js": "PASS-RENDER",
+"js": "FAIL-BACKEND",
 "perl": "FAIL-BACKEND",
-"python": "PASS-RENDER",
-"rust": "PASS-RENDER",
+"python": "FAIL-BACKEND",
+"rust": "FAIL-BACKEND",
 "sh": "FAIL-BACKEND",
 "zig": "PASS-RENDER"
 },
 "t17_continue.cc": {
-"c": "PASS-RENDER",
-"go": "PASS-RENDER",
+"c": "FAIL-BACKEND",
+"go": "FAIL-BACKEND",
 "java": "SKIP-REFUSE",
-"js": "PASS-RENDER",
+"js": "FAIL-BACKEND",
 "perl": "PASS",
-"python": "PASS-RENDER",
-"rust": "PASS-RENDER",
+"python": "FAIL-BACKEND",
+"rust": "FAIL-BACKEND",
 "sh": "FAIL-BACKEND",
 "zig": "PASS-RENDER"
 },
 "t18_funcptr_abstract.cc": {
-"c": "PASS-RENDER",
-"go": "PASS-RENDER",
+"c": "PASS",
+"go": "FAIL-BACKEND",
 "java": "SKIP-REFUSE",
-"js": "PASS-RENDER",
+"js": "FAIL-BACKEND",
 "perl": "PASS",
-"python": "PASS-RENDER",
-"rust": "PASS-RENDER",
+"python": "FAIL-BACKEND",
+"rust": "FAIL-BACKEND",
 "sh": "PASS",
+"zig": "PASS-RENDER"
+},
+"t19_nullptr.cc": {
+"c": "FAIL-FRONTEND",
+"go": "FAIL-FRONTEND",
+"java": "SKIP-REFUSE",
+"js": "FAIL-FRONTEND",
+"perl": "PASS",
+"python": "FAIL-FRONTEND",
+"rust": "FAIL-FRONTEND",
+"sh": "FAIL-FRONTEND",
 "zig": "PASS-RENDER"
 }
 },
@@ -10428,36 +10440,43 @@
 }
 },
 "sh2perl": {
+"000__01_hello.sh": {
+"c": "SKIP-ESTREE-REF",
+"go": "SKIP-ESTREE-REF",
+"js": "SKIP-ESTREE-REF",
+"python": "SKIP-ESTREE-REF",
+"rust": "SKIP-ESTREE-REF"
+},
 "000__02_output_formatting_commands.sh": {
-"c": "PASS-RENDER",
-"go": "PASS-RENDER",
-"java": "PASS-RENDER",
-"js": "PASS-RENDER",
+"c": "SKIP-ESTREE-REF",
+"go": "SKIP-ESTREE-REF",
+"java": "SKIP-REFUSE",
+"js": "SKIP-ESTREE-REF",
 "perl": "SKIP-ESTREE-REF",
-"python": "PASS-RENDER",
-"rust": "PASS-RENDER",
+"python": "SKIP-ESTREE-REF",
+"rust": "SKIP-ESTREE-REF",
 "sh": "SKIP-ESTREE-REF",
 "zig": "PASS-RENDER"
 },
 "000__03_file_manipulation_commands.sh": {
-"c": "PASS-RENDER",
-"go": "PASS-RENDER",
-"java": "PASS-RENDER",
-"js": "PASS-RENDER",
+"c": "FAIL-BACKEND",
+"go": "FAIL-BACKEND",
+"java": "SKIP-REFUSE",
+"js": "FAIL-BACKEND",
 "perl": "SKIP-ESTREE-REF",
-"python": "PASS-RENDER",
-"rust": "PASS-RENDER",
+"python": "FAIL-BACKEND",
+"rust": "FAIL-BACKEND",
 "sh": "SKIP-ESTREE-REF",
 "zig": "PASS-RENDER"
 },
 "000__04a_basic_command_substitution.sh": {
-"c": "PASS-RENDER",
-"go": "PASS-RENDER",
-"java": "PASS-RENDER",
-"js": "PASS-RENDER",
+"c": "FAIL-FRONTEND",
+"go": "FAIL-FRONTEND",
+"java": "SKIP-REFUSE",
+"js": "FAIL-FRONTEND",
 "perl": "SKIP-ESTREE-REF",
-"python": "PASS-RENDER",
-"rust": "PASS-RENDER",
+"python": "FAIL-FRONTEND",
+"rust": "FAIL-FRONTEND",
 "sh": "SKIP-ESTREE-REF",
 "zig": "PASS-RENDER"
 },
@@ -10572,7 +10591,7 @@
 "zig": "PASS-RENDER"
 },
 "001_simple.sh": {
-"c": "PASS-RENDER",
+"c": "SKIP-ESTREE-REF",
 "go": "PASS-RENDER",
 "java": "PASS-RENDER",
 "js": "PASS-RENDER",
@@ -10583,13 +10602,13 @@
 "zig": "PASS-RENDER"
 },
 "002_control_flow.sh": {
-"c": "PASS-RENDER",
-"go": "PASS-RENDER",
-"java": "PASS-RENDER",
-"js": "PASS-RENDER",
+"c": "PASS",
+"go": "FAIL-FRONTEND",
+"java": "SKIP-REFUSE",
+"js": "FAIL-FRONTEND",
 "perl": "SKIP-ESTREE-REF",
-"python": "PASS-RENDER",
-"rust": "PASS-RENDER",
+"python": "FAIL-FRONTEND",
+"rust": "FAIL-FRONTEND",
 "sh": "SKIP-ESTREE-REF",
 "zig": "PASS-RENDER"
 },
@@ -10605,24 +10624,24 @@
 "zig": "PASS-RENDER"
 },
 "004_test_quoted.sh": {
-"c": "PASS-RENDER",
-"go": "PASS-RENDER",
-"java": "PASS-RENDER",
-"js": "PASS-RENDER",
+"c": "PASS",
+"go": "FAIL-BACKEND",
+"java": "SKIP-REFUSE",
+"js": "FAIL-BACKEND",
 "perl": "SKIP-ESTREE-REF",
-"python": "PASS-RENDER",
-"rust": "PASS-RENDER",
+"python": "FAIL-BACKEND",
+"rust": "FAIL-BACKEND",
 "sh": "SKIP-ESTREE-REF",
 "zig": "PASS-RENDER"
 },
 "005_args.sh": {
-"c": "PASS-RENDER",
-"go": "PASS-RENDER",
-"java": "PASS-RENDER",
-"js": "PASS-RENDER",
+"c": "PASS",
+"go": "FAIL-BACKEND",
+"java": "SKIP-REFUSE",
+"js": "FAIL-BACKEND",
 "perl": "SKIP-ESTREE-REF",
-"python": "PASS-RENDER",
-"rust": "PASS-RENDER",
+"python": "FAIL-BACKEND",
+"rust": "FAIL-BACKEND",
 "sh": "SKIP-ESTREE-REF",
 "zig": "PASS-RENDER"
 },
@@ -10671,7 +10690,7 @@
 "zig": "PASS-RENDER"
 },
 "010_pattern_matching.sh": {
-"c": "PASS-RENDER",
+"c": "SKIP-ESTREE-REF",
 "go": "PASS-RENDER",
 "java": "PASS-RENDER",
 "js": "PASS-RENDER",
@@ -10704,7 +10723,7 @@
 "zig": "PASS-RENDER"
 },
 "013_parameter_expansion.sh": {
-"c": "PASS-RENDER",
+"c": "SKIP-ESTREE-REF",
 "go": "PASS-RENDER",
 "java": "PASS-RENDER",
 "js": "PASS-RENDER",
@@ -10715,7 +10734,7 @@
 "zig": "PASS-RENDER"
 },
 "014_ansi_quoting.sh": {
-"c": "PASS-RENDER",
+"c": "SKIP-ESTREE-REF",
 "go": "PASS-RENDER",
 "java": "PASS-RENDER",
 "js": "PASS-RENDER",
@@ -10781,7 +10800,7 @@
 "zig": "PASS-RENDER"
 },
 "020_ansi_quoting_basic.sh": {
-"c": "PASS-RENDER",
+"c": "SKIP-ESTREE-REF",
 "go": "PASS-RENDER",
 "java": "PASS-RENDER",
 "js": "PASS-RENDER",
@@ -10792,7 +10811,7 @@
 "zig": "PASS-RENDER"
 },
 "021_ansi_quoting_escape.sh": {
-"c": "PASS-RENDER",
+"c": "SKIP-ESTREE-REF",
 "go": "PASS-RENDER",
 "java": "PASS-RENDER",
 "js": "PASS-RENDER",
@@ -10803,7 +10822,7 @@
 "zig": "PASS-RENDER"
 },
 "022_ansi_quoting_unicode.sh": {
-"c": "PASS-RENDER",
+"c": "SKIP-ESTREE-REF",
 "go": "PASS-RENDER",
 "java": "PASS-RENDER",
 "js": "PASS-RENDER",
@@ -10814,7 +10833,7 @@
 "zig": "PASS-RENDER"
 },
 "023_ansi_quoting_practical.sh": {
-"c": "PASS-RENDER",
+"c": "SKIP-ESTREE-REF",
 "go": "PASS-RENDER",
 "java": "PASS-RENDER",
 "js": "PASS-RENDER",
@@ -10825,7 +10844,7 @@
 "zig": "PASS-RENDER"
 },
 "024_parameter_expansion_case.sh": {
-"c": "PASS-RENDER",
+"c": "SKIP-ESTREE-REF",
 "go": "PASS-RENDER",
 "java": "PASS-RENDER",
 "js": "PASS-RENDER",
@@ -10836,7 +10855,7 @@
 "zig": "PASS-RENDER"
 },
 "025_parameter_expansion_advanced.sh": {
-"c": "PASS-RENDER",
+"c": "SKIP-ESTREE-REF",
 "go": "PASS-RENDER",
 "java": "PASS-RENDER",
 "js": "PASS-RENDER",
@@ -10847,7 +10866,7 @@
 "zig": "PASS-RENDER"
 },
 "026_parameter_expansion_more.sh": {
-"c": "PASS-RENDER",
+"c": "SKIP-ESTREE-REF",
 "go": "PASS-RENDER",
 "java": "PASS-RENDER",
 "js": "PASS-RENDER",
@@ -10858,7 +10877,7 @@
 "zig": "PASS-RENDER"
 },
 "027_parameter_expansion_defaults.sh": {
-"c": "PASS-RENDER",
+"c": "SKIP-ESTREE-REF",
 "go": "PASS-RENDER",
 "java": "PASS-RENDER",
 "js": "PASS-RENDER",
@@ -12297,6 +12316,14 @@
 "rust": "PASS-RENDER",
 "sh": "SKIP-ESTREE-REF",
 "zig": "PASS-RENDER"
+},
+"_wiretest.sh": {
+"c": "PASS",
+"go": "FAIL-BACKEND",
+"java": "SKIP-REFUSE",
+"js": "PASS",
+"python": "PASS",
+"rust": "PASS"
 },
 "arith-ambiguous-double-paren.sh": {
 "c": "PASS-RENDER",
@@ -15906,6 +15933,14 @@
 "sh": "SKIP-ESTREE-REF",
 "zig": "PASS-RENDER"
 },
+"simple.sh": {
+"c": "SKIP-ESTREE-REF",
+"go": "SKIP-ESTREE-REF",
+"java": "SKIP-ESTREE-REF",
+"js": "SKIP-ESTREE-REF",
+"python": "SKIP-ESTREE-REF",
+"rust": "SKIP-ESTREE-REF"
+},
 "single-quote-embed-escape.sh": {
 "c": "PASS-RENDER",
 "go": "PASS-RENDER",
@@ -16825,7 +16860,7 @@
 "c": "PASS-RENDER",
 "go": "PASS-RENDER",
 "java": "SKIP-REFUSE",
-"js": "PASS-RENDER",
+"js": "SKIP-REFUSE",
 "perl": "PASS",
 "python": "PASS-RENDER",
 "rust": "PASS-RENDER",
