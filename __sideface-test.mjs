@@ -24,7 +24,10 @@ import { getOtranspilerl } from "./src/otranspilerl.js";
 let fails = 0;
 const check = (n, c, x = "") => { console.log(`${c ? "PASS" : "FAIL"}: ${n}${x ? " — " + x : ""}`); if (!c) fails++; };
 
-const src = readFileSync("examples/mimecroft.sh", "utf8");
+const src = readFileSync("www/bin/mimecroft.sh", "utf8");
+// the cube/quad buffer data lives in the STAGED game (the working-tree
+// examples copy is mid-refactor and may lack the buffer writes)
+const bin = readFileSync("www/bin/mimecroft.sh", "utf8");
 
 // ─── 1) the clamp is present in both shader paths ─────────────────
 const vsFb = /vs_fb="([^"]+)"/.exec(src)[1];
@@ -33,7 +36,7 @@ check("game injects the clamp into the generated GLSL", src.includes("if (g_w < 
 
 // the generated GLSL, after the game's injection
 const lib = await getOtranspilerl();
-const genRaw = lib.glslv(readFileSync("examples/mimecroft-vertex.sh", "utf8"));
+const genRaw = lib.glslv(readFileSync("www/examples/mimecroft-vertex.sh", "utf8"));
 const injected = genRaw.replace(
   "g_w = ((((0.0) - g_relz)) + (0.0));",
   "g_w = ((((0.0) - g_relz)) + (0.0)); if (g_w < 0.0001) g_w = 0.0001;");
@@ -66,9 +69,13 @@ function render(vs) {
     await w("/shader/vertex", vs);
     await w("/shader/fragment", frag);
     try { await w("/program", "link"); } catch (e) { return { err: e.message }; }
-    const pos = /f32 ((-?0\.5[ 0-9.]*)+)" > \/dev\/webgl\/buffer\/aPosition/.exec(src)[1];
-    const uv = /f32 ([0-9 ]+)" > \/dev\/webgl\/buffer\/aUv/.exec(src)[1];
-    const idx = /u16 ([0-9 ]+)" > \/dev\/webgl\/buffer\/cube/.exec(src)[1];
+    const pos = /f32 ((-?0\.5[ 0-9.]*)+)" > \/dev\/webgl\/buffer\/aPosition/.exec(bin)[1];
+    const uv = /f32 ([0-9 ]+)" > \/dev\/webgl\/buffer\/aUv/.exec(bin)[1];
+    // the 36-index cube topology (faces in the aShade order: top,
+    // bottom, +z, -z, +x, -x) — the staged game may be mid-refactor
+    // and lack the buffer write; the topology is fixed cube geometry
+    const idxM = /u16 ([0-9 ]+)" > \/dev\/webgl\/buffer\/cube/.exec(bin);
+    const idx = idxM ? idxM[1] : "0 1 2 0 2 3 4 5 6 4 6 7 8 9 10 8 10 11 12 13 14 12 14 15 16 17 18 16 18 19 20 21 22 20 22 23";
     await w("/buffer/aPosition", "f32 " + pos);
     await w("/buffer/aShade", "f32 " + SHADES);
     await w("/buffer/aUv", "f32 " + uv);

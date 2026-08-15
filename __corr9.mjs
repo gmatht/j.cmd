@@ -84,7 +84,7 @@ function render(blocks, camPos, yawDeg) {
 }
 
 // ── drive the game ────────────────────────────────────────────────
-const src = readFileSync("examples/mimecroft.sh", "utf8");
+const src = readFileSync("www/bin/mimecroft.sh", "utf8");
 const { js } = await bashToJS(fs, src);
 // walk along the ring corridor (z=1): face +x (ArrowRight once), then walk
 const KEYS = [

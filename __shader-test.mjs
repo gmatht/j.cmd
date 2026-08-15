@@ -6,10 +6,10 @@
 // back to hand-written shaders when the generated ones fail. This gate
 // does the real compile check:
 //
-//   1. generate the vertex shader from examples/mimecroft-vertex.sh
+//   1. generate the vertex shader from www/examples/mimecroft-vertex.sh
 //      and the fragment from the game's INLINE program (assembled from
 //      emit_fragment_shader) through the otranspilerl wasm;
-//   2. assert the canonical examples/mimecroft-frag.sh code section is
+//   2. assert the canonical www/examples/mimecroft-frag.sh code section is
 //      byte-identical to the game's inline program (drift = FAIL);
 //   3. validate vertex + fragment + canonical as GLSL ES 1.00 with
 //      glslangValidator (#version 100 prepended);
@@ -41,8 +41,8 @@ const es100 = (glsl) => "#version 100\n" + glsl;
 console.log("bash → GLSL generation…");
 let vs, fragInline;
 try {
-  vs = lib.glslv(readFileSync("examples/mimecroft-vertex.sh", "utf8"));
-  ok(`vertex: examples/mimecroft-vertex.sh → ${vs.length} bytes`);
+  vs = lib.glslv(readFileSync("www/examples/mimecroft-vertex.sh", "utf8"));
+  ok(`vertex: www/examples/mimecroft-vertex.sh → ${vs.length} bytes`);
 } catch (e) { bad("vertex generation: " + e.message); }
 try {
   // the game's ACTUAL fragment program: emit_fragment_shader writes
@@ -59,17 +59,17 @@ try {
   ok(`fragment: game inline program (${lines.length} lines) → ${fragInline.length} bytes`);
 } catch (e) { bad("fragment generation: " + e.message); }
 
-// ─── 2) canonical examples/mimecroft-frag.sh must BE the game's program
+// ─── 2) canonical www/examples/mimecroft-frag.sh must BE the game's program
 console.log("canonical ↔ game drift…");
 if (fragInline) {
-  const fragSrc = readFileSync("examples/mimecroft-frag.sh", "utf8");
+  const fragSrc = readFileSync("www/examples/mimecroft-frag.sh", "utf8");
   const code = fragSrc.split("\n").filter((l) => !l.trim().startsWith("#") && l.trim() !== "").join("\n") + "\n";
-  if (code === readFileSync("examples/mimecroft-vertex.sh", "utf8").split("\n")[0]) {
-    bad("canonical examples/mimecroft-frag.sh is empty of code");
+  if (code === readFileSync("www/examples/mimecroft-vertex.sh", "utf8").split("\n")[0]) {
+    bad("canonical www/examples/mimecroft-frag.sh is empty of code");
   } else if (lib.glsl(code) === fragInline) {
-    ok("examples/mimecroft-frag.sh code section == the game's inline program");
+    ok("www/examples/mimecroft-frag.sh code section == the game's inline program");
   } else {
-    bad("examples/mimecroft-frag.sh has DRIFTED from emit_fragment_shader — re-sync it (copy the inline program into the code section)");
+    bad("www/examples/mimecroft-frag.sh has DRIFTED from emit_fragment_shader — re-sync it (copy the inline program into the code section)");
   }
 }
 
@@ -89,16 +89,16 @@ const validate = (stage, name, glsl) => {
 validate("vert", "vertex (from bash)", vs);
 validate("frag", "fragment inline (from bash)", fragInline);
 if (fragInline) {
-  const fragSrc = readFileSync("examples/mimecroft-frag.sh", "utf8");
-  validate("frag", "canonical examples/mimecroft-frag.sh", lib.glsl(
+  const fragSrc = readFileSync("www/examples/mimecroft-frag.sh", "utf8");
+  validate("frag", "canonical www/examples/mimecroft-frag.sh", lib.glsl(
     fragSrc.split("\n").filter((l) => !l.trim().startsWith("#") && l.trim() !== "").join("\n")));
 }
 
 // ─── 4) committed reference .glsl must match the generated output ─
 console.log("reference .glsl identity…");
 for (const [refFile, genGlsl] of [
-  ["examples/mimecroft-vertex.glsl", vs],
-  ["examples/mimecroft-frag.glsl", fragInline],
+  ["www/examples/mimecroft-vertex.glsl", vs],
+  ["www/examples/mimecroft-frag.glsl", fragInline],
 ]) {
   if (!genGlsl) continue;
   const ref = readFileSync(refFile, "utf8");

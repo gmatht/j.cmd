@@ -5,7 +5,7 @@ import { readFileSync } from "fs";
 import { fs } from "./src/fs/index.js";
 import { bashToJS } from "./src/bash2js.js";
 import { createSh2Runtime } from "./src/sh2runtime.js";
-let src = readFileSync("examples/mimecroft.sh", "utf8");
+let src = readFileSync("www/bin/mimecroft.sh", "utf8");
 src = src.replace("MIMES_ON=0             # 0 = MIMEs disabled while diagnosing the flicker; set 1 to enable", "MIMES_ON=1             # enabled for the mime tests");
 src = src.replace("*headless*) sound=$((0)); headless=$((1)) ;;", "*headless*) sound=$((0)); headless=$((0)) ;;");
 const { js } = await bashToJS(fs, src);

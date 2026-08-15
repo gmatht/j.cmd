@@ -19,7 +19,7 @@
 //      tests the NEAR face: w + 500·(|cs|+|sn|)/1000.
 //
 // This test extracts the REAL try_draw + banner_visible function bodies
-// (header included) out of examples/mimecroft.sh, drives them through
+// (header included) out of www/bin/mimecroft.sh, drives them through
 // the project's bash→JS runtime with a synthetic map, and asserts:
 //   • standing at (8,8) facing -z → (7,7)/(9,7) drawn AND the same-row
 //     (7,8)/(9,8) drawn (the projection shows their front faces);
@@ -34,7 +34,7 @@ import { readFileSync } from "node:fs";
 import { fs } from "./src/fs/index.js";
 import { runBash } from "./src/bash2js.js";
 
-const src = readFileSync("examples/mimecroft.sh", "utf8");
+const src = readFileSync("www/bin/mimecroft.sh", "utf8");
 
 // pull a named multi-line function body out of the game (the header
 // line through the first line that is exactly "}")

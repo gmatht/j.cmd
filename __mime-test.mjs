@@ -1,5 +1,5 @@
 // ─── __mime-test.mjs — MIMEcroft.sh transpile-and-run harness ──────
-// Reads examples/mimecroft.sh, transpiles it (bash → ESTree → JS) and
+// Reads www/bin/mimecroft.sh, transpiles it (bash → ESTree → JS) and
 // runs the result against the REAL /dev/webgl device in its headless
 // NullGL mode, with a stub shellExec (echo/cat/sleep/true) and a
 // scripted key stream fed through /dev/webgl/key reads.
@@ -10,7 +10,7 @@ import { fs } from "./src/fs/index.js";
 import { bashToJS } from "./src/bash2js.js";
 import { createSh2Runtime } from "./src/sh2runtime.js";
 
-let src = readFileSync("examples/mimecroft.sh", "utf8");
+let src = readFileSync("www/bin/mimecroft.sh", "utf8");
 src = src.replace("MIMES_ON=0             # 0 = MIMEs disabled while diagnosing the flicker; set 1 to enable", "MIMES_ON=1             # enabled for the mime tests");
 // the shipped defaults are OFF; force them ON so the generated shader's
 // CRT/corruption effects are exercised
@@ -182,7 +182,7 @@ check("fragment shader keeps the CRT effects (generated)",
   fragSrc.includes("g_edge") && fragSrc.includes("97") && fragSrc.includes("450"),
   fragSrc.slice(0, 240));
 // the VERTEX shader is AUTHORED IN BASH too — compiled from
-// /examples/mimecroft-vertex.sh by `sh2glsl --vertex` — prove the
+// /www/examples/mimecroft-vertex.sh by `sh2glsl --vertex` — prove the
 // generated source is what the game loaded (the bash bridges + outputs)
 const vertSrc = await fs.read("/dev/webgl/shader/vertex");
 check("vertex shader is the generated one (bridges + outputs)",

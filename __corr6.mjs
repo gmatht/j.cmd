@@ -90,7 +90,7 @@ function render(blocks, camPos, yawDeg) {
 }
 
 // ── drive the game, capture the first frame ─────────────────────────
-const src = readFileSync("examples/mimecroft.sh", "utf8");
+const src = readFileSync("www/bin/mimecroft.sh", "utf8");
 const { js } = await bashToJS(fs, src);
 // let the game render the spawn view (frame 1 idle), then quit
 const KEYS = ["", "q,"];

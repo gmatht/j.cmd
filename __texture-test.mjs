@@ -1,5 +1,5 @@
 // ─── __texture-test.mjs — texture generator transpile + run harness ─
-// 1) transpiles each self-contained examples/textures/*.sh through
+// 1) transpiles each self-contained www/examples/textures/*.sh through
 //    bash2js to prove they respect the sh2runtime language discipline
 // 2) checks each script embeds the canonical texture-lib.sh core
 // 3) runs each script under real bash and validates the PPM output
@@ -12,7 +12,7 @@ import { execFileSync } from "node:child_process";
 import { fs } from "./src/fs/index.js";
 import { bashToJS } from "./src/bash2js.js";
 
-const DIR = "examples/textures";
+const DIR = "www/examples/textures";
 const SCRIPTS = readdirSync(DIR)
   .filter((f) => /^texture-[a-z]+\.sh$/.test(f) && f !== "texture-lib.sh")
   .sort();
@@ -158,7 +158,7 @@ try {
   bad(`make-textures.sh: ${e.message}`);
 }
 
-// ─── 6) jtsh copy in sync (www/examples/textures = /examples/textures) ─
+// ─── 6) jtsh copy in sync (www/examples/textures = /www/examples/textures) ─
 console.log("www/examples/textures sync…");
 const SRC_FILES = [...SCRIPTS, "texture-lib.sh", "make-textures.sh", "read-texture.sh", "README.md"];
 try {

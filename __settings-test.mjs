@@ -10,7 +10,7 @@ import { fs } from "./src/fs/index.js";
 import { bashToJS } from "./src/bash2js.js";
 import { createSh2Runtime } from "./src/sh2runtime.js";
 import { execFileSync } from "node:child_process";
-let src = readFileSync("examples/mimecroft.sh", "utf8");
+let src = readFileSync("www/bin/mimecroft.sh", "utf8");
 src = src.replace("*headless*) sound=$((0)); headless=1 ;;", "*headless*) sound=$((0)); headless=0 ;;");
 const { js } = await bashToJS(fs, src);
 // d(cam+50) s d(size→32) s d(seed+1000) s s a(CRT off) s a(corrupt off) Esc

@@ -9,7 +9,7 @@ import { readFileSync } from "fs";
 import { fs } from "./src/fs/index.js";
 import { runBash } from "./src/bash2js.js";
 
-const src = readFileSync("examples/mimecroft.sh", "utf8");
+const src = readFileSync("www/bin/mimecroft.sh", "utf8");
 const out = [];
 const err = [];
 const stdout = { write: (s) => out.push(String(s)) };

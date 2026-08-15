@@ -22,7 +22,7 @@ import { bashToJS } from "./src/bash2js.js";
 import { createSh2Runtime } from "./src/sh2runtime.js";
 
 async function play(speed) {
-  let src = readFileSync("examples/mimecroft.sh", "utf8");
+  let src = readFileSync("www/bin/mimecroft.sh", "utf8");
   src = src.replace("MIMES_ON=0             # 0 = MIMEs disabled while diagnosing the flicker; set 1 to enable", "MIMES_ON=1             # enabled for the mime tests");
   src = src.replace("TREASURE_TOTAL=10", "TREASURE_TOTAL=3"); // claim 1, keep playing
   src = src.replace("mime_speed=15", "mime_speed=" + speed);

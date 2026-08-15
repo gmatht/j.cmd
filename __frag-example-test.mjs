@@ -1,6 +1,6 @@
 // ─── __frag-example-test.mjs — the example shader is a LIVING artifact ──
-// examples/mimecroft-frag.sh (bash) is the source of truth; the committed
-// examples/mimecroft-frag.glsl is what the sh→GLSL backend (the
+// www/examples/mimecroft-frag.sh (bash) is the source of truth; the committed
+// www/examples/mimecroft-frag.glsl is what the sh→GLSL backend (the
 // otranspilerl wasm, `sh2glsl`) produces for it. This test regenerates it
 // through the same wasm the game uses and verifies:
 //   1. the committed .glsl is byte-identical to a fresh compile (no
@@ -16,16 +16,16 @@ import { readFileSync } from "fs";
 import { getOtranspilerl } from "./src/otranspilerl.js";
 
 const lib = await getOtranspilerl();
-const src = readFileSync("examples/mimecroft-frag.sh", "utf8");
+const src = readFileSync("www/examples/mimecroft-frag.sh", "utf8");
 const fresh = lib.glsl(src);
-const committed = readFileSync("examples/mimecroft-frag.glsl", "utf8");
+const committed = readFileSync("www/examples/mimecroft-frag.glsl", "utf8");
 
 // 1. the artifact is current
 if (fresh === committed) {
   console.log("ok  committed mimecroft-frag.glsl matches a fresh compile");
 } else {
   console.log("bad committed mimecroft-frag.glsl is STALE — regenerate with:");
-  console.log("  node --input-type=module -e \"import{getOtranspilerl}from'./src/otranspilerl.js';const l=await getOtranspilerl();process.stdout.write(l.glsl(require('fs').readFileSync('examples/mimecroft-frag.sh','utf8')))\" > examples/mimecroft-frag.glsl");
+  console.log("  node --input-type=module -e \"import{getOtranspilerl}from'./src/otranspilerl.js';const l=await getOtranspilerl();process.stdout.write(l.glsl(require('fs').readFileSync('www/examples/mimecroft-frag.sh','utf8')))\" > www/examples/mimecroft-frag.glsl");
   process.exitCode = 1;
 }
 

@@ -61,7 +61,7 @@ async function runWithImpl(src, useSh2glsl) {
   return await fs.read("/dev/webgl/shader/fragment");
 }
 
-let base = readFileSync("examples/mimecroft.sh", "utf8");
+let base = readFileSync("www/bin/mimecroft.sh", "utf8");
 // the shipped defaults are OFF — force the effects ON so the "allOn"
 // runs exercise them (the OFF paths are the two replace lines below)
 base = base.replace("CRT_ON=0", "CRT_ON=1");

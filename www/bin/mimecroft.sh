@@ -389,8 +389,10 @@ cache_sound() { cs_name=$1
     sl_x=$(cat /examples/sounds/sound-lib.sh)
     ss_x=$(cat /examples/sounds/sound-$cs_base.sh)
     ss_pre=${ss_x%%sl_dir=*}
-    ss_post=${ss_x##*sound-lib.sh}
-    ss_post=${ss_post#\"}
+    # strip through the CLOSING quote of the `. "$sl_dir/sound-lib.sh"`
+    # line (the pattern includes the `"` — a separate `#\"` strip is
+    # mis-transpiled in sequence)
+    ss_post=${ss_x##*sound-lib.sh"}
     # the lib read strips trailing newlines — keep one between the
     # inlined lib and the script (a glued `}#!` breaks both parsers)
     echo "$sl_x
@@ -1146,7 +1148,7 @@ count_map_treasures() {
 
 # ─── Rendering ───────────────────────────────────────────────────────
 # BOTH shader stages are AUTHORED IN BASH — see
-# examples/mimecroft-frag.sh (fragment) and examples/mimecroft-vertex.sh
+# www/examples/mimecroft-frag.sh (fragment) and www/examples/mimecroft-vertex.sh
 # (vertex) — and compiled by the sh→GLSL generator (sh2glsl /
 # glsl_backend.rs) at startup.
 #
@@ -1212,7 +1214,7 @@ emit_vertex_shader() {
   fi
 }
 
-# the fragment shader is authored in bash (see examples/mimecroft-frag.sh)
+# the fragment shader is authored in bash (see www/examples/mimecroft-frag.sh)
 # and compiled by the sh→GLSL generator (sh2glsl / glsl_backend.rs) at
 # startup.
 emit_fragment_shader() {
@@ -1385,6 +1387,24 @@ setup_webgl() {
 # parse lt_s (a generator TSV, already set by the caller) → cache +
 # upload. lt_chan = fields per pixel (3 = RGB, 4 = RGBA). Shared by the
 # synchronous generators and the background harvest.
+#
+# The transpiled shell's ${s#*TAB} prefix-strip is greedy and
+# IFS-splitting is broken, so fields are consumed with the probe loop
+# below (from read-texture.sh). Without these two helpers every field
+# read resolves to a command-not-found, the header is never stripped,
+# and the upload mangles the header ("#texture".split("x")[0] = "#te"
+# — texture contains an x).
+strip_tex_field() { sf_done=0
+  while [ "$sf_done" -eq 0 ]; do
+    sf_probe=${lt_s%%	*}
+    if [ "$sf_probe" = "" ]; then sf_done=1; lt_s=${lt_s#?}; else lt_s=${lt_s#?}; fi
+  done
+}
+
+read_tex_field() { f=${lt_s%%	*}
+  strip_tex_field
+}
+
 load_tex_payload() { ltp_name=$1; ltp_idx=$2
   lt_hdr=${lt_s%%	*}
   if [ "$lt_hdr" != "#texture" ]; then return 0; fi
@@ -1504,27 +1524,27 @@ tex_bg_avail=0
 # submit one texture's generation; records its /dev/bg job id. The
 # worker thread computes the TSV while the menu stays interactive.
 tex_bg_submit() { tbn_name=$1
-  if [ "$tex_bg_avail" -eq 0 ]; then
-    if [ -e /dev/bg ]; then tex_bg_avail=1; else return 0; fi
-  fi
-  tbn_next=$(cat /dev/bg/next)
-  echo "submit /examples/textures/texture-$tbn_name.sh --tsv --size $tex_size --seed $tex_seed" > /dev/bg
-  tex_bg_jobs[$tex_bg_n]=$tbn_next
+  # background the generation with the shell's `&` — the runtime's
+  # fork heuristic routes a nested bash script exec to a WORKER THREAD
+  # (fresh runtime, no parent state copied), so the menu never blocks.
+  # The TSV lands in /tmp; the menu polls for it.
+  bash /examples/textures/texture-$tbn_name.sh --tsv --size $tex_size --seed $tex_seed > /tmp/mimecroft-bg-$tbn_name.tsv &
+  tex_bg_jobs[$tex_bg_n]=$tbn_name
   tex_bg_n=$((tex_bg_n + 1))
 }
 
-# is the n-th submitted job done? (tbg=1 when its exit code is readable)
+# is the n-th submitted job done? (tbg=1 when its /tmp TSV landed)
 tex_bg_done() { tbd_n=$1
-  tbd_job=${tex_bg_jobs[$tbd_n]}
-  tbd_code=$(cat /dev/bg/$tbd_job/code)
-  if [ "$tbd_code" != "" ]; then tbg=1; else tbg=0; fi
+  tbd_name=${tex_bg_jobs[$tbd_n]}
+  tbd_f=/tmp/mimecroft-bg-$tbd_name.tsv
+  if [ -f "$tbd_f" ]; then tbg=1; else tbg=0; fi
 }
 
 # harvest the n-th submitted texture: take the worker's TSV and
 # parse/upload it (the menu slot geometry is active during the menu)
 tex_bg_harvest() { tbh_n=$1; tbh_name=$2; tbh_idx=$3; tbh_chan=$4
-  tbh_job=${tex_bg_jobs[$tbh_n]}
-  lt_s=$(cat /dev/bg/$tbh_job)
+  tbh_f=/tmp/mimecroft-bg-$tbh_name.tsv
+  lt_s=$(cat "$tbh_f")
   lt_ts=$tex_size
   lt_chan=$tbh_chan
   load_tex_payload $tbh_name $tbh_idx
@@ -3311,23 +3331,16 @@ settings_menu() {
       done
     fi
     if [ "$sm_tex_n" -lt "$sm_tex_total" ]; then
-      if [ "$tex_bg_avail" -eq 1 ]; then
-        tex_bg_done $sm_tex_n
-        if [ "$tbg" -eq 1 ]; then
-          sm_tex_slot $sm_tex_n
-          if [ "${sm_tex_rgba[$sm_tex_n]}" -eq 1 ]; then
-            tex_bg_harvest $sm_tex_n ${sm_tex_name[$sm_tex_n]} ${sm_tex_idx[$sm_tex_n]} 4
-          else
-            tex_bg_harvest $sm_tex_n ${sm_tex_name[$sm_tex_n]} ${sm_tex_idx[$sm_tex_n]} 3
-          fi
-          sm_tex_n=$((sm_tex_n + 1))
-        fi
-      else
+      # the generation runs on a WORKER THREAD (the runtime's & fork
+      # heuristic); harvest one texture per iteration as its /tmp TSV
+      # lands — the menu never blocks on generation
+      tex_bg_done $sm_tex_n
+      if [ "$tbg" -eq 1 ]; then
         sm_tex_slot $sm_tex_n
         if [ "${sm_tex_rgba[$sm_tex_n]}" -eq 1 ]; then
-          load_tex4 ${sm_tex_name[$sm_tex_n]} ${sm_tex_idx[$sm_tex_n]}
+          tex_bg_harvest $sm_tex_n ${sm_tex_name[$sm_tex_n]} ${sm_tex_idx[$sm_tex_n]} 4
         else
-          load_tex ${sm_tex_name[$sm_tex_n]} ${sm_tex_idx[$sm_tex_n]}
+          tex_bg_harvest $sm_tex_n ${sm_tex_name[$sm_tex_n]} ${sm_tex_idx[$sm_tex_n]} 3
         fi
         sm_tex_n=$((sm_tex_n + 1))
       fi
@@ -3406,15 +3419,6 @@ main() {
   sleep 0.02
     print_map_once
   sleep 0.02
-    if [ "$headless" -eq 0 ]; then
-    settings_menu
-    if [ "$quit" -eq 1 ]; then
-      echo "== Quit."
-      echo "hide" > /dev/webgl/call
-      return
-    fi
-    sleep 0.02
-  fi
   # background sound warm-up: as soon as bash sounds are enabled (the
   # menu's SOUND MODE row or --sounds bash), generate every sound's TSV
   # into the /tmp cache in the background — the first play of each sound
@@ -3436,6 +3440,16 @@ main() {
     echo "  shaders: bash-authored (sh2glsl)"
   else
     echo "  shaders: hand-written GLSL fallback (vertex: $vs_src, fragment: $fs_src)"
+  fi
+
+    if [ "$headless" -eq 0 ]; then
+    settings_menu
+    if [ "$quit" -eq 1 ]; then
+      echo "== Quit."
+      echo "hide" > /dev/webgl/call
+      return
+    fi
+    sleep 0.02
   fi
   gen_maze
   place_treasures

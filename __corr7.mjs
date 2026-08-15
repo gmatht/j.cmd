@@ -85,7 +85,7 @@ function render(blocks, camPos, yawDeg) {
 }
 
 // ── the __mime-test harness (works) + frame capture ─────────────────
-const src = readFileSync("examples/mimecroft.sh", "utf8");
+const src = readFileSync("www/bin/mimecroft.sh", "utf8");
 const { js } = await bashToJS(fs, src);
 const KEY_SCRIPT = ["q,"];
 let keyFrame = 0, sleepCount = 0;

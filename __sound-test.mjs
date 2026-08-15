@@ -2,7 +2,7 @@
 // 1) parseSamplesPayload (src/fs/audiodev.js — the /dev/audio/samples
 //    decoder) accepts the sound-script TSV and the bare "RATE N …"
 //    form, and rejects garbage
-// 2) every examples/sounds/sound-*.sh generator runs under real bash:
+// 2) every www/examples/sounds/sound-*.sh generator runs under real bash:
 //    TSV header shape, sample count, --material, determinism
 // 3) mimecroft --sounds bash end-to-end: transpile the game (browser
 //    path forced so sound=1), toggle SOUND MODE → BASH in the settings
@@ -26,7 +26,7 @@ const tssvCount = (tsv) => { const m = /samples\t(\d+)\t/.exec(tsv); return m ? 
 // ─── 1) the /dev/audio/samples decoder ────────────────────────────
 console.log("parseSamplesPayload…");
 {
-  const tsv = execFileSync("bash", ["examples/sounds/sound-hit.sh", "--tsv"], { encoding: "utf8" });
+  const tsv = execFileSync("bash", ["www/examples/sounds/sound-hit.sh", "--tsv"], { encoding: "utf8" });
   const p = parseSamplesPayload(tsv);
   const count = parseInt(tssvCount(tsv), 10);
   check("TSV: rate 22050", p.rate === 22050, String(p.rate));
@@ -52,22 +52,22 @@ console.log(`  [t=${((Date.now()-T0)/1000).toFixed(1)}s] generators (real bash)�
 const SOUNDS = ["hit", "break", "thud", "shoot", "kill", "damage", "treasure", "shatter", "walk", "mime"];
 const tsvBySound = {};
 for (const s of SOUNDS) {
-  const tsv = execFileSync("bash", [`examples/sounds/sound-${s}.sh`, "--tsv"], { encoding: "utf8" });
+  const tsv = execFileSync("bash", [`www/examples/sounds/sound-${s}.sh`, "--tsv"], { encoding: "utf8" });
   tsvBySound[s] = tsv;
   const okHdr = tsv.startsWith(`#sound\t${s}\t22050\tseed\t`);
   const okN = parseSamplesPayload(tsv).samples.length === parseInt(tssvCount(tsv), 10);
   if (!okHdr || !okN) { fails++; console.log(`  FAIL ${s}: bad TSV (hdr=${okHdr} count=${okN})`); }
   else console.log(`  ok  ${s}: TSV header + ${tssvCount(tsv)} samples`);
 }
-check("generators deterministic (hit ×2)", execFileSync("bash", ["examples/sounds/sound-hit.sh", "--tsv"], { encoding: "utf8" }) === tsvBySound.hit);
+check("generators deterministic (hit ×2)", execFileSync("bash", ["www/examples/sounds/sound-hit.sh", "--tsv"], { encoding: "utf8" }) === tsvBySound.hit);
 
 // the material ladder: each hit material is a different sample list
 const mats = ["stone", "dirt", "wood", "gold", "gem"];
-const matTsVs = mats.map((m) => execFileSync("bash", ["examples/sounds/sound-hit.sh", "--tsv", "--material", m], { encoding: "utf8" }));
+const matTsVs = mats.map((m) => execFileSync("bash", ["www/examples/sounds/sound-hit.sh", "--tsv", "--material", m], { encoding: "utf8" }));
 check("hit --material gives 5 distinct lists", new Set(matTsVs).size === 5);
 
 // shatter's --notes echo the game's two shot_treasure play() calls
-const shatterNotes = execFileSync("bash", ["examples/sounds/sound-shatter.sh", "--notes"], { encoding: "utf8" });
+const shatterNotes = execFileSync("bash", ["www/examples/sounds/sound-shatter.sh", "--notes"], { encoding: "utf8" });
 check("shatter --notes → the two game notes", shatterNotes.includes('play "C4 0.12"') && shatterNotes.includes('play "E2 0.18"'));
 
 // ─── 3) mimecroft --sounds bash, end to end ───────────────────────
@@ -76,7 +76,7 @@ check("shatter --notes → the two game notes", shatterNotes.includes('play "C4 
 // fs.write, and echoes through process.stdout.write — so the harness
 // patches fs.read/fs.write and passes a process shim to the Function.
 async function runGame(args, keys, opts = {}) {
-  let src = readFileSync("examples/mimecroft.sh", "utf8");
+  let src = readFileSync("www/bin/mimecroft.sh", "utf8");
   if (!opts.precache) {
     // the runs below assert the LAZY generation counts (one generator
     // run per distinct sound) — disable the background pre-cache so the

@@ -6,7 +6,7 @@ import { readFileSync, writeFileSync } from "fs";
 import { fs } from "./src/fs/index.js";
 import { bashToJS } from "./src/bash2js.js";
 import { createSh2Runtime } from "./src/sh2runtime.js";
-let src = readFileSync("examples/mimecroft.sh", "utf8");
+let src = readFileSync("www/bin/mimecroft.sh", "utf8");
 // replace main() so the game stops right after the labels are made
 src = src.replace(
   "    echo \"  generating treasure labels…\"\n    load_labels\n    echo \"  ready.\"",

@@ -11,7 +11,7 @@ import { readFileSync } from "fs";
 import { fs } from "./src/fs/index.js";
 import { bashToJS } from "./src/bash2js.js";
 import { createSh2Runtime } from "./src/sh2runtime.js";
-const src = readFileSync("examples/mimecroft.sh", "utf8");
+const src = readFileSync("www/bin/mimecroft.sh", "utf8");
 const { js } = await bashToJS(fs, src);
 const KEYS = ["ArrowRight,", "w,", "ArrowLeft,", "w,", "ArrowLeft,", "w,", "q,"];
 let keyFrame = 0, sleepCount = 0, timeReads = 0;

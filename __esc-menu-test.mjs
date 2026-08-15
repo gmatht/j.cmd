@@ -7,7 +7,7 @@ import { fs } from "./src/fs/index.js";
 import { bashToJS } from "./src/bash2js.js";
 import { createSh2Runtime } from "./src/sh2runtime.js";
 import { execFileSync } from "node:child_process";
-let src = readFileSync("examples/mimecroft.sh", "utf8");
+let src = readFileSync("www/bin/mimecroft.sh", "utf8");
 src = src.replace("*headless*) sound=$((0)); headless=1 ;;", "*headless*) sound=$((0)); headless=0 ;;");
 const { js } = await bashToJS(fs, src);
 // move a bit, Esc → menu, s s s (→ CRT), a (off), Esc close, then quit
