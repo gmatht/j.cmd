@@ -51,7 +51,7 @@ const mods = await Promise.all([
   import(${JSON.stringify(moduleUrls.sh2runtime)}),
   import(${JSON.stringify(moduleUrls.fs)}),
 ]);
-const { bashToJS } = mods[0];
+const { bashToJS, runTranspiled } = mods[0];
 const { createSh2Runtime } = mods[1];
 const { fs } = mods[2];
 
@@ -134,19 +134,22 @@ async function runNext() {
 async function runOne(id, js, args) {
   try {
     __cap.text = "";
-    const rt = createSh2Runtime({
-      fs, env: {},
-      shellExec: async () => ({ out: "", err: "", code: 0 }),
-      stdout: { write: () => {} }, stderr: { write: () => {} },
-      args, argv0: "bash",
-    });
-    const fn = new Function("args", "fs", "env", "stdout", "stderr", "__runCmd", "sh2",
-      "return (async () => { " + js + " })();");
     let code = 0;
     try {
+      // runTranspiled supplies the eval/source-aware shellExec the
+      // sound generators need (the indirect pa_a=... arg parsing) — a
+      // bare runtime without it silently no-ops the eval and the
+      // generator emits its default output instead of --tsv.
       await Promise.race([
-        fn(args, fs, {}, { write: () => {} }, { write: () => {} },
-          async () => ({ out: "", err: "", code: 0 }), rt.sh2),
+        runTranspiled(fs, js, {
+          args, argv0: "bash",
+          // stdout only — the generators' #stats lines go to stderr and
+          // must NOT join the TSV (a stats-prefixed payload fails the
+          // game's "#texture" header check → no upload).
+          stdout: { write: (x) => { __cap.text += String(x); return true; } },
+          stderr: { write: () => {} },
+          runCmd: async () => ({ out: "", err: "", code: 0 }),
+        }),
         new Promise((_, rej) => setTimeout(() => rej(new Error("bg-timeout")), 60000)),
       ]);
     } catch (e) { code = 1; }

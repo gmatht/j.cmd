@@ -268,6 +268,8 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     // Ctrl+C aborts even command-based loop conditions (`while true`
     // transpiles to exec("true"), not test()).
     if (interrupted) throw new Error("interrupted by Ctrl+C");
+    const isCapTarget = mode.type === "capture" && !!mode.target;
+    if (isCapTarget) mode.target = false;
     // ── the `&` thread heuristic: a backgrounded `bash <script>` exec
     // (the texture/sound generators — self-contained pure compute) runs
     // on a WORKER THREAD; the args here are ALREADY evaluated by the
@@ -277,6 +279,14 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     // the MAIN VFS.
     if (bgThreadJobs > 0 && (name === "bash" || name === "/bin/bash") && argsArr && argsArr[0] &&
         typeof argsArr[0] === "string" && argsArr[0].startsWith("/")) {
+      // the worker round-trip AWAITS a queued job (seconds — the menu's
+      // texture jobs are ahead), during which the main flow keeps
+      // running and `mode` (a shared variable) can change — the caller
+      // is whatever mode STARTED this exec. Capture it now and write
+      // the worker's stdout to THAT sink, so a `$(bash …)` substitution
+      // (the sound cache) gets its buffer even if the game interleaved
+      // another capture/redirect in between.
+      const entryMode = mode;
       try {
         const scriptPath = argsArr[0];
         const scriptText = await fs.read(scriptPath);
@@ -285,7 +295,16 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
         await promise;
         const job = bgPeek(id);
         lastStatus = Number(job.code ?? 0);
-        return job.out || "";
+        const jobOut = job.out || "";
+        // The worker returns the script's stdout as this exec's return.
+        // It must NOT also write it to the shared mode buffer: the
+        // worker round-trip AWAITS a queued job (seconds), during which
+        // the main flow's own output lands in whatever capture/redirect
+        // mode is active — polluting the substitution buffer (the sound
+        // cache's cs_x came back as "  compiling the fragment shader…"
+        // + the TSV, header check failed, no cache file). Callers that
+        // need the output (redirect, capture) use the string return.
+        return jobOut;
       } catch (e) {
         lastStatus = 1;
         return "";
@@ -336,6 +355,10 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       if (mode.type === "redirect") mode.buf.err += res.err;
       else stderr.write(res.err);
     }
+    // the capture target returns its stdout directly (the capture
+    // prefers a string return — the mode buffer is unreliable there
+    // because the awaited command lets other output interleave).
+    if (isCapTarget) return res.out;
     return res.code === 0;
   }
 
@@ -375,7 +398,15 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
   async function capture(fn) {
     const prev = mode;
     const buf = { out: "" };
-    mode = { type: "capture", buf };
+    // target: the FIRST exec inside the capture fn is the substituted
+    // command — it returns its stdout as the exec's return (both the
+    // worker and shellExec paths), which the capture prefers. Anything
+    // interleaved AFTER the target is consumed (the game's own echoes
+    // while the worker round-trip awaits) is NOT the substitution's
+    // output — without the marker it would land in this shared buffer
+    // and corrupt cs_x (the sound cache got "  compiling the fragment
+    // shader…" + the TSV, header check failed, no cache file).
+    mode = { type: "capture", buf, target: true };
     // Native writes bypass the mode buffer: the estree emitter's
     // native-echo lowering (echo/printf inside a sink-eligible function
     // compile to `process.stdout.write(...)` directly — see the
@@ -394,14 +425,20 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
         return origWrite(s);
       };
     }
+    let ret;
     try {
-      await fn();
+      ret = await fn();
     } finally {
       inCapture = false;
       if (origWrite) stdoutObj.write = origWrite;
       mode = prev;
     }
-    return buf.out.replace(/\n+$/, "");  // command substitution strips trailing newlines
+    // the worker path returns the script's stdout as the exec's return
+    // (the mode buffer is unreliable there — the awaited job lets other
+    // output interleave); the normal path returns a boolean and the
+    // output lives in the buffer. Prefer a non-empty string return.
+    const capOut = (typeof ret === "string" && ret) ? ret : buf.out;
+    return capOut.replace(/\n+$/, "");  // command substitution strips trailing newlines
   }
 
   // SYNC variants the estree emitter uses for sync builtins (no await —
@@ -998,7 +1035,7 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       if (env && env.SH2_BG_DEBUG) console.debug("[&] worker-thread: /examples bash script (pure compute) — main loop stays responsive");
       bgThreadJobs++;
       Promise.resolve().then(async () => {
-        try { await fn(); } catch {}
+        try { await fn(runtime.sh2); } catch {}
       }).finally(() => { bgThreadJobs--; });
       return true;
     }
@@ -1010,7 +1047,7 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     // for the game's fs-side usages).
     if (env && env.SH2_BG_DEBUG) console.debug("[&] fork: non-script body (shell state / command) — detached on the current chain");
     Promise.resolve().then(async () => {
-      try { await fn(); } catch {}
+      try { await fn(runtime.sh2); } catch {}
     });
     return true;
   }
@@ -1342,7 +1379,7 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     return layout.map((m, i) => ({ name: m.name, type: m.type, index: i }));
   }
 
-  return {
+  const runtime = {
     sh2: {
       exec, pipeline, capture, captureSync, pipelineSync, captureWords, redirect, test,
       forLoop, whileLoop, whileLoopSync, caseMatch, define, brace, param, arith, fparith,
@@ -1866,4 +1903,5 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     },
     get lastStatus() { return lastStatus; },
   };
+  return runtime;
 }

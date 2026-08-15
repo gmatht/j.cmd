@@ -23,7 +23,6 @@ import { env } from "./env.js";
 import { getSh2Lib } from "./sh2lib.js";
 import { getOtranspilerl } from "./otranspilerl.js";
 import { estreeToJs, keepVariables } from "./estree.js";
-import { a1LiteralValue } from "./shellcore/transpile.js";
 
 // ── the game's bash engine: otranspilerl vs the legacy debashcl ──
 // `.sh` files (runBashScript → runBash → bashToJS) can run on EITHER
@@ -55,13 +54,41 @@ async function bashToJSA1(fs, bashSource) {
   const program = JSON.parse(lib.transpile(String(bashSource), "sh", "js"));
   const scriptArrays = [];
   const arrayVals = new Map();
-  const a1 = JSON.parse(lib.shir(String(bashSource)));
-  for (const st of a1.stmts || []) {
-    if (st && st.type === "Assign" && st.targets && st.targets[0]) {
-      const t = st.targets[0];
-      if (t.var && !(t.indices && t.indices.length)) {
-        const val = a1LiteralValue(st.expr);
-        if (Array.isArray(val)) { scriptArrays.push(t.var); arrayVals.set(t.var, val); }
+  // The A1 shIR is built INSIDE the transpile call — the wasm's
+  // sh→A1→estree pipeline is one in-process run, so the A1 never needs
+  // to cross the boundary for the sh→js path. A separate shir() call
+  // would re-parse + re-run the A2/A3 analyses (var_types, lengths,
+  // const, lifetimes, … — all for the C/zig/go backends, none consumed
+  // by estree) + JSON-round-trip the A1, purely to extract the literal
+  // arrays. The estree already carries them: provably-static arrays
+  // arrive as native `let a = […]` declarators, the rest as top-level
+  // `sh2.setArray("a", […])` calls. Collect both — the same shape the
+  // A1 path picked (a bare-name array whose elements are all string
+  // literals; a non-literal element bails, exactly like a1LiteralValue).
+  const arrayLiteral = (arr) => {
+    if (!arr || arr.type !== "ArrayExpression") return null;
+    const vals = [];
+    for (const el of arr.elements || []) {
+      if (el && el.type === "Literal" && typeof el.value === "string") vals.push(String(el.value));
+      else return null;
+    }
+    return vals;
+  };
+  for (const st of program.body || []) {
+    const e = st && st.type === "ExpressionStatement" ? st.expression : null;
+    if (e && e.type === "CallExpression" && e.callee && e.callee.type === "MemberExpression" &&
+        e.callee.object && e.callee.object.type === "Identifier" && e.callee.object.name === "sh2" &&
+        e.callee.property && e.callee.property.type === "Identifier" && e.callee.property.name === "setArray" &&
+        e.arguments && e.arguments[0] && e.arguments[0].type === "Literal") {
+      const vals = arrayLiteral(e.arguments[1]);
+      if (vals) { scriptArrays.push(String(e.arguments[0].value)); arrayVals.set(String(e.arguments[0].value), vals); }
+    }
+    if (st && st.type === "VariableDeclaration" && st.declarations) {
+      for (const d of st.declarations) {
+        if (d.id && d.id.type === "Identifier") {
+          const vals = arrayLiteral(d.init);
+          if (vals) { scriptArrays.push(d.id.name); arrayVals.set(d.id.name, vals); }
+        }
       }
     }
   }

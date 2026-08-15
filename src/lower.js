@@ -2522,7 +2522,10 @@ export function backgroundDecide(program) {
     type: "CallExpression",
     callee: {
       type: "MemberExpression",
-      object: { type: "CallExpression", callee: fn, arguments: [] },
+      // pass the enclosing runtime (the wasm emits the background body
+      // as `async (sh2) => …` — without the argument, sh2 is undefined
+      // and the body throws silently, so the fork never runs)
+      object: { type: "CallExpression", callee: fn, arguments: [{ type: "Identifier", name: "sh2" }] },
       property: { type: "Identifier", name: "catch" },
       computed: false, optional: false,
     },
