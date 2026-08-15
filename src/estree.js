@@ -46,6 +46,97 @@ export async function estreeToJs(program, { repl = true } = {}) {
   return (await estreeToJsMapped(program, null, null, { repl })).js;
 }
 
+// ─── asyncCatCommandSubstitution: `$(cat FILE)` with a DYNAMIC path ──
+// The estree backends lower `$(cat "/constant/path")` to the async
+// sh2.fs.readFile bridge, but a dynamic path (`$(cat
+// "…/sound-$cs_base.sh")` — the game's sound staging) falls back to
+// the SYNC builtin cat, whose fs.readSync can't serve /examples (an
+// async loader) → "" → the staged generator became just the lib.
+// Rewrite that exact captureSync(builtin cat) shape to the async
+// readFile bridge (capture awaits the fn). The sourced-C sync-cat form
+// (sh2.builtin("cat") inside a function-body redirect) is NOT a
+// captureSync call — untouched.
+function asyncCatCommandSubstitution(program) {
+  const isCatCapture = (call) =>
+    call && call.type === "CallExpression" &&
+    call.callee && call.callee.type === "MemberExpression" &&
+    call.callee.object && call.callee.object.type === "Identifier" && call.callee.object.name === "sh2" &&
+    call.callee.property && call.callee.property.type === "Identifier" && call.callee.property.name === "captureSync" &&
+    call.arguments && call.arguments[0] && call.arguments[0].type === "ArrowFunctionExpression";
+  // build the awaited `sh2.capture(() => sh2.exec("cat", [path]))` —
+  // capture routes the fn's stdout writes into the buffer (the exec
+  // dispatch writes there in capture mode) and the AWAIT matters: the
+  // original captureSync was sync, so the wasm emitted the assignment
+  // WITHOUT await — without the AwaitExpression, ss_x would hold the
+  // promise object ("[object Promise]" leaked into the staged file).
+  const rewrite = (call) => {
+    const arrow = call.arguments[0];
+    let body = arrow.body;
+    if (body && body.type === "BlockStatement" && body.body && body.body.length === 1 &&
+        body.body[0].type === "ExpressionStatement") body = body.body[0].expression;
+    if (!(body && body.type === "CallExpression" &&
+        body.callee && body.callee.type === "MemberExpression" &&
+        body.callee.object && body.callee.object.type === "Identifier" && body.callee.object.name === "sh2" &&
+        body.callee.property && body.callee.property.type === "Identifier" && body.callee.property.name === "builtin" &&
+        body.arguments && body.arguments[0] && body.arguments[0].type === "Literal" && body.arguments[0].value === "cat" &&
+        body.arguments[1] && body.arguments[1].type === "ArrayExpression" &&
+        body.arguments[1].elements && body.arguments[1].elements.length === 1)) return call;
+    const path = body.arguments[1].elements[0];
+    const pv = path.type === "Literal" ? String(path.value) : null;
+    if (pv === "-") return call;   // stdin — not a file read
+    // only the ASYNC-loader mounts need this: a dynamic /examples path
+    // (the game's sound staging) can't be served by the sync builtin
+    // cat; /dev device reads and other paths stay sync. The await is
+    // only valid in async contexts — the dynamic /examples cats (the
+    // staging) live in async functions.
+    const inExamples = (path.type === "Literal" && String(path.value).startsWith("/examples/")) ||
+      (path.type === "TemplateLiteral" && path.quasis && path.quasis[0] &&
+       String(path.quasis[0].value.cooked).startsWith("/examples/"));
+    if (!inExamples) return call;
+    return {
+      type: "AwaitExpression",
+      argument: {
+        type: "CallExpression",
+        callee: {
+          type: "MemberExpression",
+          object: { type: "Identifier", name: "sh2" },
+          property: { type: "Identifier", name: "capture" },
+          computed: false, optional: false,
+        },
+        arguments: [{
+          type: "ArrowFunctionExpression",
+          id: null, params: [], body: {
+            type: "CallExpression",
+            callee: {
+              type: "MemberExpression",
+              object: { type: "Identifier", name: "sh2" },
+              property: { type: "Identifier", name: "exec" },
+              computed: false, optional: false,
+            },
+            arguments: [
+              { type: "Literal", value: "cat", raw: "\"cat\"" },
+              { type: "ArrayExpression", elements: [path] },
+            ],
+            optional: false,
+          },
+          async: false, expression: true, generator: false,
+        }],
+        optional: false,
+      },
+    };
+  };
+  const walk = (node) => {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node)) { for (let i = 0; i < node.length; i++) { if (isCatCapture(node[i])) node[i] = rewrite(node[i]); else walk(node[i]); } return; }
+    for (const k of Object.keys(node)) {
+      const child = node[k];
+      if (Array.isArray(child)) { for (let i = 0; i < child.length; i++) { if (isCatCapture(child[i])) child[i] = rewrite(child[i]); else walk(child[i]); } }
+      else if (child && typeof child === "object") { if (isCatCapture(child)) node[k] = rewrite(child); else walk(child); }
+    }
+  };
+  walk(program);
+}
+
 // ─── writeBuiltinOutput: the otranspilerl/debashcl estree backends
 // inline echo/printf with CONSTANT formats to process.stdout.write, but
 // a printf whose FORMAT contains a variable lands as a bare
@@ -1008,6 +1099,13 @@ function reclassAsyncLoops(program) {
   // otherwise emitted as a bare call whose value is discarded — the
   // texture generators' TSV header vanished and blocks rendered flat)
   writeBuiltinOutput(lowered);
+  // `$(cat "/constant/path")` lowers to the async sh2.fs.readFile
+  // bridge, but a DYNAMIC path (`$(cat "…/sound-$cs_base.sh")` — the
+  // game's sound staging) falls back to the SYNC builtin cat, whose
+  // fs.readSync can't serve /examples (an async loader) → the staged
+  // generator became just the lib. Rewrite that exact shape to the
+  // async readFile bridge (capture awaits the fn).
+  asyncCatCommandSubstitution(lowered);
   const { generate } = await getAstring();
   const js = generate(lowered);
 

@@ -134,9 +134,38 @@ async function runGame(args, keys, opts = {}) {
       const args2 = rest.split(/\s+/).map((a) => a.replace("/examples/", "examples/"));
       const name = (args2[0] || "").split("/").pop();
       if (name.startsWith("sound-") && name.endsWith(".sh")) soundRuns.push(args2.join(" "));
-      try { out = execFileSync("bash", args2, { encoding: "utf8" }); } catch { out = ""; }
+      // the transpiled path stages the generator as a VFS file
+      // (/tmp/sound-<name>.sh — lib+script in one chunk); host bash can't
+      // see the VFS, so run the CONTENT with the args (the browser runs
+      // the file through the transpiled bash builtin instead)
+      let vfsSrc = null;
+      try { vfsSrc = await fs.read(args2[0]); } catch {}
+      if (vfsSrc !== null && vfsSrc !== undefined) {
+        // the browser's `bash /tmp/sound-*.sh` is the TRANSPILED builtin —
+        // run the staged generator through the real transpiled path (the
+        // runtime transforms: arith, eval, test-arith), not host bash, so
+        // the test validates the actual generation AND stays fast
+        const { runBash } = await import("./src/bash2js.js");
+        let runOut = "";
+        await runBash(fs, String(vfsSrc), {
+          stdout: { write: (s) => { runOut += s; } },
+          stderr: { write: (s) => { runOut += s; } },
+          runCmd: async () => ({ out: "", err: "", code: 127 }),
+          args: args2.slice(1), argv0: args2[0],
+        });
+        out = runOut;
+      } else {
+        try { out = execFileSync("bash", args2, { encoding: "utf8" }); } catch { out = ""; }
+      }
     }
     else if (cmd === "sh2glsl") { out = ""; }
+    else if (cmd === "cat") {
+      // the game's staging reads the generators via `$(cat …)` — keep
+      // the ABSOLUTE VFS path (the /examples → examples strip is for
+      // host-bash argv, not the VFS read)
+      const p = rest.split(/\s+/)[0];
+      try { out = String(await fs.read(p)); } catch { out = ""; }
+    }
     else if (cmd === "true") {}
     else out = `${cmd}: command not found\n`;
     return { out, err: "", code: 0 };

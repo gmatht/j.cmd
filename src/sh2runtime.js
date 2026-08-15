@@ -162,7 +162,15 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     const withLen = str
       .replace(/\$\{#([A-Za-z_][A-Za-z0-9_]*)\[@\]\}/g, (m, name) => arrayLen(name))
       .replace(/\$\{#([A-Za-z_][A-Za-z0-9_]*)\}/g, (m, name) => String(getVar(name)).length);
-    return withLen.replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*|\d+|#|@|\*|\?|\$|\!)\}?/g, (m, name) => {
+    // `${arr[$i]}` / `$arr[0]` — array ELEMENT reads (a quoted test
+    // operand like `[ "${sh_env16[0]}" -gt 0 ]`; the scalar rule below
+    // would read the WHOLE array and Number() it to NaN → the shatter
+    // generator's shard guard silently became false). The index may be
+    // the emitter's `\$`+value artifact or a live `$name` — arrayIndex's
+    // expandOperand resolves both.
+    const withArr = withLen.replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*)\[([^\]]*)\]\}?/g, (m, name, idx) =>
+      String(arrayIndex(name, String(idx).trim())));
+    return withArr.replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*|\d+|#|@|\*|\?|\$|\!)\}?/g, (m, name) => {
       const v = getVar(name);
       return Array.isArray(v) ? v.join(" ") : String(v);
     });
@@ -472,6 +480,33 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
   // `$x -le 3`, `-f /etc/passwd`, `! -z "$x"`, `-f a -a -d b`, ...
   // debashl calls this without await, so it must be synchronous —
   // file tests use statSync (local mounts only).
+  // ─── test-string arithmetic: `[ "$x" -lt $(( ... )) ]` ──────
+  // The estree backend renders arithmetic INSIDE test strings as the
+  // literal text `$(( ... ))` — the wasm's native lowering handles the
+  // clean scalar form (`x < x + 3`) but falls back to a string for the
+  // dynamic-array form the sound generators use (`$(( tf_start[\$${tf_n}]
+  // + tf_len[\$${tf_n}] ))`). The runtime expands the region BEFORE
+  // tokenizing (it contains spaces, which would split it), substituting
+  // like `arith`. The `$<digits>` prefixes are the emitter's
+  // `\$`+value artifact (the interpolated VALUE with an escaped dollar
+  // in front) — inside this arith context a bare `$<digits>` means that
+  // literal value, so array subscripts read the element at that index.
+  function evalTestArith(inner) {
+    const sub = String(inner)
+      .replace(/\$?\{?([A-Za-z_][A-Za-z0-9_]*)\[([^\]]*)\]\}?/g, (m, name, idx) => {
+        const v = arithArrayIndex(name, idx);
+        const n = Number(v);
+        return Number.isFinite(n) ? String(n) : "0";
+      })
+      .replace(/\$\{?([0-9][0-9]*)\}?/g, (m, n) => n)   // `$3` → 3 (the artifact)
+      .replace(/\$?\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g, (m, name) => {
+        const v = getVar(name);
+        const n = Number(v);
+        return Number.isFinite(n) ? String(n) : "0";
+      });
+    return evalArithInt(sub);
+  }
+
   function test(expr) {
     // Ctrl+C while a transpiled loop is spinning: abort it (the throw
     // escapes the try below — a swallowed false would just end the
@@ -484,10 +519,22 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       const m = /^!?\$\{([A-Za-z_][A-Za-z0-9_]*)\+x\}$/.exec(String(expr));
       if (m) {
         const defined = vars.has(m[1]) || (env && env[m[1]] !== undefined);
-        return m[0].startsWith("!") ? !defined : defined;
+        const r = m[0].startsWith("!") ? !defined : defined;
+        lastStatus = r ? 0 : 1;
+        return r;
       }
-      return parseTest(tokenizeTest(expr));
+      // `$(( ... ))` inside the test — evaluate before tokenizing (it
+      // contains spaces the bracket tokenizer would split)
+      const expanded = String(expr).replace(/\$\(\(([\s\S]*?)\)\)/g, (mm, inner) => String(evalTestArith(inner)));
+      const r = parseTest(tokenizeTest(expanded));
+      // the estree's `(sh2.test(A), sh2.lastExit === 0 ? … : false)`
+      // compositions rely on the test recording $? like bash — it never
+      // did, so the second conjunct read a STALE lastExit (the sound
+      // generators' note-scan "worked" for note 0 only by that accident).
+      lastStatus = r ? 0 : 1;
+      return r;
     } catch {
+      lastStatus = 1;
       return false;
     }
   }
@@ -963,6 +1010,25 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
   // call (the treasure sound's ~30K arith calls each paid a JIT
   // compile). This version is a small shunting-yard evaluator: no
   // Function constructor, correct bitwise ops, integer division.
+  //
+  // Array subscripts come in BOTH emitter shapes: `${arr[$i]}` with the
+  // index TEXT (shatter's `$(( ${SH_START[$sh_i]} … ))` — a live loop
+  // var) and the `\$`+value ARTIFACT (treasure's `$(( tf_start[$3]
+  // … ))` — the value with an escaped dollar in front). Resolve both:
+  // a literal digit string is the index, a `$name` reads the store.
+  function arithArrayIndex(name, idx) {
+    const s = String(idx).trim();
+    // the emitter's `\$`+value ARTIFACT (treasure's `tf_start[$3]`) and
+    // plain literal indices → the digits are the index
+    const dm = /^\$?\{?([0-9]+)\}?$/.exec(s);
+    if (dm) return arrayIndex(name, dm[1]);
+    // a live `$name` index (shatter's `${SH_START[$sh_i]}`) — keep the
+    // `$` so arrayIndex's expandOperand reads the store
+    const nm = /^\$?\{?([A-Za-z_][A-Za-z0-9_]*)\}?$/.exec(s);
+    if (nm) return arrayIndex(name, "$" + nm[1]);
+    return "0";
+  }
+
   function arith(expr) {
     const substituted = String(expr)
       // `${arr[$i]}` / `$arr[$i]` — array ELEMENT reads: expand through
@@ -972,9 +1038,7 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       // accumulators silently became zero). Order matters: the array
       // form first, then scalars.
       .replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*)\[([^\]]*)\]\}?/g, (m, name, idx) => {
-        const v = arrayIndex(name, idx.trim());
-        const n = Number(v);
-        return Number.isFinite(n) ? String(n) : "0";
+        return arithArrayIndex(name, idx);
       })
       // `$1`..`$9` inside arithmetic — the callee's positionals (a
       // function body's `$(( $1 + $1 ))` must read its own args, not a
@@ -1650,7 +1714,21 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
         const fn = fns.get(name);
         if (typeof fn !== "function") throw new Error("sh2.fnCall: no function '" + name + "'");
         const prev = scriptArgs;
-        scriptArgs = (argsArr || []).map((v) => (v && typeof v === "object" && Array.isArray(v.arena)) ? v : String(v));
+        // splice array args (the `$@` listVar contract — exec does the
+        // same): a nested array becomes separate positionals, not one
+        // comma-joined string (`show "$@"` would otherwise see a single
+        // "a,b,c" positional and $# = 1).
+        scriptArgs = (() => {
+          const flat = [];
+          for (const a of argsArr || []) {
+            if (Array.isArray(a)) {
+              for (const x of a) flat.push((x && typeof x === "object" && Array.isArray(x.arena)) ? x : String(x));
+            } else {
+              flat.push((a && typeof a === "object" && Array.isArray(a.arena)) ? a : String(a));
+            }
+          }
+          return flat;
+        })();
         let r;
         try {
           r = fn();
@@ -1688,7 +1766,18 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       callDirect(name, fn, argsArr) {
         if (typeof fn !== "function") throw new Error("sh2.callDirect: no function '" + name + "'");
         const prev = scriptArgs;
-        scriptArgs = (argsArr || []).map((v) => (v && typeof v === "object" && Array.isArray(v.arena)) ? v : String(v));
+        // same nested-array splice as fnCall/exec (the `$@` listVar contract)
+        scriptArgs = (() => {
+          const flat = [];
+          for (const a of argsArr || []) {
+            if (Array.isArray(a)) {
+              for (const x of a) flat.push((x && typeof x === "object" && Array.isArray(x.arena)) ? x : String(x));
+            } else {
+              flat.push((a && typeof a === "object" && Array.isArray(a.arena)) ? a : String(a));
+            }
+          }
+          return flat;
+        })();
         let r;
         try {
           r = fn();

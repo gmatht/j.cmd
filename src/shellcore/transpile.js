@@ -45,9 +45,12 @@ export function a1LiteralValue(expr) {
       if (p && p.kind === "expr" && p.expr && p.expr.type === "Call" &&
           p.expr.func === "getVar" && p.expr.args && p.expr.args[0] && p.expr.args[0].type === "Str") {
         const name = p.expr.args[0].value;
-        if (otVars.has(name)) out += Array.isArray(otVars.get(name)) ? otVars.get(name).join(" ") : String(otVars.get(name));
-        else if (env[name] !== undefined) out += String(env[name]);
-        else out += "";
+        // the persistent-shell state (otVars) is per-shell and NOT in
+        // scope in this module (bashToJSA1 calls this with no shell
+        // state) — treat it as an env lookup only, and bail on unset
+        // (the caller treats undefined as "not statically resolvable").
+        if (env[name] !== undefined) out += String(env[name]);
+        else return undefined;
         continue;
       }
       return undefined;   // computed part we can't resolve statically
@@ -394,15 +397,17 @@ export async function runShellScript(content, opts = {}, ctx) {
       }
     }
   } catch {}
-  keepVariables(program, scriptArrays);
+  // whole-script execution (fresh runtime, one eval) — the REPL's
+  // cross-line persistence is not needed; keep the wasm's native arrays.
+  keepVariables(program, scriptArrays, { repl: false });
   const body = program.body || [];
   const last = body[body.length - 1];
   const lastIsExpr = last && last.type === "ExpressionStatement";
   const bodyJs = (lastIsExpr
-    ? (body.length > 1 ? await estreeToJs({ type: "Program", body: body.slice(0, -1) }) : "")
-    : await estreeToJs({ type: "Program", body })) + "\n";
+    ? (body.length > 1 ? await estreeToJs({ type: "Program", body: body.slice(0, -1) }, { repl: false }) : "")
+    : await estreeToJs({ type: "Program", body }, { repl: false })) + "\n";
   const lastJs = lastIsExpr
-    ? "return (" + (await estreeToJs({ type: "Program", body: [last] })).replace(/;\s*$/, "") + ");\n"
+    ? "return (" + (await estreeToJs({ type: "Program", body: [last] }, { repl: false })).replace(/;\s*$/, "") + ");\n"
     : "return sh2.lastExit;\n";
   const js = bodyJs + lastJs;
   const { createSh2Runtime } = await import("../sh2runtime.js");
