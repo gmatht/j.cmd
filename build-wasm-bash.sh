@@ -21,9 +21,16 @@
 #         ./build-wasm-bash.sh
 set -e
 cd "$(dirname "$0")/bash-wasm/build"
+# syscall-shim.o — override the libc calls bash makes whose raw syscalls
+# the emscripten runtime doesn't implement (getresgid/getrusage/wait4/
+# prlimit64), so bash.wasm never prints "warning: unsupported syscall".
+# Linked ahead of libc (the make LDFLAGS overrides the Makefile's
+# ADDON_LDFLAGS composition, so the shim goes straight into LDFLAGS)
+# so the shim wins over musl.
+emcc -c ../bash-5.3/syscall-shim.c -o syscall-shim.o
 emmake make \
   CFLAGS='-g -O2 -DBASH_WEB_SPAWN' \
-  LDFLAGS='-sFORCE_FILESYSTEM=1 -sEXPORTED_RUNTIME_METHODS=FS,callMain -sMODULARIZE=1 -sEXPORT_NAME=createBashModule -sASYNCIFY=1 -sASYNCIFY_IMPORTS=bash_web_spawn,bash_web_spawn_capture -sASYNCIFY_STACK_SIZE=262144 -sEXPORT_ES6=1'
+  LDFLAGS='syscall-shim.o -sFORCE_FILESYSTEM=1 -sEXPORTED_RUNTIME_METHODS=FS,callMain -sMODULARIZE=1 -sEXPORT_NAME=createBashModule -sASYNCIFY=1 -sASYNCIFY_IMPORTS=bash_web_spawn,bash_web_spawn_capture -sASYNCIFY_STACK_SIZE=262144 -sEXPORT_ES6=1'
 cp bash.wasm ../../www/wasm-bin/bash.wasm
 cp bash ../../www/vendor/bash.js
 echo "installed www/vendor/bash.js + www/wasm-bin/bash.wasm"

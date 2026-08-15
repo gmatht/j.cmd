@@ -588,3 +588,104 @@ index e9d3e75..4b9813d 100644
  #if defined (JOB_CONTROL)
    old_pipeline_pgrp = pipeline_pgrp;
    /* Don't reset the pipeline pgrp if we're already a subshell in a pipeline or
+diff --git a/bash-5.3/syscall-shim.c b/bash-5.3/syscall-shim.c
+new file mode 100644
+index 0000000..0e9667c
+--- /dev/null
++++ b/bash-5.3/syscall-shim.c
+@@ -0,0 +1,95 @@
++/* ─── syscall-shim.c — provide the libc calls bash makes whose raw
++   syscalls the emscripten runtime doesn't implement, so bash.wasm
++   never prints "warning: unsupported syscall: __syscall_*" (and the
++   calling libc function gets a sane answer instead of ENOSYS).
++
++   The wasm's syscall dispatch only implements the file/fs syscalls
++   (chdir/openat/stat64/…); process/scheduling syscalls are stubbed
++   with a warning. bash queries them at startup and around process
++   control, so override the libc functions with native-JS-free stubs:
++
++     getresgid/getresuid  → root (0,0,0) — bash's uid/gid bookkeeping
++     wait4                → ECHILD — no children exist (bash can't fork;
++                            the virtual-process port runs children in the
++                            host shell instead)
++     getrusage            → zeros — the `time` builtin's rusage
++     prlimit64            → ENOSYS — `ulimit` uses rlimit paths that
++                            don't need the prlimit syscall
++
++   The object is linked ahead of libc (ADDON_LDFLAGS), so these
++   definitions win over musl's. */
++#include <sys/types.h>
++#include <sys/wait.h>
++#include <sys/resource.h>
++#include <errno.h>
++#include <unistd.h>
++#include <sys/time.h>
++
++int getresgid(gid_t *rgid, gid_t *egid, gid_t *sgid) {
++  if (rgid) *rgid = 0;
++  if (egid) *egid = 0;
++  if (sgid) *sgid = 0;
++  return 0;
++}
++
++int getresuid(uid_t *ruid, uid_t *euid, uid_t *suid) {
++  if (ruid) *ruid = 0;
++  if (euid) *euid = 0;
++  if (suid) *suid = 0;
++  return 0;
++}
++
++pid_t wait4(pid_t pid, int *status, int options, struct rusage *rusage) {
++  (void)pid; (void)status; (void)options; (void)rusage;
++  errno = ECHILD;
++  return (pid_t)-1;
++}
++
++/* musl's waitpid/wait go STRAIGHT to the raw wait4 syscall (they don't
++   call the wait4 function), so the wait4 override above can't intercept
++   them — override the whole family. bash can't have children (fork is
++   stubbed; the virtual-process port runs them in the host shell), so
++   ECHILD is the truthful answer and the unsupported-syscall warning
++   never fires. */
++pid_t waitpid(pid_t pid, int *status, int options) {
++  (void)pid; (void)status; (void)options;
++  errno = ECHILD;
++  return (pid_t)-1;
++}
++
++pid_t wait(int *status) {
++  (void)status;
++  errno = ECHILD;
++  return (pid_t)-1;
++}
++
++int getrusage(int who, struct rusage *usage) {
++  (void)who;
++  if (usage) {
++    usage->ru_utime.tv_sec = 0;
++    usage->ru_utime.tv_usec = 0;
++    usage->ru_stime.tv_sec = 0;
++    usage->ru_stime.tv_usec = 0;
++    usage->ru_maxrss = 0;
++    usage->ru_ixrss = 0;
++    usage->ru_idrss = 0;
++    usage->ru_isrss = 0;
++    usage->ru_minflt = 0;
++    usage->ru_majflt = 0;
++    usage->ru_nswap = 0;
++    usage->ru_inblock = 0;
++    usage->ru_oublock = 0;
++    usage->ru_msgsnd = 0;
++    usage->ru_msgrcv = 0;
++    usage->ru_nsignals = 0;
++    usage->ru_nvcsw = 0;
++    usage->ru_nivcsw = 0;
++  }
++  return 0;
++}
++
++int prlimit64(pid_t pid, int resource, const struct rlimit *new_limit, struct rlimit *old_limit) {
++  (void)pid; (void)resource; (void)new_limit; (void)old_limit;
++  errno = ENOSYS;
++  return -1;
++}

@@ -852,19 +852,93 @@ async function runShell(lang, script) {
   }
   const factory = shellCache[lang];
   let out = "", err = "";
-  const m = await factory({
-    noInitialRun: true,
-    locateFile: (p) => new URL("wasm-bin/" + p, import.meta.url).href,
-    print: (t) => (out += t + "\n"),
-    printErr: (t) => (err += t + "\n"),
-  });
+  let inFlight = 0;   // asyncify-suspended host runs still pending
+  let code = 0;
   const ext = { sh: ".sh", zsh: ".zsh", fish: ".fish" }[lang];
   const path = "/script" + ext;
   const src = String(script).endsWith("\n") ? String(script) : String(script) + "\n";
-  m.FS.writeFile(path, src);
-  const args = lang === "zsh" ? ["-f", path] : [path];
-  let code = 0;
-  try { m.callMain(args); } catch (e) { code = (e && e.exitStatus) || (e && e.status) || 1; }
+  // ── virtual-process hooks (bash only): bash.wasm can't fork —
+  // top-level external commands, whole pipelines, ( ) subshells, $( )
+  // and `&` all run in the HOST (the transpiled shell, which has real
+  // pipes), so a script never falls through to the "fork: Function not
+  // implemented" path. The hooks mirror runRealBash's; the host output
+  // joins bash's own TTY stream in execution order (asyncify suspends
+  // bash for the whole host run).
+  const hostRun = async (cmdline, stdinIn, appendOut = true) => {
+    inFlight++;
+    const { runBash } = await import("../src/bash2js.js");
+    let ho = "", he = "", hcode = 0;
+    try {
+      hcode = await runBash(fs, cmdline, {
+        stdout: { write: (s) => { ho += s; } },
+        stderr: { write: (s) => { he += s; } },
+        runCmd: async () => ({ out: "", err: "command not found\n", code: 127 }),
+        args: [], argv0: "bash",
+        stdin: stdinIn || "",
+      });
+    } catch { hcode = 127; }
+    if (ho && appendOut) out += ho;
+    if (he && appendOut) err += he;
+    inFlight--;
+    return { out: ho, err: he, code: hcode };
+  };
+  const cfg = {
+    // bash: the runtime's own auto-run (a manual callMain breaks the
+    // asyncify unwind/rewind of the host-run hooks — main re-runs).
+    // zsh/fish keep the old callMain flow (no virtual-process hooks).
+    noInitialRun: lang !== "sh",
+    arguments: lang === "sh" ? [path] : [],
+    locateFile: (p) => new URL("wasm-bin/" + p, import.meta.url).href,
+    print: (t) => (out += t + "\n"),
+    printErr: (t) => {
+      err += t + "\n";
+      // the auto-run's exit status arrives as the runtime's exit notice
+      // (keepRuntimeAlive suppresses onExit) — capture it for `code`
+      const em = /program exited \(with status: (\d+)\)/.exec(t);
+      if (em) code = Number(em[1]);
+    },
+    preRun: [() => {
+      if (lang === "sh") {
+        globalThis.__bash_spawn = async (args, stdin) => {
+          if (!args || !args.length) return 127;
+          const h = await hostRun(args.join(" "), stdin || "");
+          return h.code;
+        };
+        globalThis.__bash_spawn_capture = async (cmd) => {
+          // captured output feeds back into the $( ) substitution — do
+          // NOT also append it to the transcript (that would double it)
+          const h = await hostRun(cmd, "", false);
+          return { out: h.out, code: h.code };
+        };
+        globalThis.__bash_web_internal = (args) => {
+          if (args && args.length) hostRun(args.join(" "), "");
+          return 0;
+        };
+      }
+      cfg.FS.writeFile(path, src);
+    }],
+  };
+  const m = await factory(cfg);
+  if (lang !== "sh") {
+    try { m.callMain(lang === "zsh" ? ["-f", path] : [path]); } catch (e) { code = (e && e.exitStatus) || (e && e.status) || 1; }
+  } else {
+    // the factory (auto-run) resolves when main's SYNCHRONOUS part
+    // exits — the asyncify-suspended host runs finish after — wait for
+    // the in-flight hooks so their output lands in the transcript.
+    const deadline = Date.now() + 30000;
+    while (inFlight > 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+  }
+  // the emscripten runtime's own notices are noise — drop them (the
+  // same filter runRealBash applies; the syscall warnings are gone too
+  // since the shim provides getresgid/wait family)
+  err = err.split("\n").filter((l) =>
+    !/^program exited \(with status/.test(l) &&
+    !/^warning: unsupported syscall/.test(l) &&
+    !/^warning: stdio streams had content/.test(l) &&
+    !/^warning: Invalid UTF-8/.test(l)
+  ).join("\n");
   return { out, err, code };
 }
 
