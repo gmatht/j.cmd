@@ -25,8 +25,7 @@
 // paths can drive this library directly.
 // -----------------------------------------------------------------
 
-const WASM_PATH = "wasm-bin/otranspilerl.wasm";  // browser: relative to the page
-// The sh2runtime device canvas is 800×600 (src/fs/webgldev.js) — the
+const WASM_PATH = "wasm-bin/otranspilerl.wasm";  // browser: relative to the page// The sh2runtime device canvas is 800×600 (src/fs/webgldev.js) — the
 // shader coordinate space is EMBEDDER-owned: the wasm's glsl/glslv
 // take the view width per call, and the frag/vertex programs are
 // authored against the same value (the game's shaders write `fx - 400`
@@ -35,7 +34,7 @@ const WASM_PATH = "wasm-bin/otranspilerl.wasm";  // browser: relative to the pag
 export const GLSL_VIEW = 800;
 // cache-buster — bump whenever www/wasm-bin/otranspilerl.wasm changes so
 // the browser (and the otranspiler GUI) never serves a stale wasm.
-const WASM_VERSION = "v22-tex32";  // v19: glsl/glslv take the embedder's view size (max_view no longer hardcoded in the wasm) // v17: ES 1.00 mediump precision gate (interval proof over all int intermediates) // v16: texture samples hoisted (2 fetches vs 7) + atom-paren strip // v15: input bridges use-gated (tex/crack/vcolor declared+seeded only when referenced) // v14: glsl DCE + scalar promotion (dead g_pa/g_fit/out_len/OUT_CAP dropped; main() locals) // v13: A1→GLSL render arm (glsl in the TARGETS dispatch — frontend A1s render to shaders) // v12: ForInit + first-class Continue/Break (strip_cfor pass) // v11: template-literal quasi escaping (trailing \ in batch echo)
+const WASM_VERSION = "v25-fractuv";  // v25: texture samples wrap via fract(vUv) — the old (g_uv_x+0.5)/sz sample coordinate was up to ±35 for the bg planes' world-xz UVs, and a MEDIUMP (fp16) sample quantized its fraction to ±1 texel (floor texture flaked); fract() keeps the sample in [0,1) — exact at any precision, REPEAT not needed for sampling  // v24: fragment vUv/vColor highp
 
 let libPromise = null;
 
@@ -44,11 +43,23 @@ export function getOtranspilerl() {
   return libPromise;
 }
 
+// the bgworker's Web Worker is a BLOB module worker — its base URL is
+// the blob: URL, so a page-relative fetch ("wasm-bin/…") would resolve
+// against the blob and fail (every backgrounded texture job died before
+// the wasm even loaded — the menu showed nothing). The main thread
+// injects the absolute URL into the worker (__SH2_OTRANSPILERL_WASM_URL)
+// before the first getOtranspilerl call.
+function wasmFetchUrl() {
+  const g = typeof globalThis !== "undefined" ? globalThis : null;
+  if (g && g.__SH2_OTRANSPILERL_WASM_URL) return String(g.__SH2_OTRANSPILERL_WASM_URL);
+  return WASM_PATH + "?v=" + WASM_VERSION;
+}
+
 async function loadWasmBytes() {
   // Browser: fetch from the server. Node (CLI): read from the repo.
   if (typeof fetch !== "undefined") {
     try {
-      const resp = await fetch(WASM_PATH + "?v=" + WASM_VERSION);
+      const resp = await fetch(wasmFetchUrl());
       if (resp.ok) return new Uint8Array(await resp.arrayBuffer());
     } catch { /* fall through to disk */ }
   }

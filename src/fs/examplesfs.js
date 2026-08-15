@@ -33,7 +33,12 @@ export class ExamplesFS {
         // an old example script forever (e.g. a texture generator
         // without the mime type names). The conditional GET keeps the
         // corpus caching benefit but always returns changed files fresh.
-        const resp = await fetch("examples/" + name + "?v=" + EXAMPLES_VERSION, { cache: "no-cache" });
+        // The bgworker's blob module worker has no page base for a
+        // relative fetch — the main thread injects the absolute base
+        // (__SH2_EXAMPLES_BASE) before the first read.
+        const g = typeof globalThis !== "undefined" ? globalThis : null;
+        const base = (g && g.__SH2_EXAMPLES_BASE) ? String(g.__SH2_EXAMPLES_BASE) : "examples/";
+        const resp = await fetch(base + name + "?v=" + EXAMPLES_VERSION, { cache: "no-cache" });
         if (!resp.ok) throw new Error("ENOENT: " + name);
         return resp.text();
       };
@@ -50,8 +55,9 @@ export class ExamplesFS {
   // corpus dirs mirror www/examples/: sh2perl (the sh2perl corpus) plus
   // one per frontend testdata (go / fish / zsh / py / pl / c / bat /
   // sh-posix / cpp / powershell / rust / zig) plus textures (the
-  // pseudorandom block-texture generators).
-  CORPUS_DIRS = ["sh2perl", "go", "fish", "zsh", "py", "pl", "c", "bat", "sh-posix", "cpp", "powershell", "rust", "zig", "textures"];
+  // pseudorandom block-texture generators) plus sounds (the mimecroft
+  // sample-accurate sound-effect generators, sound-*.sh + sound-lib.sh).
+  CORPUS_DIRS = ["sh2perl", "go", "fish", "zsh", "py", "pl", "c", "bat", "sh-posix", "cpp", "powershell", "rust", "zig", "textures", "sounds"];
 
   // drop the in-memory corpus/loader caches — the next read re-fetches
   // from the server (the `/cache` purge calls this so `rm -r /cache`

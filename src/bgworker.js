@@ -30,12 +30,22 @@ let ready = false;
 const pending = [];       // messages queued until the worker is ready
 const jobs = new Map();   // id → { resolve, reject, done, out, code, err }
 
-function workerSource(moduleUrls) {
+function workerSource(moduleUrls, injected = {}) {
   // The worker body: transpile + run one script, capture stdout, post
   // back. `moduleUrls` are absolute (file: in Node, https: in the
   // browser) so both the eval'd Node worker and the Blob worker resolve
   // them without a base URL.
+  const wasmUrl = injected.wasmUrl ? JSON.stringify(injected.wasmUrl) : "null";
+  const examplesBase = injected.examplesBase ? JSON.stringify(injected.examplesBase) : "null";
   return `
+// the BLOB worker has no page base — the main thread injects the
+// absolute URLs so the wasm fetch + /examples reads resolve (a
+// page-relative fetch against a blob: URL fails — the old worker died
+// on every job before the wasm loaded, so no texture ever generated
+// during the menu).
+if (${wasmUrl}) globalThis.__SH2_OTRANSPILERL_WASM_URL = ${wasmUrl};
+if (${examplesBase}) globalThis.__SH2_EXAMPLES_BASE = ${examplesBase};
+
 const mods = await Promise.all([
   import(${JSON.stringify(moduleUrls.bash2js)}),
   import(${JSON.stringify(moduleUrls.sh2runtime)}),
@@ -69,23 +79,61 @@ if (isNode) {
   self.process = { stdout: { write: stdoutWrite }, env: {} };
 }
 
-// one job at a time — the shared stdout capture is only valid while a
-// single job runs
+// TRANSPILE phase runs CONCURRENTLY (capped — the wasm transpile is
+// the expensive part; the menu submits all 14 textures at once, and a
+// serial queue turned the first menu into 14 × ~1s of waiting). The RUN
+// phase stays serial: the generated code writes through the single
+// shared stdout capture, so only one job may run at a time.
+const transpileCache = new Map();   // scriptText → { js, arrayVals } (reuse across re-submits)
 const bgQueue = [];
-let bgBusy = false;
-async function pump() {
-  if (bgBusy || !bgQueue.length) return;
-  bgBusy = true;
-  const { id, scriptText, args } = bgQueue.shift();
-  await runOne(id, scriptText, args);
-  bgBusy = false;
-  pump();
+const runQueue = [];
+const transpiling = new Set();
+const MAX_TRANSPILING = 3;
+let runBusy = false;
+
+function pump() {
+  while (bgQueue.length && transpiling.size < MAX_TRANSPILING) {
+    const job = bgQueue.shift();
+    transpiling.add(job.id);
+    (async () => {
+      try {
+        const cached = transpileCache.get(job.scriptText);
+        if (cached) {
+          job.js = cached.js;
+        } else {
+          const t = await bashToJS(fs, job.scriptText);
+          transpileCache.set(job.scriptText, t);
+          job.js = t.js;
+        }
+        job.code = 0;
+      } catch (e) {
+        job.err = String(e && e.message ? e.message : e);
+        job.code = 1;
+      }
+      transpiling.delete(job.id);
+      runQueue.push(job);
+      runNext();
+      pump();
+    })();
+  }
 }
 
-async function runOne(id, scriptText, args) {
+async function runNext() {
+  if (runBusy || !runQueue.length) return;
+  runBusy = true;
+  const job = runQueue.shift();
+  if (job.code !== 0) {
+    post({ id: job.id, err: job.err, code: 1 });
+  } else {
+    await runOne(job.id, job.js, job.args);
+  }
+  runBusy = false;
+  runNext();
+}
+
+async function runOne(id, js, args) {
   try {
     __cap.text = "";
-    const { js } = await bashToJS(fs, scriptText);
     const rt = createSh2Runtime({
       fs, env: {},
       shellExec: async () => ({ out: "", err: "", code: 0 }),
@@ -138,7 +186,14 @@ function moduleUrls() {
 
 async function spawnWorker() {
   const urls = moduleUrls();
-  const src = workerSource(urls);
+  // the BLOB worker has no page base — absolute URLs for the wasm
+  // fetch + /examples reads (page-relative fetches fail against blob:)
+  let injected = {};
+  if (typeof document !== "undefined" && document.baseURI) {
+    injected.wasmUrl = new URL("wasm-bin/otranspilerl.wasm", document.baseURI).href;
+    injected.examplesBase = new URL("examples/", document.baseURI).href;
+  }
+  const src = workerSource(urls, injected);
   const isNode = typeof process !== "undefined" && !!process.versions && !!process.versions.node;
   if (isNode) {
     const { Worker } = await import("node:worker_threads");
