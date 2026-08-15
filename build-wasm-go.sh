@@ -37,7 +37,7 @@ if [[ -z "$GOBIN" ]]; then
 fi
 echo "Using $(go version)"
 
-PKGS="fmt os strings strconv math time sort encoding/json net/http regexp"
+PKGS="fmt os os/exec strings strconv math time sort encoding/json net/http regexp"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
