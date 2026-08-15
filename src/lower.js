@@ -520,18 +520,26 @@ function shellFnCallInfo(call) {
 // (the adapter propagates $? — the conservative fallback).
 export function directShellFnCalls(program) {
   if (!program || program.type !== "Program" || !Array.isArray(program.body)) return program;
-  const fns = new Map(); // name → { async, hasReturn }
+  const fns = new Map(); // name → { async, hasReturn, posRefs }
   for (const st of program.body) {
     if (!st || st.type !== "FunctionDeclaration" || !st.id || st.id.type !== "Identifier") continue;
     let hasReturn = false;
+    let posRefs = false;
     const scan = (n) => {
       if (!n || typeof n !== "object") return;
       if (Array.isArray(n)) { for (const x of n) scan(x); return; }
       if (n.type === "ReturnStatement") hasReturn = true;
+      // a NESTED function's `$1..$9` are ITS OWN positionals (its own
+      // dispatch sets them) — only the outer body's refs matter for the
+      // direct-call wrapper, so don't descend
+      if ((n.type === "ArrowFunctionExpression" || n.type === "FunctionExpression" || n.type === "FunctionDeclaration") && n !== st) return;
+      if (n.type === "MemberExpression" && n.computed === false &&
+          n.object && n.object.type === "Identifier" && n.object.name === "sh2" &&
+          n.property && n.property.type === "Identifier" && n.property.name === "positional") posRefs = true;
       for (const k of Object.keys(n)) if (k !== "loc") scan(n[k]);
     };
     scan(st.body);
-    fns.set(st.id.name, { async: !!st.async, hasReturn });
+    fns.set(st.id.name, { async: !!st.async, hasReturn, posRefs });
   }
   if (!fns.size) return program;
 
@@ -561,14 +569,60 @@ export function directShellFnCalls(program) {
   };
   const directStmt = (info) => {
     const f = fns.get(info.name);
+    const args = info.args.map((a) => rewrite(unwrapWordList(a)));
     const callExpr = {
       type: "CallExpression",
       callee: { type: "Identifier", name: info.name },
-      arguments: info.args.map((a) => rewrite(unwrapWordList(a))),
+      arguments: args,
       optional: false,
     };
-    if (f.async) return { type: "ExpressionStatement", expression: { type: "AwaitExpression", argument: callExpr } };
-    return { type: "ExpressionStatement", expression: callExpr };
+    let expr = callExpr;
+    if (f.posRefs) {
+      // the callee reads `$5..$9` via `sh2.positional[N]` — the runtime
+      // dispatch sets that array for the call, so the DIRECT call must
+      // too (and restore the caller's positionals after, exactly like
+      // callDirect). Without it the HUD/menu rects lose their colour
+      // (the device skips <7-number rect lines → invisible text).
+      const prev = { type: "Identifier", name: "prevArgs" };
+      const sh2Pos = () => ({
+        type: "MemberExpression", computed: false, optional: false,
+        object: { type: "Identifier", name: "sh2" },
+        property: { type: "Identifier", name: "positional" },
+      });
+      const call = f.async ? { type: "AwaitExpression", argument: callExpr } : callExpr;
+      expr = {
+        type: "CallExpression",
+        callee: {
+          type: "ArrowFunctionExpression", async: !!f.async, params: [], expression: false, generator: false,
+          body: {
+            type: "BlockStatement",
+            body: [
+              { type: "VariableDeclaration", kind: "const", declarations: [
+                { type: "VariableDeclarator", id: prev, init: sh2Pos() },
+              ] },
+              { type: "ExpressionStatement", expression: {
+                type: "AssignmentExpression", operator: "=", left: sh2Pos(),
+                right: { type: "ArrayExpression", elements: args },
+              } },
+              { type: "TryStatement",
+                block: { type: "BlockStatement", body: [{ type: "ReturnStatement", argument: call }] },
+                handler: null,
+                finalizer: { type: "BlockStatement", body: [
+                  { type: "ExpressionStatement", expression: {
+                    type: "AssignmentExpression", operator: "=", left: sh2Pos(), right: prev,
+                  } },
+                ] },
+              },
+            ],
+          },
+        },
+        arguments: [],
+      };
+      if (f.async) expr = { type: "AwaitExpression", argument: expr };
+    } else if (f.async) {
+      expr = { type: "AwaitExpression", argument: callExpr };
+    }
+    return { type: "ExpressionStatement", expression: expr };
   };
   const rewrite = (node) => {
     if (!node || typeof node !== "object") return node;
