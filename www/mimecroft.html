@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MIMEcroft.sh — a 3D maze treasure hunt written in bash</title>
+<style>
+  body { background:#1a1a2e; color:#e0e0e0; font-family:'Cascadia Code','Fira Code',ui-monospace,monospace; margin:0; padding:40px 24px 64px; display:flex; flex-direction:column; align-items:center; }
+  .wrap { max-width:780px; width:100%; }
+  h1 { font-size:22px; color:#7ec8e3; margin:0 0 4px; }
+  h2 { font-size:15px; color:#ffd75e; margin:28px 0 10px; border-bottom:1px solid #21262d; padding-bottom:6px; }
+  h3 { font-size:13px; color:#7ec8e3; margin:14px 0 6px; }
+  p, li { font-size:13px; line-height:1.55; color:#c9d1d9; }
+  .muted { color:#8b949e; }
+  a { color:#7ec8e3; text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  .panel { background:#0d1117; border:1px solid #21262d; border-radius:8px; padding:16px 20px; margin:14px 0; }
+  .play { background:#16233b; border-color:#1f3a5f; text-align:center; }
+  .play a.big { font-size:17px; color:#7ee787; font-weight:bold; }
+  .tag { display:inline-block; background:#21262d; color:#8b949e; font-size:11px; border-radius:4px; padding:1px 6px; margin-left:6px; vertical-align:1px; }
+  code { background:#21262d; color:#ffa657; padding:1px 5px; border-radius:4px; font-size:12px; }
+  .file { margin:12px 0; padding:10px 14px; background:#0d1117; border:1px solid #21262d; border-left:3px solid #7ec8e3; border-radius:6px; }
+  .file .path { font-size:14px; color:#7ee787; font-weight:bold; }
+  .file .desc { font-size:12.5px; color:#c9d1d9; margin-top:4px; }
+  .file ul { margin:6px 0 0; padding-left:18px; }
+  .file li { font-size:12px; color:#8b949e; margin:3px 0; }
+  .keys { margin:10px 0 0; }
+  .keys b { color:#ffd75e; }
+  .small { font-size:11.5px; color:#8b949e; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>MIMEcroft.sh</h1>
+  <p class="muted">a first-person 3D maze treasure hunt rendered over WebGL &mdash; written entirely in bash</p>
+
+  <div class="panel play">
+    <p style="margin:0 0 6px"><a class="big" href="./index.html?demo=mimecroft.sh">▶ Play MIMEcroft in the browser shell</a></p>
+    <p class="small" style="margin:0">opens the shell at <code>www/index.html</code> and auto-starts the game via the
+      allow-listed <code>?demo=mimecroft.sh</code> parameter (see <a href="../SECURITY.md">SECURITY.md</a>) &mdash; the
+      game boots as the <code>mimecroft</code> command. You can also just
+      <a href="./index.html">open the shell</a> and type <code>mimecroft</code>.</p>
+  </div>
+
+  <h2>What it is</h2>
+  <p>You are a lost shell command inside a corrupted filesystem. The maze around you is made of
+    <b>data blocks</b> &mdash; coloured chunks of file content. Somewhere in the depths lie hidden
+    <b>treasures</b>: the Great Operating Systems (GNU Hurd, Linux, FreeBSD, NetBSD, OpenBSD, Plan&nbsp;9, Minix,
+    Solaris, macOS Darwin, Unix) preserved as artifacts. But the filesystem is infested with
+    <b>evil MIMEs</b> &mdash; misbehaving content types (<code>image/jpeg</code>, <code>image/png</code>,
+    <code>application/octet-stream</code>, <code>text/plain</code>) that hunt you through the corridors.</p>
+  <p>Your gun fires a <b>single ray of pure type-checking</b>. Shooting a block mines through the data;
+    shooting a MIME sanitises it. Walk <i>into</i> a hidden treasure to recover it &mdash; shooting one
+    shatters the artifact and costs you an archaeology-licence strike (three strikes and the Board revokes it).</p>
+  <div class="panel">
+    <p class="keys" style="margin-top:0"><b>WASD</b> move &nbsp;·&nbsp; <b>←/→</b> turn &nbsp;·&nbsp; <b>SPACE</b> shoot &nbsp;·&nbsp; <b>Q</b> quit &nbsp;·&nbsp; <b>ESC</b> settings</p>
+    <p class="small" style="margin:6px 0 0">The settings menu tweaks the camera shift, texture size/seed, CRT &amp;
+      corruption effects, the minimap, mime speed and the sound mode (<i>notes</i> oscillators or <i>bash</i> &mdash;
+      sample-accurate generators).</p>
+  </div>
+
+  <h2>Why it's interesting</h2>
+  <ul>
+    <li>The <b>whole game is one bash script</b> (<code>bin/mimecroft.sh</code>, ~3,900 lines) that runs in the
+      browser via the shell's bash&rarr;JS transpiler &mdash; no build step, no WebGL API calls in the game itself.</li>
+    <li>The <b>GPU shaders are written in bash too</b> and compiled to GLSL ES&nbsp;1.00 at startup by the
+      sh&rarr;GLSL backend (see <a href="../WRITING_GPU_SHADERS_IN_BASH.md">WRITING_GPU_SHADERS_IN_BASH.md</a>).</li>
+    <li>The <b>block textures and sound effects are synthesised by bash</b>: pseudorandom value-noise texture
+      generators and sample-accurate DSP sound generators, all deterministic per seed.</li>
+    <li>Every browser capability is a file: the game renders by writing cubes to <code>/dev/webgl</code> and
+      plays by writing samples to <code>/dev/audio</code> &mdash; the Plan&nbsp;9-style filesystem-as-API metaphor
+      (see <a href="../docs/bash-game-vision.md">bash-game-vision.md</a> and
+      <a href="../docs/mimecroft-proposal.md">mimecroft-proposal.md</a>).</li>
+  </ul>
+
+  <h2>The implementation &mdash; the .sh files</h2>
+
+  <div class="file">
+    <div class="path"><a href="./bin/mimecroft.sh">bin/mimecroft.sh</a> <span class="tag">~3,900 lines</span></div>
+    <div class="desc">The game itself &mdash; the <code>mimecroft</code> command. One script does everything:</div>
+    <ul>
+      <li><b>world generation</b> &mdash; a seeded drunkard's walk carves the corridors over a 16&times;16&times;3
+        block grid; an indestructible obsidian ring borders the maze; coloured gem blocks and grass patches are
+        scattered deterministically</li>
+      <li><b>rendering</b> &mdash; a painter's-algorithm scan (far-to-near along the facing axis) writes every
+        visible cube to <code>/dev/webgl/blocks</code> in one batched payload per frame; a continuous frustum
+        culls off-screen cells; floor/ceiling planes follow the camera</li>
+      <li><b>gameplay</b> &mdash; movement/turn glides, a ray-cast shot with per-material hardness and damage
+        (blocks crack, then break), hidden treasures claimed by walking in, and MIME entities that hunt or flee</li>
+      <li><b>HUD</b> &mdash; a canvas radar/minimap, score/hp/licence/fps digits in a 3&times;5 pixel font, floating
+        treasure-name labels, a view-model gun with muzzle flash, and the settings menu</li>
+      <li><b>assets</b> &mdash; loads the generated textures, treasure labels and MIME banners through
+        <code>/dev/webgl/texture</code>, and plays sounds through <code>/dev/audio</code></li>
+    </ul>
+  </div>
+
+  <div class="file">
+    <div class="path"><a href="./examples/mimecroft-vertex.sh">examples/mimecroft-vertex.sh</a> <span class="tag">~50 lines</span></div>
+    <div class="desc">The <b>vertex shader authored in bash</b>. Object&rarr;world transform, the camera-relative
+      delta, the yaw rotation (cos/sin via <code>bc</code>), and the fake perspective
+      (<code>gl_Position = (rel&times;0.45, w&sup2;/64, w)</code>). Compiled at startup by <code>sh2glsl --vertex</code>
+      into GLSL ES 1.00; the compiled reference is
+      <a href="./examples/mimecroft-vertex.glsl">examples/mimecroft-vertex.glsl</a>.</div>
+  </div>
+
+  <div class="file">
+    <div class="path"><a href="./examples/mimecroft-frag.sh">examples/mimecroft-frag.sh</a> <span class="tag">~68 lines</span></div>
+    <div class="desc">The <b>fragment shader authored in bash</b>: per-pixel block-texture tint, the crack-overlay
+      blend on damaged blocks, and the optional CRT scanlines / corruption streaks / vignette. Every intermediate
+      is bounded to fit <code>precision mediump int</code>. Compiled by <code>sh2glsl</code>; the compiled reference
+      is <a href="./examples/mimecroft-frag.glsl">examples/mimecroft-frag.glsl</a>.</div>
+  </div>
+
+  <div class="file">
+    <div class="path"><a href="./examples/textures/texture-lib.sh">examples/textures/</a> <span class="tag">17 generators</span></div>
+    <div class="desc">Pseudorandom, seamlessly tileable block textures, generated by bash (seeded LCG + value noise,
+      no floats, no <code>$RANDOM</code>), deterministic per seed. <a href="./examples/textures/README.md">README</a>.
+      The core <code>texture-lib.sh</code> is inlined into each generator so they run identically under host bash,
+      the real-bash wasm, and the transpiled shell:</div>
+    <ul>
+      <li><a href="./examples/textures/texture-stone.sh">stone</a> · <a href="./examples/textures/texture-sandstone.sh">sandstone</a> ·
+          <a href="./examples/textures/texture-dirt.sh">dirt</a> · <a href="./examples/textures/texture-grass.sh">grass</a> ·
+          <a href="./examples/textures/texture-leaves.sh">leaves</a> · <a href="./examples/textures/texture-wood.sh">wood</a> ·
+          <a href="./examples/textures/texture-brick.sh">brick</a> · <a href="./examples/textures/texture-water.sh">water</a> ·
+          <a href="./examples/textures/texture-obsidian.sh">obsidian</a> &mdash; the block walls/floor</li>
+      <li><a href="./examples/textures/texture-chest.sh">chest</a> &mdash; the treasure-artifact side (wood + iron struts + latch)</li>
+      <li><a href="./examples/textures/texture-crack.sh">crack</a> &mdash; the transparent RGBA damage overlay on mined blocks</li>
+      <li><a href="./examples/textures/texture-jpeg.sh">jpeg</a> · <a href="./examples/textures/texture-png.sh">png</a> ·
+          <a href="./examples/textures/texture-octet.sh">octet</a> · <a href="./examples/textures/texture-text.sh">text</a> &mdash; the MIME
+          entity icons (a tiny DCT-grid photo, a transparency checkerboard, a hex dump, a text page)</li>
+      <li><a href="./examples/textures/read-texture.sh">read-texture.sh</a> · <a href="./examples/textures/make-textures.sh">make-textures.sh</a> &mdash; TSV reader + one-shot PPM&rarr;PNG&rarr;contact-sheet batch</li>
+    </ul>
+  </div>
+
+  <div class="file">
+    <div class="path"><a href="./examples/sounds/sound-lib.sh">examples/sounds/</a> <span class="tag">12 synthesizers</span></div>
+    <div class="desc">Every game sound as a list of signed 16-bit PCM samples at 22050&nbsp;Hz, synthesised in bash
+      (sine-table waveforms, envelopes, seeded noise) and played through <code>/dev/audio/samples</code> in the
+      game's <i>bash</i> sound mode. <a href="./examples/sounds/README.md">README</a>:</div>
+    <ul>
+      <li><a href="./examples/sounds/sound-hit.sh">hit</a> (material-dependent tick) · <a href="./examples/sounds/sound-break.sh">break</a> ·
+          <a href="./examples/sounds/sound-thud.sh">thud</a> · <a href="./examples/sounds/sound-shoot.sh">shoot</a> ·
+          <a href="./examples/sounds/sound-kill.sh">kill</a> · <a href="./examples/sounds/sound-damage.sh">damage</a></li>
+      <li><a href="./examples/sounds/sound-treasure.sh">treasure</a> (recovery fanfare) · <a href="./examples/sounds/sound-shatter.sh">shatter</a> ·
+          <a href="./examples/sounds/sound-walk.sh">walk</a> · <a href="./examples/sounds/sound-mime.sh">mime</a></li>
+      <li><a href="./examples/sounds/make-sounds.sh">make-sounds.sh</a> (batch .wav/.tsv) · <a href="./examples/sounds/audition-sounds.sh">audition-sounds.sh</a> (A/B audition)</li>
+    </ul>
+  </div>
+
+  <h2>How it runs</h2>
+  <p>The page's bash&rarr;JS transpiler turns <code>mimecroft.sh</code> into JavaScript against the sh2 runtime;
+    the <code>/dev/webgl</code> device (<code>src/fs/webgldev.js</code>) provides the WebGL context as files
+    (<code>shader/</code>, <code>buffer/</code>, <code>uniform/</code>, <code>call</code>, <code>blocks</code>),
+    and <code>/dev/audio</code> plays the notes or sample lists. The same script runs headless in the Node CLI
+    (a null WebGL device), which is how the game is regression-tested.</p>
+
+  <p class="small">MIMEcroft lives in the <a href="https://github.com/gmatht/j.cmd">j.cmd</a> repo &mdash;
+    <a href="./bin/mimecroft.sh">the game</a>, its <a href="./examples/mimecroft-vertex.sh">shaders</a>,
+    <a href="./examples/textures/">textures</a> and <a href="./examples/sounds/">sounds</a>, all written in bash.</p>
+</div>
+</body>
+</html>

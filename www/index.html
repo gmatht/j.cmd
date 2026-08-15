@@ -6270,6 +6270,25 @@ document.addEventListener("click", (e) => {
   }
   write("║     JavaScript is the binary format  ║\n", "info");
   write("╚══════════════════════════════════════╝\n", "info");
+  // MIMEcroft — the bundled 3D bash game (the ?demo= auto-start page)
+  {
+    const line = document.createElement("span");
+    line.className = "info";
+    const game = document.createElement("a");
+    game.href = "./mimecroft.html";
+    game.className = "banner-link";
+    game.textContent = "MIMEcroft — a 3D maze treasure hunt written in bash";
+    line.append("\u2b50 ");
+    line.append(game);
+    line.append("  ·  ");
+    const demo = document.createElement("a");
+    demo.href = "./index.html?demo=mimecroft.sh";
+    demo.className = "banner-link";
+    demo.textContent = "play";
+    line.append(demo, "\n");
+    if (welcomeText) welcomeText.appendChild(line);
+    else term.insertBefore(line, promptLine);
+  }
   write("Type 'help' for available commands.\n\n", "info");
   write("Features: Tab completion · Ctrl+L clear · Ctrl+C copy/interrupt · Up/Down history\n", "info");
   write("          cd into .zip files — archives browse like directories (ls/cat/cp inside)\n", "info");
