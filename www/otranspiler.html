@@ -568,12 +568,26 @@ function gateStatus(dir, name) {
 }
 // (re)paint every corpus example button + header count for the current target
 function colourExamples() {
-  document.querySelectorAll(".example-btn[data-gate-dir]").forEach((btn) => {
+  const gateBtns = document.querySelectorAll(".example-btn[data-gate-dir]");
+  gateBtns.forEach((btn) => {
     const g = gateStatus(btn.dataset.gateDir, btn.dataset.gateName);
     btn.classList.remove("gate-green", "gate-red", "gate-yellow");
     if (g) btn.classList.add(g.cls);
     btn.title = btn.dataset.gateHint + (g ? " — " + g.label : " — no cached gate result");
   });
+  // diagnostic: what did this pass colour, per corpus? (the button-grey
+  // reports traced back to the gate not being applied — this prints the
+  // per-corpus class counts once so the console shows it directly)
+  if (gateBtns.length) {
+    const byDir = {};
+    gateBtns.forEach((b) => {
+      const d = b.dataset.gateDir || "?";
+      const k = [...b.classList].find((c) => c.startsWith("gate-")) || "NO-GATE";
+      byDir[d] = byDir[d] || {};
+      byDir[d][k] = (byDir[d][k] || 0) + 1;
+    });
+    console.info("[otranspiler] coloured " + gateBtns.length + " example buttons (target " + tgtLang + "): " + JSON.stringify(byDir));
+  }
   document.querySelectorAll(".example-count[data-gate-dir]").forEach((c) => {
     const t = corpusCountText(c.dataset.gateDir);
     if (t) c.textContent = t;
