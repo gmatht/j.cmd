@@ -3377,7 +3377,7 @@
 },
 "fish": {
 "fail": 0,
-"pass": 79,
+"pass": 80,
 "results": {
 "t01_echo.fish": "PASS",
 "t01_literal.fish": "PASS",
@@ -3457,10 +3457,11 @@
 "t79_return.fish": "PASS",
 "t80_arith_unary.fish": "PASS",
 "t81_regex_match.fish": "PASS",
-"t82_break.fish": "PASS"
+"t82_break.fish": "PASS",
+"t83_continue.fish": "PASS"
 },
 "skip": 0,
-"total": 79
+"total": 80
 },
 "go": {
 "fail": 0,
@@ -4027,7 +4028,7 @@
 "total": 91
 }
 },
-"generated": "2026-08-15T04:22:03+00:00",
+"generated": "2026-08-15T04:44:47+00:00",
 "source": "/home/llm/sh2loop",
 "triage": {
 "backends": {
