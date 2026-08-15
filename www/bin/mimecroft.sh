@@ -2102,6 +2102,18 @@ CELL_H="0.056"
 GLP_W="0.008"
 GLP_H="0.011"
 
+# format a 0-255 colour channel to a 0.00-1.00 NDC component (the
+# texture payloads carry raw ints; the device needs the float form).
+# Lost in the same edit that dropped read_tex_field/strip_tex_field —
+# without it every per-pixel fmt_c call resolved to a command-not-found
+# (the shell even tried /www/wasm-bin/fmt_c.wasm).
+fmt_c() { fc_v=$1
+  fc_x=$(( (fc_v * 100) / 255 ))
+  if [ "$fc_x" -ge 100 ]; then fv="1.00"
+  elif [ "$fc_x" -lt 10 ]; then fv="0.0$fc_x"
+  else fv="0.$fc_x"; fi
+}
+
 fmt_pos() { fp_ms=$1
   # negative milli values are legal (left turns glide 0 → -90°) —
   # format the magnitude and apply the sign
