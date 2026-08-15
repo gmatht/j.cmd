@@ -103,6 +103,35 @@ FRONTEND_DIR = {"sh": "sh-posix", "go": "go", "py": "py",
                 "fish": "fish", "zsh": "zsh", "pl": "pl", "c": "c",
                 "bat": "bat", "cpp": "cpp", "powershell": "powershell",
                 "rust": "rust", "zig": "zig"}
+# frontend dir → (www corpus dir, testdata subdir) — mirrors the testdata
+# into www/examples/<dir>/ so the GUI ships the SAME corpus the fleet
+# gates (the browser can't reach the sh2loop tree). cpp keeps its files
+# in testdata_cpp/.
+FRONTEND_TD = {"posix-sh-go": ("sh-posix", "testdata"), "go-sh": ("go", "testdata"),
+               "py-sh-go": ("py", "testdata"), "fish-sh-go": ("fish", "testdata"),
+               "zsh-sh-go": ("zsh", "testdata"), "perl-sh-go": ("pl", "testdata"),
+               "c-sh-go": ("c", "testdata"), "cpp-sh-go": ("cpp", "testdata_cpp"),
+               "bat-sh-go": ("bat", "testdata"), "powershell-sh-go": ("powershell", "testdata"),
+               "rust-frontend": ("rust", "testdata"), "zig-sh-go": ("zig", "testdata")}
+import shutil
+for fe, (cdir, sub) in FRONTEND_TD.items():
+    src = os.path.join(loop, "frontends", fe, sub)
+    if not os.path.isdir(src):
+        continue
+    cdst = os.path.join(dst, cdir)
+    os.makedirs(cdst, exist_ok=True)
+    names = sorted(f for f in os.listdir(src) if os.path.isfile(os.path.join(src, f)))
+    kept = set()
+    for n in names:
+        shutil.copy2(os.path.join(src, n), os.path.join(cdst, n))
+        kept.add(n)
+    # drop corpus files the fleet no longer carries (never the manifest)
+    for old in os.listdir(cdst):
+        if old != "index.json" and old not in kept:
+            os.unlink(os.path.join(cdst, old))
+    with open(os.path.join(cdst, "index.json"), "w") as fh:
+        json.dump(names, fh)
+    print(f"  [corpus:{cdir}] {len(names)} examples mirrored from {fe}/{sub}")
 frontends = {}
 tsv = os.path.join(loop, ".frontend_gate.tsv")
 if os.path.isfile(tsv):
@@ -176,8 +205,38 @@ data = {
 }
 os.makedirs(dst, exist_ok=True)
 out = os.path.join(dst, "gate.json")
-with open(out, "w") as fh:
-    json.dump(data, fh, indent=0, sort_keys=True)
-    fh.write("\n")
-print(f"==> {out} ({os.path.getsize(out)} bytes)")
+
+def data_only(s):
+    """The gate content minus the churn metadata (generated/source change
+    on EVERY run — committing those would spam history once per sweep)."""
+    try:
+        d = json.loads(s)
+    except Exception:
+        return s
+    d.pop("generated", None)
+    d.pop("source", None)
+    return json.dumps(d, sort_keys=True)
+
+prev = open(out).read() if os.path.exists(out) else ""
+new = json.dumps(data, indent=0, sort_keys=True) + "\n"
+if data_only(new) == data_only(prev):
+    print(f"==> {out} unchanged (verdict data identical)")
+else:
+    with open(out, "w") as fh:
+        fh.write(new)
+    print(f"==> {out} ({os.path.getsize(out)} bytes)")
+    # the verdict data changed — bump the GUI's cache-bust version so a
+    # browser/proxy that cached the old `?v=N` can't keep serving the
+    # previous snapshot (the fetch also uses cache:'no-cache').
+    hp = os.path.join(dst, "..", "otranspiler.html")
+    try:
+        html = open(hp).read()
+    except FileNotFoundError:
+        html = None
+    if html is not None:
+        m = re.search(r'const GATE_VERSION = "(\d+)"', html)
+        if m:
+            nv = str(int(m.group(1)) + 1)
+            open(hp, "w").write(html.replace(m.group(0), 'const GATE_VERSION = "' + nv + '"'))
+            print("GATE_VERSION -> " + nv)
 PY
