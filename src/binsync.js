@@ -20,7 +20,7 @@
 
 import { fs } from "./fs/index.js";
 
-const BIN_VERSION = "4";   // bump whenever www/bin templates change
+const BIN_VERSION = "5";   // bump whenever www/bin templates change
 
 const done = new Map();   // command name → resolved /bin path (materialized/verified this session)
 const nope = new Set();   // commands confirmed NOT template-backed (don't retry)
