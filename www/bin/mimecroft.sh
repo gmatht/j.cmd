@@ -1169,7 +1169,7 @@ emit_vertex_shader() {
   # yaw rotation, the fake perspective + the
   # strafe screen-shift (uCamShift·w keeps it a constant NDC-x offset),
   # and the uOverlay > 0.5 flat-quad path.
-  vs_fb="attribute vec3 aPosition; attribute vec3 aShade; attribute vec2 aUv; uniform vec3 uCamPos; uniform float uCamYaw; uniform float uCamShift; uniform vec3 uObjPos; uniform vec3 uBlockColor; uniform vec3 uScale; uniform float uOverlay; varying vec4 vColor; varying vec2 vUv; void main() { vec3 p = aPosition * uScale + uObjPos; if (uOverlay > 0.5) { gl_Position = vec4(p.x + uCamShift, p.y, -0.95, 1.0); vColor = vec4(aShade * uBlockColor, 1.0); vUv = vec2(0.0); return; } vec3 cam = uCamPos + vec3(0.0, 0.5, 0.0); vec3 d = p - cam; float a = uCamYaw * 0.0174532925; float c = cos(a); float s = sin(a); vec3 rel = vec3(d.x * c + d.z * s, d.y, -d.x * s + d.z * c); float w = -rel.z; if (w < 0.0001) w = 0.0001; gl_Position = vec4(rel.x * 0.3375 + uCamShift * w, rel.y * 0.45, w * w / 64.0, w); vColor = vec4(aShade * uBlockColor, 1.0); if (uScale.x > 1.1) { vUv = p.xz; } else { vUv = aUv; } }"
+  vs_fb="attribute vec3 aPosition; attribute vec3 aShade; attribute vec2 aUv; uniform vec3 uCamPos; uniform float uCamYaw; uniform float uCamShift; uniform vec3 uObjPos; uniform vec3 uBlockColor; uniform vec3 uScale; uniform float uOverlay; varying vec4 vColor; varying vec2 vUv; void main() { vec3 p = aPosition * uScale + uObjPos; if (uOverlay > 0.5) { gl_Position = vec4(p.x + uCamShift, p.y, -0.95, 1.0); vColor = vec4(aShade * uBlockColor, 1.0); vUv = vec2(0.0); return; } vec3 cam = uCamPos + vec3(0.0, 0.5, 0.0); vec3 d = p - cam; float a = uCamYaw * 0.0174532925; float c = cos(a); float s = sin(a); vec3 rel = vec3(d.x * c + d.z * s, d.y, -d.x * s + d.z * c); float w = -rel.z; if (w < 0.5) w = 0.5; gl_Position = vec4(rel.x * 0.3375 + uCamShift * w, rel.y * 0.45, w * w / 64.0, w); vColor = vec4(aShade * uBlockColor, 1.0); if (uScale.x > 1.1) { vUv = p.xz; } else { vUv = aUv; } }"
   vs_src=hand
   # compile the bash-authored vertex program — canonical at
   # /examples/mimecroft-vertex.sh (the /examples mount serves
@@ -1184,11 +1184,14 @@ emit_vertex_shader() {
     # -w≤x≤w clip volume unless x=0), so the whole face vanishes — the
     # block renders FLAT (axis-aligned edges, no visible side) and the
     # corridor walls look longer in depth than they are wide. Clamp w
-    # to a small positive: every vertex stays in front, the face becomes
-    # the same wedge the correct clip would produce, and no polygon is
-    # left to the driver. (The generator's float grammar can't express
-    # the clamp, so it is injected here — and baked into vs_fb above.)
-    glsl=${glsl/g_w = ((((0.0) - g_relz)) + (0.0));/g_w = ((((0.0) - g_relz)) + (0.0)); if (g_w < 0.0001) g_w = 0.0001;}
+    # to half a cell: a straddling vertex at w→0 would divide to ±∞ and
+    # the face exploded to the window edge (the grass patches beside the
+    # player looked twice as long in depth as wide). The w=0.5 floor
+    # keeps every vertex in front AND bounded — the same-cell faces land
+    # at the cell boundary, the corridor faces (w ≥ 0.5) are untouched.
+    # (The generator's float grammar can't express the clamp, so it is
+    # injected here — and baked into vs_fb above.)
+    glsl=${glsl/g_w = ((((0.0) - g_relz)) + (0.0));/g_w = ((((0.0) - g_relz)) + (0.0)); if (g_w < 0.5) g_w = 0.5;}
     echo "$glsl" > /dev/webgl/shader/vertex
     # real-GL ground truth: if the generated shader failed to compile,
     # fall back to the hand-written one (same look, guaranteed-ES1.00).
