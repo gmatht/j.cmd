@@ -577,7 +577,57 @@ export function directShellFnCalls(program) {
       optional: false,
     };
     let expr = callExpr;
-    if (f.posRefs) {
+    if (f.hasReturn && !f.posRefs) {
+      // hasReturn target: the dispatch's `$?` contract is lastExit =
+      // Number(return-value) (false → 1) — emulate it on the direct
+      // call so the transformation is EXACTLY dispatch-equivalent even
+      // when a later statement reads $?. The game's call sites discard
+      // the result and overwrite lastExit right after, but the emulation
+      // keeps the pass general (can_step/cell_visible/try_draw/… return
+      // "0"/"1" verdicts through the STORE vars, not $?).
+      const r = { type: "Identifier", name: "__r" };
+      const sh2LastExit = () => ({
+        type: "MemberExpression", computed: false, optional: false,
+        object: { type: "Identifier", name: "sh2" },
+        property: { type: "Identifier", name: "lastExit" },
+      });
+      const typeofR = (lit) => ({
+        type: "BinaryExpression", operator: "===",
+        left: { type: "UnaryExpression", operator: "typeof", prefix: true, argument: r },
+        right: { type: "Literal", value: lit },
+      });
+      const inner = f.async ? { type: "AwaitExpression", argument: callExpr } : callExpr;
+      expr = {
+        type: "CallExpression",
+        callee: {
+          type: "ArrowFunctionExpression", async: !!f.async, params: [], expression: false, generator: false,
+          body: {
+            type: "BlockStatement",
+            body: [
+              { type: "VariableDeclaration", kind: "const", declarations: [
+                { type: "VariableDeclarator", id: r, init: inner },
+              ] },
+              { type: "ExpressionStatement", expression: {
+                type: "AssignmentExpression", operator: "=", left: sh2LastExit(),
+                right: {
+                  type: "ConditionalExpression",
+                  test: { type: "LogicalExpression", operator: "||", left: typeofR("string"), right: typeofR("number") },
+                  consequent: { type: "CallExpression", callee: { type: "Identifier", name: "Number" }, arguments: [r] },
+                  alternate: {
+                    type: "ConditionalExpression",
+                    test: { type: "BinaryExpression", operator: "===", left: r, right: { type: "Literal", value: false } },
+                    consequent: { type: "Literal", value: 1 },
+                    alternate: { type: "Literal", value: 0 },
+                  },
+                },
+              } },
+            ],
+          },
+        },
+        arguments: [],
+      };
+      if (f.async) expr = { type: "AwaitExpression", argument: expr };
+    } else if (f.posRefs) {
       // the callee reads `$5..$9` via `sh2.positional[N]` — the runtime
       // dispatch sets that array for the call, so the DIRECT call must
       // too (and restore the caller's positionals after, exactly like
@@ -633,10 +683,27 @@ export function directShellFnCalls(program) {
       if (e && e.type === "AwaitExpression") {
         const inner = rewrite(e);
         if (inner && inner.type === "ExpressionStatement") return inner;
+        // `await sh2.fnCall(...)` of a RETURNING function as a whole
+        // statement: the dispatch result is discarded (the game's calls
+        // set a STORE var; the next test overwrites $? anyway) — convert
+        // it to a direct call with the dispatch's $? emulation. Value-
+        // position awaits stay dispatched (their result is consumed).
+        const ainfo = shellFnCallInfo(e.argument);
+        if (ainfo && fns.has(ainfo.name)) {
+          const af = fns.get(ainfo.name);
+          if (af.hasReturn && !af.posRefs) return directStmt(ainfo);
+        }
         return { type: "ExpressionStatement", expression: inner };
       }
       const info = shellFnCallInfo(e);
-      if (info && fns.has(info.name) && !fns.get(info.name).hasReturn) return directStmt(info);
+      if (info && fns.has(info.name)) {
+        const f = fns.get(info.name);
+        // a hasReturn target that also reads $1..$9 via the positional
+        // bridge keeps the runtime dispatch (the direct wrapper cannot
+        // both bridge positionals AND carry the return value) — rare
+        // (HUD/menu rect helpers), not on the hot path.
+        if (!(f.hasReturn && f.posRefs)) return directStmt(info);
+      }
       return { type: "ExpressionStatement", expression: rewrite(node.expression) };
     }
     if (node.type === "AwaitExpression" && node.argument && node.argument.type === "CallExpression") {
