@@ -23,7 +23,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-TESTS=(__mini-test.mjs __my_qsort-test.mjs __linked-list-test.mjs __qsort-builtin-test.mjs __shell-regression.mjs __shader-test.mjs __sound-test.mjs)
+TESTS=(__mini-test.mjs __my_qsort-test.mjs __linked-list-test.mjs __qsort-builtin-test.mjs __shell-regression.mjs __shader-test.mjs __sound-test.mjs __sideface-test.mjs)
 ALLOW_DIRTY=false
 SKIP_TESTS=false
 for a in "$@"; do

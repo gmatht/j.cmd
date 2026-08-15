@@ -80,12 +80,33 @@ else
   rely=$dy
   relz=$(echo "scale=4; 0.0 - $dx * $s + $dz * $c + 0.0" | bc)
   w=$(echo "scale=4; 0.0 - $relz + 0.0" | bc)
-  # the fake perspective: x/y scaled 0.45 = the 50% map scale (x + the strafe screen-shift
-  # uCamShift·w), z = w²/64 (depth-ordered), w = depth
+  # fake perspective: x/y scaled 0.45 = the 50% map scale (x + the strafe screen-shift
+  # uCamShift·w), z = w²/64 (depth-ordered), w = depth. w is CLAMPED by the
+  # game at compile time (emit_vertex_shader injects `if (g_w < 0.0001)…`
+  # into the generated GLSL — the generator's float grammar can't express
+  # it): a cube face that straddles the camera plane (the toward-player
+  # side of a same-row block) has w<0 vertices, the GPU near-plane clip
+  # of the straddling polygon is degenerate and the face vanishes (the
+  # block renders flat); clamping keeps every vertex in front.
   vp_x=$(echo "scale=4; $relx * 0.45 + $ucs * $w / 1000.0 + 0.0" | bc)
   vp_y=$(echo "scale=4; $rely * 0.45" | bc)
   vp_z=$(echo "scale=4; $w * $w / 64.0" | bc)
   vp_w=$w
-  vu_u=$auv_u
-  vu_v=$auv_v
+  # texture coordinates: cubes use the per-face UVs (auv_* 0..1000);
+  # the floor/ceiling BACKGROUND planes (uScale.x = 40 → usc_x 40000,
+  # vs 1000 for a cube / 700 for a mime) instead pass the WORLD xz
+  # position (milli-units ×1000 — the vUv bridge), so the fragment
+  # shader's quantized texel sample tiles the texture once per world
+  # unit — the device uploads every texture with gl.REPEAT wrapping
+  # (all game texture sizes are powers of two, so repeat is legal in
+  # WebGL1 without mipmaps). Pure integer: wx·1000 = ap_x·usc_x/1000
+  # + uop_x (bc float truncation ≤ 1 milli-unit — invisible at texel
+  # granularity, and keeps vu_* int-typed so GLSL compiles clean).
+  if [ "$usc_x" -gt 1100 ]; then
+    vu_u=$((ap_x * usc_x / 1000 + uop_x))
+    vu_v=$((ap_z * usc_z / 1000 + uop_z))
+  else
+    vu_u=$auv_u
+    vu_v=$auv_v
+  fi
 fi

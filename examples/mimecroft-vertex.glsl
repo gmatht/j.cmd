@@ -12,8 +12,8 @@ uniform vec3 uObjPos;
 uniform vec3 uScale;
 uniform vec3 uBlockColor;
 uniform float uOverlay;
-varying vec4 vColor;
-varying vec2 vUv;
+varying highp vec4 vColor;
+varying highp vec2 vUv;
 
 void main() {
     int g_ap_x;
@@ -121,8 +121,13 @@ void main() {
         g_vp_y = (g_rely * (0.45));
         g_vp_z = (((g_w * g_w)) / (64.0));
         g_vp_w = g_w;
-        g_vu_u = g_auv_u;
-        g_vu_v = g_auv_v;
+        if ((g_usc_x > 1100)) {
+            g_vu_u = (((((g_ap_x * g_usc_x)) / 1000)) + g_uop_x);
+            g_vu_v = (((((g_ap_z * g_usc_z)) / 1000)) + g_uop_z);
+        } else {
+            g_vu_u = g_auv_u;
+            g_vu_v = g_auv_v;
+        }
     }
     gl_Position = vec4(g_vp_x, g_vp_y, g_vp_z, g_vp_w);
     vColor = vec4(float(g_vc_r) / 1000.0, float(g_vc_g) / 1000.0, float(g_vc_b) / 1000.0, float(g_vc_a) / 1000.0);

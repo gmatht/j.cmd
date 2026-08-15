@@ -236,6 +236,7 @@ if [ "$1" = "--sounds" ] || [ "$1" = "--sound" ]; then
   if [ "$2" = "bash" ]; then SOUND_MODE=bash; fi
 fi
 anim=0              # 1 while an action glides the camera
+precache_done=0     # the background sound pre-cache spawns once per session
 anim_t0=0           # wall-clock ms when the current glide started
 ANIM_MS=200         # each action completes in 0.2s of wall time
 ANIM_MS_CROUCH=400  # a move through a 1-tall (mined) passage — half speed
@@ -302,7 +303,7 @@ block_color() { bc_t=$1; case $bc_t in
   4) cr=0.95; cg=0.75; cb=0.10 ;;
   5) cr=0.20; cg=0.85; cb=0.85 ;;
   6) cr=0.85; cg=0.15; cb=0.20 ;;
-  7) cr=0.20; cg=1.00; cb=0.45 ;;
+  7) cr=1.00; cg=1.00; cb=1.00 ;;   # the treasure chest — white tint so the chest texture shows
   *) cr=1.00; cg=1.00; cb=1.00 ;;
 esac; }
 
@@ -362,35 +363,65 @@ block_material() { bm_t=$1
 # cats the cached payload to /dev/audio/samples. sound-lib.sh is staged
 # beside the generated scripts in /tmp so their $(dirname "$0")
 # sources resolve through the real bash's VFS bridge.
-play_sound() { ps_name=$1
-  if [ "$ps_name" = "-" ]; then return; fi
-  if [ "$ps_name" = "" ]; then return; fi
-  if [ ! -f /tmp/mimecroft-snd-$ps_name.tsv ]; then
-    if [ ! -f /tmp/sound-lib.sh ]; then
-      # stage the generator's shared core beside the staged scripts
-      # (cp is not a sync builtin in the transpiled shell — read + write
-      # through the async fs bridge instead)
-      sl_x=$(cat /examples/sounds/sound-lib.sh)
-      echo "$sl_x" > /tmp/sound-lib.sh
-    fi
-    # the cache key may carry the hit material: "hit-stone" →
-    # sound-hit.sh --material stone (there is no sound-hit-stone.sh —
-    # the material is a --material flag, not part of the script name)
-    ps_base=$ps_name
-    ps_mat=""
-    case $ps_name in
-      hit-*) ps_base="hit"; ps_mat=${ps_name#hit-} ;;
-    esac
-    if [ "$ps_mat" != "" ]; then
-      ps_x=$(/bin/bash /examples/sounds/sound-$ps_base.sh --tsv --material $ps_mat)
-    else
-      ps_x=$(/bin/bash /examples/sounds/sound-$ps_base.sh --tsv)
-    fi
-    ps_hdr=${ps_x%%	*}
-    if [ "$ps_hdr" != "#sound" ]; then return; fi
-    echo "$ps_x" > /tmp/mimecroft-snd-$ps_name.tsv
+#
+# cache_sound is the SHARED generator — play_sound calls it lazily on
+# first play, and precache_sounds (below) warms the SAME /tmp cache in
+# the background as soon as bash sounds are enabled, so the first play
+# is a cache hit instead of a ~20s generator run.
+cache_sound() { cs_name=$1
+  if [ "$cs_name" = "-" ] || [ "$cs_name" = "" ]; then return; fi
+  if [ -f /tmp/mimecroft-snd-$cs_name.tsv ]; then return; fi
+  if [ ! -f /tmp/sound-lib.sh ]; then
+    # stage the generator's shared core beside the staged scripts
+    # (cp is not a sync builtin in the transpiled shell — read + write
+    # through the async fs bridge instead)
+    sl_x=$(cat /examples/sounds/sound-lib.sh)
+    echo "$sl_x" > /tmp/sound-lib.sh
   fi
-  cat /tmp/mimecroft-snd-$ps_name.tsv > /dev/audio/samples
+  # the cache key may carry the hit material: "hit-stone" →
+  # sound-hit.sh --material stone (there is no sound-hit-stone.sh —
+  # the material is a --material flag, not part of the script name)
+  cs_base=$cs_name
+  cs_mat=""
+  case $cs_name in
+    hit-*) cs_base="hit"; cs_mat=${cs_name#hit-} ;;
+  esac
+  if [ "$cs_mat" != "" ]; then
+    cs_x=$(/bin/bash /examples/sounds/sound-$cs_base.sh --tsv --material $cs_mat)
+  else
+    cs_x=$(/bin/bash /examples/sounds/sound-$cs_base.sh --tsv)
+  fi
+  cs_hdr=${cs_x%%	*}
+  if [ "$cs_hdr" != "#sound" ]; then return; fi
+  echo "$cs_x" > /tmp/mimecroft-snd-$cs_name.tsv
+}
+
+play_sound() { ps_name=$1
+  if [ "$ps_name" = "-" ] || [ "$ps_name" = "" ]; then return; fi
+  cache_sound $ps_name
+  if [ -f /tmp/mimecroft-snd-$ps_name.tsv ]; then
+    cat /tmp/mimecroft-snd-$ps_name.tsv > /dev/audio/samples
+  fi
+}
+
+# ─── background sound pre-cache ───────────────────────────────────
+# As soon as bash sounds are enabled (the settings menu's SOUND MODE
+# row → BASH, or `--sounds bash`), warm the /tmp sound cache in the
+# background so the FIRST play of each sound is instant — the treasure
+# generator is ~10K samples, ~20s of real-bash-wasm time, and the hit
+# MATERIAL ladder adds five more generators. cache_sound is idempotent
+# (skips existing cache files), so re-runs and mid-list plays are
+# no-ops; the order puts the sounds the game plays first (the opening
+# shot hits the obsidian border → thud; the first blocks mined are the
+# hit materials) ahead of the long ones.
+PRECACHE_N=15
+PRECACHE_LIST=(hit hit-stone hit-dirt hit-wood hit-gold hit-gem thud break shoot walk damage kill mime shatter treasure)
+precache_sounds() {
+  pc_i=0
+  while [ "$pc_i" -lt "$PRECACHE_N" ]; do
+    cache_sound ${PRECACHE_LIST[$pc_i]}
+    pc_i=$((pc_i + 1))
+  done
 }
 
 play() { pl_note=$1; pl_mat=$2
@@ -1118,7 +1149,7 @@ emit_vertex_shader() {
   # yaw rotation, the fake perspective + the
   # strafe screen-shift (uCamShift·w keeps it a constant NDC-x offset),
   # and the uOverlay > 0.5 flat-quad path.
-  vs_fb="attribute vec3 aPosition; attribute vec3 aShade; attribute vec2 aUv; uniform vec3 uCamPos; uniform float uCamYaw; uniform float uCamShift; uniform vec3 uObjPos; uniform vec3 uBlockColor; uniform vec3 uScale; uniform float uOverlay; varying vec4 vColor; varying vec2 vUv; void main() { vec3 p = aPosition * uScale + uObjPos; if (uOverlay > 0.5) { gl_Position = vec4(p.x + uCamShift, p.y, -0.95, 1.0); vColor = vec4(aShade * uBlockColor, 1.0); vUv = vec2(0.0); return; } vec3 cam = uCamPos + vec3(0.0, 0.5, 0.0); vec3 d = p - cam; float a = uCamYaw * 0.0174532925; float c = cos(a); float s = sin(a); vec3 rel = vec3(d.x * c + d.z * s, d.y, -d.x * s + d.z * c); float w = -rel.z; gl_Position = vec4(rel.x * 0.45 + uCamShift * w, rel.y * 0.45, w * w / 64.0, w); vColor = vec4(aShade * uBlockColor, 1.0); if (uScale.x > 1.1) { vUv = p.xz; } else { vUv = aUv; } }"
+  vs_fb="attribute vec3 aPosition; attribute vec3 aShade; attribute vec2 aUv; uniform vec3 uCamPos; uniform float uCamYaw; uniform float uCamShift; uniform vec3 uObjPos; uniform vec3 uBlockColor; uniform vec3 uScale; uniform float uOverlay; varying vec4 vColor; varying vec2 vUv; void main() { vec3 p = aPosition * uScale + uObjPos; if (uOverlay > 0.5) { gl_Position = vec4(p.x + uCamShift, p.y, -0.95, 1.0); vColor = vec4(aShade * uBlockColor, 1.0); vUv = vec2(0.0); return; } vec3 cam = uCamPos + vec3(0.0, 0.5, 0.0); vec3 d = p - cam; float a = uCamYaw * 0.0174532925; float c = cos(a); float s = sin(a); vec3 rel = vec3(d.x * c + d.z * s, d.y, -d.x * s + d.z * c); float w = -rel.z; if (w < 0.0001) w = 0.0001; gl_Position = vec4(rel.x * 0.45 + uCamShift * w, rel.y * 0.45, w * w / 64.0, w); vColor = vec4(aShade * uBlockColor, 1.0); if (uScale.x > 1.1) { vUv = p.xz; } else { vUv = aUv; } }"
   vs_src=hand
   # compile the bash-authored vertex program — canonical at
   # /examples/mimecroft-vertex.sh (the /examples mount serves
@@ -1126,15 +1157,35 @@ emit_vertex_shader() {
   # generator is unavailable or the file isn't mounted
   glsl=$(sh2glsl --vertex /examples/mimecroft-vertex.sh)
   if [ "$glsl" != "" ]; then
+    # the toward-player side of a same-row block is EDGE-ON: the fake
+    # perspective divides by w, and the face's back half has w < 0 — its
+    # triangles straddle the camera plane. The GPU's near-plane clip of
+    # a straddling polygon is degenerate (the w=0 clip point fails the
+    # -w≤x≤w clip volume unless x=0), so the whole face vanishes — the
+    # block renders FLAT (axis-aligned edges, no visible side) and the
+    # corridor walls look longer in depth than they are wide. Clamp w
+    # to a small positive: every vertex stays in front, the face becomes
+    # the same wedge the correct clip would produce, and no polygon is
+    # left to the driver. (The generator's float grammar can't express
+    # the clamp, so it is injected here — and baked into vs_fb above.)
+    glsl=${glsl/g_w = ((((0.0) - g_relz)) + (0.0));/g_w = ((((0.0) - g_relz)) + (0.0)); if (g_w < 0.0001) g_w = 0.0001;}
     echo "$glsl" > /dev/webgl/shader/vertex
     # real-GL ground truth: if the generated shader failed to compile,
     # fall back to the hand-written one (same look, guaranteed-ES1.00).
     # The device logs "[shader/vertex] FAILED: …" on a bad compile —
     # probe for THIS stage only (a bare FAILED scan would also catch a
     # stale fragment/hud failure from earlier in the log).
-    vs_log=$(cat /dev/webgl/log)
-    vs_probe=${vs_log#*\[shader/vertex\] FAILED}
-    if [ "$vs_probe" != "$vs_log" ]; then
+    # the device's authoritative per-stage compile status: the state
+    # file reports "shader/vertex: N chars — compiled" after the write
+    # (or — FAILED). The simple %FAILED* pattern lowers to a native
+    # lastIndexOf on the state string (a bracket pattern would force the
+    # runtime sh2.param path, which reads the STORE — a freshly assigned
+    # let is never synced there and the probe would falsely fall back).
+    # A fallback write recompiles the stage, clearing its FAILED status,
+    # so each stage's probe only sees its OWN failure.
+    vs_state=$(cat /dev/webgl/state)
+    vs_probe=${vs_state%FAILED*}
+    if [ "$vs_probe" != "$vs_state" ]; then
       echo "$vs_fb" > /dev/webgl/shader/vertex
     else
       vs_src=bash
@@ -1260,9 +1311,9 @@ emit_fragment_shader() {
       # The device logs "[shader/fragment] FAILED: …" on a bad compile —
       # probe for THIS stage only (the vertex probe may have logged its
       # own FAILED earlier in the same log).
-      fs_log=$(cat /dev/webgl/log)
-      fs_probe=${fs_log#*\[shader/fragment\] FAILED}
-      if [ "$fs_probe" != "$fs_log" ]; then
+      fs_state=$(cat /dev/webgl/state)
+      fs_probe=${fs_state%FAILED*}
+      if [ "$fs_probe" != "$fs_state" ]; then
         echo "$fs_fb" > /dev/webgl/shader/fragment
       else
         fs_src=bash
@@ -1494,6 +1545,8 @@ load_textures() {
   load_tex dirt 8
   echo "    obsidian…"
   load_tex obsidian 10
+  echo "    chest…"
+  load_tex chest 15
   echo "    jpeg…"
   load_tex jpeg 11
   echo "    png…"
@@ -1701,7 +1754,7 @@ texture_of() { to_t=$1
   elif [ "$to_t" -eq 4 ]; then tx=2
   elif [ "$to_t" -eq 5 ]; then tx=3
   elif [ "$to_t" -eq 6 ]; then tx=4
-  elif [ "$to_t" -eq 7 ]; then tx=5
+  elif [ "$to_t" -eq 7 ]; then tx=15
   else tx=0; fi
 }
 
@@ -1789,7 +1842,7 @@ try_draw() { td_a=$1; td_b=$2; td_c=$3
   elif [ "$gv" -eq 4 ]; then cr=0.95; cg=0.75; cb=0.10
   elif [ "$gv" -eq 5 ]; then cr=0.20; cg=0.85; cb=0.85
   elif [ "$gv" -eq 6 ]; then cr=0.85; cg=0.15; cb=0.20
-  elif [ "$gv" -eq 7 ]; then cr=0.20; cg=1.00; cb=0.45
+  elif [ "$gv" -eq 7 ]; then cr=1.00; cg=1.00; cb=1.00
   else cr=1.00; cg=1.00; cb=1.00; fi
   # texture_of inlined
   if [ "$gv" -eq 2 ]; then tx=1
@@ -1797,7 +1850,7 @@ try_draw() { td_a=$1; td_b=$2; td_c=$3
   elif [ "$gv" -eq 4 ]; then tx=2
   elif [ "$gv" -eq 5 ]; then tx=3
   elif [ "$gv" -eq 6 ]; then tx=4
-  elif [ "$gv" -eq 7 ]; then tx=5
+  elif [ "$gv" -eq 7 ]; then tx=15
   else tx=0; fi
   # draw_block inlined (get_bhp + the batched append)
   td_bgi=$((td_b * CELLS + td_c * MAP_W + td_a))
@@ -3251,6 +3304,16 @@ main() {
       return
     fi
     sleep 0.02
+  fi
+  # background sound warm-up: as soon as bash sounds are enabled (the
+  # menu's SOUND MODE row or --sounds bash), generate every sound's TSV
+  # into the /tmp cache in the background — the first play of each sound
+  # is then a cache hit instead of a ~20s generator run. Runs detached
+  # (sh2.background) while the shader/maze/textures load; the generator
+  # list puts the sounds the opening minutes play first.
+  if [ "$SOUND_MODE" = "bash" ] && [ "$precache_done" -eq 0 ]; then
+    precache_done=1
+    precache_sounds &
   fi
   echo "  compiling the fragment shader…"
   sleep 0.02
