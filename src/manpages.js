@@ -716,8 +716,8 @@ DESCRIPTION
      source to wasm32-wasi binaries AND the compiled program runs in the
      same sandbox.
 
-     `wasmer install zig` stages the compiler AND the minimal lib bundle
-     (www/wasm-bin/zig-lib.dat — the exact std + compiler_rt sources the
+     wasmer install zig stages the compiler AND the minimal lib bundle
+     (www/wasm-bin/zig-lib.dat - the exact std + compiler_rt sources the
      wasm was built from, ~29MB raw / ~4MB gzipped, well under 100MB)
      into /tmp/zig-lib (RamFS — the WASI /tmp seed picks it up), sets
      ZIG_LIB_DIR / ZIG_LOCAL_CACHE_DIR / ZIG_GLOBAL_CACHE_DIR, and marks
