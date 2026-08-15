@@ -134,6 +134,9 @@ mkdir -p "$INC"
 cp -r "$WASI_SDK/share/wasi-sysroot/include/wasm32-wasi/"* "$INC/"
 rm -rf "$INC/c++"
 cp "$TINYCC"/include/*.h "$INC/" 2>/dev/null || true
+# the fork's include/ subdirectories (sys/wait.h — the sandbox wait
+# family; the wasi sysroot deliberately omits it) — copy recursively
+cp -r "$TINYCC"/include/sys "$INC/" 2>/dev/null || true
 
 # tcc predeclares size_t/ptrdiff_t/alloca in tccdefs.h — guard them so
 # the musl-style wasi headers can coexist (see the fork's include/stddef.h).
