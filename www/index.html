@@ -2873,7 +2873,7 @@ const builtins = {
     //
     // Type bash, get generated JS executed:
     //   bash → ESTree (debashl.wasm) → JS (sh2.* runtime) — with a
-//   bash → ESTree (debashcl.wasm) → JS (sh2.* runtime) → run in the shell
+//   bash → ESTree (otranspilerl.wasm) → JS (sh2.* runtime) → run in the shell
     if (args[0] === "-h" || args[0] === "--help") {
       stdout.write(`bash — run bash commands by transpiling them to JS
 
@@ -2885,7 +2885,7 @@ Usage:
   bash -                   execute from a pipe (explicit)
   bash                     interactive REPL (state persists per line)
 
-Pipeline:  bash → ESTree (debashcl.wasm) → JS (sh2.* runtime) → executed
+Pipeline:  bash → ESTree (otranspilerl.wasm) → JS (sh2.* runtime) → executed
 Loops, conditionals, variables, arithmetic and pipes work:
   bash 'for i in 1 2 3; do echo $i; done'
   bash 'x=1; while [ $x -lt 3 ]; do echo $x; x=$((x+1)); done'
@@ -3913,7 +3913,7 @@ const shellCtx = {
   ensureOtRuntime,
   get otRt() { return otRt; },
   runSourceContent: (content, lang, srcArgs) => sharedRunSourceContent(content, lang, srcArgs, shellCtx),
-  // .sh command execution — the debashcl engine (same as `bash file.sh`)
+  // .sh command execution — the otranspilerl engine (same as `bash file.sh`)
   runBashScript: (content, opts = {}) =>
     runBash(fs, content, {
       stdout: shellCtx.stdout,
@@ -5643,7 +5643,7 @@ const tbCmdPop = document.getElementById("tb-cmd-pop");
 // binaries (listed even before they've been run once — tcc, cproc,
 // grep, …) + PATH command files (.js/.wasm). Returns [name, category].
 // Keep WASM_BIN in step with the actual www/wasm-bin/*.wasm files.
-const WASM_BIN = ["cproc", "debashcl", "echo", "echoc", "go", "grep", "link", "make", "markdown", "python", "tcc", "wasm-diff", "zig", "zstd"];
+const WASM_BIN = ["cproc", "echo", "echoc", "go", "grep", "link", "make", "markdown", "python", "tcc", "wasm-diff", "zig", "zstd"];
 
 async function listAllCommands() {
   const cmds = new Map(); // name → category (first category wins)

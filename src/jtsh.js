@@ -441,7 +441,7 @@ const shellCtx = {
   get otRt() { return otRt; },
   syncOtVarsFromStore: () => syncOtVarsFromStore(otRt, otVars),
   runSourceContent: (content, lang, srcArgs) => sharedRunSourceContent(content, lang, srcArgs, shellCtx),
-  // .sh command execution — the debashcl engine (same as `bash file.sh`)
+  // .sh command execution — the otranspilerl engine (same as `bash file.sh`)
   runBashScript: (content, opts = {}) =>
     runBash(fs, content, {
       stdout: shellCtx.stdout,

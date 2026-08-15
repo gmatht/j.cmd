@@ -618,7 +618,7 @@ export async function runSegment(segmentText, stdin, isLast, target, ctx) {
       }
       let code = 1;
       try {
-        // The .sh command path: runBash (the debashcl engine — the SAME
+        // The .sh command path: runBash (the otranspilerl engine — the SAME
         // pipeline as `bash script.sh`) handles the full bash surface;
         // fall back to the shared otranspilerl runShellScript when the
         // ctx doesn't provide it.

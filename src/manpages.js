@@ -59,7 +59,7 @@ const SHORT = {
   qbe2wasm: "compile QBE IR (cproc output) to a wasm binary",
   cc: "compile C with the real cproc compiler (cproc → QBE IR → qbe2wasm)",
   bug: "file a bug report as a GitHub issue (with terminal context)",
-  bash2js: "transpile bash to JavaScript (debashcl ESTree)",
+  bash2js: "transpile bash to JavaScript (otranspilerl)",
   bash: "run bash commands: transpile to JS and execute",
   "cmd.exe": "run Windows batch by transpiling it to JS (bat2js)",
   cmd: "alias for cmd.exe (run Windows batch by transpiling it to JS)",
@@ -773,7 +773,7 @@ SYNOPSIS
 
 DESCRIPTION
      bash2js compiles bash source to JavaScript entirely in the
-     browser. The pipeline is bash → ESTree (debashcl.wasm, a real
+     browser. The pipeline is bash → ESTree (otranspilerl.wasm, a real
      bash compiler) → JS (sh2.* runtime). The generated JS targets
      the sh2.* runtime; save it to a .js command file to run it
      again without the compiler.
@@ -845,7 +845,7 @@ SYNOPSIS
 DESCRIPTION
      bash transpiles bash source to JavaScript and executes it
      immediately. The compiler runs in the browser: bash → ESTree
-     (debashcl.wasm) → JS (sh2.* runtime) → executed in the shell.
+     (otranspilerl.wasm) → JS (sh2.* runtime) → executed in the shell.
      Loops, conditionals, variables, arithmetic, pipes and command
      substitution work; pipelines run through the shell's own
      pipeline machinery.

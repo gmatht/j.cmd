@@ -54,7 +54,7 @@ export const builtins = {
     // cat script.sh | bash    — execute from a pipe
     //
     // Type bash, get generated JS executed:
-    //   bash → ESTree (debashcl.wasm) → JS (sh2.* runtime) → run in the shell
+    //   bash → ESTree (otranspilerl.wasm) → JS (sh2.* runtime) → run in the shell
     if (args[0] === "-h" || args[0] === "--help") {
       ctx.stdout.write(`bash — run bash commands by transpiling them to JS
 
@@ -66,7 +66,7 @@ Usage:
   bash -                   execute from a pipe (explicit)
     bash                     interactive REPL (state persists per line)
 
-Pipeline:  bash → ESTree (debashcl.wasm) → JS (sh2.* runtime) → executed
+Pipeline:  bash → ESTree (otranspilerl.wasm) → JS (sh2.* runtime) → executed
 Loops, conditionals, variables, arithmetic and pipes work:
   bash 'for i in 1 2 3; do echo $i; done'
   bash 'x=1; while [ $x -lt 3 ]; do echo $x; x=$((x+1)); done'
@@ -157,7 +157,7 @@ Loops, conditionals, variables, arithmetic and pipes work:
     // bash2js < script.sh   — transpile from a pipe
     //
     // The whole pipeline runs in the browser:
-    //   bash → ESTree (debashcl.wasm, the debashc reactor) → JS (sh2.* runtime)
+    //   bash → ESTree (otranspilerl.wasm, the debashc reactor) → JS (sh2.* runtime)
     if (args[0] === "-h" || args[0] === "--help") {
       ctx.stdout.write(`bash2js — transpile bash to JavaScript (runs entirely in the browser)
 
@@ -166,7 +166,7 @@ Usage:
   bash2js -f script.sh         transpile a file from the virtual FS
   cat script.sh | bash2js      transpile from a pipe
 
-Pipeline:  bash → ESTree (debashcl.wasm) → JS (sh2.* runtime)
+Pipeline:  bash → ESTree (otranspilerl.wasm) → JS (sh2.* runtime)
 The generated JS targets the sh2.* runtime + env; save it to a .js file
 and run it as a command.
 `);
@@ -1232,7 +1232,7 @@ Built-in commands:
                   (browser: full-screen TTY · CLI: nethack --demo autoplays · man nethack)
   jobs            List background jobs (&) · wait [id] · kill <id>
                   (cmd & runs in the background; browser: right-hand panel)
-  bash2js         Transpile bash to JavaScript (debashcl ESTree)
+  bash2js         Transpile bash to JavaScript (otranspilerl)
   bash            Run bash commands: transpile to JS and execute
                   (bash 'echo hi' · bash script.sh · cat s.sh | bash)
   cmd.exe         Run Windows batch: transpile to JS and execute (bat2js)

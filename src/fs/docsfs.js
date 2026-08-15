@@ -11,7 +11,7 @@
 
 export class DocsFS {
   constructor() {
-    this.files = ["README.md", "debashcl-integration.md", "security.md", "licences.md"];
+    this.files = ["README.md", "security.md", "licences.md"];
     this._loader = null;
   }
 
