@@ -1406,7 +1406,12 @@ function renderCorpusList(dir, names) {
     div.appendChild(btn);
     list.appendChild(div);
   }
-  colourExamples();
+  // don't paint the pre-gate "no cached gate result" flash: the corpus
+  // buttons render before loadGate's fetch resolves, so an immediate
+  // colourExamples() paints them grey for a beat. Skip until GATE is
+  // loaded — loadGate's own colourExamples() paints them the moment it
+  // lands (and target clicks re-colour).
+  if (GATE) colourExamples();
 }
 
 function loadExample(ex) {
