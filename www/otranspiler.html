@@ -122,10 +122,17 @@
   .example-btn:hover { background: #545b62; transform: translateX(2px); }
   .example-btn.active { background: var(--accent); }
   /* example gate colours — 🟢 passes on the currently selected backend,
-     🔴 fails, grey = no cached gate result (sync-backend-gates.sh) */
+     🟡 renders/refuses/unverifiable (the cross-product triage's
+     PASS-RENDER/SKIP-* verdicts — the DEFAULT for the triage targets,
+     e.g. sh2perl → c is all PASS-RENDER), 🔴 fails, grey = no cached
+     gate result (sync-backend-gates.sh). The yellow rule was missing,
+     so triage-coloured buttons rendered grey. */
   .example-btn.gate-green { background: #28a745; }
   .example-btn.gate-green:hover { background: #1e7e34; transform: translateX(2px); }
   .example-btn.gate-green.active { background: #1e7e34; }
+  .example-btn.gate-yellow { background: #ffc107; color: #333; }
+  .example-btn.gate-yellow:hover { background: #e0a800; transform: translateX(2px); }
+  .example-btn.gate-yellow.active { background: #e0a800; }
   .example-btn.gate-red { background: #dc3545; }
   .example-btn.gate-red:hover { background: #c82333; transform: translateX(2px); }
   .example-btn.gate-red.active { background: #c82333; }
