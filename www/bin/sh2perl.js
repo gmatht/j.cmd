@@ -13,7 +13,7 @@ async function sh2src() {
   }
   return args.join(" ");
 }
-// sh2perl v2 — transpile bash to Perl via debashl.
+// sh2perl — transpile bash to Perl via otranspilerl (the unified A1
 //   sh2perl 'echo hi'      inline source
 //   sh2perl script.sh      bash script file
 //   sh2perl -f script.sh   bash script file (explicit)

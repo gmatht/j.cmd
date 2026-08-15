@@ -13,7 +13,7 @@ async function sh2src() {
   }
   return args.join(" ");
 }
-// sh2js v2 — transpile bash to JavaScript (debashl ESTree path).
+// sh2js — transpile bash to JavaScript via otranspilerl (the unified A1
 //   sh2js 'echo hi'        inline source
 //   sh2js script.sh        bash script file
 //   sh2js -f script.sh     bash script file (explicit)

@@ -111,10 +111,13 @@ export async function bashToJS(fs, bashSource) {
 // backend renderers), the full sh → A1 → target pipeline.
 export function buildSh2LibFacade(fs) {
   return {
-    toEstree: (src) => getSh2Lib().then((l) => l.toEstree(src)),
-    toPerl: (src) => getSh2Lib().then((l) => l.toPerl(src)),
-    lex: (src) => getSh2Lib().then((l) => l.lex(src)),
-    version: () => getSh2Lib().then((l) => l.version()),
+    // the shell's transpile core is otranspilerl now — toPerl/toEstree
+    // use the unified wasm's in-process renderers (debashcl is only the
+    // bashToJS throw-fallback + the legacy lex below).
+    toPerl: (src) => getOtranspilerl().then((l) => l.transpile(String(src), "sh", "perl")),
+    toEstree: (src) => getOtranspilerl().then((l) => l.transpile(String(src), "sh", "js")),
+    lex: (src) => getSh2Lib().then((l) => l.lex(src)),   // otranspilerl has no lex export — debashcl-only
+    version: () => getOtranspilerl().then((l) => l.version()),
     bashToJs: async (src) => (await bashToJS(fs, src)).js,
     // Windows batch → JS: the bat2js pipeline (busybox's bat-sh-go
     // frontend → A1 shIR → otranspilerl estree → JS against sh2.*).
@@ -198,6 +201,18 @@ export async function runBash(fs, source, { stdout, stderr, runCmd, args = [], a
       if (js.includes(f)) { js = js.replace(f, write); break; }
     }
   }
+  return runTranspiled(fs, js, { args, argv0, stdout, stderr, runCmd, arrayVals, stdin });
+}
+
+// ─── runTranspiled: run PRE-TRANSPILED generated JS with the full
+// shell plumbing — the same eval/source-aware shellExec, runtime, proc
+// shim and invocation runBash uses. Shared by runBash (after its
+// bashToJS + marker rewrite) and the bgworker (which reuses its
+// per-script transpile cache instead of re-transpiling). Without the
+// eval-aware shellExec the sound generators' indirect arg parsing
+// (`eval "pa_a=\${$pa_i}"` in parse_sound_args) silently no-ops and
+// the generator emits its default (WAV) output instead of the --tsv.
+export async function runTranspiled(fs, js, { args = [], argv0 = "bash", stdout, stderr, runCmd, arrayVals, stdin } = {}) {
   const out = stdout || { write: () => {} };
   const err = stderr || { write: (s) => out.write(s) };
   const { createSh2Runtime } = await import("./sh2runtime.js");
@@ -258,7 +273,7 @@ export async function runBash(fs, source, { stdout, stderr, runCmd, args = [], a
         return { out: "", err: String(e && e.message ? e.message : e) + "\n", code: 2 };
       }
     }
-    return runCmd(cmdline, stdin2, modeType);
+    return runCmd ? runCmd(cmdline, stdin2, modeType) : { out: "", err: "", code: 0 };
   };
   rt = createSh2Runtime({ fs, env, shellExec, stdout: out, stderr: err, args, argv0 });
   // the otranspilerl A1 path pre-seeds the literal arrays (the A1
