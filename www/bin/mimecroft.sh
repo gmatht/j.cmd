@@ -219,9 +219,14 @@ mime_count=0
 # spawn/move/kill; the transpiler's loop-var array refs expand at the
 # runtime boundary, so the plain writes below work.
 mime_lookup=()
+grass=()
 ml_i=0
 while [ "$ml_i" -lt "$CELLS" ]; do
   mime_lookup[$ml_i]=-1
+  # grass patch flag on the walkable ground (y=1 air layer, cell =
+  # z*MAP_W + x, 1 = grass): ~1/4 of the corridors get grass drawn
+  # over the dirt floor — the grass texture's old treasure job
+  grass[$ml_i]=0
   ml_i=$((ml_i + 1))
 done
 frame=0
@@ -371,25 +376,30 @@ block_material() { bm_t=$1
 cache_sound() { cs_name=$1
   if [ "$cs_name" = "-" ] || [ "$cs_name" = "" ]; then return; fi
   if [ -f /tmp/mimecroft-snd-$cs_name.tsv ]; then return; fi
-  if [ ! -f /tmp/sound-lib.sh ]; then
-    # stage the generator's shared core beside the staged scripts
-    # (cp is not a sync builtin in the transpiled shell — read + write
-    # through the async fs bridge instead)
-    sl_x=$(cat /examples/sounds/sound-lib.sh)
-    echo "$sl_x" > /tmp/sound-lib.sh
-  fi
-  # the cache key may carry the hit material: "hit-stone" →
-  # sound-hit.sh --material stone (there is no sound-hit-stone.sh —
-  # the material is a --material flag, not part of the script name)
+  # stage the generator: the lib is PREPENDED to the sound script with
+  # its sourcing block dropped (the transpiler can't share native locals
+  # across a `.` boundary yet, so the lib is inlined into ONE chunk).
+  # The staged file is also valid bash, so host bash runs it identically.
   cs_base=$cs_name
   cs_mat=""
   case $cs_name in
     hit-*) cs_base="hit"; cs_mat=${cs_name#hit-} ;;
   esac
+  if [ ! -f /tmp/sound-$cs_base.sh ]; then
+    sl_x=$(cat /examples/sounds/sound-lib.sh)
+    ss_x=$(cat /examples/sounds/sound-$cs_base.sh)
+    ss_pre=${ss_x%%sl_dir=*}
+    ss_post=${ss_x##*sound-lib.sh}
+    ss_post=${ss_post#\"}
+    # the lib read strips trailing newlines — keep one between the
+    # inlined lib and the script (a glued `}#!` breaks both parsers)
+    echo "$sl_x
+$ss_pre$ss_post" > /tmp/sound-$cs_base.sh
+  fi
   if [ "$cs_mat" != "" ]; then
-    cs_x=$(/bin/bash /examples/sounds/sound-$cs_base.sh --tsv --material $cs_mat)
+    cs_x=$(bash /tmp/sound-$cs_base.sh --tsv --material $cs_mat)
   else
-    cs_x=$(/bin/bash /examples/sounds/sound-$cs_base.sh --tsv)
+    cs_x=$(bash /tmp/sound-$cs_base.sh --tsv)
   fi
   cs_hdr=${cs_x%%	*}
   if [ "$cs_hdr" != "#sound" ]; then return; fi
@@ -568,7 +578,7 @@ cell_visible() { cv_x=$1; cv_z=$2
   if [ "$cv_wfront" -le 0 ]; then cv=0; return 0; fi
   cv_rx=$(( (cv_ddx * cv_cs + cv_ddz * cv_sn) / 1000 ))
   if [ "$cv_rx" -lt 0 ]; then cv_arx=$((0 - cv_rx)); else cv_arx=$cv_rx; fi
-  cv_fov=$(( cv_w + cv_w / 2 + 1000 ))
+  cv_fov=$(( cv_w * 3 + 1000 ))
   if [ "$cv_arx" -gt "$cv_fov" ]; then cv=0; return 0; fi
   cv=1
 }
@@ -974,6 +984,13 @@ gen_maze() {
   while [ "$gm_steps" -lt "$gm_total" ]; do
     set_cell $gm_cx 1 $gm_cz $AIR
     set_cell $gm_cx 2 $gm_cz $AIR
+    # ~1/4 of the carved ground cells get a grass patch (deterministic
+    # LCG — the scatter is stable per seed)
+    rand 4
+    if [ "$rv" -eq 0 ]; then
+      gm_gi=$((gm_cz * MAP_W + gm_cx))
+      grass[$gm_gi]=1
+    fi
     rand 4
     if [ "$rv" -eq 0 ]; then gm_cx=$((gm_cx + 1)); fi
     if [ "$rv" -eq 1 ]; then gm_cx=$((gm_cx - 1)); fi
@@ -1149,7 +1166,7 @@ emit_vertex_shader() {
   # yaw rotation, the fake perspective + the
   # strafe screen-shift (uCamShift·w keeps it a constant NDC-x offset),
   # and the uOverlay > 0.5 flat-quad path.
-  vs_fb="attribute vec3 aPosition; attribute vec3 aShade; attribute vec2 aUv; uniform vec3 uCamPos; uniform float uCamYaw; uniform float uCamShift; uniform vec3 uObjPos; uniform vec3 uBlockColor; uniform vec3 uScale; uniform float uOverlay; varying vec4 vColor; varying vec2 vUv; void main() { vec3 p = aPosition * uScale + uObjPos; if (uOverlay > 0.5) { gl_Position = vec4(p.x + uCamShift, p.y, -0.95, 1.0); vColor = vec4(aShade * uBlockColor, 1.0); vUv = vec2(0.0); return; } vec3 cam = uCamPos + vec3(0.0, 0.5, 0.0); vec3 d = p - cam; float a = uCamYaw * 0.0174532925; float c = cos(a); float s = sin(a); vec3 rel = vec3(d.x * c + d.z * s, d.y, -d.x * s + d.z * c); float w = -rel.z; if (w < 0.0001) w = 0.0001; gl_Position = vec4(rel.x * 0.45 + uCamShift * w, rel.y * 0.45, w * w / 64.0, w); vColor = vec4(aShade * uBlockColor, 1.0); if (uScale.x > 1.1) { vUv = p.xz; } else { vUv = aUv; } }"
+  vs_fb="attribute vec3 aPosition; attribute vec3 aShade; attribute vec2 aUv; uniform vec3 uCamPos; uniform float uCamYaw; uniform float uCamShift; uniform vec3 uObjPos; uniform vec3 uBlockColor; uniform vec3 uScale; uniform float uOverlay; varying vec4 vColor; varying vec2 vUv; void main() { vec3 p = aPosition * uScale + uObjPos; if (uOverlay > 0.5) { gl_Position = vec4(p.x + uCamShift, p.y, -0.95, 1.0); vColor = vec4(aShade * uBlockColor, 1.0); vUv = vec2(0.0); return; } vec3 cam = uCamPos + vec3(0.0, 0.5, 0.0); vec3 d = p - cam; float a = uCamYaw * 0.0174532925; float c = cos(a); float s = sin(a); vec3 rel = vec3(d.x * c + d.z * s, d.y, -d.x * s + d.z * c); float w = -rel.z; if (w < 0.0001) w = 0.0001; gl_Position = vec4(rel.x * 0.3375 + uCamShift * w, rel.y * 0.45, w * w / 64.0, w); vColor = vec4(aShade * uBlockColor, 1.0); if (uScale.x > 1.1) { vUv = p.xz; } else { vUv = aUv; } }"
   vs_src=hand
   # compile the bash-authored vertex program — canonical at
   # /examples/mimecroft-vertex.sh (the /examples mount serves
@@ -1355,54 +1372,18 @@ setup_webgl() {
   echo "f32 -0.5 -0.5 0 0.5 -0.5 0 0.5 0.5 0 -0.5 0.5 0" > /dev/webgl/buffer/quadpos
   echo "f32 1 1 1 1 1 1 1 1 1 1 1 1" > /dev/webgl/buffer/quadshade
   echo "u16 0 1 2 0 2 3" > /dev/webgl/buffer/quadi
-    echo "0.05 0.05 0.12 1.0" > /dev/webgl/clearcolor
-}
+# ─── texture loading (background-first) ─────────────────────────────
+# The generation (the slow transpiled bash run) executes on a SEPARATE
+# JS thread via /dev/bg (src/fs/bgdev.js + src/bgworker.js — a Web
+# Worker / worker_thread): the menu submits all textures up front
+# (non-blocking) and harvests each when its job reports done. The
+# parse + upload stays on the main thread (fast — a few ms). Falls
+# back to the synchronous `bash` generator when /dev/bg is unavailable.
 
-# ─── texture loading: run examples/textures/texture-<name>.sh --tsv,
-# parse the tab-separated R G B fields and upload to /dev/webgl/texture/<idx>.
-# The transpiled shell's ${s#*TAB} prefix-strip is greedy and IFS-splitting
-# is broken, so fields are consumed with the probe loop from read-texture.sh.
-strip_tex_field() { sf_done=0
-  while [ "$sf_done" -eq 0 ]; do
-    sf_probe=${lt_s%%	*}
-    if [ "$sf_probe" = "" ]; then sf_done=1; lt_s=${lt_s#?}; else lt_s=${lt_s#?}; fi
-  done
-}
-
-read_tex_field() { f=${lt_s%%	*}
-  strip_tex_field
-}
-
-# texture colour 0..255 → NDC string "0.xx" for the loading preview
-fmt_c() { fc_v=$1
-  fc_x=$(( (fc_v * 100) / 255 ))
-  if [ "$fc_x" -ge 100 ]; then fv="1.00"
-  elif [ "$fc_x" -lt 10 ]; then fv="0.0$fc_x"
-  else fv="0.$fc_x"; fi
-}
-
-load_tex() { lt_name=$1; lt_idx=$2
-  # the selected resolution; the generators handle their own minimums
-  # (the MIME name textures clamp themselves to 32px — the 2x3 font's
-  # "APPLICATION/OCTET-STREAM" needs the 32 canvas)
-  lt_ts=$tex_size
-  # a macrotask yield so the preceding "    name…" line paints before
-  # this texture's (transpiled) generation runs
-  sleep 0.01
-  # cached payload from an earlier run THIS session (/tmp is RamFS —
-  # wiped on every reload, so a fresh page always regenerates from the
-  # generator instead of replaying a stale persistent payload). The
-  # cache key carries the resolution + seed so a settings change
-  # regenerates instead of reusing an old texture.
-  if [ -f /tmp/mimecroft-tex-$lt_name-$lt_ts-$tex_seed-$tex_ver ]; then
-    cat /tmp/mimecroft-tex-$lt_name-$lt_ts-$tex_seed-$tex_ver > /dev/webgl/texture/$lt_idx
-    if [ "$lt_menu" -eq 1 ]; then
-      sm_tex_thumb_line $lt_menu_slot $lt_idx
-      echo "$tt_line" > /dev/webgl/hud
-    fi
-    return 0
-  fi
-  lt_s=$(bash /examples/textures/texture-$lt_name.sh --tsv --size $lt_ts --seed $tex_seed)
+# parse lt_s (a generator TSV, already set by the caller) → cache +
+# upload. lt_chan = fields per pixel (3 = RGB, 4 = RGBA). Shared by the
+# synchronous generators and the background harvest.
+load_tex_payload() { ltp_name=$1; ltp_idx=$2
   lt_hdr=${lt_s%%	*}
   if [ "$lt_hdr" != "#texture" ]; then return 0; fi
   # header: strip #texture + NAME, READ SIZExSIZE, strip the rest
@@ -1416,8 +1397,8 @@ load_tex() { lt_name=$1; lt_idx=$2
   lt_s=${lt_s#?}
   if [ "$lt_menu" -ne 1 ]; then
     # loading-screen geometry: 4×2 grid of 180-milli previews, 16×16 cells
-    lt_basex=$(( 140 + (lt_idx - 1) % 4 * 470 ))
-    lt_basey=$(( 1600 - (lt_idx - 1) / 4 * 470 ))
+    lt_basex=$(( 140 + (ltp_idx - 1) % 4 * 470 ))
+    lt_basey=$(( 1600 - (ltp_idx - 1) / 4 * 470 ))
   fi
   lt_cell=$(( 180 / lt_size ))
   lt_payload="$lt_size"
@@ -1432,6 +1413,11 @@ load_tex() { lt_name=$1; lt_idx=$2
     read_tex_field
     lt_b=$f
     lt_payload="$lt_payload $lt_r $lt_g $lt_b"
+    if [ "$lt_chan" -eq 4 ]; then
+      read_tex_field
+      lt_a=$f
+      lt_payload="$lt_payload $lt_a"
+    fi
     # one preview rect per pixel — the texture appears as it generates
     lt_col=$(( lt_px % lt_size ))
     lt_row=$(( lt_px / lt_size ))
@@ -1458,12 +1444,12 @@ load_tex() { lt_name=$1; lt_idx=$2
   done
   # session cache only (/tmp — RamFS, wiped on reload): a persistent
   # /home copy could replay a stale payload from an older generator
-  echo "$lt_payload" > /tmp/mimecroft-tex-$lt_name-$lt_ts-$tex_seed-$tex_ver
-  echo "$lt_payload" > /dev/webgl/texture/$lt_idx
+  echo "$lt_payload" > /tmp/mimecroft-tex-$ltp_name-$lt_ts-$tex_seed-$tex_ver
+  echo "$lt_payload" > /dev/webgl/texture/$ltp_idx
   if [ "$lt_menu" -eq 1 ]; then
     # menu mode: ALSO draw the complete texture as one HUD image at the
     # side slot — the menu redraw re-emits it, so the thumbs persist
-    sm_tex_thumb_line $lt_menu_slot $lt_idx
+    sm_tex_thumb_line $lt_menu_slot $ltp_idx
     lt_preview="$lt_preview$tt_line
 "
   fi
@@ -1473,8 +1459,27 @@ load_tex() { lt_name=$1; lt_idx=$2
   echo "swap" > /dev/webgl/call
 }
 
+# synchronous cache replay / generation (main's load_textures and the
+# menu's fallback when /dev/bg is unavailable)
+load_tex() { lt_name=$1; lt_idx=$2
+  lt_ts=$tex_size
+  sleep 0.01
+  if [ -f /tmp/mimecroft-tex-$lt_name-$lt_ts-$tex_seed-$tex_ver ]; then
+    cat /tmp/mimecroft-tex-$lt_name-$lt_ts-$tex_seed-$tex_ver > /dev/webgl/texture/$lt_idx
+    if [ "$lt_menu" -eq 1 ]; then
+      sm_tex_thumb_line $lt_menu_slot $lt_idx
+      echo "$tt_line" > /dev/webgl/hud
+    fi
+    return 0
+  fi
+  lt_s=$(bash /examples/textures/texture-$lt_name.sh --tsv --size $lt_ts --seed $tex_seed)
+  lt_chan=3
+  load_tex_payload $lt_name $lt_idx
+}
+
 # RGBA variant (the transparent crack overlay — R G B A per pixel)
 load_tex4() { lt_name=$1; lt_idx=$2
+  lt_ts=$tex_size
   sleep 0.01
   if [ -f /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed-$tex_ver ]; then
     cat /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed-$tex_ver > /dev/webgl/texture/$lt_idx
@@ -1485,7 +1490,44 @@ load_tex4() { lt_name=$1; lt_idx=$2
     return 0
   fi
   lt_s=$(bash /examples/textures/texture-$lt_name.sh --tsv --size $tex_size --seed $tex_seed)
-  lt_hdr=${lt_s%%	*}
+  lt_chan=4
+  load_tex_payload $lt_name $lt_idx
+}
+
+# ─── background generation (/dev/bg — a JS worker thread) ──────────
+tex_bg_jobs=(0 0 0 0 0 0 0 0 0 0 0 0 0 0)
+tex_bg_n=0
+tex_bg_avail=0
+
+# submit one texture's generation; records its /dev/bg job id. The
+# worker thread computes the TSV while the menu stays interactive.
+tex_bg_submit() { tbn_name=$1
+  if [ "$tex_bg_avail" -eq 0 ]; then
+    if [ -e /dev/bg ]; then tex_bg_avail=1; else return 0; fi
+  fi
+  tbn_next=$(cat /dev/bg/next)
+  echo "submit /examples/textures/texture-$tbn_name.sh --tsv --size $tex_size --seed $tex_seed" > /dev/bg
+  tex_bg_jobs[$tex_bg_n]=$tbn_next
+  tex_bg_n=$((tex_bg_n + 1))
+}
+
+# is the n-th submitted job done? (tbg=1 when its exit code is readable)
+tex_bg_done() { tbd_n=$1
+  tbd_job=${tex_bg_jobs[$tbd_n]}
+  tbd_code=$(cat /dev/bg/$tbd_job/code)
+  if [ "$tbd_code" != "" ]; then tbg=1; else tbg=0; fi
+}
+
+# harvest the n-th submitted texture: take the worker's TSV and
+# parse/upload it (the menu slot geometry is active during the menu)
+tex_bg_harvest() { tbh_n=$1; tbh_name=$2; tbh_idx=$3; tbh_chan=$4
+  tbh_job=${tex_bg_jobs[$tbh_n]}
+  lt_s=$(cat /dev/bg/$tbh_job)
+  lt_ts=$tex_size
+  lt_chan=$tbh_chan
+  load_tex_payload $tbh_name $tbh_idx
+}
+
   if [ "$lt_hdr" != "#texture" ]; then return 0; fi
   strip_tex_field
   strip_tex_field
@@ -1523,6 +1565,25 @@ load_textures() {
   # any mid-game regen) uses the plain loading-screen geometry
   lt_menu=0
   lt_menu_slot=0
+  # drain any background generations the menu submitted but didn't
+  # harvest (the player started early): each harvest is fast (the
+  # worker already computed the TSV), so the loading screen never
+  # regenerates synchronously.
+  sm_bg_i=0
+  while [ "$sm_bg_i" -lt "$tex_bg_n" ]; do
+    tex_bg_done $sm_bg_i
+    if [ "$tbg" -eq 1 ]; then
+      sm_bg_name=${sm_tex_name[$sm_bg_i]}
+      if [ ! -f /tmp/mimecroft-tex-$sm_bg_name-$tex_size-$tex_seed-$tex_ver ]; then
+        if [ "${sm_tex_rgba[$sm_bg_i]}" -eq 1 ]; then
+          tex_bg_harvest $sm_bg_i $sm_bg_name ${sm_tex_idx[$sm_bg_i]} 4
+        else
+          tex_bg_harvest $sm_bg_i $sm_bg_name ${sm_tex_idx[$sm_bg_i]} 3
+        fi
+      fi
+    fi
+    sm_bg_i=$((sm_bg_i + 1))
+  done
   # wipe the GL back buffer first so the loading grid builds on black
   # instead of accumulating over the menu card (the HUD composite blends
   # the layer over the preserved drawing buffer)
@@ -1833,7 +1894,7 @@ try_draw() { td_a=$1; td_b=$2; td_c=$3
   # the cone keeps |rx| ≤ w + w/2 + 1 cell (the old axis-FOV shape,
   # at any angle) — at axis-aligned yaws this reduces exactly to the
   # old radius / in-front / in-row tests
-  td_fov=$(( td_w + td_w / 2 + 1000 ))
+  td_fov=$(( td_w * 3 + 1000 ))
   if [ "$td_arx" -gt "$td_fov" ]; then return 1; fi
   # block_color inlined
   if [ "$gv" -eq 1 ]; then cr=0.55; cg=0.35; cb=0.20
@@ -1986,6 +2047,23 @@ render_frame() {
   # background planes first with depth WRITES OFF (gl.depthMask 0) —
   # they fill the void but never record depth, so the cubes drawn after
   # (depth writes on) ALWAYS paint over them
+  # grass patches on the marked walkable cells: thin quads at the
+  # floor (top face at 0.525, just above the dirt plane's 0.5). The
+  # depth test sorts them under the walls (written earlier) and over
+  # the floor plane (which draws with depth writes OFF).
+  gs_i=0
+  while [ "$gs_i" -lt "$CELLS" ]; do
+    # array reads go to a scalar FIRST (the game's discipline — an
+    # arr[$i] read inside a test bracket doesn't transpile)
+    gs_v=${grass[$gs_i]}
+    if [ "$gs_v" -eq 1 ]; then
+      gs_x=$((gs_i % MAP_W))
+      gs_z=$((gs_i / MAP_W))
+      blk_p="${blk_p}$gs_x 0.5 $gs_z 1 0.05 1 1 1 1 5 0
+"
+    fi
+    gs_i=$((gs_i + 1))
+  done
   echo "0" > /dev/webgl/depthmask
   echo "$bg_p" > /dev/webgl/blocks
   echo "1" > /dev/webgl/depthmask
@@ -2514,7 +2592,7 @@ banner_visible() { bv_x=$1; bv_z=$2
   if [ "$bv_w" -le 0 ]; then return 0; fi
   bv_rx=$(( (bv_ddx_ms * bv_cs + bv_ddz_ms * bv_sn) / 1000 ))
   if [ "$bv_rx" -lt 0 ]; then bv_arx=$((0 - bv_rx)); else bv_arx=$bv_rx; fi
-  bv_fov=$(( bv_w + bv_w / 2 + 1000 ))
+  bv_fov=$(( bv_w * 3 + 1000 ))
   if [ "$bv_arx" -gt "$bv_fov" ]; then return 0; fi
   # line of sight: step the ray toward the cell (dominant axis)
   bv_n=$bv_adx
@@ -3138,6 +3216,14 @@ settings_menu() {
   # (the /tmp cache keys change → fresh generation at the new settings)
   sm_told_size=$tex_size
   sm_told_seed=$tex_seed
+  # initial background submit: all textures go to the JS worker thread
+  # now (non-blocking), harvested one per loop iteration as they finish
+  tex_bg_n=0
+  sm_bg_i=0
+  while [ "$sm_bg_i" -lt "$sm_tex_total" ]; do
+    tex_bg_submit ${sm_tex_name[$sm_bg_i]}
+    sm_bg_i=$((sm_bg_i + 1))
+  done
   # show the canvas first so /dev/webgl/key starts capturing. The HUD
   # composite BLENDS the layer over the back buffer and the drawing
   # buffer is preserved now (preserveDrawingBuffer:true) — so the back
@@ -3205,22 +3291,44 @@ settings_menu() {
         draw_settings_menu
       fi
     fi
-    # background texture load: one texture per loop iteration — the
-    # menu stays interactive while the thumbs materialize along the
-    # sides (each load_tex does its own yield + HUD preview + swap)
+    # background texture load: on entry/settings change, submit ALL
+    # generations to the JS worker thread (/dev/bg — non-blocking);
+    # each loop iteration harvests ONE texture whose job finished. The
+    # menu never blocks on generation (the worker computes it); the
+    # parse + upload on harvest is fast. Falls back to the synchronous
+    # load_tex (one per iteration) when /dev/bg is unavailable.
     if [ "$tex_size" -ne "$sm_told_size" ] || [ "$tex_seed" -ne "$sm_told_seed" ]; then
       sm_tex_n=0
       sm_told_size=$tex_size
       sm_told_seed=$tex_seed
+      tex_bg_n=0
+      sm_bg_i=0
+      while [ "$sm_bg_i" -lt "$sm_tex_total" ]; do
+        tex_bg_submit ${sm_tex_name[$sm_bg_i]}
+        sm_bg_i=$((sm_bg_i + 1))
+      done
     fi
     if [ "$sm_tex_n" -lt "$sm_tex_total" ]; then
-      sm_tex_slot $sm_tex_n
-      if [ "${sm_tex_rgba[$sm_tex_n]}" -eq 1 ]; then
-        load_tex4 ${sm_tex_name[$sm_tex_n]} ${sm_tex_idx[$sm_tex_n]}
+      if [ "$tex_bg_avail" -eq 1 ]; then
+        tex_bg_done $sm_tex_n
+        if [ "$tbg" -eq 1 ]; then
+          sm_tex_slot $sm_tex_n
+          if [ "${sm_tex_rgba[$sm_tex_n]}" -eq 1 ]; then
+            tex_bg_harvest $sm_tex_n ${sm_tex_name[$sm_tex_n]} ${sm_tex_idx[$sm_tex_n]} 4
+          else
+            tex_bg_harvest $sm_tex_n ${sm_tex_name[$sm_tex_n]} ${sm_tex_idx[$sm_tex_n]} 3
+          fi
+          sm_tex_n=$((sm_tex_n + 1))
+        fi
       else
-        load_tex ${sm_tex_name[$sm_tex_n]} ${sm_tex_idx[$sm_tex_n]}
+        sm_tex_slot $sm_tex_n
+        if [ "${sm_tex_rgba[$sm_tex_n]}" -eq 1 ]; then
+          load_tex4 ${sm_tex_name[$sm_tex_n]} ${sm_tex_idx[$sm_tex_n]}
+        else
+          load_tex ${sm_tex_name[$sm_tex_n]} ${sm_tex_idx[$sm_tex_n]}
+        fi
+        sm_tex_n=$((sm_tex_n + 1))
       fi
-      sm_tex_n=$((sm_tex_n + 1))
     fi
     # wipe the back buffer before presenting (see above)
     echo "clear" > /dev/webgl/call
