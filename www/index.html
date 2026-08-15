@@ -6362,6 +6362,21 @@ document.addEventListener("click", (e) => {
   // a #try=… / #prefill=… link the otranspiler GUI opened.
   const bootHash = location.hash.slice(1);
 
+  // ?demo=<name> — auto-START one of the page's own bundled demos.
+  //
+  // SECURITY: the value is URL-supplied, so it must NEVER be treated
+  // as an arbitrary command (a crafted link could otherwise run any
+  // command line in the user's shell).  It is checked against a fixed
+  // allow-list of trusted strings — currently just "mimecroft.sh" —
+  // and anything else is silently ignored.  Unlike #try/#prefill
+  // (which only pre-fill a line for the user's Enter), a demo is
+  // deliberately auto-run — that is the point of the link — but only
+  // because the allow-list bounds it to the page's own bundled,
+  // self-contained games.  Read it HERE, before syncCwdUrl() below
+  // replaces the URL with ?cwd=… (which would drop the parameter).
+  const DEMO_ALLOWLIST = ["mimecroft.sh"];
+  const demoParam = new URLSearchParams(location.search).get("demo");
+
   // Restore the working directory from ?cwd= (set by cd) so a refresh
   // lands back where you were. The URL wins over any `cd` a config
   // file did; invalid or missing paths fall back to the default. The
@@ -6465,6 +6480,21 @@ document.addEventListener("click", (e) => {
       // is the point of a share link.
     } catch (e) {
       process.stdout.write("prefill: " + (e && e.message ? e.message : e) + "\n");
+    }
+  }
+
+  // Auto-start the allowlisted demo (see DEMO_ALLOWLIST above).  The
+  // map turns a trusted name into the bundled command line that runs
+  // it; anything outside the allow-list never reaches this point.
+  if (demoParam !== null && DEMO_ALLOWLIST.includes(demoParam)) {
+    const DEMO_CMD = { "mimecroft.sh": "mimecroft" };
+    const demoCmd = DEMO_CMD[demoParam];
+    if (demoCmd) {
+      try {
+        await runCommandLine(demoCmd);
+      } catch (e) {
+        process.stdout.write("demo: " + (e && e.message ? e.message : e) + "\n");
+      }
     }
   }
 })();

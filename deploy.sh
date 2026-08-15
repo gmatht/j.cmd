@@ -124,7 +124,7 @@ cp www-landing.html index.html
 for HOST in root@72.11.150.147 us; do
   rsync -az --delete www/ "$HOST:/var/www/html/j.cmd/www/"
   rsync -az --delete src/ "$HOST:/var/www/html/j.cmd/src/"
-  rsync -az index.html version.txt "$HOST:/var/www/html/j.cmd/"
+  rsync -az index.html version.txt SECURITY.md "$HOST:/var/www/html/j.cmd/"
 done
 ssh -o ConnectTimeout=8 root@72.11.150.147 "curl -s -o /dev/null -w 'public: %{http_code}\n' http://localhost/j.cmd/version.txt"
 ssh -o ConnectTimeout=8 us "curl -s -o /dev/null -w 'origin:  %{http_code}\n' http://localhost/j.cmd/version.txt"
