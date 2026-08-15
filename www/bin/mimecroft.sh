@@ -1170,7 +1170,7 @@ emit_vertex_shader() {
   # yaw rotation, the fake perspective + the
   # strafe screen-shift (uCamShift·w keeps it a constant NDC-x offset),
   # and the uOverlay > 0.5 flat-quad path.
-  vs_fb="attribute vec3 aPosition; attribute vec3 aShade; attribute vec2 aUv; uniform vec3 uCamPos; uniform float uCamYaw; uniform float uCamShift; uniform vec3 uObjPos; uniform vec3 uBlockColor; uniform vec3 uScale; uniform float uOverlay; varying vec4 vColor; varying vec2 vUv; void main() { vec3 p = aPosition * uScale + uObjPos; if (uOverlay > 0.5) { gl_Position = vec4(p.x + uCamShift, p.y, -0.95, 1.0); vColor = vec4(aShade * uBlockColor, 1.0); vUv = vec2(0.0); return; } vec3 cam = uCamPos + vec3(0.0, 0.5, 0.0); vec3 d = p - cam; float a = uCamYaw * 0.0174532925; float c = cos(a); float s = sin(a); vec3 rel = vec3(d.x * c + d.z * s, d.y, -d.x * s + d.z * c); float w = -rel.z; if (w < 0.0001) w = 0.0001; gl_Position = vec4(rel.x * 0.7 + uCamShift * w, rel.y * 0.45, w * w / 64.0, w); vColor = vec4(aShade * uBlockColor, 1.0); if (uScale.x > 1.1) { vUv = p.xz - uCamPos.xz; } else { vUv = aUv; } }"
+  vs_fb="attribute vec3 aPosition; attribute vec3 aShade; attribute vec2 aUv; uniform vec3 uCamPos; uniform float uCamYaw; uniform float uCamShift; uniform vec3 uObjPos; uniform vec3 uBlockColor; uniform vec3 uScale; uniform float uOverlay; varying vec4 vColor; varying vec2 vUv; void main() { vec3 p = aPosition * uScale + uObjPos; if (uOverlay > 0.5) { gl_Position = vec4(p.x + uCamShift, p.y, -0.95, 1.0); vColor = vec4(aShade * uBlockColor, 1.0); vUv = vec2(0.0); return; } vec3 cam = uCamPos + vec3(0.0, 0.5, 0.0); vec3 d = p - cam; float a = uCamYaw * 0.0174532925; float c = cos(a); float s = sin(a); vec3 rel = vec3(d.x * c + d.z * s, d.y, -d.x * s + d.z * c); float w = -rel.z; if (w < 0.0001) w = 0.0001; gl_Position = vec4(rel.x * 0.7 + uCamShift * w, rel.y * 0.45, w * w / 64.0, w); vColor = vec4(aShade * uBlockColor, 1.0); if (uScale.x > 1.1) { vUv = p.xz; } else { vUv = aUv; } }"
   vs_src=hand
   # compile the bash-authored vertex program — canonical at
   # /examples/mimecroft-vertex.sh (the /examples mount serves
@@ -1487,17 +1487,16 @@ load_tex_payload() { ltp_name=$1; ltp_idx=$2
 }
 
 # the effective texture size for a generator: the MIME entity icons
-# (jpeg/png/octet/text) keep ≥32px even at the default 16 — their fine
-# detail (the DCT grid, the transparency checkerboard, the hex dump,
-# the text lines) doesn't survive the small canvas. Blocks follow the
-# menu setting. Used by every size-dependent path (load_tex, the menu's
-# tex_bg_submit/tex_bg_harvest) so the generator, the cache key and the
-# uploaded payload all agree.
+# (jpeg/png/octet/text) are always 64×64 — the generators clamp their
+# own size (the type name needs the 64 canvas) — so the game's size
+# bookkeeping (the generator call, the /tmp cache key and the menu's
+# background harvest) must use 64 too, not the 16px block default.
+# Blocks follow the menu setting.
 lt_size_of() { lso_name=$1
   lso_size=$tex_size
   case $lso_name in
     jpeg|png|octet|text)
-      if [ "$lso_size" -lt 32 ]; then lso_size=32; fi
+      lso_size=64
       ;;
   esac
   lt_eff=$lso_size

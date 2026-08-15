@@ -111,8 +111,8 @@ else
   # the camera (ucp_x/z) freezes the texels at the fixed pixels, like
   # the walls.
   if [ "$usc_x" -gt 1100 ]; then
-    vu_u=$((ap_x * usc_x / 1000 + uop_x - ucp_x))
-    vu_v=$((ap_z * usc_z / 1000 + uop_z - ucp_z))
+    vu_u=$((ap_x * usc_x / 1000 + uop_x))
+    vu_v=$((ap_z * usc_z / 1000 + uop_z))
   else
     vu_u=$auv_u
     vu_v=$auv_v
