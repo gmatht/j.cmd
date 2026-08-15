@@ -108,9 +108,8 @@ export async function bashToJS(fs, bashSource) {
 // backend renderers), the full sh → A1 → target pipeline.
 export function buildSh2LibFacade(fs) {
   return {
-    // the shell's transpile core is otranspilerl now — toPerl/toEstree
-    // use the unified wasm's in-process renderers (debashcl is only the
-    // bashToJS throw-fallback + the legacy lex below).
+    // the shell's transpile core is otranspilerl — toPerl/toEstree/lex
+    // all use the unified wasm's in-process renderers.
     toPerl: (src) => getOtranspilerl().then((l) => l.transpile(String(src), "sh", "perl")),
     toEstree: (src) => getOtranspilerl().then((l) => l.transpile(String(src), "sh", "js")),
     lex: (src) => getOtranspilerl().then((l) => l.lex(String(src))),
