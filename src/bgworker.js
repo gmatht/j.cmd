@@ -56,13 +56,30 @@ if (isNode) {
 }
 
 // the generated code writes through process.stdout.write — capture it
-// (the A1 stripProcessEnv pass already removed process.env refs)
+// (the A1 stripProcessEnv pass already removed process.env refs). The
+// capture is PER JOB: runOne's are serialized through a queue so the
+// single shared stdout capture can't cross between concurrent jobs
+// (the menu submits all textures at once — without the queue, the last
+// job's output won every read, e.g. stone.tsv got jpeg's output).
 const __cap = { text: "" };
 const stdoutWrite = (s) => { __cap.text += String(s); return true; };
 if (isNode) {
   process.stdout.write = stdoutWrite;
 } else {
   self.process = { stdout: { write: stdoutWrite }, env: {} };
+}
+
+// one job at a time — the shared stdout capture is only valid while a
+// single job runs
+const bgQueue = [];
+let bgBusy = false;
+async function pump() {
+  if (bgBusy || !bgQueue.length) return;
+  bgBusy = true;
+  const { id, scriptText, args } = bgQueue.shift();
+  await runOne(id, scriptText, args);
+  bgBusy = false;
+  pump();
 }
 
 async function runOne(id, scriptText, args) {
@@ -95,7 +112,8 @@ const onMsg = (e) => {
   const d = e && (e.data !== undefined ? e.data : e);
   const { id, scriptText, args } = d || {};
   if (id === undefined) return;
-  runOne(id, String(scriptText), Array.isArray(args) ? args : []);
+  bgQueue.push({ id, scriptText: String(scriptText), args: Array.isArray(args) ? args : [] });
+  pump();
 };
 if (isNode) {
   const { parentPort } = await import("node:worker_threads");

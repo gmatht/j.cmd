@@ -980,23 +980,35 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
   // slow background command (a /bin/bash generator, ~20s for treasure)
   // doesn't steal the foreground's output. Errors are swallowed; $? = 0.
   function background(fn) {
-    // ── thread heuristic: a backgrounded `bash <script>` exec (the
-    // texture/sound generators — self-contained pure compute) runs on a
-    // WORKER THREAD so the main event loop (a game's menu) stays
-    // responsive. The exec() hook routes the body's bash execs to the
-    // worker when this counter is positive (a counter, not a boolean,
-    // survives concurrent `&` jobs); each pending thread job keeps it
-    // live until its body finishes.
+    // ── `&` → WORKER THREAD or FORK? ───────────────────────────────
+    // The heuristic (documented here so the generated code's choice is
+    // traceable): a backgrounded `bash <script>` exec of an /examples
+    // script (the texture/sound generators — self-contained pure
+    // compute, no parent state) is routed to a JS WORKER THREAD via the
+    // exec() hook, so the main event loop (a game's menu) never blocks
+    // on generation. Everything else (shell functions, non-script
+    // commands, simple subshells) FORKS — a detached task on the
+    // current chain (bash's & semantics; the game's & usages are
+    // fs-side work, so the shared-state approximation is faithful).
     if (/exec\("(?:\/bin\/)?bash"/.test(String(fn)) && /\/examples\//.test(String(fn))) {
+      // WHY THREAD: the body execs a nested bash /examples script —
+      // self-contained compute (only its args + stdout matter); the
+      // worker runs it with a FRESH runtime (no parent state to copy),
+      // and the result crosses back as this exec's stdout.
+      if (env && env.SH2_BG_DEBUG) console.debug("[&] worker-thread: /examples bash script (pure compute) — main loop stays responsive");
       bgThreadJobs++;
       Promise.resolve().then(async () => {
         try { await fn(); } catch {}
       }).finally(() => { bgThreadJobs--; });
       return true;
     }
-    // ── fork path: detached, current shell state (bash's & — the
-    // game's `&` usages are fs-side work, e.g. precache_sounds, so the
-    // shared-state approximation is faithful).
+    // WHY FORK: not a self-contained script exec — the body touches the
+    // shell state (functions, vars) or is a plain command; run it
+    // detached on the current chain (bash's &; a full copy-at-fork
+    // clone of the shell state is the sh2loop v27 semantics — the
+    // sh2runtime's state is closure-based, so the approximation stands
+    // for the game's fs-side usages).
+    if (env && env.SH2_BG_DEBUG) console.debug("[&] fork: non-script body (shell state / command) — detached on the current chain");
     Promise.resolve().then(async () => {
       try { await fn(); } catch {}
     });
