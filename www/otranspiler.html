@@ -461,6 +461,10 @@ function frontendGrade(lang) {
 // currently selected backend) / 🟡 (renders-only / refuses /
 // unverifiable) / 🔴 (fails) / ⚪ (no cached gate).
 let GATE = null;              // { backends:{…}, frontends:{ dir: {total,pass,results} }, triage:{…} }
+// gate.json content version — bump when sync-backend-gates.sh
+// regenerates www/examples/gate.json (the fetch is cache-busted on
+// this so a browser/proxy can't serve a stale snapshot).
+const GATE_VERSION = "4";
 const GATE_SETS = {};         // backend → { pass:Set, corpus:Set }
 // cross-product triage (sh2loop harness/triage.sh): frontend corpus × backend.
 // The GUI's target keys (pl/py/rs) differ from the triage backend names
@@ -482,9 +486,18 @@ const GATE_DIR_PREFIX = {
 };
 async function loadGate() {
   try {
-    const resp = await fetch(new URL("examples/gate.json", import.meta.url));
+    // gate.json changes with the cross-validation workers, NOT with the
+    // wasm — a dedicated version (bump when sync-backend-gates.sh
+    // regenerates it) so a browser/proxy cache can never pin an old
+    // snapshot (the corpus fetches already version against
+    // BUSYBOX_VERSION; this one must not, or a wasm bump would force a
+    // gate refresh it doesn't need — and vice versa).
+    const resp = await fetch(new URL("examples/gate.json?v=" + GATE_VERSION, import.meta.url), { cache: "no-cache" });
     GATE = resp.ok ? await resp.json() : null;
-  } catch { GATE = null; }
+  } catch (e) {
+    GATE = null;
+    console.warn("[otranspiler] gate.json unavailable (" + e.message + ") — example buttons stay grey", e);
+  }
   for (const k of Object.keys(GATE_SETS)) delete GATE_SETS[k];
   if (GATE) for (const [lang, info] of Object.entries(GATE.backends || {})) {
     GATE_SETS[lang] = {
