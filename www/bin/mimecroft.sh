@@ -3524,6 +3524,55 @@ level_clear_popup() {
   echo "C" > /dev/webgl/hud
 }
 
+# MINED OUT — an artifact was SHATTERED (shot), so the board can't be
+# completed. Same popup + pause as LEVEL CLEARED (SPACE / Enter / a move
+# key dismisses; q quits), so the transition to the next level is a
+# deliberate beat, not an abrupt cut. No heal — it wasn't a clean win;
+# the licence strike carries the penalty (3 strikes revoke it = game over).
+mined_out_popup() {
+  echo ""
+  echo "═══════════════════════════════════════════════"
+  echo "   MINED OUT — an artifact was SHATTERED!"
+  echo "   score $score · hp $hp/$maxhp · licence $license / 3"
+  echo "   press SPACE for level $((level + 1))"
+  echo "═══════════════════════════════════════════════"
+  # canvas popup: the same dark panel + text as LEVEL CLEARED, with the
+  # warning in orange (a lost artifact, not a clean recovery)
+  ov_text="C
+"
+  draw_rect "-0.05" "0.15" "0.90" "0.34" 0.04 0.05 0.09
+  draw_text "LEVEL" 5 760 1360 12 16 0.95 0.85 0.30
+  mp_lvl=$level
+  mp_d1=$((mp_lvl / 10))
+  mp_d2=$((mp_lvl % 10))
+  if [ "$mp_d1" -gt 0 ]; then draw_char $((mp_d1 + 26)) 1060 1360 12 16 0.95 0.85 0.30; fi
+  draw_char $((mp_d2 + 26)) 1120 1360 12 16 0.95 0.85 0.30
+  draw_text "MINED OUT" 9 760 1210 12 16 0.95 0.60 0.40
+  draw_text "AN ARTIFACT WAS LOST" 22 660 1070 7 10 0.85 0.85 0.85
+  draw_text "PRESS SPACE FOR THE NEXT LEVEL" 30 560 980 7 10 0.85 0.85 0.85
+  echo "$ov_text" > /dev/webgl/hud
+  echo "swap" > /dev/webgl/call
+  # pause until the player dismisses the popup
+  mp_done=0
+  while [ "$mp_done" -eq 0 ] && [ "$quit" -eq 0 ]; do
+    mp_keys=$(cat /dev/webgl/key)
+    case $mp_keys in
+      *q*)
+        quit=1
+        mp_done=1
+        ;;
+      *space*|*Enter*|*Escape*|*w*|*a*|*s*|*d*|*ArrowUp*|*ArrowDown*|*ArrowLeft*|*ArrowRight*)
+        mp_done=1
+        ;;
+    esac
+    # heartbeat swap keeps the canvas + the keyboard grab alive
+    echo "swap" > /dev/webgl/call
+    sleep 0.05
+  done
+  # wipe the popup (the static rebuild after start_level redraws the HUD)
+  echo "C" > /dev/webgl/hud
+}
+
 main() {
   st=$(cat /dev/webgl/state)
   case $st in
@@ -3833,7 +3882,14 @@ main() {
       # this board can't be completed; the dig still moves on to the
       # next level (the licence carries the real penalty: three strikes
       # revoke it and end the game). No heal — it wasn't a clean win.
+      # The popup + pause (SPACE/Enter/move; q quits) makes the
+      # transition a deliberate beat, exactly like LEVEL CLEARED.
+      mined_out_popup
+      if [ "$quit" -eq 1 ]; then
+        break
+      fi
       level=$((level + 1))
+      digits_dirty=1
       start_level
       echo ""
       echo "  ── MINED OUT — an artifact was lost; LEVEL $level begins (licence $license / 3) ──"
