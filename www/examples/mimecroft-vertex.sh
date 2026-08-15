@@ -102,9 +102,17 @@ else
   # WebGL1 without mipmaps). Pure integer: wx·1000 = ap_x·usc_x/1000
   # + uop_x (bc float truncation ≤ 1 milli-unit — invisible at texel
   # granularity, and keeps vu_* int-typed so GLSL compiles clean).
+  # the FLOOR/CEILING planes: CAMERA-ANCHORED world-xz UVs. The old
+  # world-fixed vUv made the floor's texture stream past the screen at
+  # camera speed (texel = fract(world-z), and a fixed screen row has a
+  # CONSTANT depth → the texel changed 1:1 with the walk + snapped at
+  # the 1-unit tile), while the wall textures stayed face-fixed — the
+  # ground visibly moved at a different rate to the walls. Subtracting
+  # the camera (ucp_x/z) freezes the texels at the fixed pixels, like
+  # the walls.
   if [ "$usc_x" -gt 1100 ]; then
-    vu_u=$((ap_x * usc_x / 1000 + uop_x))
-    vu_v=$((ap_z * usc_z / 1000 + uop_z))
+    vu_u=$((ap_x * usc_x / 1000 + uop_x - ucp_x))
+    vu_v=$((ap_z * usc_z / 1000 + uop_z - ucp_z))
   else
     vu_u=$auv_u
     vu_v=$auv_v

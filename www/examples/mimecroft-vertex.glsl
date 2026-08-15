@@ -122,8 +122,8 @@ void main() {
         g_vp_z = (((g_w * g_w)) / (64.0));
         g_vp_w = g_w;
         if ((g_usc_x > 1100)) {
-            g_vu_u = (((((g_ap_x * g_usc_x)) / 1000)) + g_uop_x);
-            g_vu_v = (((((g_ap_z * g_usc_z)) / 1000)) + g_uop_z);
+            g_vu_u = (((((((g_ap_x * g_usc_x)) / 1000)) + g_uop_x)) - g_ucp_x);
+            g_vu_v = (((((((g_ap_z * g_usc_z)) / 1000)) + g_uop_z)) - g_ucp_z);
         } else {
             g_vu_u = g_auv_u;
             g_vu_v = g_auv_v;

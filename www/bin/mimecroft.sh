@@ -50,14 +50,15 @@ VIEW_R=16                         # draw radius — the whole 16x16 map (display
 RADAR_X=80                        # radar x base (milli-NDC) — the map sits top-LEFT
 # ─── settings (editable in the pre-game menu; browser only) ────────
 cam_shift_ms=0        # camera right shift (milli-NDC, ±50 per press, no limit) — 0 = the centred view; the old 500 (a quarter-screen right shift) moved the vanishing point off-centre
-tex_size=32           # texture resolution (1..64 px, powers of two — the
-# menu ladder; 1x1 = flat colours). The MIME name textures clamp
-# themselves to ≥32 px (the 2×3-font prefix + type name need the 32 canvas)
+tex_size=16           # texture resolution (1..64 px, powers of two — the
+# menu ladder; 1x1 = flat colours). The default 16 keeps the block
+# textures chunky and fast; the MIME entity icons clamp themselves to
+# ≥32 px (their fine detail needs the 32 canvas — see lt_size_of).
 tex_seed=20240812     # texture generation seed (drives the LCG noise)
 # texture cache version — bump when the texture GENERATORS change (e.g.
 # the mime type names) so stale session caches regenerate instead
 # of uploading the old pattern
-tex_ver=9          # MIME font 2-4x bigger (64px textures)
+tex_ver=10         # stone noise cells are now fixed 4px/2px (jagged at every resolution)
 sm_sel=0              # settings-menu cursor (0=shift 1=size 2=seed 3=crt 4=corrupt 5=mime speed 6=mime names 7=sound mode 8=minimap)
 sm_done=0
 sm_changed=0
@@ -1169,7 +1170,7 @@ emit_vertex_shader() {
   # yaw rotation, the fake perspective + the
   # strafe screen-shift (uCamShift·w keeps it a constant NDC-x offset),
   # and the uOverlay > 0.5 flat-quad path.
-  vs_fb="attribute vec3 aPosition; attribute vec3 aShade; attribute vec2 aUv; uniform vec3 uCamPos; uniform float uCamYaw; uniform float uCamShift; uniform vec3 uObjPos; uniform vec3 uBlockColor; uniform vec3 uScale; uniform float uOverlay; varying vec4 vColor; varying vec2 vUv; void main() { vec3 p = aPosition * uScale + uObjPos; if (uOverlay > 0.5) { gl_Position = vec4(p.x + uCamShift, p.y, -0.95, 1.0); vColor = vec4(aShade * uBlockColor, 1.0); vUv = vec2(0.0); return; } vec3 cam = uCamPos + vec3(0.0, 0.5, 0.0); vec3 d = p - cam; float a = uCamYaw * 0.0174532925; float c = cos(a); float s = sin(a); vec3 rel = vec3(d.x * c + d.z * s, d.y, -d.x * s + d.z * c); float w = -rel.z; if (w < 0.0001) w = 0.0001; gl_Position = vec4(rel.x * 0.7 + uCamShift * w, rel.y * 0.45, w * w / 64.0, w); vColor = vec4(aShade * uBlockColor, 1.0); if (uScale.x > 1.1) { vUv = p.xz; } else { vUv = aUv; } }"
+  vs_fb="attribute vec3 aPosition; attribute vec3 aShade; attribute vec2 aUv; uniform vec3 uCamPos; uniform float uCamYaw; uniform float uCamShift; uniform vec3 uObjPos; uniform vec3 uBlockColor; uniform vec3 uScale; uniform float uOverlay; varying vec4 vColor; varying vec2 vUv; void main() { vec3 p = aPosition * uScale + uObjPos; if (uOverlay > 0.5) { gl_Position = vec4(p.x + uCamShift, p.y, -0.95, 1.0); vColor = vec4(aShade * uBlockColor, 1.0); vUv = vec2(0.0); return; } vec3 cam = uCamPos + vec3(0.0, 0.5, 0.0); vec3 d = p - cam; float a = uCamYaw * 0.0174532925; float c = cos(a); float s = sin(a); vec3 rel = vec3(d.x * c + d.z * s, d.y, -d.x * s + d.z * c); float w = -rel.z; if (w < 0.0001) w = 0.0001; gl_Position = vec4(rel.x * 0.7 + uCamShift * w, rel.y * 0.45, w * w / 64.0, w); vColor = vec4(aShade * uBlockColor, 1.0); if (uScale.x > 1.1) { vUv = p.xz - uCamPos.xz; } else { vUv = aUv; } }"
   vs_src=hand
   # compile the bash-authored vertex program — canonical at
   # /examples/mimecroft-vertex.sh (the /examples mount serves
@@ -1485,10 +1486,28 @@ load_tex_payload() { ltp_name=$1; ltp_idx=$2
   echo "swap" > /dev/webgl/call
 }
 
+# the effective texture size for a generator: the MIME entity icons
+# (jpeg/png/octet/text) keep ≥32px even at the default 16 — their fine
+# detail (the DCT grid, the transparency checkerboard, the hex dump,
+# the text lines) doesn't survive the small canvas. Blocks follow the
+# menu setting. Used by every size-dependent path (load_tex, the menu's
+# tex_bg_submit/tex_bg_harvest) so the generator, the cache key and the
+# uploaded payload all agree.
+lt_size_of() { lso_name=$1
+  lso_size=$tex_size
+  case $lso_name in
+    jpeg|png|octet|text)
+      if [ "$lso_size" -lt 32 ]; then lso_size=32; fi
+      ;;
+  esac
+  lt_eff=$lso_size
+}
+
 # synchronous cache replay / generation (main's load_textures and the
 # menu's fallback when /dev/bg is unavailable)
 load_tex() { lt_name=$1; lt_idx=$2
-  lt_ts=$tex_size
+  lt_size_of $lt_name
+  lt_ts=$lt_eff
   sleep 0.01
   if [ -f /tmp/mimecroft-tex-$lt_name-$lt_ts-$tex_seed-$tex_ver ]; then
     cat /tmp/mimecroft-tex-$lt_name-$lt_ts-$tex_seed-$tex_ver > /dev/webgl/texture/$lt_idx
@@ -1532,7 +1551,8 @@ tex_bg_submit() { tbn_name=$1
   # fork heuristic routes a nested bash script exec to a WORKER THREAD
   # (fresh runtime, no parent state copied), so the menu never blocks.
   # The TSV lands in /tmp; the menu polls for it.
-  bash /examples/textures/texture-$tbn_name.sh --tsv --size $tex_size --seed $tex_seed > /tmp/mimecroft-bg-$tbn_name.tsv &
+  lt_size_of $tbn_name
+  bash /examples/textures/texture-$tbn_name.sh --tsv --size $lt_eff --seed $tex_seed > /tmp/mimecroft-bg-$tbn_name.tsv &
   tex_bg_jobs[$tex_bg_n]=$tbn_name
   tex_bg_n=$((tex_bg_n + 1))
 }
@@ -1549,7 +1569,8 @@ tex_bg_done() { tbd_n=$1
 tex_bg_harvest() { tbh_n=$1; tbh_name=$2; tbh_idx=$3; tbh_chan=$4
   tbh_f=/tmp/mimecroft-bg-$tbh_name.tsv
   lt_s=$(cat "$tbh_f")
-  lt_ts=$tex_size
+  lt_size_of $tbh_name
+  lt_ts=$lt_eff
   lt_chan=$tbh_chan
   load_tex_payload $tbh_name $tbh_idx
 }
