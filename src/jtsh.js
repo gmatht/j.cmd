@@ -12,6 +12,7 @@
 // -----------------------------------------------------------------
 
 import { createInterface } from "readline";
+import { readdirSync } from "node:fs";
 import { createShellCore } from "./shellcore/index.js";
 import { resolveCommand as shellResolve, isPrivilegedUser, customExecDenied } from "./shellcore/resolve.js";
 import { tokenize } from "./shellcore/tokenize.js";
@@ -1134,6 +1135,31 @@ function tabComplete(line, callback) {
     }
   } catch {}
   (async () => {
+    // Staged /bin templates (www/bin/) — materialize-on-first-use means
+    // the /bin RamFS lists nothing until a command runs, so `mimecro<Tab>`
+    // found no matches. Consult the template dir directly: the CLI reads
+    // the repo dir, the browser fetches the server's directory listing
+    // (SimpleHTTPRequestHandler serves one).
+    try {
+      let staged = [];
+      if (typeof process !== "undefined" && process.versions && process.versions.node) {
+        staged = readdirSync(new URL("../www/bin/", import.meta.url))
+          .map((f) => f.replace(/\.(js|sh|mjs)$/, ""));
+      } else {
+        const resp = await fetch(new URL("../www/bin/", import.meta.url));
+        if (resp.ok) {
+          const html = await resp.text();
+          staged = [...html.matchAll(/href="([^"]+)"/g)]
+            .map((m) => m[1])
+            .filter((n) => /\.(js|sh|mjs)$/.test(n))
+            .map((n) => n.replace(/\.(js|sh|mjs)$/, "").replace(/\/$/, ""));
+        }
+      }
+      for (const name of staged) {
+        const full = line.slice(0, wordStart) + name;
+        if (name.startsWith(word) && !matches.includes(full)) matches.push(full);
+      }
+    } catch {}
     try {
       for (const dir of env.PATH.split(":").filter(Boolean)) {
         const entries = await fs.list(dir);
