@@ -98,6 +98,44 @@ export class WasmerRegistry {
     const blob = await resp.blob();
     await this.vfs.writeBlob(destPath, blob);
 
+    // zig also needs its lib (std + compiler_rt — the exact sources the
+    // wasm compiler was built from; a newer 0.16.0 snap's std uses
+    // builtins the wasm build predates).  Stage it from the gzipped
+    // bundle into /tmp/zig-lib (RamFS — the WASI /tmp seed picks it up)
+    // and point the compiler at it.  The lib is read-only; WASM_SKIP_HARVEST
+    // keeps the runner from harvesting it back on every run.
+    if (name === "zig") {
+      const lb = await fetch("wasm-bin/zig-lib.dat");
+      if (lb.ok) {
+        let bytes = new Uint8Array(await lb.arrayBuffer());
+        if (typeof process !== "undefined" && process.versions && process.versions.node) {
+          const zlib = await import("node:zlib");
+          bytes = new Uint8Array(zlib.gunzipSync(bytes));
+        } else {
+          const { ensurePako } = await import("./pako.js");
+          if (globalThis.pako) bytes = new Uint8Array(globalThis.pako.inflate(bytes));
+          else { await ensurePako(); bytes = new Uint8Array(globalThis.pako.inflate(bytes)); }
+        }
+        const magic = new TextDecoder().decode(bytes.slice(0, 4));
+        if (magic === "ZIG1") {
+          const headerLen = bytes[4] | (bytes[5] << 8) | (bytes[6] << 16) | (bytes[7] << 24);
+          const index = JSON.parse(new TextDecoder().decode(bytes.slice(8, 8 + headerLen)));
+          const data = bytes.slice(8 + headerLen);
+          for (const [rel, off, len] of index) {
+            await this.vfs.writeBlob("/tmp/zig-lib" + rel, new Blob([data.slice(off, off + len)]));
+          }
+          const { env } = await import("./env.js");
+          env.ZIG_LIB_DIR = "/tmp/zig-lib";
+          env.ZIG_LOCAL_CACHE_DIR = "/tmp/.zig-cache-local";
+          env.ZIG_GLOBAL_CACHE_DIR = "/tmp/.zig-cache";
+          env.WASM_SKIP_HARVEST = ((env.WASM_SKIP_HARVEST || "").split(":").filter(Boolean))
+            .concat(["/tmp/zig-lib", "/tmp/.zig-cache-local", "/tmp/.zig-cache"])
+            .join(":");
+          return { name, path: destPath, size: blob.size, lib: index.length + " files staged" };
+        }
+      }
+    }
+
     return { name, path: destPath, size: blob.size };
   }
 

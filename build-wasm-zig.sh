@@ -422,4 +422,47 @@ WASM="$WORK/zig/zig-out/bin/zig.wasm"
 ls -lh "$WASM"
 cp "$WASM" "$REPO/www/wasm-bin/zig.wasm"
 echo "==> installed www/wasm-bin/zig.wasm"
-echo "    quick check: wasmer install zig && zig version"
+
+# 5. Bundle the minimal lib (std + compiler_rt + roots — the EXACT
+#    sources this compiler was built from; a newer 0.16.0's std uses
+#    builtins the wasm build predates) into one gzipped file:
+#    [4B magic "ZIG1"][4B headerLen LE][header JSON (rel,off,len)][data]
+#    wasmer install zig stages it into /tmp/zig-lib (RamFS, WASI /tmp
+#    seed) and sets ZIG_LIB_DIR.  ~29MB raw -> ~4MB gzipped.
+LIB="$WORK/zig/lib"
+echo "==> bundling zig lib (std + compiler_rt) → zig-lib.dat"
+node - "$LIB" "$WORK" <<'EOF'
+const fs = require("fs");
+const path = require("path");
+const zlib = require("zlib");
+const [srcDir, workDir] = process.argv.slice(2);
+const DIRS = ["std", "compiler_rt"];
+const FILES = ["c.zig", "compiler_rt.zig", "ubsan_rt.zig", "zig.h"];
+const files = [];
+const walk = (d, rel) => {
+  for (const e of fs.readdirSync(d)) {
+    const p = path.join(d, e);
+    if (fs.statSync(p).isDirectory()) walk(p, rel + "/" + e);
+    else {
+      if (rel.includes("/docs") || e.endsWith(".html")) continue;
+      files.push({ rel: rel + "/" + e, buf: fs.readFileSync(p) });
+    }
+  }
+};
+for (const name of DIRS) { const p = path.join(srcDir, name); if (fs.statSync(p).isDirectory()) walk(p, "/" + name); }
+for (const f of FILES) files.push({ rel: "/" + f, buf: fs.readFileSync(path.join(srcDir, f)) });
+files.sort((a, b) => a.rel < b.rel ? -1 : 1);
+const index = [], chunks = [];
+let off = 0;
+for (const f of files) { index.push([f.rel, off, f.buf.length]); chunks.push(f.buf); off += f.buf.length; }
+const header = Buffer.from(JSON.stringify(index), "utf8");
+const data = Buffer.concat(chunks);
+const magic = Buffer.from("ZIG1");
+const headerLen = Buffer.alloc(4); headerLen.writeUInt32LE(header.length, 0);
+const out = zlib.gzipSync(Buffer.concat([magic, headerLen, header, data]));
+fs.writeFileSync(path.join(workDir, "zig-lib.dat"), out);
+console.log(`  ${files.length} files, ${(data.length / 1048576).toFixed(1)}MB raw -> ${(out.length / 1048576).toFixed(1)}MB gzipped`);
+EOF
+cp "$WORK/zig-lib.dat" "$REPO/www/wasm-bin/zig-lib.dat"
+echo "==> installed www/wasm-bin/zig-lib.dat (minimal lib bundle, <100MB)"
+echo "    quick check: wasmer install zig && zig version && zig build-exe hello.zig -target wasm32-wasi"

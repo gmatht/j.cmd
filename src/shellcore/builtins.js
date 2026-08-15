@@ -8,6 +8,9 @@ import { fs } from "../fs/index.js";
 import { env, setPositional, setOption } from "../env.js";
 import { getManPage, MAN_PAGES } from "../manpages.js";
 import { formatAge } from "../fs/lscache.js";
+import { WasmerRegistry } from "../wasmer.js";
+
+const wasmerReg = new WasmerRegistry(fs);
 import { bashToJS, runBash } from "../bash2js.js";
 import { batToJS, runBat } from "../bat2js.js";
 import { InterruptError } from "./runner.js";
@@ -2092,7 +2095,7 @@ Once installed they run as native commands:
       let buf;
       try {
         const { readFile } = await import("node:fs/promises");
-        buf = await readFile(new URL(`../www/wasm-bin/${name}.wasm`, import.meta.url));
+        buf = await readFile(new URL(`../../www/wasm-bin/${name}.wasm`, import.meta.url));
       } catch {
         ctx.stderr.write(`wasmer: ${name}.wasm not built — run the repo's build script (e.g. ./build-wasm-grep.sh)\n`);
         return 1;
@@ -2100,6 +2103,36 @@ Once installed they run as native commands:
       const destPath = `/usr/bin/${name}.wasm`;
       await fs.writeBlob(destPath, new Blob([buf]));
       ctx.stdout.write(`Installed ${name} → ${destPath} (${buf.length} bytes)\n`);
+      // zig also needs its lib (std + compiler_rt — the exact sources the
+      // wasm compiler was built from) — stage it from the gzipped bundle
+      // into /tmp/zig-lib (RamFS — the WASI /tmp seed picks it up) and
+      // point the compiler at it.
+      if (name === "zig") {
+        try {
+          const { readFile } = await import("node:fs/promises");
+          const zlib = await import("node:zlib");
+          const lb = await readFile(new URL("../../www/wasm-bin/zig-lib.dat", import.meta.url));
+          const bytes = new Uint8Array(zlib.gunzipSync(lb));
+          const magic = new TextDecoder().decode(bytes.slice(0, 4));
+          if (magic === "ZIG1") {
+            const headerLen = bytes[4] | (bytes[5] << 8) | (bytes[6] << 16) | (bytes[7] << 24);
+            const index = JSON.parse(new TextDecoder().decode(bytes.slice(8, 8 + headerLen)));
+            const data = bytes.slice(8 + headerLen);
+            for (const [rel, off, len] of index) {
+              await fs.writeBlob("/tmp/zig-lib" + rel, new Blob([data.slice(off, off + len)]));
+            }
+            env.ZIG_LIB_DIR = "/tmp/zig-lib";
+            env.ZIG_LOCAL_CACHE_DIR = "/tmp/.zig-cache-local";
+            env.ZIG_GLOBAL_CACHE_DIR = "/tmp/.zig-cache";
+            env.WASM_SKIP_HARVEST = ((env.WASM_SKIP_HARVEST || "").split(":").filter(Boolean))
+              .concat(["/tmp/zig-lib", "/tmp/.zig-cache-local", "/tmp/.zig-cache"])
+              .join(":");
+            ctx.stdout.write(`  staged zig lib: ${index.length} files → /tmp/zig-lib\n`);
+          }
+        } catch (e) {
+          ctx.stderr.write(`wasmer: zig lib staging failed: ${e.message}\n`);
+        }
+      }
       return 0;
     }
     ctx.stderr.write(`wasmer: unknown command '${args[0]}' (list, install, search, help)\n`);
