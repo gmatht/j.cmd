@@ -1517,7 +1517,7 @@ load_tex4() { lt_name=$1; lt_idx=$2
 }
 
 # ─── background generation (/dev/bg — a JS worker thread) ──────────
-tex_bg_jobs=(0 0 0 0 0 0 0 0 0 0 0 0 0 0)
+tex_bg_jobs=(0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
 tex_bg_n=0
 tex_bg_avail=0
 
@@ -3019,6 +3019,12 @@ settings_inc() {
   fi
   if [ "$sm_sel" -eq 7 ]; then
     SOUND_MODE=bash
+    # warm the sound cache right away — the user wants the first play
+    # instant, not after the menu closes (main's check already passed)
+    if [ "$precache_done" -eq 0 ]; then
+      precache_done=1
+      precache_sounds &
+    fi
   fi
   if [ "$sm_sel" -eq 8 ]; then
     # minimap: OFF -> ON -> 50% -> OFF (the right arrow increases)
@@ -3096,10 +3102,10 @@ settings_dec() {
 # (n even) at x≈170 or right column (n odd) at x≈1830. The load_tex
 # calls write /tmp cache files, so main's load_textures after the menu
 # replays every texture instantly (cache hits).
-sm_tex_total=14
-sm_tex_name=(stone sandstone water brick grass leaves wood dirt obsidian jpeg png octet text crack)
-sm_tex_idx=(1 2 3 4 5 6 7 8 10 11 12 13 14 9)
-sm_tex_rgba=(0 0 0 0 0 0 0 0 0 0 0 0 0 1)
+sm_tex_total=15
+sm_tex_name=(stone sandstone water brick grass leaves wood dirt obsidian chest jpeg png octet text crack)
+sm_tex_idx=(1 2 3 4 5 6 7 8 10 15 11 12 13 14 9)
+sm_tex_rgba=(0 0 0 0 0 0 0 0 0 0 0 0 0 0 1)
 sm_tex_n=0
 
 # pick the side slot for the n-th texture and set the load_tex preview
