@@ -73,9 +73,9 @@ void main() {
         if ((g_mix > 127)) {
             g_mix = 127;
         }
-        g_r = (g_r - ((((((g_r - g_cr_r)) * g_mix)) / 256)));
-        g_g = (g_g - ((((((g_g - g_cr_g)) * g_mix)) / 256)));
-        g_b = (g_b - ((((((g_b - g_cr_b)) * g_mix)) / 256)));
+        g_r = (g_r - ((((((g_r - g_cr_r)) * g_mix)) / 128)));
+        g_g = (g_g - ((((((g_g - g_cr_g)) * g_mix)) / 128)));
+        g_b = (g_b - ((((((g_b - g_cr_b)) * g_mix)) / 128)));
     }
     g_hash = (((g_fx * 7)) + ((g_fy * 13)));
     g_corrupt = (g_hash - (97 * (g_hash / 97)));

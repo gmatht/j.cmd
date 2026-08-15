@@ -406,7 +406,7 @@ while [ "$seg" -lt 8 ]; do
   clen=$((rv + 4))
   cstep=0
   while [ "$cstep" -lt "$clen" ]; do
-    crack_set $((cy * SIZE + cx)) 28 28 32 255
+    crack_set $((cy * SIZE + cx)) 28 28 28 255
     if [ "$cdir" -eq 0 ]; then cx=$((cx + 1)); fi
     if [ "$cdir" -eq 1 ]; then cy=$((cy + 1)); fi
     if [ "$cdir" -eq 2 ]; then cx=$((cx - 1)); fi

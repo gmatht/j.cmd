@@ -21,7 +21,10 @@
 # 32767 and the backend can emit `precision mediump int;`:
 #   tint  r·tex_r/128:  r ≤ 127, tex_r ≤ 255  → 32385
 #   CRT   r·90/100:  r ≤ 254  → 22860   (runs BEFORE the blend)
-#   blend (r-cr_r)·mix/256:  |r-cr_r| ≤ 228, mix ≤ 127  → 28956
+#   blend (r-cr_r)·mix/128:  |r-cr_r| ≤ 228, mix ≤ 127  → 28956
+#   (the /128 divisor doubles the crack's blend weight — damage 1 ≈ 49%
+#   of the crack texel, damage 2+ ≈ 99% — so the dark crack colour
+#   dominates and the block's own hue fades out of the crack lines)
 #   vig   r·dim/256:  r ≤ 342, dim ≤ 30  → 10260
 # 127/128 ≈ 255/255 keeps the output range (tint max 253 ≈ 255), so
 # the 0..127 colour scale is visually identical to the old 0..255.
@@ -52,9 +55,9 @@ fi
 if [ "$damage" -gt 0 ]; then
   mix=$((damage * cr_a / 2))
   if [ "$mix" -gt 127 ]; then mix=127; fi
-  r=$((r - (r - cr_r) * mix / 256))
-  g=$((g - (g - cr_g) * mix / 256))
-  b=$((b - (b - cr_b) * mix / 256))
+  r=$((r - (r - cr_r) * mix / 128))
+  g=$((g - (g - cr_g) * mix / 128))
+  b=$((b - (b - cr_b) * mix / 128))
 fi
 hash=$((fx * 7 + fy * 13))
 corrupt=$((hash % 97))

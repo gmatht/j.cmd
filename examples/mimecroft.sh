@@ -1180,17 +1180,19 @@ emit_fragment_shader() {
   # block texture so damaged blocks show cracks. The blend is written as
   # r - (r-cr_r)·mix/256 (≡ r·(1-mix/256) + cr_r·mix/256 — same value,
   # weights sum to 1) so the intermediate (r-cr_r)·mix ≤ 228·127 stays
-  # inside mediump int; /256 is a power-of-two shift. The /2 (vs the
-  # old /3) makes each damage step blend the crack in 1.5× heavier —
-  # damage 1 ≈ 25% and 2 ≈ 50% of the crack texel (the cap keeps the
-  # intermediate at the original 228·127 bound), so the overlay reads
-  # on the block instead of dissolving into it.
+  # inside mediump int. The /128 divisor (vs the old /256) doubles the
+  # effective weight — mix ≤ 127 → the crack texel takes 49% at damage 1
+  # and ~99% at damage 2+, so the crack COLOUR dominates the blend and
+  # a damaged gold/diamond/ruby block shows a dark GRAY crack instead of
+  # a dark tint of the block's own hue (the /256 blend kept (1-mix/256)
+  # of the block colour — cracks on the gems read olive/teal/maroon).
+  # The cap keeps (r-cr_r)·mix ≤ 253·127 = 32131 ≤ 32767.
   echo 'if [ "$damage" -gt 0 ]; then' >> /tmp/mimecroft-frag.sh
   echo '  mix=$((damage * cr_a / 2))' >> /tmp/mimecroft-frag.sh
   echo '  if [ "$mix" -gt 127 ]; then mix=127; fi' >> /tmp/mimecroft-frag.sh
-  echo '  r=$((r - (r - cr_r) * mix / 256))' >> /tmp/mimecroft-frag.sh
-  echo '  g=$((g - (g - cr_g) * mix / 256))' >> /tmp/mimecroft-frag.sh
-  echo '  b=$((b - (b - cr_b) * mix / 256))' >> /tmp/mimecroft-frag.sh
+  echo '  r=$((r - (r - cr_r) * mix / 128))' >> /tmp/mimecroft-frag.sh
+  echo '  g=$((g - (g - cr_g) * mix / 128))' >> /tmp/mimecroft-frag.sh
+  echo '  b=$((b - (b - cr_b) * mix / 128))' >> /tmp/mimecroft-frag.sh
   echo 'fi' >> /tmp/mimecroft-frag.sh
   if [ "$CORRUPT_ON" -eq 1 ]; then
     echo 'hash=$((fx * 7 + fy * 13))' >> /tmp/mimecroft-frag.sh
