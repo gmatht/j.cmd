@@ -143,7 +143,7 @@ export function buildSh2LibFacade(fs) {
     // bashToJS throw-fallback + the legacy lex below).
     toPerl: (src) => getOtranspilerl().then((l) => l.transpile(String(src), "sh", "perl")),
     toEstree: (src) => getOtranspilerl().then((l) => l.transpile(String(src), "sh", "js")),
-    lex: (src) => getSh2Lib().then((l) => l.lex(src)),   // otranspilerl has no lex export — debashcl-only
+    lex: (src) => getOtranspilerl().then((l) => l.lex(String(src))),
     version: () => getOtranspilerl().then((l) => l.version()),
     bashToJs: async (src) => (await bashToJS(fs, src)).js,
     // Windows batch → JS: the bat2js pipeline (busybox's bat-sh-go

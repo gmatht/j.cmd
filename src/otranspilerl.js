@@ -34,7 +34,7 @@ const WASM_PATH = "wasm-bin/otranspilerl.wasm";  // browser: relative to the pag
 export const GLSL_VIEW = 800;
 // cache-buster — bump whenever www/wasm-bin/otranspilerl.wasm changes so
 // the browser (and the otranspiler GUI) never serves a stale wasm.
-const WASM_VERSION = "v25-fractuv";  // v25: texture samples wrap via fract(vUv) — the old (g_uv_x+0.5)/sz sample coordinate was up to ±35 for the bg planes' world-xz UVs, and a MEDIUMP (fp16) sample quantized its fraction to ±1 texel (floor texture flaked); fract() keeps the sample in [0,1) — exact at any precision, REPEAT not needed for sampling  // v24: fragment vUv/vColor highp
+const WASM_VERSION = "v26-lex";  // v25: texture samples wrap via fract(vUv) — the old (g_uv_x+0.5)/sz sample coordinate was up to ±35 for the bg planes' world-xz UVs, and a MEDIUMP (fp16) sample quantized its fraction to ±1 texel (floor texture flaked); fract() keeps the sample in [0,1) — exact at any precision, REPEAT not needed for sampling  // v24: fragment vUv/vColor highp
 
 let libPromise = null;
 
@@ -182,6 +182,9 @@ function wrapLibrary(instance, mem, out) {
       call("otranspilerl_transpile", [String(src), srcLang || "sh", tgtLang || "js"]).output,
     // shell source → A1 shIR JSON (the neutral contract)
     shir: (src) => call("otranspilerl_shir", [String(src)]).output,
+    // shell source → token dump (the CLI `lex` output — same helper the
+    // legacy debashc reactor exposed, now in the unified binary)
+    lex: (src) => call("otranspilerl_lex", [String(src)]).output,
     // A1 shIR JSON → target source (lang: c|go|java|js|perl|python|rs|sh|zig)
     render: (a1, lang) => call("otranspilerl_render", [String(a1), lang]).output,
     // shell → GLSL ES 1.00 render fragment (the MIMEcroft shader pipeline;
