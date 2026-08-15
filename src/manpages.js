@@ -718,14 +718,16 @@ DESCRIPTION
      and sets ZIG_LIB_DIR / ZIG_LOCAL_CACHE_DIR / ZIG_GLOBAL_CACHE_DIR.
 
 LIMITATIONS
-     The shell's wasmer-wasi runtime mangles binary FILE writes (both
-     fd_pwrite AND fd_write): the write path routes the data through a
-     lossy UTF-8 string, so bytes >= 0x80 become U+FFFD replacement
-     chars (verified: a 256-byte 0x00-0xFF pattern round-trips only its
-     first 128 ASCII bytes). Emitted binaries are therefore corrupt in
-     the browser shell. Under a V8-based WASI (node:wasi, wasmtime) the
-     same compiler produces correct output (verified at build time).
-     'zig version' and 'zig help' work everywhere.
+     FIXED (2026-08-15): binary file output from wasm32-wasi programs is
+     now correct. The corruption (bytes >= 0x80 became U+FFFD — a lossy
+     UTF-8 decode) was never in wasmer-wasi: the shell's OWN layered
+     virtual filesystem routed writeBlob/readBlob through blob.text() /
+     TextDecoder for backends without binary methods, turning every
+     byte >= 0x80 into U+FFFD and doubling the file (a 256-byte
+     0x00-0xFF pattern came back as 128 ASCII bytes + 128 replacement
+     chars).  The fs now writes/reads raw bytes; 'zig build-exe' emits
+     a VALID wasm binary and the compiled program RUNS in the sandbox
+     (verified: hello.zig -> hello.wasm -> 'hello from zig!').
 
      The compiler also needs the EXACT lib it was built from: the
      wasm's version string (0.16.0) is not enough — a newer 0.16.0

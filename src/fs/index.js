@@ -68,6 +68,17 @@ class RootFS {
     return new TextDecoder().decode(data);
   }
 
+  async readBlob(path) {
+    // binary-safe — the read() path decodes UTF-8 (lossy for bytes
+    // >= 0x80); the wasm32-wasi harvest reads back binaries through
+    // readBlob and must get the raw bytes back.
+    const norm = path.replace(/\/$/, "") || "/";
+    if (this.dirs.has(norm)) throw new Error("EISDIR");
+    const data = this.files.get(norm);
+    if (data === undefined) throw new Error("ENOENT");
+    return new Blob([data]);
+  }
+
   // readLimit(path, n) — the first n BYTES as text, without decoding the
   // whole file. Only the memory backends (RamFS, OverlayFS) can do this
   // cheaply; the network backends (http/github/…) fetch whole resources
@@ -82,7 +93,10 @@ class RootFS {
   async write(path, content) {
     const norm = path.replace(/\/$/, "") || "/";
     this._ensureParent(norm);
-    this.files.set(norm, new TextEncoder().encode(content));
+    const encoded = typeof content === "string"
+      ? new TextEncoder().encode(content)
+      : content;
+    this.files.set(norm, encoded);
     this.mtimes.set(norm, Date.now());
   }
 
@@ -1406,9 +1420,13 @@ print("sum 1..10 = " .. total)
     if (m.backend.writeBlob) {
       result = await m.backend.writeBlob(m.relative, blob);
     } else {
-      // Fallback: read blob as text and write
-      const text = await blob.text();
-      result = await m.backend.write(m.relative, text);
+      // Fallback: read the blob's RAW bytes and write them — the text
+      // path (blob.text()) is a lossy UTF-8 decode that turns every byte
+      // >= 0x80 into U+FFFD, corrupting binary output (a wasm binary
+      // harvested from a wasm32-wasi run came back doubled with 3000+
+      // replacement chars; the same corruption hit zig's emitted wasm).
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      result = await m.backend.write(m.relative, bytes);
     }
     if (result && result.overlay) this._emitOverlayWarning(r, m.name);
     this._recordWrite(r);
