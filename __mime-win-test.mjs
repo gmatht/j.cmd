@@ -1,6 +1,7 @@
 // ─── Win-path test: TREASURE_TOTAL=1, treasure at (2,1,1) — the cell
 // straight ahead of spawn (2,2) facing -z. One W press walks into it
-// (hidden treasures are claimed by WALKING IN, not by shooting).
+// (hidden treasures are claimed by WALKING IN, not by shooting) →
+// LEVEL CLEARED popup (SPACE dismisses it) → level 2 starts → q quits.
 import { readFileSync } from "fs";
 import { fs } from "./src/fs/index.js";
 import { bashToJS } from "./src/bash2js.js";
@@ -25,7 +26,7 @@ const shellExec = async (cmdline, stdin) => {
   if (cmd === "echo") out = rest + "\n";
   else if (cmd === "cat") {
     const p = fs._resolve(rest.split(/\s+/)[0]);
-    if (p === "/dev/webgl/key") { out = (keyFrame === 0 ? "w," : "q,") + "\n"; keyFrame++; }
+    if (p === "/dev/webgl/key") { out = (keyFrame === 0 ? "w," : keyFrame === 1 ? "space," : "q,") + "\n"; keyFrame++; }
     else { try { out = await fs.read(p); } catch (e) { out = ""; } }
   }
   else if (cmd === "sleep") { sleepCount++; if (sleepCount > 200) throw new Error("test-stop"); await new Promise((r) => setTimeout(r, 0)); }
@@ -48,7 +49,7 @@ const rt = createSh2Runtime({ fs, env: { HOME: "/home" }, shellExec, stdout: out
 const origSh2ReadFile = rt.sh2.fs.readFile.bind(rt.sh2.fs);
 rt.sh2.fs.readFile = async (p, enc) => {
   if (String(p) === "/dev/webgl/key") {
-    const k = keyFrame === 0 ? "w," : "q,";
+    const k = keyFrame === 0 ? "w," : keyFrame === 1 ? "space," : "q,";
     keyFrame++;
     return k;
   }
@@ -61,9 +62,9 @@ catch (e) { if (e.message !== "test-stop") { console.log("RUN ERROR:", e.message
 const text = stdout.join("");
 const ok =
   text.includes("TREASURE FOUND:") &&
-  /artifacts recovered: 1 \/ 1/.test(text) &&
-  text.includes("VICTORY") &&
+  text.includes("LEVEL 1 CLEARED") &&
+  /LEVEL 2 —/.test(text) &&
   text.includes("GAME DONE");
 console.log("win-path:", ok ? "PASS" : "FAIL");
-console.log(text.split("\n").filter((l) => l.includes("TREASURE") || l.includes("VICTORY") || l.includes("GAME DONE") || l.includes("artifacts recovered")).slice(0, 8).join("\n"));
+console.log(text.split("\n").filter((l) => /TREASURE|LEVEL|GAME DONE|artifacts/.test(l)).slice(0, 10).join("\n"));
 process.exit(ok ? 0 : 1);

@@ -99,9 +99,6 @@ TREASURES=("GNU Hurd" "Linux" "FreeBSD" "NetBSD" "OpenBSD" "Plan 9" "Minix" "Sol
 # the label-texture generator reads this parallel table)
 TRLEN=(8 5 7 6 7 6 5 7 12 4)
 
-# mime damage by type: 1=jpeg 2=png 3=octet-stream 4=text/plain
-MIME_DMG=(0 2 1 1 1)
-
 # ─── World arrays ───────────────────────────────────────────────────
 # map[i] and bhp[i], i = y*CELLS + z*MAP_W + x   (768 cells: 3 levels)
 map=(0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
@@ -202,6 +199,8 @@ pz=2
 yaw=0
 hp=10
 maxhp=10
+level=1              # the current level — MIME damage scales 1..level,
+                     # and clearing a level heals 1 HP and regenerates
 score=0
 license=3            # your archeology licence: shooting a treasure costs
                      # one strike; three strikes revokes it (game over)
@@ -634,7 +633,9 @@ update_mimes() {
       if [ "$um_n" -eq 3 ]; then um_cx=$um_p3x; um_cz=$um_p3z; fi
       if [ "$um_n" -eq 4 ]; then um_cx=$um_p4x; um_cz=$um_p4z; fi
       if [ "$um_cx" -eq "$px" ] && [ "$um_cz" -eq "$pz" ]; then
-        um_dmg=${MIME_DMG[$um_t]}
+        # MIME damage is random 1..level (harder mazes, meaner bites)
+        rand $level
+        um_dmg=$((rv + 1))
         hurt $um_dmg
         kill_mime_at $um_a $um_b
         um_moved=1
@@ -3410,6 +3411,109 @@ settings_menu() {
   echo "  settings: camera shift $fv · textures ${tex_size}px · seed $tex_seed · mime speed $mime_speed · sound $SOUND_MODE"
 }
 
+# ─── level progression ─────────────────────────────────────────────
+# A fresh level: regenerate the maze + treasures, reset the recovered
+# artifacts, clear the mimes and respawn the player in the (always
+# carved) spawn pocket. The static HUD/radar/labels rebuild on the
+# next frame (hud_static_dirty / labels_dirty).
+start_level() {
+  gen_maze
+  place_treasures
+  count_map_treasures
+  found_count=0
+  fl_i=0
+  while [ "$fl_i" -lt "$TREASURE_TOTAL" ]; do
+    found[$fl_i]=0
+    fl_i=$((fl_i + 1))
+  done
+  # the player respawns in the spawn pocket (the maze is fresh)
+  px=2
+  pz=2
+  yaw=0
+  crouched=0
+  anim=0
+  # clear the mimes (and their radar blips + 2D banners)
+  mime_count=0
+  ml_i=0
+  while [ "$ml_i" -lt "$CELLS" ]; do
+    mime_lookup[$ml_i]=-1
+    ml_i=$((ml_i + 1))
+  done
+  rm_i=0
+  while [ "$rm_i" -lt "$MIME_CAP" ]; do
+    rmx[$rm_i]=-1
+    rmz[$rm_i]=-1
+    mblx[$rm_i]=-1
+    mbly[$rm_i]=-1
+    mblw[$rm_i]=0
+    mblh[$rm_i]=0
+    rm_i=$((rm_i + 1))
+  done
+  mblx[$MIME_CAP]=-1
+  mbly[$MIME_CAP]=-1
+  if [ "$MIMES_ON" -eq 1 ]; then
+    spawn_mime
+    spawn_mime
+    spawn_mime
+  fi
+  # the radar base, labels and 3D view all change with the new world
+  hud_static_dirty=1
+  labels_dirty=1
+  prev_px=-1
+  prev_pz=-1
+  prev_deg=-1
+  map_ver=$((map_ver + 1))
+  mimes_ver=$((mimes_ver + 1))
+}
+
+# LEVEL CLEARED — a popup (terminal + canvas), and the next level does
+# NOT start until the player dismisses it (SPACE / Enter / a move key;
+# q quits). Heals 1 HP (capped) and advances the level.
+level_clear_popup() {
+  echo ""
+  echo "═══════════════════════════════════════════════"
+  echo "   LEVEL $level CLEARED — all $TREASURE_TOTAL artifacts recovered!"
+  echo "   score $score · hp $hp/$maxhp"
+  echo "   press SPACE for level $((level + 1))"
+  echo "═══════════════════════════════════════════════"
+  # canvas popup: a dark panel + the text at screen centre. The leading
+  # C wipes the old HUD layer; the static base + labels are rebuilt on
+  # the next frame after start_level.
+  ov_text="C
+"
+  draw_rect "-0.05" "0.15" "0.90" "0.34" 0.04 0.05 0.09
+  draw_text "LEVEL" 5 760 1360 12 16 0.95 0.85 0.30
+  lp_lvl=$level
+  lp_d1=$((lp_lvl / 10))
+  lp_d2=$((lp_lvl % 10))
+  if [ "$lp_d1" -gt 0 ]; then draw_char $((lp_d1 + 26)) 1060 1360 12 16 0.95 0.85 0.30; fi
+  draw_char $((lp_d2 + 26)) 1120 1360 12 16 0.95 0.85 0.30
+  draw_text "CLEARED" 7 760 1210 12 16 0.60 0.95 0.75
+  draw_text "ALL ARTIFACTS RECOVERED" 23 660 1070 7 10 0.85 0.85 0.85
+  draw_text "PRESS SPACE FOR THE NEXT LEVEL" 30 560 980 7 10 0.85 0.85 0.85
+  echo "$ov_text" > /dev/webgl/hud
+  echo "swap" > /dev/webgl/call
+  # pause until the player dismisses the popup
+  lp_done=0
+  while [ "$lp_done" -eq 0 ] && [ "$quit" -eq 0 ]; do
+    lp_keys=$(cat /dev/webgl/key)
+    case $lp_keys in
+      *q*)
+        quit=1
+        lp_done=1
+        ;;
+      *space*|*Enter*|*Escape*|*w*|*a*|*s*|*d*|*ArrowUp*|*ArrowDown*|*ArrowLeft*|*ArrowRight*)
+        lp_done=1
+        ;;
+    esac
+    # heartbeat swap keeps the canvas + the keyboard grab alive
+    echo "swap" > /dev/webgl/call
+    sleep 0.05
+  done
+  # wipe the popup (the static rebuild after start_level redraws the HUD)
+  echo "C" > /dev/webgl/hud
+}
+
 main() {
   st=$(cat /dev/webgl/state)
   case $st in
@@ -3469,18 +3573,11 @@ main() {
     fi
     sleep 0.02
   fi
-  gen_maze
-  place_treasures
-  count_map_treasures
+  start_level
     # the radar base needs the maze — build it now (after gen/placement),
   # not before, so the first static layer has the real walls/treasures
   hud_build_static
     hud_static_dirty=0
-  if [ "$MIMES_ON" -eq 1 ]; then
-    spawn_mime
-    spawn_mime
-    spawn_mime
-  fi
   # block textures (generated by examples/textures at startup — cached
   # in /tmp per session so re-runs skip the generation)
   echo "  loading block textures…"
@@ -3495,6 +3592,7 @@ main() {
   frame=$((0))
   quit=$((0))
   dirty=1
+  while [ "$quit" -eq 0 ] && [ "$hp" -gt 0 ] && [ "$license" -gt 0 ]; do
   while [ "$quit" -eq 0 ] && [ "$hp" -gt 0 ] && [ "$license" -gt 0 ] && [ "$treasures_left" -gt 0 ]; do
     frame=$((frame + 1))
     gtick
@@ -3703,40 +3801,49 @@ main() {
     # the sleep itself + the fps-sampling tail of the frame
     gspan "sleep"
   done
+    # the level ended: every artifact recovered, or the board mined out
+    if [ "$quit" -eq 1 ] || [ "$hp" -le 0 ] || [ "$license" -le 0 ]; then
+      break
+    fi
+    if [ "$found_count" -ge "$treasures_placed" ]; then
+      # LEVEL CLEARED — the popup blocks until the player dismisses it
+      level_clear_popup
+      if [ "$quit" -eq 1 ]; then
+        break
+      fi
+      level=$((level + 1))
+      hp=$((hp + 1))
+      if [ "$hp" -gt "$maxhp" ]; then hp=$maxhp; fi
+      digits_dirty=1
+      start_level
+      echo ""
+      echo "  ── LEVEL $level — $TREASURE_TOTAL artifacts hidden · MIME damage 1-$level ──"
+    else
+      # mined out — the rest were shattered; the dig is over
+      break
+    fi
+  done
   echo "hide" > /dev/webgl/call
   echo ""
   if [ "$quit" -eq 1 ]; then
-    echo "== Quit. Score $score — $found_count artifacts recovered. =="
-  elif [ "$found_count" -ge "$TREASURE_TOTAL" ]; then
-    echo "▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒"
-    echo "▒  VICTORY — all $TREASURE_TOTAL operating systems recovered!  ▒"
-    echo "▒  The filesystem is pure again.  Final score: $score         ▒"
-    echo "▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒"
+    echo "== Quit at level $level. Score $score — $found_count artifacts this level. =="
+  elif [ "$hp" -le 0 ]; then
+    echo "╔════════════════════════════════════════════╗"
+    echo "║  GAME OVER — the MIMEs got you on level $level. ║"
+    echo "║  $found_count / $TREASURE_TOTAL artifacts recovered.  ║"
+    echo "║  Score: $score                             ║"
+    echo "╚════════════════════════════════════════════╝"
   elif [ "$license" -le 0 ]; then
     echo "╔════════════════════════════════════════════╗"
     echo "║  GAME OVER — LICENCE REVOKED.               ║"
     echo "║  You shot three artifacts; the Archeology   ║"
     echo "║  Board revoked your licence. Score: $score  ║"
     echo "╚════════════════════════════════════════════╝"
-  elif [ "$treasures_left" -le 0 ]; then
-    # the board holds no more artifacts — either every one was
-    # recovered, or the rest were shattered by shooting; the dig is
-    # over either way
-    echo "╔════════════════════════════════════════════╗"
-    if [ "$found_count" -ge "$treasures_placed" ]; then
-      echo "║  ALL RECOVERED — no more artifacts to dig.  ║"
-      echo "║  The filesystem is pure again.  Score: $score ║"
-    else
-      echo "║  MINED OUT — no more artifacts on the map.  ║"
-      echo "║  At least you didn't lose.                  ║"
-      echo "║  $found_count / $TREASURE_TOTAL recovered.  Score: $score  ║"
-    fi
-    echo "╚════════════════════════════════════════════╝"
   else
+    # the board mined out: the remaining artifacts were shattered
     echo "╔════════════════════════════════════════════╗"
-    echo "║  GAME OVER — the MIMEs got you.             ║"
-    echo "║  $found_count / $TREASURE_TOTAL artifacts recovered.  ║"
-    echo "║  Score: $score                             ║"
+    echo "║  MINED OUT on level $level — no more artifacts.  ║"
+    echo "║  $found_count / $TREASURE_TOTAL recovered.  Score: $score  ║"
     echo "╚════════════════════════════════════════════╝"
   fi
   gtick

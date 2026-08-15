@@ -90,9 +90,9 @@ const frozen = await play(0);
 
 const has = (r, s) => r.text.includes(s);
 const kills = (r) => (r.text.match(/MIME sanitised/g) || []).length;
-console.log("hunt(+2):   contact-kills=" + kills(hunt) + " mimes=" + hunt.mimes + " draws=" + hunt.draws + " score-line=" + (hunt.text.match(/Quit. Score [0-9]+/) || ["?"])[0]);
-console.log("flee(−2):   contact-kills=" + kills(flee) + " mimes=" + flee.mimes + " draws=" + flee.draws + " score-line=" + (flee.text.match(/Quit. Score [0-9]+/) || ["?"])[0]);
-console.log("frozen(0):  contact-kills=" + kills(frozen) + " mimes=" + frozen.mimes + " draws=" + frozen.draws + " score-line=" + (frozen.text.match(/Quit. Score [0-9]+/) || ["?"])[0]);
+console.log("hunt(+2):   contact-kills=" + kills(hunt) + " mimes=" + hunt.mimes + " draws=" + hunt.draws + " score-line=" + (hunt.text.match(/Quit at level [0-9]+. Score [0-9]+/) || ["?"])[0]);
+console.log("flee(−2):   contact-kills=" + kills(flee) + " mimes=" + flee.mimes + " draws=" + flee.draws + " score-line=" + (flee.text.match(/Quit at level [0-9]+. Score [0-9]+/) || ["?"])[0]);
+console.log("frozen(0):  contact-kills=" + kills(frozen) + " mimes=" + frozen.mimes + " draws=" + frozen.draws + " score-line=" + (frozen.text.match(/Quit at level [0-9]+. Score [0-9]+/) || ["?"])[0]);
 
 const ok =
   kills(hunt) > 0 && hunt.mimes < 5 &&                      // control: converged + contact
