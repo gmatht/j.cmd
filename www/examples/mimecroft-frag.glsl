@@ -3,8 +3,8 @@ precision mediump float;
 precision mediump int;
 
 int out_buf[4];
-varying vec4 vColor;
-varying vec2 vUv;
+varying highp vec4 vColor;
+varying highp vec2 vUv;
 uniform sampler2D uTex;
 uniform sampler2D uCrack;
 uniform int uDamage;
@@ -44,18 +44,11 @@ void main() {
     g_vcolor_r = int(vColor.r * 127.0);
     g_vcolor_g = int(vColor.g * 127.0);
     g_vcolor_b = int(vColor.b * 127.0);
-    g_uv_x = int(vUv.x * 32.0);
-    g_uv_y = int(vUv.y * 32.0);
-    vec4 _tex = texture2D(uTex, (vec2(float(g_uv_x), float(g_uv_y)) + vec2(0.5)) / 32.0);
+    vec4 _tex = texture2D(uTex, fract(vUv));
     g_tex_r = int(_tex.r * 255.0);
     g_tex_g = int(_tex.g * 255.0);
     g_tex_b = int(_tex.b * 255.0);
     g_damage = uDamage;
-    vec4 _crack = texture2D(uCrack, (vec2(float(g_uv_x), float(g_uv_y)) + vec2(0.5)) / 32.0);
-    g_cr_r = int(_crack.r * 127.0);
-    g_cr_g = int(_crack.g * 127.0);
-    g_cr_b = int(_crack.b * 127.0);
-    g_cr_a = int(_crack.a * 127.0);
     g_fx = g_frag_x;
     g_fy = g_frag_y;
     g_r = g_vcolor_r;
@@ -71,7 +64,15 @@ void main() {
         g_b = (((g_b * 90)) / 100);
     }
     if ((g_damage > 0)) {
-        g_mix = (((g_damage * g_cr_a)) / 3);
+        vec4 _crack = texture2D(uCrack, fract(vUv));
+        g_cr_r = int(_crack.r * 127.0);
+        g_cr_g = int(_crack.g * 127.0);
+        g_cr_b = int(_crack.b * 127.0);
+        g_cr_a = int(_crack.a * 127.0);
+        g_mix = (((g_damage * g_cr_a)) / 2);
+        if ((g_mix > 127)) {
+            g_mix = 127;
+        }
         g_r = (g_r - ((((((g_r - g_cr_r)) * g_mix)) / 256)));
         g_g = (g_g - ((((((g_g - g_cr_g)) * g_mix)) / 256)));
         g_b = (g_b - ((((((g_b - g_cr_b)) * g_mix)) / 256)));
