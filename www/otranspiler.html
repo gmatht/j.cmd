@@ -639,7 +639,7 @@ const RUNTIME_LABEL = {
   cpp: "none (no browser C++ runtime — the cpp frontend parses in-browser, executing the generated target needs g++)",
   powershell: "none (no browser pwsh/frontend wasm yet)",
   rust: "none (no browser Rust runtime — the rust frontend parses in-browser, executing the generated target needs rustc)",
-  zig: "none (no browser Zig runtime — the zig frontend parses in-browser, executing the generated target needs zig)",
+  zig: "none in-browser (zig.wasm compiles but the wasmer-wasi write path corrupts binary output — `man zig`; transpile the same source to c/js/sh to run it)",
 };
 const CAVEAT = {
   py: "micropython is an older build — f-strings / some imports in generated code may fail (syntax error shows below)",
@@ -649,7 +649,7 @@ const CAVEAT = {
   cpp: "the cpp-sh-go frontend parses in-browser (pure-Go tokenizer onto the shared C lowering); the generated target needs a C++ toolchain to execute",
   powershell: "the powershell-sh-go frontend is not ported to the browser wasm yet (tree-sitter-powershell, cgo)",
   rust: "the rust-frontend parses in-browser (the real fleet binary, syn-based, built to wasm32-wasip1); the generated target needs a Rust toolchain to execute",
-  zig: "the zig-sh-go frontend parses in-browser (pure-Go tokenizer onto the shared C lowering); the generated target needs a Zig toolchain to execute",
+  zig: "the zig-sh-go frontend parses in-browser (pure-Go tokenizer onto the shared C lowering) — transpile to c/js/sh to run it; the native zig.wasm compiler would need the wasmer-wasi write-path bug fixed (`man zig`)",
 };
 
 // ─── small DOM helpers ──────────────────────────────────────────
