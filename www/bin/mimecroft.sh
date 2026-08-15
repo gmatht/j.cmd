@@ -59,7 +59,7 @@ tex_seed=20240812     # texture generation seed (drives the LCG noise)
 # the mime type names) so stale session caches regenerate instead
 # of uploading the old pattern
 tex_ver=10         # stone noise cells are now fixed 4px/2px (jagged at every resolution)
-sm_sel=0              # settings-menu cursor (0=shift 1=size 2=seed 3=crt 4=corrupt 5=mime speed 6=mime names 7=sound mode 8=minimap)
+sm_sel=0              # settings-menu cursor (0=shift 1=size 2=seed 3=crt 4=corrupt 5=mime speed 6=mime names 7=sound mode 8=minimap 9=game speed)
 sm_done=0
 sm_changed=0
 headless=1            # set from /dev/webgl/state in main()
@@ -244,6 +244,7 @@ anim=0              # 1 while an action glides the camera
 precache_done=0     # the background sound pre-cache spawns once per session
 anim_t0=0           # wall-clock ms when the current glide started
 ANIM_MS=200         # each action completes in 0.2s of wall time
+game_speed=100       # player speed as % of normal (100=normal, 10=10%, 5=5% — the settings menu's GAME SPEED item)
 ANIM_MS_CROUCH=400  # a move through a 1-tall (mined) passage — half speed
 anim_ms=200         # the CURRENT glide's duration (moves slow when crouched)
 crouched=0          # 1 when the ceiling overhead is low — the eye ducks
@@ -715,7 +716,9 @@ try_move() { tm_a=$1; tm_b=$2
 # reads the interpolated display values (dpx/dpz/dyaw + fractional milli
 # positions) so the view eases instead of snapping.
 start_anim() { an[0]=$1; an[1]=$2; an[2]=$3; an[3]=$4; an[4]=$5; an[5]=$6
-  anim_ms=$ANIM_MS
+  # the GAME SPEED setting: the glide lasts 100/game_speed × the normal
+  # 0.2s, so at 10% a cell-step takes 2s and the motion is easy to study
+  anim_ms=$((ANIM_MS * 100 / game_speed))
   # shortest yaw arc across the 0↔3 seam (3→0 turns +90°, not -270°)
   anim_ayd=$((an[5] - an[2]))
   if [ "$anim_ayd" -gt 2 ]; then anim_ayd=$((anim_ayd - 4)); fi
@@ -745,7 +748,7 @@ try_anim_move() { ta_dx=$1; ta_dz=$2
     # passage keeps its y=2 block (the 1-tall opening) — slow the glide
     # so the crouch reads as ducking under the low ceiling
     get_cell $ta_nx 2 $ta_nz
-    if [ "$gv" -eq "$AIR" ]; then anim_ms=$ANIM_MS; else anim_ms=$ANIM_MS_CROUCH; fi
+    if [ "$gv" -eq "$AIR" ]; then anim_ms=$((ANIM_MS * 100 / game_speed)); else anim_ms=$((ANIM_MS_CROUCH * 100 / game_speed)); fi
     return 0
   fi
   # a HIDDEN treasure is claimed by WALKING into it — the claim fires
@@ -753,7 +756,7 @@ try_anim_move() { ta_dx=$1; ta_dz=$2
   # are always 2-tall (place_treasures guarantees it), so walk upright
   if [ "$gv" -eq "$TREASURE" ]; then
     start_anim $px $pz $yaw $ta_nx $ta_nz $yaw
-    anim_ms=$ANIM_MS
+    anim_ms=$((ANIM_MS * 100 / game_speed))
     return 0
   fi
   return 1
@@ -3057,6 +3060,18 @@ settings_inc() {
     else MINIMAP_MODE=0
     fi
   fi
+  if [ "$sm_sel" -eq 9 ]; then
+    # game speed ladder: 100 → 50 → 20 → 10 → 5 → 2 → 1 → back to 100
+    # (the right arrow increases — 100 = normal, lower = slower)
+    if [ "$game_speed" -eq 100 ]; then game_speed=50
+    elif [ "$game_speed" -eq 50 ]; then game_speed=20
+    elif [ "$game_speed" -eq 20 ]; then game_speed=10
+    elif [ "$game_speed" -eq 10 ]; then game_speed=5
+    elif [ "$game_speed" -eq 5 ]; then game_speed=2
+    elif [ "$game_speed" -eq 2 ]; then game_speed=1
+    else game_speed=100
+    fi
+  fi
 }
 
 settings_dec() {
@@ -3115,6 +3130,17 @@ settings_dec() {
     if [ "$MINIMAP_MODE" -eq 2 ]; then MINIMAP_MODE=1
     elif [ "$MINIMAP_MODE" -eq 1 ]; then MINIMAP_MODE=0
     else MINIMAP_MODE=2
+    fi
+  fi
+  if [ "$sm_sel" -eq 9 ]; then
+    # game speed ladder (the left arrow decreases — lower = slower)
+    if [ "$game_speed" -eq 1 ]; then game_speed=2
+    elif [ "$game_speed" -eq 2 ]; then game_speed=5
+    elif [ "$game_speed" -eq 5 ]; then game_speed=10
+    elif [ "$game_speed" -eq 10 ]; then game_speed=20
+    elif [ "$game_speed" -eq 20 ]; then game_speed=50
+    elif [ "$game_speed" -eq 50 ]; then game_speed=100
+    else game_speed=1
     fi
   fi
 }
@@ -3196,6 +3222,9 @@ draw_settings_menu() {
   elif [ "$MINIMAP_MODE" -eq 2 ]; then sm_mm="50%"
   else sm_mm="ON"; fi
   echo "  $sm_mark  minimap     : $sm_mm"
+  if [ "$sm_sel" -eq 9 ]; then sm_mark=">"; else sm_mark=" "; fi
+  echo "  $sm_mark  game speed  : ${game_speed}%"
+  # canvas card
   # canvas card — the leading C must be on its OWN line (a real
   # newline) or the device never clears the layer and old rects stay
   sm_shift_s=$fv
@@ -3324,22 +3353,22 @@ settings_menu() {
           ;;
         *ArrowUp*)
           sm_sel=$((sm_sel - 1))
-          if [ "$sm_sel" -lt 0 ]; then sm_sel=8; fi
+          if [ "$sm_sel" -lt 0 ]; then sm_sel=9; fi
           sm_changed=1
           ;;
         *ArrowDown*)
           sm_sel=$((sm_sel + 1))
-          if [ "$sm_sel" -gt 8 ]; then sm_sel=0; fi
+          if [ "$sm_sel" -gt 9 ]; then sm_sel=0; fi
           sm_changed=1
           ;;
         *w*)
           sm_sel=$((sm_sel - 1))
-          if [ "$sm_sel" -lt 0 ]; then sm_sel=8; fi
+          if [ "$sm_sel" -lt 0 ]; then sm_sel=9; fi
           sm_changed=1
           ;;
         *s*)
           sm_sel=$((sm_sel + 1))
-          if [ "$sm_sel" -gt 8 ]; then sm_sel=0; fi
+          if [ "$sm_sel" -gt 9 ]; then sm_sel=0; fi
           sm_changed=1
           ;;
         *d*)
