@@ -251,6 +251,7 @@
 "sh2perl/examples/dollar-bang.sh",
 "sh2perl/examples/dollar-escape-in-interpolate.sh",
 "sh2perl/examples/dollar-followed-by-slash.sh",
+"sh2perl/examples/dollar-minus.sh",
 "sh2perl/examples/dollar-positional-arithmetic.sh",
 "sh2perl/examples/dollar-question-in-bracket.sh",
 "sh2perl/examples/dollar-question-in-test.sh",
@@ -326,6 +327,7 @@
 "sh2perl/examples/nested-subshell-paren.sh",
 "sh2perl/examples/not-negation.sh",
 "sh2perl/examples/or-continue.sh",
+"sh2perl/examples/param-expand-default-operator.sh",
 "sh2perl/examples/param-expand-hash-sameline.sh",
 "sh2perl/examples/param-expand-hash.sh",
 "sh2perl/examples/param-expand-hashhash.sh",
@@ -386,6 +388,7 @@
 "sh2perl/examples/parse-double-bracket-or-after-heredoc.sh",
 "sh2perl/examples/parse-double-bracket-or.sh",
 "sh2perl/examples/parse-double-semicolon-in-case.sh",
+"sh2perl/examples/parse-double-semicolon.sh",
 "sh2perl/examples/parse-doublequote-unexpected.sh",
 "sh2perl/examples/parse-ef-test-operator.sh",
 "sh2perl/examples/parse-empty-assign-doublesemicolon.sh",
@@ -393,6 +396,7 @@
 "sh2perl/examples/parse-error-block-in-pipeline.sh",
 "sh2perl/examples/parse-error-case-bracket.sh",
 "sh2perl/examples/parse-error-dollar-question-in-regex.sh",
+"sh2perl/examples/parse-error-doublesemicolon.sh",
 "sh2perl/examples/parse-error-escaped-dollar.sh",
 "sh2perl/examples/parse-error-export-empty.sh",
 "sh2perl/examples/parse-error-regex-lookbehind.sh",
@@ -429,7 +433,9 @@
 "sh2perl/examples/parse-or-continuation.sh",
 "sh2perl/examples/parse-orelse-continuation.sh",
 "sh2perl/examples/parse-param-pattern-match.sh",
+"sh2perl/examples/parse-parameter-expansion-eof.sh",
 "sh2perl/examples/parse-parameter-pattern.sh",
+"sh2perl/examples/parse-paren-after-do.sh",
 "sh2perl/examples/parse-paren-close.sh",
 "sh2perl/examples/parse-posix-case-paren.sh",
 "sh2perl/examples/parse-question-mark.sh",
@@ -459,6 +465,10 @@
 "sh2perl/examples/parse-test-or.sh",
 "sh2perl/examples/parse-test-semicolon.sh",
 "sh2perl/examples/parse-test-with-source.sh",
+"sh2perl/examples/parse-unexpected-braceclose.sh",
+"sh2perl/examples/parse-unexpected-end-of-input.sh",
+"sh2perl/examples/parse-unexpected-parenclose.sh",
+"sh2perl/examples/parse-unterminated-heredoc.sh",
 "sh2perl/examples/parse-variable-default-with-quotes.sh",
 "sh2perl/examples/pid_tempfile.sh",
 "sh2perl/examples/pipeline-after-subshell.sh",
@@ -524,6 +534,7 @@
 "sh2perl/examples/test_simple_function.sh",
 "sh2perl/examples/test_system_builtin.sh",
 "sh2perl/examples/tsv-string-accumulate-loop.sh",
+"sh2perl/examples/tty-cmdsub.sh",
 "sh2perl/examples/typeset-cmdsub.sh",
 "sh2perl/examples/uname-in-qx.sh",
 "sh2perl/examples/unclosed-param-expansion.sh",
@@ -540,7 +551,7 @@
 "sh2perl/examples/zstd_example.sh"
 ],
 "name": "estree",
-"pass": 519,
+"pass": 530,
 "passPaths": [
 "sh2perl/examples/000__02_output_formatting_commands.sh",
 "sh2perl/examples/000__03_file_manipulation_commands.sh",
@@ -786,6 +797,7 @@
 "sh2perl/examples/dollar-at-with-default.sh",
 "sh2perl/examples/dollar-bang.sh",
 "sh2perl/examples/dollar-followed-by-slash.sh",
+"sh2perl/examples/dollar-minus.sh",
 "sh2perl/examples/dollar-positional-arithmetic.sh",
 "sh2perl/examples/dollar-question-in-bracket.sh",
 "sh2perl/examples/dollar-question-in-test.sh",
@@ -856,6 +868,7 @@
 "sh2perl/examples/nested-subshell-paren.sh",
 "sh2perl/examples/not-negation.sh",
 "sh2perl/examples/or-continue.sh",
+"sh2perl/examples/param-expand-default-operator.sh",
 "sh2perl/examples/param-expand-hash-sameline.sh",
 "sh2perl/examples/param-expand-hash.sh",
 "sh2perl/examples/param-expand-hashhash.sh",
@@ -916,6 +929,7 @@
 "sh2perl/examples/parse-double-bracket-or-after-heredoc.sh",
 "sh2perl/examples/parse-double-bracket-or.sh",
 "sh2perl/examples/parse-double-semicolon-in-case.sh",
+"sh2perl/examples/parse-double-semicolon.sh",
 "sh2perl/examples/parse-doublequote-unexpected.sh",
 "sh2perl/examples/parse-ef-test-operator.sh",
 "sh2perl/examples/parse-empty-assign-doublesemicolon.sh",
@@ -923,6 +937,7 @@
 "sh2perl/examples/parse-error-block-in-pipeline.sh",
 "sh2perl/examples/parse-error-case-bracket.sh",
 "sh2perl/examples/parse-error-dollar-question-in-regex.sh",
+"sh2perl/examples/parse-error-doublesemicolon.sh",
 "sh2perl/examples/parse-error-escaped-dollar.sh",
 "sh2perl/examples/parse-error-export-empty.sh",
 "sh2perl/examples/parse-error-regex-lookbehind.sh",
@@ -959,7 +974,9 @@
 "sh2perl/examples/parse-or-continuation.sh",
 "sh2perl/examples/parse-orelse-continuation.sh",
 "sh2perl/examples/parse-param-pattern-match.sh",
+"sh2perl/examples/parse-parameter-expansion-eof.sh",
 "sh2perl/examples/parse-parameter-pattern.sh",
+"sh2perl/examples/parse-paren-after-do.sh",
 "sh2perl/examples/parse-paren-close.sh",
 "sh2perl/examples/parse-posix-case-paren.sh",
 "sh2perl/examples/parse-question-mark.sh",
@@ -989,6 +1006,10 @@
 "sh2perl/examples/parse-test-or.sh",
 "sh2perl/examples/parse-test-semicolon.sh",
 "sh2perl/examples/parse-test-with-source.sh",
+"sh2perl/examples/parse-unexpected-braceclose.sh",
+"sh2perl/examples/parse-unexpected-end-of-input.sh",
+"sh2perl/examples/parse-unexpected-parenclose.sh",
+"sh2perl/examples/parse-unterminated-heredoc.sh",
 "sh2perl/examples/parse-variable-default-with-quotes.sh",
 "sh2perl/examples/pid_tempfile.sh",
 "sh2perl/examples/pipeline-after-subshell.sh",
@@ -1048,6 +1069,7 @@
 "sh2perl/examples/test_perl_critic.sh",
 "sh2perl/examples/test_simple_function.sh",
 "sh2perl/examples/test_system_builtin.sh",
+"sh2perl/examples/tty-cmdsub.sh",
 "sh2perl/examples/typeset-cmdsub.sh",
 "sh2perl/examples/uname-in-qx.sh",
 "sh2perl/examples/unclosed-param-expansion.sh",
@@ -1062,7 +1084,7 @@
 "sh2perl/examples/zsh-style-eval-redirect.sh",
 "sh2perl/examples/zstd_example.sh"
 ],
-"total": 535
+"total": 546
 },
 "pl": {
 "corpus": "sh2perl/examples",
@@ -1315,6 +1337,7 @@
 "sh2perl/examples/dollar-bang.sh",
 "sh2perl/examples/dollar-escape-in-interpolate.sh",
 "sh2perl/examples/dollar-followed-by-slash.sh",
+"sh2perl/examples/dollar-minus.sh",
 "sh2perl/examples/dollar-positional-arithmetic.sh",
 "sh2perl/examples/dollar-question-in-bracket.sh",
 "sh2perl/examples/dollar-question-in-test.sh",
@@ -1390,6 +1413,7 @@
 "sh2perl/examples/nested-subshell-paren.sh",
 "sh2perl/examples/not-negation.sh",
 "sh2perl/examples/or-continue.sh",
+"sh2perl/examples/param-expand-default-operator.sh",
 "sh2perl/examples/param-expand-hash-sameline.sh",
 "sh2perl/examples/param-expand-hash.sh",
 "sh2perl/examples/param-expand-hashhash.sh",
@@ -1450,6 +1474,7 @@
 "sh2perl/examples/parse-double-bracket-or-after-heredoc.sh",
 "sh2perl/examples/parse-double-bracket-or.sh",
 "sh2perl/examples/parse-double-semicolon-in-case.sh",
+"sh2perl/examples/parse-double-semicolon.sh",
 "sh2perl/examples/parse-doublequote-unexpected.sh",
 "sh2perl/examples/parse-ef-test-operator.sh",
 "sh2perl/examples/parse-empty-assign-doublesemicolon.sh",
@@ -1457,6 +1482,7 @@
 "sh2perl/examples/parse-error-block-in-pipeline.sh",
 "sh2perl/examples/parse-error-case-bracket.sh",
 "sh2perl/examples/parse-error-dollar-question-in-regex.sh",
+"sh2perl/examples/parse-error-doublesemicolon.sh",
 "sh2perl/examples/parse-error-escaped-dollar.sh",
 "sh2perl/examples/parse-error-export-empty.sh",
 "sh2perl/examples/parse-error-regex-lookbehind.sh",
@@ -1493,7 +1519,9 @@
 "sh2perl/examples/parse-or-continuation.sh",
 "sh2perl/examples/parse-orelse-continuation.sh",
 "sh2perl/examples/parse-param-pattern-match.sh",
+"sh2perl/examples/parse-parameter-expansion-eof.sh",
 "sh2perl/examples/parse-parameter-pattern.sh",
+"sh2perl/examples/parse-paren-after-do.sh",
 "sh2perl/examples/parse-paren-close.sh",
 "sh2perl/examples/parse-posix-case-paren.sh",
 "sh2perl/examples/parse-question-mark.sh",
@@ -1523,6 +1551,10 @@
 "sh2perl/examples/parse-test-or.sh",
 "sh2perl/examples/parse-test-semicolon.sh",
 "sh2perl/examples/parse-test-with-source.sh",
+"sh2perl/examples/parse-unexpected-braceclose.sh",
+"sh2perl/examples/parse-unexpected-end-of-input.sh",
+"sh2perl/examples/parse-unexpected-parenclose.sh",
+"sh2perl/examples/parse-unterminated-heredoc.sh",
 "sh2perl/examples/parse-variable-default-with-quotes.sh",
 "sh2perl/examples/pid_tempfile.sh",
 "sh2perl/examples/pipeline-after-subshell.sh",
@@ -1588,6 +1620,7 @@
 "sh2perl/examples/test_simple_function.sh",
 "sh2perl/examples/test_system_builtin.sh",
 "sh2perl/examples/tsv-string-accumulate-loop.sh",
+"sh2perl/examples/tty-cmdsub.sh",
 "sh2perl/examples/typeset-cmdsub.sh",
 "sh2perl/examples/uname-in-qx.sh",
 "sh2perl/examples/unclosed-param-expansion.sh",
@@ -1604,7 +1637,7 @@
 "sh2perl/examples/zstd_example.sh"
 ],
 "name": "perl",
-"pass": 412,
+"pass": 413,
 "passPaths": [
 "sh2perl/examples/000__02_output_formatting_commands.sh",
 "sh2perl/examples/000__03_file_manipulation_commands.sh",
@@ -1960,6 +1993,7 @@
 "sh2perl/examples/parse-substring-expansion.sh",
 "sh2perl/examples/parse-test-or.sh",
 "sh2perl/examples/parse-test-with-source.sh",
+"sh2perl/examples/parse-unterminated-heredoc.sh",
 "sh2perl/examples/parse-variable-default-with-quotes.sh",
 "sh2perl/examples/pipeline-after-subshell.sh",
 "sh2perl/examples/ps-system-call.sh",
@@ -2019,7 +2053,7 @@
 "sh2perl/examples/variable-plus-operator.sh",
 "sh2perl/examples/zsh-style-eval-redirect.sh"
 ],
-"total": 535
+"total": 546
 },
 "sh": {
 "corpus": "examples + frontends testdata",
@@ -2364,6 +2398,7 @@
 "sh2perl/examples/dollar-bang.sh",
 "sh2perl/examples/dollar-escape-in-interpolate.sh",
 "sh2perl/examples/dollar-followed-by-slash.sh",
+"sh2perl/examples/dollar-minus.sh",
 "sh2perl/examples/dollar-positional-arithmetic.sh",
 "sh2perl/examples/dollar-question-in-bracket.sh",
 "sh2perl/examples/dollar-question-in-test.sh",
@@ -2439,6 +2474,7 @@
 "sh2perl/examples/nested-subshell-paren.sh",
 "sh2perl/examples/not-negation.sh",
 "sh2perl/examples/or-continue.sh",
+"sh2perl/examples/param-expand-default-operator.sh",
 "sh2perl/examples/param-expand-hash-sameline.sh",
 "sh2perl/examples/param-expand-hash.sh",
 "sh2perl/examples/param-expand-hashhash.sh",
@@ -2499,6 +2535,7 @@
 "sh2perl/examples/parse-double-bracket-or-after-heredoc.sh",
 "sh2perl/examples/parse-double-bracket-or.sh",
 "sh2perl/examples/parse-double-semicolon-in-case.sh",
+"sh2perl/examples/parse-double-semicolon.sh",
 "sh2perl/examples/parse-doublequote-unexpected.sh",
 "sh2perl/examples/parse-ef-test-operator.sh",
 "sh2perl/examples/parse-empty-assign-doublesemicolon.sh",
@@ -2506,6 +2543,7 @@
 "sh2perl/examples/parse-error-block-in-pipeline.sh",
 "sh2perl/examples/parse-error-case-bracket.sh",
 "sh2perl/examples/parse-error-dollar-question-in-regex.sh",
+"sh2perl/examples/parse-error-doublesemicolon.sh",
 "sh2perl/examples/parse-error-escaped-dollar.sh",
 "sh2perl/examples/parse-error-export-empty.sh",
 "sh2perl/examples/parse-error-regex-lookbehind.sh",
@@ -2542,7 +2580,9 @@
 "sh2perl/examples/parse-or-continuation.sh",
 "sh2perl/examples/parse-orelse-continuation.sh",
 "sh2perl/examples/parse-param-pattern-match.sh",
+"sh2perl/examples/parse-parameter-expansion-eof.sh",
 "sh2perl/examples/parse-parameter-pattern.sh",
+"sh2perl/examples/parse-paren-after-do.sh",
 "sh2perl/examples/parse-paren-close.sh",
 "sh2perl/examples/parse-posix-case-paren.sh",
 "sh2perl/examples/parse-question-mark.sh",
@@ -2572,6 +2612,10 @@
 "sh2perl/examples/parse-test-or.sh",
 "sh2perl/examples/parse-test-semicolon.sh",
 "sh2perl/examples/parse-test-with-source.sh",
+"sh2perl/examples/parse-unexpected-braceclose.sh",
+"sh2perl/examples/parse-unexpected-end-of-input.sh",
+"sh2perl/examples/parse-unexpected-parenclose.sh",
+"sh2perl/examples/parse-unterminated-heredoc.sh",
 "sh2perl/examples/parse-variable-default-with-quotes.sh",
 "sh2perl/examples/pid_tempfile.sh",
 "sh2perl/examples/pipeline-after-subshell.sh",
@@ -2637,6 +2681,7 @@
 "sh2perl/examples/test_simple_function.sh",
 "sh2perl/examples/test_system_builtin.sh",
 "sh2perl/examples/tsv-string-accumulate-loop.sh",
+"sh2perl/examples/tty-cmdsub.sh",
 "sh2perl/examples/typeset-cmdsub.sh",
 "sh2perl/examples/uname-in-qx.sh",
 "sh2perl/examples/unclosed-param-expansion.sh",
@@ -2653,7 +2698,7 @@
 "sh2perl/examples/zstd_example.sh"
 ],
 "name": "sh",
-"pass": 519,
+"pass": 520,
 "passPaths": [
 "frontends/go-sh/testdata/t01_echo.sh",
 "frontends/go-sh/testdata/t02_assign.sh",
@@ -3110,6 +3155,7 @@
 "sh2perl/examples/parse-substring-expansion.sh",
 "sh2perl/examples/parse-test-or.sh",
 "sh2perl/examples/parse-test-with-source.sh",
+"sh2perl/examples/parse-unterminated-heredoc.sh",
 "sh2perl/examples/parse-variable-default-with-quotes.sh",
 "sh2perl/examples/pid_tempfile.sh",
 "sh2perl/examples/pipeline-after-subshell.sh",
@@ -3175,7 +3221,7 @@
 "sh2perl/examples/zsh-style-eval-redirect.sh",
 "sh2perl/examples/zstd_example.sh"
 ],
-"total": 627
+"total": 638
 }
 },
 "frontends": {
@@ -4028,54 +4074,54 @@
 "total": 91
 }
 },
-"generated": "2026-08-15T06:15:12+00:00",
+"generated": "2026-08-15T06:18:46+00:00",
 "source": "/home/llm/sh2loop",
 "triage": {
 "backends": {
 "c": {
 "fail": 20,
-"pass": 1176,
-"total": 1196
+"pass": 1187,
+"total": 1207
 },
 "go": {
 "fail": 20,
-"pass": 1175,
-"total": 1195
+"pass": 1186,
+"total": 1206
 },
 "java": {
 "fail": 20,
-"pass": 685,
-"total": 1195
+"pass": 696,
+"total": 1206
 },
 "js": {
 "fail": 22,
-"pass": 1111,
-"total": 1200
+"pass": 1122,
+"total": 1211
 },
 "perl": {
 "fail": 64,
 "pass": 575,
-"total": 1197
+"total": 1208
 },
 "python": {
 "fail": 20,
-"pass": 1175,
-"total": 1195
+"pass": 1186,
+"total": 1206
 },
 "rust": {
 "fail": 20,
-"pass": 1154,
-"total": 1195
+"pass": 1165,
+"total": 1206
 },
 "sh": {
 "fail": 118,
 "pass": 532,
-"total": 1196
+"total": 1207
 },
 "zig": {
 "fail": 20,
-"pass": 1163,
-"total": 1195
+"pass": 1174,
+"total": 1206
 }
 },
 "frontends": {
@@ -13110,6 +13156,17 @@
 "sh": "SKIP-ESTREE-REF",
 "zig": "PASS-RENDER"
 },
+"dollar-minus.sh": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "SKIP-ESTREE-REF",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "SKIP-ESTREE-REF",
+"zig": "PASS-RENDER"
+},
 "dollar-positional-arithmetic.sh": {
 "c": "PASS-RENDER",
 "go": "PASS-RENDER",
@@ -13935,6 +13992,17 @@
 "sh": "SKIP-ESTREE-REF",
 "zig": "PASS-RENDER"
 },
+"param-expand-default-operator.sh": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "SKIP-ESTREE-REF",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "SKIP-ESTREE-REF",
+"zig": "PASS-RENDER"
+},
 "param-expand-hash-sameline.sh": {
 "c": "PASS-RENDER",
 "go": "PASS-RENDER",
@@ -14595,6 +14663,17 @@
 "sh": "SKIP-ESTREE-REF",
 "zig": "PASS-RENDER"
 },
+"parse-double-semicolon.sh": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "SKIP-ESTREE-REF",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "SKIP-ESTREE-REF",
+"zig": "PASS-RENDER"
+},
 "parse-doublequote-unexpected.sh": {
 "c": "PASS-RENDER",
 "go": "PASS-RENDER",
@@ -14662,6 +14741,17 @@
 "zig": "PASS-RENDER"
 },
 "parse-error-dollar-question-in-regex.sh": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "SKIP-ESTREE-REF",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "SKIP-ESTREE-REF",
+"zig": "PASS-RENDER"
+},
+"parse-error-doublesemicolon.sh": {
 "c": "PASS-RENDER",
 "go": "PASS-RENDER",
 "java": "PASS-RENDER",
@@ -15068,7 +15158,29 @@
 "sh": "SKIP-ESTREE-REF",
 "zig": "PASS-RENDER"
 },
+"parse-parameter-expansion-eof.sh": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "SKIP-ESTREE-REF",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "SKIP-ESTREE-REF",
+"zig": "PASS-RENDER"
+},
 "parse-parameter-pattern.sh": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "SKIP-ESTREE-REF",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "SKIP-ESTREE-REF",
+"zig": "PASS-RENDER"
+},
+"parse-paren-after-do.sh": {
 "c": "PASS-RENDER",
 "go": "PASS-RENDER",
 "java": "PASS-RENDER",
@@ -15388,6 +15500,50 @@
 "zig": "PASS-RENDER"
 },
 "parse-test-with-source.sh": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "SKIP-ESTREE-REF",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "SKIP-ESTREE-REF",
+"zig": "PASS-RENDER"
+},
+"parse-unexpected-braceclose.sh": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "SKIP-ESTREE-REF",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "SKIP-ESTREE-REF",
+"zig": "PASS-RENDER"
+},
+"parse-unexpected-end-of-input.sh": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "SKIP-ESTREE-REF",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "SKIP-ESTREE-REF",
+"zig": "PASS-RENDER"
+},
+"parse-unexpected-parenclose.sh": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "SKIP-ESTREE-REF",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "SKIP-ESTREE-REF",
+"zig": "PASS-RENDER"
+},
+"parse-unterminated-heredoc.sh": {
 "c": "PASS-RENDER",
 "go": "PASS-RENDER",
 "java": "PASS-RENDER",
@@ -16109,6 +16265,17 @@
 "zig": "PASS-RENDER"
 },
 "tsv-string-accumulate-loop.sh": {
+"c": "PASS-RENDER",
+"go": "PASS-RENDER",
+"java": "PASS-RENDER",
+"js": "PASS-RENDER",
+"perl": "SKIP-ESTREE-REF",
+"python": "PASS-RENDER",
+"rust": "PASS-RENDER",
+"sh": "SKIP-ESTREE-REF",
+"zig": "PASS-RENDER"
+},
+"tty-cmdsub.sh": {
 "c": "PASS-RENDER",
 "go": "PASS-RENDER",
 "java": "PASS-RENDER",
