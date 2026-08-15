@@ -42,7 +42,7 @@ if [ ! -d "$SH2LOOP" ]; then
 fi
 
 python3 - "$SH2LOOP" "$REPO/www/examples" <<'PY'
-import datetime, json, os, sys
+import datetime, json, os, re, sys
 
 loop, dst = sys.argv[1], sys.argv[2]
 
@@ -166,7 +166,11 @@ TRIAGE_FRONTEND = {"c-sh-go": "c", "cpp-sh-go": "cpp", "bat-sh-go": "bat",
                    "py-sh-go": "py", "perl-sh-go": "pl", "posix-sh-go": "sh-posix",
                    "zsh-sh-go": "zsh", "fish-sh-go": "fish", "go-sh": "go",
                    "powershell-sh-go": "powershell", "rust-frontend": "rust",
-                   "zig-sh-go": "zig"}
+                   "zig-sh-go": "zig",
+                   # the SHARED sh corpus (sh2perl/examples) — the triage
+                   # sweeps it through every backend, colouring the sh→X
+                   # buttons for targets with no backend pass set
+                   "sh2perl": "sh2perl"}
 triage = {"frontends": {}, "backends": {}}
 tv = os.path.join(loop, "triage", "verdicts.tsv")
 if os.path.isfile(tv):
