@@ -117,7 +117,7 @@ void main() {
         g_rely = g_dy;
         g_relz = ((((((0.0) - ((g_dx * g_s)))) + ((g_dz * g_c)))) + (0.0));
         g_w = ((((0.0) - g_relz)) + (0.0));
-        g_vp_x = (((((g_relx * (1.0))) + (((((float(g_ucs)) * g_w)) / (1000.0))))) + (0.0));
+        g_vp_x = (((((g_relx * (0.7))) + (((((float(g_ucs)) * g_w)) / (1000.0))))) + (0.0));
         g_vp_y = (g_rely * (0.45));
         g_vp_z = (((g_w * g_w)) / (64.0));
         g_vp_w = g_w;

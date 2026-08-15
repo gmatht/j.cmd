@@ -33,8 +33,8 @@
 #        off-screen)
 #   rel = (d.x·cos yaw + d.z·sin yaw, d.y, -d.x·sin yaw + d.z·cos yaw)
 #   w  = -rel.z                                       (depth)
-#   gl_Position = (rel.x·1.0 + uCamShift·w, rel.y·0.45, w²/64, w) — x scale 1 (user-tested), y 0.45
-#   (uCamShift is a constant screen-x shift: NDC x = rel.x·1.0/w + shift)
+#   gl_Position = (rel.x·0.7 + uCamShift·w, rel.y·0.45, w²/64, w) — x scale 1 (user-tested), y 0.45
+#   (uCamShift is a constant screen-x shift: NDC x = rel.x·0.7/w + shift)
 # Every bc capture carries a decimal-point literal (the backend's
 # float-path gate), every integer expression stays in `$(( ))`, and the
 # program is otherwise a faithful transcription of the hand-written
@@ -80,7 +80,7 @@ else
   rely=$dy
   relz=$(echo "scale=4; 0.0 - $dx * $s + $dz * $c + 0.0" | bc)
   w=$(echo "scale=4; 0.0 - $relz + 0.0" | bc)
-  # fake perspective: x scaled 1.0, y 0.45 (x + the strafe screen-shift
+  # fake perspective: x scaled 0.7, y 0.45 (x + the strafe screen-shift
   # uCamShift·w), z = w²/64 (depth-ordered), w = depth. w is CLAMPED by the
   # game at compile time (emit_vertex_shader injects `if (g_w < 0.0001)…`
   # into the generated GLSL — the generator's float grammar can't express
@@ -88,7 +88,7 @@ else
   # side of a same-row block) has w<0 vertices, the GPU near-plane clip
   # of the straddling polygon is degenerate and the face vanishes (the
   # block renders flat); clamping keeps every vertex in front.
-  vp_x=$(echo "scale=4; $relx * 1.0 + $ucs * $w / 1000.0 + 0.0" | bc)
+  vp_x=$(echo "scale=4; $relx * 0.7 + $ucs * $w / 1000.0 + 0.0" | bc)
   vp_y=$(echo "scale=4; $rely * 0.45" | bc)
   vp_z=$(echo "scale=4; $w * $w / 64.0" | bc)
   vp_w=$w
