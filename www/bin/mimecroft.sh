@@ -3417,8 +3417,15 @@ settings_menu() {
 # carved) spawn pocket. The static HUD/radar/labels rebuild on the
 # next frame (hud_static_dirty / labels_dirty).
 start_level() {
+  # the transpiled shell's async store needs a macrotask yield between
+  # the phase functions (the same reason main() sleeps between its
+  # startup phases) — back-to-back calls let the map writes pile up and
+  # count_map_treasures reads stale cells (levels regenerated with no
+  # treasures). Each sleep lets the pending writes land.
   gen_maze
+  sleep 0.01
   place_treasures
+  sleep 0.01
   count_map_treasures
   found_count=0
   fl_i=0
@@ -3819,8 +3826,14 @@ main() {
       echo ""
       echo "  ── LEVEL $level — $TREASURE_TOTAL artifacts hidden · MIME damage 1-$level ──"
     else
-      # mined out — the rest were shattered; the dig is over
-      break
+      # mined out — one or more artifacts were SHATTERED by shooting, so
+      # this board can't be completed; the dig still moves on to the
+      # next level (the licence carries the real penalty: three strikes
+      # revoke it and end the game). No heal — it wasn't a clean win.
+      level=$((level + 1))
+      start_level
+      echo ""
+      echo "  ── MINED OUT — an artifact was lost; LEVEL $level begins (licence $license / 3) ──"
     fi
   done
   echo "hide" > /dev/webgl/call
@@ -3840,10 +3853,10 @@ main() {
     echo "║  Board revoked your licence. Score: $score  ║"
     echo "╚════════════════════════════════════════════╝"
   else
-    # the board mined out: the remaining artifacts were shattered
     echo "╔════════════════════════════════════════════╗"
-    echo "║  MINED OUT on level $level — no more artifacts.  ║"
-    echo "║  $found_count / $TREASURE_TOTAL recovered.  Score: $score  ║"
+    echo "║  GAME OVER — the MIMEs got you on level $level. ║"
+    echo "║  $found_count / $TREASURE_TOTAL artifacts recovered.  ║"
+    echo "║  Score: $score                             ║"
     echo "╚════════════════════════════════════════════╝"
   fi
   gtick
