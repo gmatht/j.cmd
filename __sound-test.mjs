@@ -75,8 +75,15 @@ check("shatter --notes → the two game notes", shatterNotes.includes('play "C4 
 // lowers `$(cat /dev/webgl/key)` to a direct fs read), writes through
 // fs.write, and echoes through process.stdout.write — so the harness
 // patches fs.read/fs.write and passes a process shim to the Function.
-async function runGame(args, keys) {
+async function runGame(args, keys, opts = {}) {
   let src = readFileSync("examples/mimecroft.sh", "utf8");
+  if (!opts.precache) {
+    // the runs below assert the LAZY generation counts (one generator
+    // run per distinct sound) — disable the background pre-cache so the
+    // in-game plays drive the generators, exactly as before the
+    // feature. The dedicated pre-cache run turns it back on.
+    src = src.replace("precache_sounds &", "true");
+  }
   // force the browser path AND keep sound on (the headless branch sets
   // sound=0 — the CLI has no Web Audio)
   src = src.replace("*headless*) sound=$((0)); headless=1 ;;", "*headless*) sound=$((1)); headless=0 ;;").replace(
@@ -201,6 +208,42 @@ console.log(`  [t=${((Date.now()-T0)/1000).toFixed(1)}s] game run 2 (CLI arg)…
   check("samples device received a sound", samplesWrites.length >= 1, "writes=" + samplesWrites.length);
   check("startup echo shows bash mode", stdout.join("").includes("sound bash"));
   check("cache reused across runs (no re-generation)", soundRuns.length === 0, `runs=${soundRuns.length}`);
+}
+
+// Background pre-cache: as soon as bash sounds are enabled, the game
+// warms the /tmp sound cache in the background — the first play of
+// each sound is then a cache hit instead of a generator run. The list
+// starts with the sounds the opening minutes play (hit + its five
+// materials, then thud), so clear the in-process cache from the runs
+// above, run the game with the pre-cache ON, and assert those land
+// without the game hanging (the generator invocations happen detached).
+console.log(`  [t=${((Date.now()-T0)/1000).toFixed(1)}s] game run 3 (background pre-cache)…`);
+{
+  // drop the caches runs 1-2 wrote, so the pre-cache does the work
+  for (const n of (await fs.list("/tmp") || [])) {
+    if (String(n).startsWith("mimecroft-snd-")) { try { await fs.remove("/tmp/" + n); } catch {} }
+  }
+  const keys = ["Escape,", "space,", "q,"];
+  const { soundRuns } = await runGame(["--sounds", "bash"], keys, { precache: true });
+  // the opening sounds the pre-cache list puts first: hit + materials
+  const PRECACHE_FIRST = ["hit", "hit-stone", "hit-dirt", "hit-wood", "hit-gold", "hit-gem"];
+  const deadline = Date.now() + 90000;
+  let got = [];
+  while (Date.now() < deadline) {
+    got = [];
+    for (const n of PRECACHE_FIRST) {
+      if (await fs.stat(`/tmp/mimecroft-snd-${n}.tsv`).then(() => true).catch(() => false)) got.push(n);
+    }
+    if (got.length === PRECACHE_FIRST.length) break;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  check("pre-cache warmed the opening sounds (hit + materials)", got.length === PRECACHE_FIRST.length, got.join(","));
+  check("pre-cache ran the generators in the background", soundRuns.length >= PRECACHE_FIRST.length, `runs=${soundRuns.length}`);
+  // a cached sound plays without re-generating: play the material hit
+  // again — the pre-cache already wrote it, so no new generator run
+  const { soundRuns: r2Runs } = await runGame(["--sounds", "bash"], ["Escape,", "q,"], { precache: true });
+  const hitStone = (r2Runs || []).filter((r) => r.includes("sound-hit.sh")).length;
+  check("pre-cached sound plays without re-generating", hitStone === 0, "hit runs=" + hitStone);
 }
 
 if (fails) { console.log(`  [t=${((Date.now()-T0)/1000).toFixed(1)}s] FAILED`); console.log(`\nSOUND CHECKS FAILED: ${fails}`); process.exit(1); }

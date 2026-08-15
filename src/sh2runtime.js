@@ -900,6 +900,21 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     return "";
   }
 
+  // `cmd &` — the estree backend's background dispatch: run the body
+  // DETACHED (fire-and-forget) so the transpiled `&` never blocks the
+  // current chain (the game's sound pre-cache runs this way — the first
+  // play of each bash sound is instant once the /tmp cache is warmed).
+  // The shell's capture chain (capOut.__wraps) routes the task's output
+  // to its OWN capture even while the main chain's commands run, so a
+  // slow background command (a /bin/bash generator, ~20s for treasure)
+  // doesn't steal the foreground's output. Errors are swallowed; $? = 0.
+  function background(fn) {
+    Promise.resolve().then(async () => {
+      try { await fn(); } catch {}
+    });
+    return true;
+  }
+
   function define(name, fn) {
     fns.set(name, fn);
   }
@@ -1214,7 +1229,7 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     sh2: {
       exec, pipeline, capture, captureSync, pipelineSync, captureWords, redirect, test,
       forLoop, whileLoop, whileLoopSync, caseMatch, define, brace, param, arith, fparith,
-      guard, and, or, arithEval,
+      guard, and, or, arithEval, background,
       setArray, setArrayAppend, arrayIndex, arrayLen, arrayItems, join,
       strcmp,
       readLine,
