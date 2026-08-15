@@ -141,6 +141,7 @@ function evalArithInt(src) {
 
 export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = [], argv0 = "bash" }) {
   const vars = new Map();      // script-local variables (not exported)
+  let bgThreadJobs = 0;        // pending `&` jobs routed to the worker thread
   let interrupted = false;     // Ctrl+C from the shell — test() throws when set
   registerInterruptHook(() => { interrupted = true; });
   const fns = new Map();       // function definitions
@@ -267,6 +268,29 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     // Ctrl+C aborts even command-based loop conditions (`while true`
     // transpiles to exec("true"), not test()).
     if (interrupted) throw new Error("interrupted by Ctrl+C");
+    // ── the `&` thread heuristic: a backgrounded `bash <script>` exec
+    // (the texture/sound generators — self-contained pure compute) runs
+    // on a WORKER THREAD; the args here are ALREADY evaluated by the
+    // generated code (the template literals resolved), so no source
+    // parsing is needed. The worker's stdout returns as this exec's
+    // output, which the surrounding redirect writes to the target on
+    // the MAIN VFS.
+    if (bgThreadJobs > 0 && (name === "bash" || name === "/bin/bash") && argsArr && argsArr[0] &&
+        typeof argsArr[0] === "string" && argsArr[0].startsWith("/")) {
+      try {
+        const scriptPath = argsArr[0];
+        const scriptText = await fs.read(scriptPath);
+        const { bgSubmit, bgPeek } = await import("./bgworker.js");
+        const { id, promise } = await bgSubmit(scriptText, argsArr.slice(1));
+        await promise;
+        const job = bgPeek(id);
+        lastStatus = Number(job.code ?? 0);
+        return job.out || "";
+      } catch (e) {
+        lastStatus = 1;
+        return "";
+      }
+    }
     // User-defined function shadows commands, like in bash.
     if (fns.has(name)) {
       // splice array args (the `$@` listVar contract) — a single arg
@@ -956,6 +980,23 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
   // slow background command (a /bin/bash generator, ~20s for treasure)
   // doesn't steal the foreground's output. Errors are swallowed; $? = 0.
   function background(fn) {
+    // ── thread heuristic: a backgrounded `bash <script>` exec (the
+    // texture/sound generators — self-contained pure compute) runs on a
+    // WORKER THREAD so the main event loop (a game's menu) stays
+    // responsive. The exec() hook routes the body's bash execs to the
+    // worker when this counter is positive (a counter, not a boolean,
+    // survives concurrent `&` jobs); each pending thread job keeps it
+    // live until its body finishes.
+    if (/exec\("(?:\/bin\/)?bash"/.test(String(fn)) && /\/examples\//.test(String(fn))) {
+      bgThreadJobs++;
+      Promise.resolve().then(async () => {
+        try { await fn(); } catch {}
+      }).finally(() => { bgThreadJobs--; });
+      return true;
+    }
+    // ── fork path: detached, current shell state (bash's & — the
+    // game's `&` usages are fs-side work, e.g. precache_sounds, so the
+    // shared-state approximation is faithful).
     Promise.resolve().then(async () => {
       try { await fn(); } catch {}
     });

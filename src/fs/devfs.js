@@ -23,6 +23,7 @@
 import { WebGLDevice } from "./webgldev.js";
 import { CameraDevice } from "./cameradev.js";
 import { AudioDevice } from "./audiodev.js";
+import { BgDevice } from "./bgdev.js";
 
 export class DevFS {
   constructor() {
@@ -30,8 +31,12 @@ export class DevFS {
     this._webgl = new WebGLDevice();
     this._camera = new CameraDevice();
     this._audio = new AudioDevice();
+    this._bg = new BgDevice();
     this._init();
   }
+
+  // the parent VirtualFS — /dev/bg needs it to read script files
+  attachFs(fs) { this._bg.attachFs(fs); }
 
   _init() {
     // Static/generated-on-read files
@@ -99,6 +104,9 @@ export class DevFS {
         if (norm === "/audio" || norm.startsWith("/audio/")) {
           return this._audio.read(norm.slice(7) || "/");
         }
+        if (norm === "/bg" || norm.startsWith("/bg/")) {
+          return this._bg.read(norm.slice(3) || "/");
+        }
         throw new Error("ENOENT");
     }
   }
@@ -141,6 +149,9 @@ export class DevFS {
     }
     if (norm === "/audio" || norm.startsWith("/audio/")) {
       return this._audio.write(norm.slice(7) || "/", content);
+    }
+    if (norm === "/bg" || norm.startsWith("/bg/")) {
+      return this._bg.write(norm.slice(3) || "/", content);
     }
 
     switch (norm) {
@@ -187,6 +198,9 @@ export class DevFS {
     if (norm === "/audio" || norm.startsWith("/audio/")) {
       return this._audio.list(norm.slice(7) || "/");
     }
+    if (norm === "/bg" || norm.startsWith("/bg/")) {
+      return this._bg.list(norm.slice(3) || "/");
+    }
     if (norm === "/input") {
       return ["keyboard"];
     }
@@ -194,7 +208,24 @@ export class DevFS {
   }
 
   async stat(path) {
+    const syncish = this._statSyncish(path);
+    if (syncish) return syncish;
+    // Don't trigger a real clipboard read (permission prompt) just to
+    // stat the file; report a fixed size instead.
     const norm = path.replace(/\/$/, "") || "/";
+    if (norm === "/clipboard") return { type: "file", size: 0, mtime: undefined };
+    const content = await this.read(norm);
+    return { type: "file", size: content.length, mtime: undefined };
+  }
+
+  // synchronous stat for the sync file tests ([ -e /dev/bg ] etc.) —
+  // the devices' stat methods are in-memory lookups (no awaits)
+  statSync(path) {
+    return this._statSyncish(path);
+  }
+
+  _statSyncish(path) {
+    const norm = (path.replace(/\/$/, "") || "/");
     if (norm === "/") return { type: "dir", size: 0, mtime: undefined };
     if (norm === "/webgl" || norm.startsWith("/webgl/")) {
       return this._webgl.stat(norm.slice(6) || "/");
@@ -205,17 +236,13 @@ export class DevFS {
     if (norm === "/audio" || norm.startsWith("/audio/")) {
       return this._audio.stat(norm.slice(7) || "/");
     }
-    // Known virtual directories under /dev
+    if (norm === "/bg" || norm.startsWith("/bg/")) {
+      return this._bg.stat(norm.slice(3) || "/");
+    }
     if (norm === "/cpu" || norm === "/input") {
       return { type: "dir", size: 0, mtime: undefined };
     }
-    // Don't trigger a real clipboard read (permission prompt) just to
-    // stat the file; report a fixed size instead.
-    if (norm === "/clipboard") {
-      return { type: "file", size: 0, mtime: undefined };
-    }
-    const content = await this.read(norm);
-    return { type: "file", size: content.length, mtime: undefined };
+    return null;
   }
 
   async remove(path) {

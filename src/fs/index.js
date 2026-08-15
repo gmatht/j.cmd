@@ -539,7 +539,9 @@ class VirtualFS {
     const git = new OverlayFS(new GitFS(), "git", "fs:ovl:git:");
     this.mount("git", "/mount/git", git);
     this.mount("git", "/git", git);  // convenience alias
-    this.mount("dev", "/dev", new DevFS());
+    const devfs = new DevFS();
+    devfs.attachFs(this);
+    this.mount("dev", "/dev", devfs);
     // The repo's own documentation, readable from inside the shell.
     this.mount("docs", "/docs", new OverlayFS(new DocsFS(), "docs", "fs:ovl:docs:"));
     // The example corpus (sh2perl + sample files), readable like /bin —
