@@ -72,9 +72,9 @@ SHADE=" .:-=+*#%@"
 # clobber any value exported by the caller.
 SIZE=16
 if [ "$TEX_SIZE" != "" ]; then SIZE=$TEX_SIZE; fi
-if [ "$SIZE" -lt 4 ]; then SIZE=4; fi
+if [ "$SIZE" -lt 1 ]; then SIZE=1; fi
 m4=$(( SIZE % 4 ))
-if [ "$m4" -ne 0 ]; then SIZE=$(( (SIZE / 4) * 4 )); fi
+if [ "$m4" -ne 0 ] && [ "$SIZE" -gt 4 ]; then SIZE=$(( (SIZE / 4) * 4 )); fi
 LAST=$(( SIZE - 1 ))
 
 if [ "$TEX_SEED" = "" ]; then TEX_SEED=20240812; fi
@@ -82,13 +82,20 @@ if [ "$SEED" != "" ]; then TEX_SEED=$SEED; fi
 seed=$TEX_SEED
 noise_seed=$TEX_SEED
 
-# value-noise lattice geometry, derived from SIZE so the textures
-# scale up without changing their character
-LOW_CELL=$(( SIZE / 4 ))
-HIGH_CELL=$(( SIZE / 8 ))
+# value-noise lattice geometry. The cells are FIXED pixel sizes (the
+# 16px character), not SIZE-relative: at high resolutions a SIZE/4
+# lattice cell is 16px wide and the smoothstep interpolation blends the
+# surface into smooth gradients — the stone reads "smooth" at 32/64px
+# while the 16px default is nicely jagged. Fixed 4px/2px cells keep the
+# same chunky grain at every resolution (just more of it). The hash
+# WRAP scales with the cell count so the pattern never repeats inside
+# the tile and still wraps seamlessly at the seam.
+LOW_CELL=4
+if [ "$LOW_CELL" -lt 1 ]; then LOW_CELL=1; fi
+HIGH_CELL=2
 if [ "$HIGH_CELL" -lt 1 ]; then HIGH_CELL=1; fi
-LOW_WRAP=4
-HIGH_WRAP=8
+LOW_WRAP=$(( SIZE / LOW_CELL ))
+HIGH_WRAP=$(( SIZE / HIGH_CELL ))
 
 # ─── loop-var bridge ────────────────────────────────────────────────
 # the A1 transpiler types purely-local while-loop induction counters

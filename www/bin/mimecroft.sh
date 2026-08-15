@@ -50,10 +50,10 @@ VIEW_R=16                         # draw radius — the whole 16x16 map (display
 RADAR_X=80                        # radar x base (milli-NDC) — the map sits top-LEFT
 # ─── settings (editable in the pre-game menu; browser only) ────────
 cam_shift_ms=0        # camera right shift (milli-NDC, ±50 per press, no limit) — 0 = the centred view; the old 500 (a quarter-screen right shift) moved the vanishing point off-centre
-tex_size=16           # texture resolution (1..64 px, powers of two — the
-# menu ladder; 1x1 = flat colours). The default 16 keeps the block
-# textures chunky and fast; the MIME entity icons clamp themselves to
-# ≥32 px (their fine detail needs the 32 canvas — see lt_size_of).
+tex_size=32           # texture resolution (1..64 px, powers of two — the
+# menu ladder; 1x1 = flat colours). The MIME entity icons are always
+# 64×64 (their generators clamp — the type name needs the 64 canvas;
+# see lt_size_of).
 tex_seed=20240812     # texture generation seed (drives the LCG noise)
 # texture cache version — bump when the texture GENERATORS change (e.g.
 # the mime type names) so stale session caches regenerate instead
