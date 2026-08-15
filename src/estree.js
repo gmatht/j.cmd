@@ -989,7 +989,7 @@ export function normalizeFunctions(program) {
 // Returns { js, map } where map[i] = { jsStart, jsEnd, sourceLine }.
 export async function estreeToJsMapped(program, stmtLines, a1Stmts, { repl = true } = {}) {
   const lowerMod = await import("./lower.js");
-  const { lowerNativeArrays, hoistLoopLastExit, hoistCommonLastExit, dropDeadFlags, mergeInitAssignments, pushLastExitToEnd, nativeForLoops, lowerPureFunctions, flattenAndOrAll, lowerDeviceRedirects, directShellFnCalls } = lowerMod;
+  const { lowerNativeArrays, hoistLoopLastExit, hoistCommonLastExit, dropDeadFlags, mergeInitAssignments, pushLastExitToEnd, nativeForLoops, lowerPureFunctions, flattenAndOrAll, lowerDeviceRedirects, directShellFnCalls, backgroundDecide } = lowerMod;
   // awaitSyncFnCalls must run BEFORE normalizeFunctions: the sync-fnCall
   // form (a fnCall the frontend believes is await-free) becomes an
   // AwaitExpression here; markAsyncOnAwait then sets async on every
@@ -1106,8 +1106,13 @@ function reclassAsyncLoops(program) {
   // generator became just the lib. Rewrite that exact shape to the
   // async readFile bridge (capture awaits the fn).
   asyncCatCommandSubstitution(lowered);
+  // `&` (sh2.background): the emitter classifies each backgrounded body
+  // statically (thread vs fork) and annotates the generated code —
+  // fork bodies become native `fn().catch(() => {})`, no runtime call.
+  if (typeof backgroundDecide === "function") backgroundDecide(lowered);
+  else console.warn("[estree] backgroundDecide missing from lower.js (stale cache?) — keeping the runtime fork heuristic");
   const { generate } = await getAstring();
-  const js = generate(lowered);
+  const js = generate(lowered, { comments: true });
 
   const srcLineOf = new Map();
   for (const e of stmtLines || []) srcLineOf.set(e.stmt, e.line);

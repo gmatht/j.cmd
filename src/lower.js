@@ -2474,3 +2474,96 @@ export function pushLastExitToEnd(program) {
   });
   return program;
 }
+
+// ─── backgroundDecide: `&` (sh2.background) → static thread-vs-fork ──
+// The EMITTER decides at compile time what the runtime's old fork
+// heuristic decided at run time, and annotates the generated code with
+// the why. A backgrounded body whose subtree execs a nested
+// `bash /examples/…` script (the texture/sound generators —
+// self-contained pure compute; only args + stdout cross the boundary)
+// is the THREAD case: it KEEPS the sh2.background runtime entry, whose
+// worker hook routes the inner exec to a JS worker thread (a fresh
+// runtime there — no parent shell state to copy, so the "cloning
+// optimised out" note applies), and the main event loop (a game's
+// settings menu) never blocks on generation. Everything else is the
+// FORK case: it becomes NATIVE JS — `fn().catch(() => {})`, a detached
+// promise — no runtime dispatch at all. Either way the generated code
+// carries a comment saying which and why.
+export function backgroundDecide(program) {
+  const execsExamples = (n) => {
+    if (!n || typeof n !== "object") return false;
+    if (Array.isArray(n)) return n.some(execsExamples);
+    if (n.type === "CallExpression" && n.callee && n.callee.type === "MemberExpression" &&
+        n.callee.object && n.callee.object.type === "Identifier" && n.callee.object.name === "sh2" &&
+        n.callee.property && n.callee.property.type === "Identifier" && n.callee.property.name === "exec" &&
+        n.arguments && n.arguments[0] && n.arguments[0].type === "Literal" &&
+        (n.arguments[0].value === "bash" || n.arguments[0].value === "/bin/bash") &&
+        n.arguments[1] && n.arguments[1].type === "ArrayExpression" &&
+        n.arguments[1].elements && n.arguments[1].elements[0]) {
+      const a0 = n.arguments[1].elements[0];
+      const pv = a0.type === "Literal" ? String(a0.value)
+        : (a0.type === "TemplateLiteral" && a0.quasis && a0.quasis[0] ? String(a0.quasis[0].value.cooked) : null);
+      return pv !== null && pv.startsWith("/examples/");
+    }
+    for (const k of Object.keys(n)) {
+      if (k === "loc" || k === "range" || k === "start" || k === "end") continue;
+      if (execsExamples(n[k])) return true;
+    }
+    return false;
+  };
+
+  const isBackgroundCall = (n) =>
+    n && n.type === "CallExpression" && n.callee && n.callee.type === "MemberExpression" &&
+    n.callee.object && n.callee.object.type === "Identifier" && n.callee.object.name === "sh2" &&
+    n.callee.property && n.callee.property.type === "Identifier" && n.callee.property.name === "background" &&
+    n.arguments && n.arguments[0];
+
+  const forkIIFE = (fn) => ({
+    type: "CallExpression",
+    callee: {
+      type: "MemberExpression",
+      object: { type: "CallExpression", callee: fn, arguments: [] },
+      property: { type: "Identifier", name: "catch" },
+      computed: false, optional: false,
+    },
+    arguments: [{
+      type: "ArrowFunctionExpression",
+      id: null, params: [],
+      body: { type: "BlockStatement", body: [] },
+    }],
+    optional: false,
+  });
+
+  const visit = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) { for (const c of n) visit(c); return; }
+    if (n.type === "ExpressionStatement" && isBackgroundCall(n.expression)) {
+      const fn = n.expression.arguments[0];
+      if (execsExamples(fn)) {
+        // THREAD: keep the runtime entry — its worker hook routes the
+        // inner bash /examples exec to a JS thread (fresh runtime, no
+        // state copy); the menu stays responsive during generation.
+        n.comments = [{
+          type: "Line",
+          value: " & → worker thread: nested bash /examples script (self-contained compute) — parallel generation, menu stays responsive",
+        }];
+      } else {
+        // FORK: native async — no runtime dispatch (the runtime's fork
+        // path was exactly this; a detached promise on the current
+        // chain, shared shell state).
+        n.comments = [{
+          type: "Line",
+          value: " & → fork: not a script exec — native async (no runtime dispatch)",
+        }];
+        n.expression = forkIIFE(fn);
+      }
+      return;
+    }
+    for (const k of Object.keys(n)) {
+      if (k === "loc" || k === "range" || k === "start" || k === "end") continue;
+      visit(n[k]);
+    }
+  };
+  visit(program);
+  return program;
+}
