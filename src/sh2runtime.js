@@ -760,6 +760,27 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     }
   }
 
+  // Sync twin of forLoop — the A1 lowers provably-sync for-in loops
+  // (body await-free) to `sh2.forLoopSync(items, fn)` with NO per-item
+  // promises. Same list-joining, break/continue LoopSignal contract.
+  function forLoopSync(items, fn) {
+    const list = items || [];
+    const joined = (list.length > 1 && typeof list[0] === "string" && list[0].endsWith("/"))
+      ? [list[0] + list.slice(1).map(String).join("")]
+      : list;
+    for (const it of joined) {
+      if (interrupted) throw new Error("interrupted by Ctrl+C");
+      try {
+        fn(it);
+      } catch (e) {
+        if (e instanceof LoopSignal && e.kind === "break") break;
+        if (e instanceof LoopSignal && e.kind === "continue") continue;
+        if (e instanceof ReturnSignal) throw e;
+        throw e;
+      }
+    }
+  }
+
   // sh2.guard — this debashcl build wraps every command in it. Minimal
   // semantics: pass the result through (exec already records status); a
   // future `set -e` would throw here on falsy.
@@ -1382,7 +1403,7 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
   const runtime = {
     sh2: {
       exec, pipeline, capture, captureSync, pipelineSync, captureWords, redirect, test,
-      forLoop, whileLoop, whileLoopSync, caseMatch, define, brace, param, arith, fparith,
+      forLoop, forLoopSync, whileLoop, whileLoopSync, caseMatch, define, brace, param, arith, fparith,
       guard, and, or, arithEval, background,
       setArray, setArrayAppend, arrayIndex, arrayLen, arrayItems, join,
       strcmp,
