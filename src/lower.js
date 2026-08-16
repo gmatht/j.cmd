@@ -499,6 +499,42 @@ function shellFnCallInfo(call) {
   return { name: String(call.arguments[0].value), args: argsArr ? argsArr.elements : [] };
 }
 
+// ── safeWordListCoercion: the A1 word-split (`X.split(/\s+/)
+// .filter(w => w.length > 0)` — the shell's unquoted-expansion split on a
+// dispatch arg) is emitted on the RAW var — for a NUMBER (a native loop
+// counter like the game's `tex_bg_done $sm_bg_i` after the numeric loop
+// lowering) Number.split is not a function → the dispatch crashes. bash's
+// word-split coerces the value to a string FIRST, so wrap the base in
+// String(). The directShellFnCalls unwrap then strips it for direct calls;
+// non-direct calls (fnCall/exec on functions the pass doesn't know, e.g.
+// the tex_bg_* helpers nested inside setup_webgl's registration) keep the
+// safe coercion.
+export function safeWordListCoercion(program) {
+  const isStringSafe = (b) =>
+    !b || b.type === "StringLiteral" || b.type === "TemplateLiteral" ||
+    (b.type === "CallExpression" && b.callee && b.callee.type === "Identifier" && b.callee.name === "String");
+  const walk = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) { for (const x of n) walk(x); return; }
+    if (n.type === "CallExpression" && n.callee && n.callee.type === "MemberExpression" &&
+        n.callee.property && n.callee.property.type === "Identifier" && n.callee.property.name === "split" &&
+        n.arguments && n.arguments.length) {
+      const base = n.callee.object;
+      if (!isStringSafe(base)) {
+        n.callee.object = {
+          type: "CallExpression",
+          callee: { type: "Identifier", name: "String" },
+          arguments: [base],
+          optional: false,
+        };
+      }
+    }
+    for (const k of Object.keys(n)) if (k !== "loc") walk(n[k]);
+  };
+  walk(program);
+  return program;
+}
+
 // ── directShellFnCalls: rewrite dispatch call sites of the NORMALIZED
 // shell functions to direct JS calls ─────────────────────────────────
 //
@@ -1003,20 +1039,56 @@ export function liftLocalVars(program) {
     if (drop.size) syncDrops.set(name, drop);
   }
   if (!lifts.size && !syncDrops.size) return program;
-
   // rewrite
   const id = (name) => ({ type: "Identifier", name });
   const isChainRead = (n) =>
     n && n.type === "LogicalExpression" && n.operator === "??" && isVarsMember(n.left);
+  // the module lets are the SHARED cross-function binding: a var lifted in
+  // ONE function (the write-first owner) must have its STORE reads/writes
+  // converted to the native binding in EVERY function that touches it —
+  // a read-only function (e.g. draw_text reading `gi` that glyph_index
+  // writes) would otherwise keep reading `sh2.vars.gi` — the store never
+  // gets the value → "" → the glyph always rendered as the first char.
+  const liftedAll = new Set();
+  for (const [, lf] of lifts) for (const v of lf) liftedAll.add(v);
   for (const [name, s] of scopes) {
     if (name === "__top") continue;
-    const lifted = lifts.get(name) || new Set();
+    const lifted = new Set(liftedAll);
     const drop = syncDrops.get(name) || new Set();
-    if (!lifted.size && !drop.size) continue;
-    const fn = program.body.find((st) => st && st.type === "FunctionDeclaration" && st.id && st.id.name === name);
-    if (!fn || !fn.body || !fn.body.body) continue;
+    // process a function when it has a write-lift OR drops OR touches any
+    // module-lifted var (a read-only consumer needs the read conversion)
+    const touchesLifted = (s.ops || []).some((o) => liftedAll.has(o.name));
+    if (!lifted.size && !drop.size && !touchesLifted) continue;
+    // the per-function body may be a FunctionDeclaration OR a
+    // `sh2.functions.set("name", async () => { … })` registration (the
+    // otranspilerl compile path emits the latter) — find whichever
+    // carries the body so the write-lift actually lands (a lift with a
+    // missing write leaves the reads interpolated against an undefined
+    // JS binding — the game's `glsl` test crashed emit_vertex_shader).
+    let fn = null, fnBodyArr = null, regArrow = null;
+    const fd = program.body.find((st) => st && st.type === "FunctionDeclaration" && st.id && st.id.name === name);
+    if (fd && fd.body && fd.body.type === "BlockStatement" && Array.isArray(fd.body.body)) { fn = fd; fnBodyArr = fd.body.body; }
+    if (!fnBodyArr) {
+      for (const st of program.body) {
+        if (!st || st.type !== "ExpressionStatement" || !st.expression || st.expression.type !== "CallExpression") continue;
+        const callee = st.expression.callee;
+        if (!callee || callee.type !== "MemberExpression" || !callee.property || callee.property.type !== "Identifier" ||
+            callee.property.name !== "set" || !callee.object || callee.object.type !== "MemberExpression" ||
+            !callee.object.object || callee.object.object.type !== "Identifier" || callee.object.object.name !== "sh2" ||
+            !callee.object.property || callee.object.property.type !== "Identifier" || callee.object.property.name !== "functions") continue;
+        const args = st.expression.arguments || [];
+        if (args.length >= 2 && args[0] && args[0].type === "Literal" && args[0].value === name &&
+            args[1] && (args[1].type === "ArrowFunctionExpression" || args[1].type === "FunctionExpression") &&
+            args[1].body && args[1].body.type === "BlockStatement" && Array.isArray(args[1].body.body)) {
+          fnBodyArr = args[1].body.body;
+          regArrow = args[1];
+          break;
+        }
+      }
+    }
+    if (!fnBodyArr) continue;
     const newBody = [];
-    for (const st of fn.body.body) {
+    for (const st of fnBodyArr) {
       const walk = (n, parent, key) => {
         if (!n || typeof n !== "object") return n;
         if (Array.isArray(n)) return n.map((x) => walk(x, n, key));
@@ -1064,7 +1136,7 @@ export function liftLocalVars(program) {
       }
       newBody.push(rewritten);
     }
-    fn.body.body = newBody;
+    if (regArrow) regArrow.body.body = newBody; else fn.body.body = newBody;
   }
   // declare the lifted vars at module level (`let v = ""` — the store's
   // default; preserves cross-call persistence like the store)
@@ -1082,12 +1154,48 @@ export function liftLocalVars(program) {
   // post-lift: the runtime reads "$name" string args (arrayIndex/setVar/
   // test/param) FROM THE STORE — a lifted var's store is never written, so
   // the expansion would resolve to "". Rewrite every "$lifted" token to a
-  // ${lifted} interpolation (same helper the counter promotion uses), so
-  // the value travels with the call.
-  for (const lifted of lifts.values()) {
-    for (const v of lifted) {
-      program.body = program.body.map((st) => rewriteCounterRefs(st, v));
-    }
+  // ${lifted} interpolation (same contract the counter promotion uses), so
+  // the value travels with the call. ONE program walk over ALL the lifted
+  // names (the per-name rewriteCounterRefs loop was O(names × program) —
+  // ~8s of the mimecroft transpile).
+  const allLifted = new Set();
+  for (const lifted of lifts.values()) for (const v of lifted) allLifted.add(v);
+  if (allLifted.size) {
+    const names = [...allLifted];
+    const walkInterp = (n) => {
+      if (!n || typeof n !== "object") return n;
+      if (Array.isArray(n)) return n.map(walkInterp);
+      if (n.type === "CallExpression" && n.callee && n.callee.type === "MemberExpression" &&
+          n.callee.object && n.callee.object.type === "Identifier" && n.callee.object.name === "sh2" &&
+          n.callee.property && n.callee.property.type === "Identifier" &&
+          (n.callee.property.name === "arrayIndex" || n.callee.property.name === "arrayLen" || n.callee.property.name === "param")) {
+        const out = { ...n };
+        out.arguments = (n.arguments || []).map((a) =>
+          a && a.type === "Literal" && typeof a.value === "string" && a.value.startsWith("$") &&
+          allLifted.has(a.value.slice(1))
+            ? { type: "Identifier", name: a.value.slice(1) }
+            : walkInterp(a));
+        return out;
+      }
+      if (n.type === "Literal" && typeof n.value === "string") {
+        let has = false;
+        for (const nm of names) if (String(n.value).includes("$" + nm)) { has = true; break; }
+        return has ? interpolateStringMulti(n, names) : n;
+      }
+      if (n.type === "TemplateLiteral") {
+        let has = false;
+        for (const q of n.quasis || []) {
+          const t = q.value && (q.value.cooked != null ? q.value.cooked : q.value.raw);
+          if (t != null) for (const nm of names) if (String(t).includes("$" + nm)) { has = true; break; }
+          if (has) break;
+        }
+        if (has) return interpolateTemplateMulti(n, names);
+      }
+      const out = {};
+      for (const k of Object.keys(n)) if (k !== "loc") out[k] = walkInterp(n[k]);
+      return out;
+    };
+    program.body = program.body.map(walkInterp);
   }
   return program;
 }
@@ -2639,6 +2747,49 @@ function splitOnVar(text, name) {
   return segs;
 }
 
+// multi-name variant: ONE regex over all the lifted names, so a single
+// program walk interpolates every "$var" token (the per-name
+// rewriteCounterRefs loop was O(names × program) — 156 full walks ≈ 8s
+// of the mimecroft transpile).
+function splitOnVars(text, names) {
+  // $name or ${name}, the longest name first so a prefix ("a" vs "ab")
+  // never steals a longer match
+  const sorted = [...names].sort((a, b) => b.length - a.length);
+  const re = new RegExp("\\$\\{(?:" + sorted.join("|") + ")\\}|\\$(?:" + sorted.join("|") + ")(?![A-Za-z0-9_])", "g");
+  const segs = [];
+  let last = 0, m;
+  while ((m = re.exec(text))) {
+    if (m.index > last) segs.push({ text: text.slice(last, m.index) });
+    const tok = m[0].startsWith("${") ? m[0].slice(2, -1) : m[0].slice(1);
+    segs.push({ text: "", expr: tok });
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) segs.push({ text: text.slice(last) });
+  return segs;
+}
+
+function interpolateStringMulti(node, names) {
+  const segs = splitOnVars(String(node.value), names);
+  if (segs.length === 1) return node;
+  return templateFromSegments(segs);
+}
+
+function interpolateTemplateMulti(node, names) {
+  const outQuasis = [], outExprs = [];
+  const n = node.quasis.length;
+  for (let i = 0; i < n; i++) {
+    const q = node.quasis[i];
+    const text = (q.value && q.value.cooked != null ? q.value.cooked : q.value.raw) || "";
+    for (const seg of splitOnVars(String(text), names)) {
+      if (seg.expr) outExprs.push({ type: "Identifier", name: seg.expr });
+      else outQuasis.push({ type: "TemplateElement", value: { raw: toRaw(seg.text), cooked: seg.text }, tail: false });
+    }
+    if (i < node.expressions.length) outExprs.push(node.expressions[i]);
+  }
+  outQuasis[outQuasis.length - 1].tail = true;
+  return { type: "TemplateLiteral", quasis: outQuasis, expressions: outExprs };
+}
+
 function toRaw(s) {
   return String(s).replace(/\\/g, "\\\\").replace(/`/g, "\\`").replace(/\$\{/g, "\\${");
 }
@@ -3346,6 +3497,14 @@ export function backgroundDecide(program) {
     if (Array.isArray(n)) { for (const c of n) visit(c); return; }
     if (n.type === "ExpressionStatement" && isBackgroundCall(n.expression)) {
       const fn = n.expression.arguments[0];
+      // the A1 emits the background body as `async (sh2) => <stmt>` — an
+      // arrow whose body is an ExpressionStatement (malformed ESTree;
+      // astring prints it as `async sh2 => await x;` — the `;` lands
+      // inside the call parens → `Unexpected token ';'`). Move the
+      // statement into a real block body.
+      if (fn && fn.body && fn.body.type !== "BlockStatement") {
+        fn.body = { type: "BlockStatement", body: [fn.body] };
+      }
       if (execsExamples(fn)) {
         // THREAD: keep the runtime entry — its worker hook routes the
         // inner bash /examples exec to a JS thread (fresh runtime, no
