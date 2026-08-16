@@ -26,7 +26,7 @@
 </style>
 </head>
 <body>
-<h1>GLSL ES 1.00 — int vs float math benchmark (fragment &amp; vertex) <span class="muted" style="font-size:12px; color:#fa5">v6</span></h1>
+<h1>GLSL ES 1.00 — int vs float math benchmark (fragment &amp; vertex) <span class="muted" style="font-size:12px; color:#fa5">v7</span></h1>
 <div class="muted">The mimecroft game's <b>fragment</b> shader does its colour math in
 <b>mediump int</b> (0..127 scale — every intermediate fits mediump int's ±2<sup>15</sup>);
 its <b>vertex</b> shader is highp float (mandatory). This page times the arithmetic in
@@ -49,7 +49,11 @@ its <b>vertex</b> shader is highp float (mandatory). This page times the arithme
 (6) <b>fragment: medp int /128 vs /127</b> — the SAME mediump-int pipeline with the
     divisor changed: /128 (the game's power-of-two divisor — a cheap shift on most
     hardware) vs /127 (the exact 0..127 normalisation — a real division) — isolates
-    the divisor cost, everything else identical.
+    the divisor cost, everything else identical;
+(7) <b>mimecroft: mixed vs full-int</b> — the proposed "as integer as you comfortably can"
+    shader: mediump int for every power-of-two-friendly step (tint /128, crack /128,
+    vignette /256, ×0.5 as /2) and ONLY the awkward ×0.9 (scanline) in float — vs the
+    full-int version that pays the *90/100 divide. This measures the ×0.9 decision.
 The GL/GLSL/ANGLE line below the results identifies exactly which GLES→backend
 translator your browser is using, so the numbers are read in that context.</div>
 
@@ -61,6 +65,7 @@ translator your browser is using, so the numbers are read in that context.</div>
   <button id="modePrecInt">fragment: mediump vs highp int</button>
   <button id="modeMime">mimecroft: actual vs full-int</button>
   <button id="modeDiv">fragment: medp int /128 vs /127</button>
+  <button id="modeMix">mimecroft: mixed vs full-int</button>
   <label>frames <input type="number" id="frames" value="2400" min="10" max="20000"></label>
   <label>samples <input type="number" id="samples" value="5" min="1" max="20"></label>
   <label id="gridLbl">texel grid <input type="number" id="grid" value="64" min="8" max="256"></label>
@@ -133,7 +138,7 @@ translator your browser is using, so the numbers are read in that context.</div>
 
 <script>
 "use strict";
-const BENCH_VERSION = "6";   // bump on every page change — the header shows it so a stale browser copy is obvious
+const BENCH_VERSION = "7";   // bump on every page change — the header shows it so a stale browser copy is obvious
 const $ = (id) => document.getElementById(id);
 const intC = $("intC"), fltC = $("fltC");
 let mode = "frag";
@@ -241,6 +246,65 @@ void main() {
 `;
 
 // ────────────────────────────────────────────────────────────────
+// ─── mixed mode: the proposed "as integer as you comfortably can" shader
+// — mediump int for every power-of-two-friendly step (tint /128, crack
+// /128, vignette /256, ×0.5 as /2) and ONLY the awkward ×0.9 (scanline)
+// in float (0.9 isn't a nice int fraction and ES 1.00 has no shifts).
+// Compared against the full-int version (which pays the *90/100 divide).
+const FS_MIME_MIXED = `
+precision mediump float;
+precision mediump int;
+varying highp vec2 vUv;
+varying highp vec4 vColor;
+uniform sampler2D uTex;
+uniform sampler2D uCrack;
+uniform int uDamage;
+void main() {
+  highp vec2 uv = fract(vUv);
+  vec4 _tex = texture2D(uTex, uv);
+  vec4 _crack = texture2D(uCrack, uv);
+  int fx = int(gl_FragCoord.x);
+  int fy = int(gl_FragCoord.y);
+  int tr = int(_tex.r * 255.0);
+  int tg = int(_tex.g * 255.0);
+  int tb = int(_tex.b * 255.0);
+  int crr = int(_crack.r * 127.0);
+  int crg = int(_crack.g * 127.0);
+  int crb = int(_crack.b * 127.0);
+  int cra = int(_crack.a * 127.0);
+  int r = int(vColor.r * 127.0);
+  int g = int(vColor.g * 127.0);
+  int b = int(vColor.b * 127.0);
+  r = r * tr / 128;
+  g = g * tg / 128;
+  b = b * tb / 128;
+  int scan = int(mod(float(fy), 6.0));
+  if (scan == 0) {
+    r = int(float(r) * 0.9);
+    g = int(float(g) * 0.9);
+    b = int(float(b) * 0.9);
+  }
+  int hash = int(mod(float(fx * 7 + fy * 13), 97.0));
+  if (hash == 0) { r = 255; g = g / 2; b = b / 2; }
+  int vx = fx - 256; int vy = fy - 192;
+  if (vx < 0) vx = 0 - vx;
+  if (vy < 0) vy = 0 - vy;
+  int edge = vx + vy;
+  if (edge > 225) { int d = edge - 225; if (d > 15) d = 15; r = r - r * d / 256; g = g - g * d / 256; b = b - b * d / 256; }
+  if (uDamage > 0) {
+    int mixi = uDamage * cra;
+    if (mixi > 127) mixi = 127;
+    r = r - (r - crr) * mixi / 128;
+    g = g - (g - crg) * mixi / 128;
+    b = b - (b - crb) * mixi / 128;
+  }
+  if (r < 0) r = 0;
+  if (g < 0) g = 0;
+  if (b < 0) b = 0;
+  gl_FragColor = vec4(float(r) / 255.0, float(g) / 255.0, float(b) / 255.0, 1.0);
+}
+`;
+
 // ─── divisor mode: the SAME mediump-int pipeline at /128 (the game's
 // power-of-two divisor — cheap shift on most hardware) vs /127 (the
 // exact 0..127 normalisation — a real division). Isolates the divisor
@@ -663,9 +727,11 @@ function setMode(m) {
   $("modePrecInt").className = m === "precInt" ? "active" : "";
   $("modeMime").className = m === "mime" ? "active" : "";
   $("modeDiv").className = m === "div" ? "active" : "";
+  $("modeMix").className = m === "mix" ? "active" : "";
   $("gridLbl").style.display = m === "frag" ? "" : "none";
   $("meshLbl").style.display = m === "vert" ? "" : "none";
-  if (m === "div") { $("lbl-a").textContent = "/128 (game)"; $("lbl-b").textContent = "/127"; $("lbl-ratio").textContent = "/127 ÷ /128"; }
+  if (m === "mix") { $("lbl-a").textContent = "mixed (0.9 float)"; $("lbl-b").textContent = "full int"; $("lbl-ratio").textContent = "full-int ÷ mixed"; }
+  else if (m === "div") { $("lbl-a").textContent = "/128 (game)"; $("lbl-b").textContent = "/127"; $("lbl-ratio").textContent = "/127 ÷ /128"; }
   else if (m === "mime") { $("lbl-a").textContent = "actual (float tint)"; $("lbl-b").textContent = "full int"; $("lbl-ratio").textContent = "int / actual"; }
   else if (m === "prec" || m === "precInt") { $("lbl-a").textContent = "mediump"; $("lbl-b").textContent = "highp"; $("lbl-ratio").textContent = "highp / mediump"; }
   else { $("lbl-a").textContent = "int"; $("lbl-b").textContent = "float"; $("lbl-ratio").textContent = "float / int"; }
@@ -676,6 +742,7 @@ $("modePrec").onclick = () => setMode("prec");
 $("modePrecInt").onclick = () => setMode("precInt");
 $("modeMime").onclick = () => setMode("mime");
 $("modeDiv").onclick = () => setMode("div");
+$("modeMix").onclick = () => setMode("mix");
 
 $("run").onclick = async () => {
   const frames = Math.max(10, Number($("frames").value) || 2400);
@@ -714,6 +781,12 @@ $("run").onclick = async () => {
     crack = makeTexture(grid, 777);
     pInt = program(VS_QUAD, FS_INT);          // /128 — the game's power-of-two divisor
     pFlt = program(VS_QUAD, FS_INT_127);      // /127 — the exact normalisation
+  } else if (mode === "mix") {
+    const grid = Math.max(8, Number($("grid").value) || 64);
+    tex = makeTexture(grid, 12345);
+    crack = makeTexture(grid, 777);
+    pInt = program(VS_QUAD, FS_MIME_MIXED);   // the proposed mixed pipeline (0.9 in float)
+    pFlt = program(VS_QUAD, FS_MIME_INT);     // the full-int (the *90/100 divide)
   } else {
     const n = Math.max(8, Number($("mesh").value) || 256);
     meshBuf = makeMesh(n);
@@ -724,7 +797,7 @@ $("run").onclick = async () => {
 
   $("status").textContent = `benchmarking ${frames} frames × ${samples} samples (${mode})…`;
   const iSamples = [], fSamples = [];
-  const draw = (mode === "frag" || mode === "prec" || mode === "precInt" || mode === "mime" || mode === "div") ? drawFrag : drawVert;
+  const draw = (mode === "frag" || mode === "prec" || mode === "precInt" || mode === "mime" || mode === "div" || mode === "mix") ? drawFrag : drawVert;
   for (let s = 0; s < samples; s++) {
     iSamples.push(draw(pInt, frames));
     fSamples.push(draw(pFlt, frames));
@@ -747,7 +820,11 @@ $("run").onclick = async () => {
   $("ratio").className = "best";
   const stage = mode === "frag" ? "fragment (per-pixel)" : mode === "vert" ? "vertex (per-vertex)" : "fragment precision";
   const verdict =
-    mode === "div"
+    mode === "mix"
+      ? (ratio < 0.95 ? `the full-INT version is ${(1 / ratio).toFixed(2)}× FASTER than the MIXED (the ×0.9 in float) on this translator — the float 0.9 costs more than the *90/100 divide it avoids.`
+         : ratio > 1.05 ? `the full-INT version is ${ratio.toFixed(2)}× SLOWER than the MIXED on this translator — moving the awkward ×0.9 to float (the mixed shader) beats the *90/100 divide.`
+         : `the MIXED and full-INT versions are within ±5% on this translator — the ×0.9 decision is free either way.`)
+      : (mode === "div"
       ? (ratio > 1.05 ? `/127 is ${ratio.toFixed(2)}× SLOWER than /128 on this translator — the power-of-two /128 (a shift) is the cheaper divisor, so the game's choice is the right one.`
          : ratio < 0.95 ? `/127 is ${(1 / ratio).toFixed(2)}× FASTER than /128 on this translator — the driver folds the /127 as well as the shift.`
          : `/127 and /128 are within ±5% on this translator — the divisor is free here (the driver constant-folds both).`)
@@ -761,7 +838,7 @@ $("run").onclick = async () => {
          : `mediump and highp ${mode === "precInt" ? "INT" : "FLOAT"} are within ±5% on this translator — the precision qualifier costs nothing here (ANGLE maps both to the full native form on desktop).`)
       : (ratio > 1.05 ? `In the ${stage} stage, the FLOAT pipeline is ${ratio.toFixed(2)}× SLOWER than the INT pipeline on this translator (float÷int = ${ratio.toFixed(2)}) — the int pipeline (the game's choice) is the faster path here.`
          : ratio < 0.95 ? `In the ${stage} stage, the FLOAT pipeline is ${(1 / ratio).toFixed(2)}× FASTER than the INT pipeline on this translator — the int casts/emulated modulo cost more than they save here.`
-         : `In the ${stage} stage, the FLOAT and INT pipelines are within ±5% on this translator — the arithmetic choice is free; the int path's benefit is exactness (no mediump-float mantissa quantisation), not speed.`)));
+         : `In the ${stage} stage, the FLOAT and INT pipelines are within ±5% on this translator — the arithmetic choice is free; the int path's benefit is exactness (no mediump-float mantissa quantisation), not speed.`))));
   $("verdict").textContent = verdict;
   $("status").textContent = "done";
 

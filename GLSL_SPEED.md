@@ -18,6 +18,7 @@ Three modes, each rendering the game's real per-pixel / per-vertex workload twic
 | fragment: mediump vs highp int | mediump int (the game's 0..127 scale) | highp int | the SAME int pipeline — isolates the int precision qualifier (the floats stay mediump) |
 | mimecroft: actual vs full-int | the game's ACTUAL compiled fragment (float tint + int effects, transcribed from www/examples/mimecroft-frag.glsl) | the full-int version (the tint moved to mediump int) | the use-case-specific question: how much would the game gain if the generator emitted the int colour math |
 | fragment: medp int /128 vs /127 | the game's int pipeline at /128 (power-of-two divisor — shift) | the same at /127 (exact normalisation — division) | isolates the divisor cost; everything else identical |
+| mimecroft: mixed vs full-int | the proposed "as integer as you comfortably can" shader — mediump int for every power-of-two step (tint /128, crack /128, vignette /256, ×0.5 as /2), ONLY the ×0.9 (scanline) in float (0.9 isn't a nice int fraction; ES 1.00 has no shifts) | the full-int version that pays the *90/100 divide | measures the ×0.9 decision — does the float 0.9 beat the divide it avoids |
 
 Timing: N frames × S samples per path, order alternated to cancel clock drift; reports
 avg/min ms/frame, FPS, and the ratio.
@@ -56,6 +57,7 @@ Measured with the harness (24000 frames/sample × 5 samples):
 | fragment mediump vs highp int | mediump 0.123 ms/frame (8158 FPS) | highp 0.149 ms/frame (6725 FPS) | **highp 1.21× slower** |
 | mimecroft: actual vs full-int | actual 0.102 ms/frame (9834 FPS) | full int 0.102 ms/frame (9801 FPS) | **1.003× — within ±5%** — the float tint costs nothing vs the int tint on this translator |
 | fragment: medp int /128 vs /127 | /128 0.122 ms/frame (8195 FPS) | /127 0.138 ms/frame (7246 FPS) | **/127 1.13× slower** — the power-of-two /128 (a shift) is the cheaper divisor on this translator; the game's choice is the right one |
+| mimecroft: mixed vs full-int | mixed (the proposed "as int as you can": tint/crack/vignette in int, ONLY ×0.9 in float) | full int (the *90/100 divide) | run the page for the current numbers — measures the ×0.9 decision |
 
 (Vertex mode on the same machine: per-vertex int vs float — run the page for the
 current numbers.)
