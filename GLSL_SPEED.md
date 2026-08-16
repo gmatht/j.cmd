@@ -55,7 +55,7 @@ Measured with the harness (24000 frames/sample × 5 samples):
 | fragment mediump vs highp float | mediump 0.053 ms/frame (18740 FPS) | highp 0.064 ms/frame (15630 FPS) | **highp 1.20× slower** |
 | fragment mediump vs highp int | mediump 0.123 ms/frame (8158 FPS) | highp 0.149 ms/frame (6725 FPS) | **highp 1.21× slower** |
 | mimecroft: actual vs full-int | actual (float tint + int effects — the sh2glsl output) | full int (tint moved to mediump int) | run the page for the current numbers — this is the use-case-specific question |
-| fragment: medp int /128 vs /127 | /128 (the game's power-of-two divisor) | /127 (the exact 0..127 normalisation) | run the page for the current numbers — the power-of-two divisor should be a shift |
+| fragment: medp int /128 vs /127 | /128 0.122 ms/frame (8195 FPS) | /127 0.138 ms/frame (7246 FPS) | **/127 1.13× slower** — the power-of-two /128 (a shift) is the cheaper divisor on this translator; the game's choice is the right one |
 
 (Vertex mode on the same machine: per-vertex int vs float — run the page for the
 current numbers.)
