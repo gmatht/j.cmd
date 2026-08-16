@@ -525,10 +525,29 @@ export function directShellFnCalls(program) {
     if (!st || st.type !== "FunctionDeclaration" || !st.id || st.id.type !== "Identifier") continue;
     let hasReturn = false;
     let posRefs = false;
+    let inLoopBody = 0;
+    let canThrowReturn = false;
     const scan = (n) => {
       if (!n || typeof n !== "object") return;
       if (Array.isArray(n)) { for (const x of n) scan(x); return; }
-      if (n.type === "ReturnStatement") hasReturn = true;
+      if (n.type === "ReturnStatement") {
+        hasReturn = true;
+        if (inLoopBody > 0) canThrowReturn = true;
+      }
+      // the sh2 loop twins' BODY arrow (arguments[1]) is where the
+      // return_in_loop conversion throws the ReturnSignal
+      if (n.type === "CallExpression" && n.callee && n.callee.type === "MemberExpression" &&
+          n.callee.object && n.callee.object.type === "Identifier" && n.callee.object.name === "sh2" &&
+          n.callee.property && n.callee.property.type === "Identifier" &&
+          /^(whileLoop|whileLoopSync|forLoop)$/.test(n.callee.property.name) &&
+          n.arguments && n.arguments.length > 1) {
+        scan(n.arguments[0]);
+        inLoopBody++;
+        scan(n.arguments[1]);
+        inLoopBody--;
+        for (const k of Object.keys(n)) if (k !== "loc" && k !== "arguments") scan(n[k]);
+        return;
+      }
       // a NESTED function's `$1..$9` are ITS OWN positionals (its own
       // dispatch sets them) — only the outer body's refs matter for the
       // direct-call wrapper, so don't descend
@@ -539,7 +558,7 @@ export function directShellFnCalls(program) {
       for (const k of Object.keys(n)) if (k !== "loc") scan(n[k]);
     };
     scan(st.body);
-    fns.set(st.id.name, { async: !!st.async, hasReturn, posRefs });
+    fns.set(st.id.name, { async: !!st.async, hasReturn, posRefs, canThrowReturn });
   }
   if (!fns.size) return program;
 
@@ -567,6 +586,51 @@ export function directShellFnCalls(program) {
         base.callee.name === "String" && base.arguments && base.arguments.length === 1) base = base.arguments[0];
     return base;
   };
+  // the runtime's callDirect catches a ReturnSignal (the loop-body
+  // return_in_loop conversion) + unwraps its value; a DIRECT call must
+  // too, or the signal escapes to the top (the game's draw_char loop
+  // crashes). Wrap only the canThrowReturn functions (the hot pure
+  // helpers stay bare).
+  const catchReturn = (inner) => ({
+    type: "CallExpression",
+    callee: {
+      type: "ArrowFunctionExpression", async: false, params: [], expression: false,
+      body: {
+        type: "BlockStatement",
+        body: [{
+          type: "TryStatement",
+          block: { type: "BlockStatement", body: [{ type: "ReturnStatement", argument: inner }] },
+          handler: {
+            type: "CatchClause", param: { type: "Identifier", name: "e" },
+            body: {
+              type: "BlockStatement",
+              body: [{
+                type: "IfStatement",
+                test: {
+                  type: "BinaryExpression", operator: "instanceof",
+                  left: { type: "Identifier", name: "e" },
+                  right: { type: "MemberExpression", computed: false, optional: false,
+                    object: { type: "Identifier", name: "sh2" },
+                    property: { type: "Identifier", name: "ReturnSignal" } },
+                },
+                consequent: { type: "BlockStatement", body: [{
+                  type: "ReturnStatement",
+                  argument: { type: "MemberExpression", computed: false, optional: false,
+                    object: { type: "Identifier", name: "e" },
+                    property: { type: "Identifier", name: "value" } },
+                }] },
+                alternate: { type: "BlockStatement", body: [{
+                  type: "ThrowStatement", argument: { type: "Identifier", name: "e" },
+                }] },
+              }],
+            },
+          },
+          finalizer: null,
+        }],
+      },
+    },
+    arguments: [],
+  });
   const directStmt = (info) => {
     const f = fns.get(info.name);
     const args = info.args.map((a) => rewrite(unwrapWordList(a)));
@@ -672,6 +736,7 @@ export function directShellFnCalls(program) {
     } else if (f.async) {
       expr = { type: "AwaitExpression", argument: callExpr };
     }
+    if (f.canThrowReturn) expr = catchReturn(expr);
     return { type: "ExpressionStatement", expression: expr };
   };
   const rewrite = (node) => {
