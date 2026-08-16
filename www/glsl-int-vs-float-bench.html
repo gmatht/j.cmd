@@ -29,17 +29,25 @@
 <h1>GLSL ES 1.00 — int vs float math benchmark (fragment &amp; vertex)</h1>
 <div class="muted">The mimecroft game's <b>fragment</b> shader does its colour math in
 <b>mediump int</b> (0..127 scale — every intermediate fits mediump int's ±2<sup>15</sup>);
-its <b>vertex</b> shader is highp float (mandatory). This page times int vs float
-arithmetic in <b>both stages</b> on your browser's WebGL 1.0 implementation — the same
-per-pixel workload twice in the fragment, the same per-vertex transform twice in the
-vertex. The GL/GLSL/ANGLE line below the results identifies exactly which GLES→backend
+its <b>vertex</b> shader is highp float (mandatory). This page times the arithmetic in
+<b>three modes</b> on your browser's WebGL 1.0 implementation:
+(1) <b>fragment: int vs float</b> — the game's per-pixel colour pipeline, mediump int
+    (0..127 scale) vs the equivalent float;
+(2) <b>vertex: int vs float</b> — the per-vertex yaw+perspective transform (milli/‰ int
+    vs float) over a grid mesh;
+(3) <b>fragment: mediump vs highp float</b> — the PRECISION QUALIFIER cost ONLY: both
+    variants are the float pipeline, so this mode answers "what does the mediump
+    qualifier cost" with the int question removed (mediump is the ES 1.00 fragment
+    default; highp needs the OES_fragment_precision_high extension, which is why the
+    game avoids it). The mediump-int pipeline is only in mode 1.
+The GL/GLSL/ANGLE line below the results identifies exactly which GLES→backend
 translator your browser is using, so the numbers are read in that context.</div>
 
 <div class="controls">
   <label>mode</label>
   <button id="modeFrag" class="active">fragment: int vs float</button>
   <button id="modeVert">vertex: int vs float</button>
-  <button id="modePrec">fragment: mediump vs highp</button>
+  <button id="modePrec">fragment: mediump vs highp float</button>
   <label>frames <input type="number" id="frames" value="2400" min="10" max="20000"></label>
   <label>samples <input type="number" id="samples" value="5" min="1" max="20"></label>
   <label id="gridLbl">texel grid <input type="number" id="grid" value="64" min="8" max="256"></label>
@@ -90,7 +98,8 @@ translator your browser is using, so the numbers are read in that context.</div>
         usually maps mediump to the FULL native float, so the float path here runs at
         full precision while the int path runs at the int's exact ±2<sup>15</sup> — the
         two paths are not on equal precision footing, which is exactly the game's
-        argument for the int pipeline.</li>
+        argument for the int pipeline. The mediump-vs-highp mode measures the qualifier
+        itself (both float); the mediump-int path is not involved there.</li>
     <li><b>ES 1.00 has NO integer modulo, abs, or min/max overloads.</b> The game's
         compiled shader uses the float <code>mod()</code> + <code>int()</code> cast and
         the manual <code>if (x &lt; 0) x = -x;</code> branch (what the sh2glsl generator
@@ -218,9 +227,11 @@ void main() {
 `;
 
 // ────────────────────────────────────────────────────────────────
-// ─── precision mode: the SAME fragment workload at mediump vs highp
+// ─── precision mode: the SAME FLOAT fragment workload at mediump vs highp
 // (mediump is the ES 1.00 fragment default — what the game runs; highp
-// needs OES_fragment_precision_high. The workload is the float path's.)
+// needs OES_fragment_precision_high). This isolates the PRECISION QUALIFIER
+// cost: BOTH variants are the float pipeline (the mediump int path is only
+// in the int-vs-float mode — it is NOT involved here).
 const FS_FLOAT_HIGHP = `
 precision highp float;
 varying highp vec2 vUv;
@@ -501,9 +512,13 @@ $("run").onclick = async () => {
   $("ratio").className = "best";
   const stage = mode === "frag" ? "fragment (per-pixel)" : mode === "vert" ? "vertex (per-vertex)" : "fragment precision";
   const verdict =
-    ratio > 1.05 ? `In the ${stage} stage, float is ${ratio.toFixed(2)}× SLOWER than int on this translator — the int pipeline (the game's choice) is the faster path here.`
-    : ratio < 0.95 ? `In the ${stage} stage, float is ${(1 / ratio).toFixed(2)}× FASTER than int on this translator — the int casts/emulated modulo cost more than they save here.`
-    : `In the ${stage} stage, float and int are within ±5% on this translator — the arithmetic choice is free; the int path's benefit is exactness (no mediump-float mantissa quantisation), not speed.`;
+    mode === "prec"
+      ? (ratio > 1.05 ? `highp FLOAT is ${ratio.toFixed(2)}× SLOWER than mediump FLOAT on this translator — the mediump default the game runs is the cheaper path (and highp in the fragment needs the OES_fragment_precision_high extension).`
+         : ratio < 0.95 ? `highp FLOAT is ${(1 / ratio).toFixed(2)}× FASTER than mediump FLOAT on this translator (ANGLE often runs mediump at full precision on desktop — the qualifier is then free).`
+         : `mediump and highp FLOAT are within ±5% on this translator — the precision qualifier costs nothing here (ANGLE maps both to the full native float on desktop).`)
+      : (ratio > 1.05 ? `In the ${stage} stage, float is ${ratio.toFixed(2)}× SLOWER than int on this translator — the int pipeline (the game's choice) is the faster path here.`
+         : ratio < 0.95 ? `In the ${stage} stage, float is ${(1 / ratio).toFixed(2)}× FASTER than int on this translator — the int casts/emulated modulo cost more than they save here.`
+         : `In the ${stage} stage, float and int are within ±5% on this translator — the arithmetic choice is free; the int path's benefit is exactness (no mediump-float mantissa quantisation), not speed.`);
   $("verdict").textContent = verdict;
   $("status").textContent = "done";
 
