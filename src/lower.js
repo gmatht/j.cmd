@@ -1308,6 +1308,102 @@ export function nativeArrays(program) {
   return program;
 }
 
+// ── lowerI32Trunc: Math.trunc on a provably-int32 compound → trailing |0 ──
+//
+// Why this is specifically a win (measured, Node 24 — see
+// docs/architectural-considerations.md § "JS arithmetic speed"):
+//   • `Math.trunc(x / 1000)` — the SIMPLE constant-divisor division — is
+//     already optimal: V8's magic-number division (multiply-high + shift)
+//     handles the constant 1000, and `(x/1000)|0` is a wash (69 vs 58 M
+//     ops/s — the |0's ToInt32 cancels the benefit).
+//   • `Math.trunc(<compound> / y)` — the COMPOUND form (a product/sum
+//     chain divided at the end, e.g. the render geometry
+//     `(td_ddx*td_sn − td_ddz*td_cs)/1000` and the anim glide) — the JIT
+//     keeps `Math.trunc` as a separate conversion sequence on the FP
+//     chain, while the trailing `|0` uses the built-in ToInt32 conversion:
+//     on the game's REAL emitted shapes the |0 forms measured 0–16%
+//     faster (averaged interleaved rounds: cell 27.5 vs 23.7 M, glide
+//     26.7 vs 24.8, render compound 22.6 vs 22.3) and never slower. (The
+//     earlier "2.3×" figure was a single-run artifact on a loaded box —
+//     the variable-divisor synthetic shape — it does not reproduce under
+//     repeated interleaved measurement.)
+//   • Correctness: `(X)|0` is ToInt32 — identity for values in
+//     [−2^31, 2^31) AND truncates toward zero like Math.trunc (bash's
+//     integer division). Outside that range it WRAPS — so the rewrite is
+//     applied ONLY where the interval fold below proves the expression's
+//     value stays in [−2^31, 2^31).
+//
+// The range proof: a conservative interval fold over literals + the
+// arithmetic operators. Any leaf that isn't a bounded literal (a var
+// read, a `(Number(v)||0)` coercion, an arrayIndex call — the game's
+// compounds are full of them) is UNPROVABLE → the whole expression is
+// skipped. So today the pass only fires where the compiler already knows
+// the bounds (literal-only numerators — which the A1 usually constant-
+// folds anyway). Covering the game's var compounds needs the A1-side i31
+// range analysis (shir.rs can propagate the def bounds — the maze limits,
+// the ×1000 scales — and emit `(N/D)|0` at the division render); this
+// pass is the sound JS-side half + the place the A1 annotation would
+// hook.
+export function lowerI32Trunc(program) {
+  if (!program || program.type !== "Program" || !Array.isArray(program.body)) return program;
+  // interval fold: {lo, hi} integer bounds, or null when unprovable
+  const bound = (n) => {
+    if (!n || typeof n !== "object") return null;
+    if (n.type === "Literal" && typeof n.value === "number" && Number.isFinite(n.value)) {
+      return { lo: Math.floor(n.value), hi: Math.ceil(n.value) };
+    }
+    if (n.type === "UnaryExpression" && n.operator === "-" && n.argument) {
+      const b = bound(n.argument);
+      return b ? { lo: -b.hi, hi: -b.lo } : null;
+    }
+    if (n.type === "BinaryExpression") {
+      const l = bound(n.left), r = bound(n.right);
+      if (!l || !r) return null;
+      switch (n.operator) {
+        case "+": return { lo: l.lo + r.lo, hi: l.hi + r.hi };
+        case "-": return { lo: l.lo - r.hi, hi: l.hi - r.lo };
+        case "*": {
+          const v = [l.lo * r.lo, l.lo * r.hi, l.hi * r.lo, l.hi * r.hi];
+          return { lo: Math.min(...v), hi: Math.max(...v) };
+        }
+        case "/": {
+          // integer division (Math.trunc semantics); a divisor crossing
+          // zero is unprovable
+          if (r.lo <= 0 && r.hi >= 0) return null;
+          const v = [Math.trunc(l.lo / r.lo), Math.trunc(l.hi / r.lo), Math.trunc(l.lo / r.hi), Math.trunc(l.hi / r.hi)];
+          return { lo: Math.min(...v), hi: Math.max(...v) };
+        }
+        default: return null; // % | & ^ << >> — leave alone
+      }
+    }
+    return null; // var reads / calls / coercions — unprovable
+  };
+  const isTruncCall = (n) =>
+    n && n.type === "CallExpression" && n.callee && n.callee.type === "MemberExpression" &&
+    n.callee.object && n.callee.object.type === "Identifier" && n.callee.object.name === "Math" &&
+    n.callee.property && n.callee.property.type === "Identifier" && n.callee.property.name === "trunc" &&
+    n.arguments && n.arguments.length === 1;
+  const rewrite = (n) => {
+    if (!n || typeof n !== "object") return n;
+    if (Array.isArray(n)) return n.map(rewrite);
+    if (isTruncCall(n)) {
+      const X = n.arguments[0];
+      const b = bound(X);
+      if (b && b.lo >= -2147483648 && b.hi <= 2147483647) {
+        return {
+          type: "BinaryExpression", operator: "|",
+          left: X, right: { type: "Literal", value: 0 },
+        };
+      }
+    }
+    const out = {};
+    for (const k of Object.keys(n)) if (k !== "loc") out[k] = rewrite(n[k]);
+    return out;
+  };
+  program.body = program.body.map(rewrite);
+  return program;
+}
+
 function lowerPureRound(program) {
   if (!program || program.type !== "Program") return 0;
   const body = program.body || [];

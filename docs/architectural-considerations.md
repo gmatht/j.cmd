@@ -643,6 +643,45 @@ the IR — similar to SSA form in compilers.
 The type inference pass should be **IR-level, not backend-specific**.
 Otherwise each statically-typed backend repeats the same analysis.
 
+### JS arithmetic speed (measured, Node 24, 20M-iter benchmarks)
+
+Bash `$(( ))` is signed 64-bit integer arithmetic. The estree backend
+emits it as JS **Number** (double) with `Math.trunc` for division (a
+literal `x/1000` → `Math.trunc(x/1000)`), which is exact for the game's
+actual ranges (cells 0–15, milli coords ≤ 400000, yaw 360000 — all well
+under 2⁵³, with 64-bit only misbehaving past that or on shifts/bitwise,
+which the game never uses). Measured findings:
+
+| form | throughput | verdict |
+|---|---|---|
+| `Math.trunc(x / 1000)` | 69 M ops/s | the current constant-divisor emission — fastest |
+| `x >> 10` (shift) | 69 M | ties — no win from a 1024 scale |
+| `(x / 1024) \| 0` | 62 M | best 1024 form, still loses to /1000 |
+| `(x / 1000) \| 0` | 58 M | wash-to-slower (ToInt32 cancels the magic-number div) |
+| `Math.trunc(x / 1024)` | 50 M | slowest |
+| `Math.trunc((a*b − c*d) / y)` | ~32 M | compound Math.trunc — the JIT keeps a separate trunc sequence |
+| `((a*b − c*d) / y) \| 0` | ~36 M | trailing ToInt32 — 0–16% faster on the game's real shapes, JIT-dependent |
+
+Takeaways:
+- **Stick with 1000, not 1024**: a power-of-two scale buys nothing (V8's
+  magic-number division handles the constant 1000; `/1024` is actually
+  slower), and it would break the milli-degree trig tables (360°×1000 →
+  index 360) and the NDC half-extent (2000 = full screen).
+- **The trailing `|0` on compound divisions** (the render geometry
+  `(td_ddx*td_sn − td_ddz*td_cs)/1000`, the anim glide, `cv_w`/`cv_rx`/
+  `bv_*`) is a small, JIT-dependent win (0–16%, never slower in averaged
+  interleaved rounds). The `lowerI32Trunc` pass applies it ONLY where an
+  interval fold proves the value stays in [−2³¹, 2³¹) (outside that the
+  `|0` wraps). The game's var compounds are not yet provable on the JS
+  side — covering them needs an A1-side range analysis (shir.rs: propagate
+  the def bounds — maze limits, ×1000 scales — and emit `(N/D)|0` at the
+  division render). An earlier "2.3×" figure for this shape was a
+  single-run artifact on a loaded box; repeated interleaved measurement
+  shows ~5% typical.
+- **No i32 mode**: a blanket `|0`/`Math.imul` lowering would be faster for
+  <2³¹ values but silently wrong past 2³¹ (the wrap) — the game's exact
+  Number path is the right level unless an A1 range proof can gate it.
+
 ---
 
 ## 9. Recommended Architecture

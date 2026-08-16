@@ -989,7 +989,7 @@ export function normalizeFunctions(program) {
 // Returns { js, map } where map[i] = { jsStart, jsEnd, sourceLine }.
 export async function estreeToJsMapped(program, stmtLines, a1Stmts, { repl = true } = {}) {
   const lowerMod = await import("./lower.js");
-  const { lowerNativeArrays, hoistLoopLastExit, hoistCommonLastExit, dropDeadFlags, mergeInitAssignments, pushLastExitToEnd, nativeForLoops, lowerPureFunctions, flattenAndOrAll, lowerDeviceRedirects, directShellFnCalls, liftLocalVars, nativeArrays, backgroundDecide } = lowerMod;
+  const { lowerNativeArrays, hoistLoopLastExit, hoistCommonLastExit, dropDeadFlags, mergeInitAssignments, pushLastExitToEnd, nativeForLoops, lowerPureFunctions, flattenAndOrAll, lowerDeviceRedirects, directShellFnCalls, liftLocalVars, nativeArrays, lowerI32Trunc, backgroundDecide } = lowerMod;
   // awaitSyncFnCalls must run BEFORE normalizeFunctions: the sync-fnCall
   // form (a fnCall the frontend believes is await-free) becomes an
   // AwaitExpression here; markAsyncOnAwait then sets async on every
@@ -1023,6 +1023,10 @@ export async function estreeToJsMapped(program, stmtLines, a1Stmts, { repl = tru
   // store — the NEXT line (or a sourced C function) reads it by name, and
   // a native binding would orphan those writes.
   if (!repl) normalized = nativeArrays(normalized);
+  // Math.trunc(<i32-provable compound>) → (<compound>) | 0 — the trailing
+  // ToInt32 is cheaper than the JIT's Math.trunc sequence on compound FP
+  // chains (see lowerI32Trunc's comment + the docs for the measurement).
+  normalized = lowerI32Trunc(normalized);
   // keepVariables (the A1 path's array pre-seeding) must run for the
   // debashcl path too: the wasm lowers `a=(...)` to `sh2.setArray` only
   // for the arrays it flags, and the game's module arrays (DIR_X, DIR_Z,
