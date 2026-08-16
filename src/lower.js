@@ -718,6 +718,247 @@ export function directShellFnCalls(program) {
   return program;
 }
 
+// ── liftLocalVars: promote single-function store locals to native
+// bindings + drop dead param-sync writes ───────────────────────────
+//
+// The A1's typed lowering lifts the vars it proves safe to module-level
+// `let` declarators; everything else round-trips through the runtime
+// store (`sh2.setVar("v", …)` writes + `sh2.vars.v` reads — a Proxy
+// trap + an env-fallback chain per access). Every shell function also
+// writes its PARAMS to the store on entry (`sh2.setVar("a", a)` — the
+// param-sync) even when the body never re-reads them from the store.
+// The game's per-frame helpers (cell_visible's cv_deg/cv_cs/cv_sn, the
+// maze-gen map_get) pay that round-trip on every call.
+//
+// Two safe rewrites:
+//   A) param-sync drop: `sh2.setVar("p", p)` where p is a native param
+//      and the body's ONLY store ops for p are those sync writes →
+//      remove them (the body reads p natively; the store is untouched).
+//   B) local lift: a store var v used in exactly ONE function F (and
+//      nowhere at top level), written there with a WRITE as its first
+//      mention, never a module `let`, never an array (setArray /
+//      element-write / arrayIndex read) or string-indirected (dynamic
+//      setVar/getVar names, sh2.param) → rewrite F's store ops for v to
+//      a bare identifier and declare `let v = ""` at module level (the
+//      store's default; a written var shadows the env fallback, and the
+//      module-level let preserves the store's cross-call persistence).
+export function liftLocalVars(program) {
+  if (!program || program.type !== "Program" || !Array.isArray(program.body)) return program;
+  const moduleLets = new Set();
+  for (const st of program.body) {
+    if (st && st.type === "VariableDeclaration" && st.kind === "let" && st.declarations) {
+      for (const d of st.declarations) if (d.id && d.id.type === "Identifier") moduleLets.add(d.id.name);
+    }
+  }
+  const isCall = (n, obj, fn) =>
+    n && n.type === "CallExpression" && n.callee && n.callee.type === "MemberExpression" &&
+    n.callee.object && n.callee.object.type === "Identifier" && n.callee.object.name === obj &&
+    n.callee.property && n.callee.property.type === "Identifier" && n.callee.property.name === fn;
+  const identName = (n) => (n && n.type === "Identifier" ? n.name : null);
+  const isVarsMember = (n) =>
+    n && n.type === "MemberExpression" && !n.computed &&
+    n.object && n.object.type === "MemberExpression" && !n.object.computed &&
+    n.object.object && n.object.object.type === "Identifier" && n.object.object.name === "sh2" &&
+    n.object.property && n.object.property.type === "Identifier" && n.object.property.name === "vars" &&
+    n.property && n.property.type === "Identifier";
+
+  // per-scope store usage: { reads, writes, syncs, arrays, indirect, ops }
+  const scopes = new Map();
+  const newScope = () => ({ reads: new Set(), writes: new Set(), syncs: new Set(), arrays: new Set(), indirect: new Set(), ops: [] });
+  const scan = (body, scope) => {
+    const walk = (n, parent, key) => {
+      if (!n || typeof n !== "object") return;
+      if (Array.isArray(n)) { for (const x of n) walk(x, parent, key); return; }
+      // sh2.setVar / setArray / getVar / param / arrayIndex / vars.x
+      if (n.type === "CallExpression" && n.callee && n.callee.type === "MemberExpression" &&
+          n.callee.object && n.callee.object.type === "Identifier" && n.callee.object.name === "sh2") {
+        const fn = n.callee.property && n.callee.property.type === "Identifier" ? n.callee.property.name : "";
+        const a0 = n.arguments && n.arguments[0];
+        if (fn === "setVar" && a0) {
+          if (a0.type === "Literal" && typeof a0.value === "string") {
+            const nm = a0.value;
+            if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(nm)) {
+              const val = n.arguments[1];
+              const isSync = val && val.type === "Identifier" && val.name === nm;
+              if (isSync) scope.syncs.add(nm); else scope.writes.add(nm);
+              scope.ops.push({ name: nm, kind: isSync ? "sync" : "write", node: n, parent, key });
+            } else scope.indirect.add(nm);
+          } else if (a0.type === "TemplateLiteral") {
+            const q = a0.quasis && a0.quasis[0] && a0.quasis[0].value && a0.quasis[0].value.raw;
+            if (q && /^[A-Za-z_][A-Za-z0-9_]*\[$/.test(q)) {
+              const nm = q.slice(0, -1); scope.arrays.add(nm);
+              scope.ops.push({ name: nm, kind: "write", node: n, parent, key });
+            }
+          } else scope.indirect.add("*");
+          return;
+        }
+        if (fn === "setArray" && a0 && a0.type === "Literal" && typeof a0.value === "string") {
+          scope.arrays.add(a0.value);
+          scope.ops.push({ name: a0.value, kind: "write", node: n, parent, key });
+          return;
+        }
+        if (fn === "getVar" && a0 && a0.type === "Literal" && typeof a0.value === "string") {
+          scope.reads.add(a0.value);
+          scope.ops.push({ name: a0.value, kind: "read", node: n, parent, key });
+          return;
+        }
+        if (fn === "getVar" && a0 && a0.type !== "Literal") { scope.indirect.add("*"); return; }
+        if (fn === "param") {
+          for (const a of n.arguments) if (a.type === "Literal" && typeof a.value === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(a.value)) scope.indirect.add(a.value);
+          return;
+        }
+        if (fn === "arrayIndex" && a0 && a0.type === "Literal" && typeof a0.value === "string") {
+          scope.arrays.add(a0.value);
+          scope.ops.push({ name: a0.value, kind: "read", node: n, parent, key });
+          return;
+        }
+      }
+      if (isVarsMember(n)) {
+        const nm = n.property.name;
+        const isWrite = parent && parent.type === "AssignmentExpression" && parent.left === n;
+        const kind = isWrite ? "write" : "read";
+        (kind === "write" ? scope.writes : scope.reads).add(nm);
+        scope.ops.push({ name: nm, kind, node: n, parent, key });
+        return; // the vars.x chain is fully consumed
+      }
+      if (n.type === "MemberExpression" && n.computed &&
+          n.object && n.object.type === "MemberExpression" &&
+          n.object.object && n.object.object.type === "Identifier" && n.object.object.name === "sh2" &&
+          n.object.property && n.object.property.type === "Identifier" && n.object.property.name === "vars") {
+        scope.indirect.add("*");
+        return;
+      }
+      for (const k of Object.keys(n)) if (k !== "loc") walk(n[k], n, k);
+    };
+    for (const st of body) walk(st, null, null);
+  };
+  for (const st of program.body) {
+    if (st && st.type === "FunctionDeclaration" && st.id) {
+      const s = newScope();
+      s.params = new Set((st.params || []).filter((p) => p && p.type === "Identifier").map((p) => p.name));
+      scan(st.body ? st.body.body : [], s);
+      scopes.set(st.id.name, s);
+    }
+  }
+  const top = newScope();
+  top.params = new Set();
+  scan(program.body.filter((st) => !(st && st.type === "FunctionDeclaration")), top);
+  scopes.set("__top", top);
+
+  // single-function usage: v is used in exactly one NON-top scope
+  const usageCount = new Map();
+  for (const [name, s] of scopes) {
+    if (name === "__top") continue;
+    for (const v of s.ops.map((o) => o.name)) usageCount.set(v, (usageCount.get(v) || 0) + 1);
+  }
+  const topUses = new Set(top.ops.map((o) => o.name).concat([...top.indirect]));
+
+  // decide lifts per function
+  const lifts = new Map(); // fn name → Set of lifted var names
+  const syncDrops = new Map(); // fn name → Set of param names whose syncs are dropped
+  for (const [name, s] of scopes) {
+    if (name === "__top") continue;
+    const lifted = new Set();
+    for (const v of s.ops.map((o) => o.name)) {
+      if (s.arrays.has(v) || s.indirect.has(v) || s.indirect.has("*") || topUses.has(v)) continue;
+      if (moduleLets.has(v)) continue;
+      if (usageCount.get(v) !== 1) continue;
+      if (!s.writes.has(v)) continue; // written at least once (shadows env)
+      // first mention (statement order) must be a write — no read-before-
+      // write, so the module let's "" default can never leak in
+      const first = s.ops.find((o) => o.name === v);
+      if (!first || first.kind === "read") continue;
+      if (s.params.has(v)) continue; // params are native already
+      lifted.add(v);
+    }
+    if (lifted.size) lifts.set(name, lifted);
+    // A) param-sync drop: a param whose ONLY store ops are its syncs
+    const drop = new Set();
+    for (const p of s.params) {
+      const ops = s.ops.filter((o) => o.name === p);
+      if (ops.length && ops.every((o) => o.kind === "sync")) drop.add(p);
+    }
+    if (drop.size) syncDrops.set(name, drop);
+  }
+  if (!lifts.size && !syncDrops.size) return program;
+
+  // rewrite
+  const id = (name) => ({ type: "Identifier", name });
+  const isChainRead = (n) =>
+    n && n.type === "LogicalExpression" && n.operator === "??" && isVarsMember(n.left);
+  for (const [name, s] of scopes) {
+    if (name === "__top") continue;
+    const lifted = lifts.get(name) || new Set();
+    const drop = syncDrops.get(name) || new Set();
+    if (!lifted.size && !drop.size) continue;
+    const fn = program.body.find((st) => st && st.type === "FunctionDeclaration" && st.id && st.id.name === name);
+    if (!fn || !fn.body || !fn.body.body) continue;
+    const newBody = [];
+    for (const st of fn.body.body) {
+      const walk = (n, parent, key) => {
+        if (!n || typeof n !== "object") return n;
+        if (Array.isArray(n)) return n.map((x) => walk(x, n, key));
+        // 1) the `(sh2.vars.v ?? (sh2.env.v ?? ""))` chain → v
+        if (isChainRead(n)) {
+          const v = n.left.property.name;
+          if (lifted.has(v)) return id(v);
+        }
+        // 2) bare sh2.vars.v read / assignment target → v
+        if (isVarsMember(n)) {
+          const v = n.property.name;
+          if (lifted.has(v)) return id(v);
+        }
+        // 3) sh2.setVar("v", X) → v = X ; sync drops → remove
+        if (isCall(n, "sh2", "setVar") && n.arguments && n.arguments[0]) {
+          const a0 = n.arguments[0];
+          if (a0.type === "Literal" && typeof a0.value === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(a0.value)) {
+            const v = a0.value;
+            if (drop.has(v) && n.arguments[1] && n.arguments[1].type === "Identifier" && n.arguments[1].name === v) return null; // dead sync
+            if (lifted.has(v)) {
+              return {
+                type: "AssignmentExpression", operator: "=",
+                left: id(v), right: walk(n.arguments[1], n, "arguments"),
+              };
+            }
+          }
+        }
+        // 4) sh2.getVar("v") → v
+        if (isCall(n, "sh2", "getVar") && n.arguments && n.arguments[0] && n.arguments[0].type === "Literal" &&
+            typeof n.arguments[0].value === "string" && lifted.has(n.arguments[0].value)) return id(n.arguments[0].value);
+        const out = {};
+        for (const k of Object.keys(n)) if (k !== "loc") out[k] = walk(n[k], n, k);
+        return out;
+      };
+      const rewritten = walk(st, null, null);
+      if (rewritten === null) continue;
+      if (rewritten && rewritten.type === "ExpressionStatement" && rewritten.expression &&
+          rewritten.expression.type === "SequenceExpression") {
+        const kept = (rewritten.expression.expressions || []).filter(Boolean);
+        if (kept.length) {
+          const s2 = { type: "SequenceExpression", expressions: kept };
+          newBody.push({ type: "ExpressionStatement", expression: s2 });
+        }
+        continue;
+      }
+      newBody.push(rewritten);
+    }
+    fn.body.body = newBody;
+  }
+  // declare the lifted vars at module level (`let v = ""` — the store's
+  // default; preserves cross-call persistence like the store)
+  const newLets = [];
+  for (const [name, lifted] of lifts) for (const v of lifted) newLets.push(v);
+  if (newLets.length) {
+    newLets.sort();
+    program.body.unshift({
+      type: "VariableDeclaration", kind: "let", declarations: newLets.map((v) => ({
+        type: "VariableDeclarator", id: id(v), init: { type: "Literal", value: "" },
+      })),
+    });
+  }
+  return program;
+}
+
 function lowerPureRound(program) {
   if (!program || program.type !== "Program") return 0;
   const body = program.body || [];

@@ -989,7 +989,7 @@ export function normalizeFunctions(program) {
 // Returns { js, map } where map[i] = { jsStart, jsEnd, sourceLine }.
 export async function estreeToJsMapped(program, stmtLines, a1Stmts, { repl = true } = {}) {
   const lowerMod = await import("./lower.js");
-  const { lowerNativeArrays, hoistLoopLastExit, hoistCommonLastExit, dropDeadFlags, mergeInitAssignments, pushLastExitToEnd, nativeForLoops, lowerPureFunctions, flattenAndOrAll, lowerDeviceRedirects, directShellFnCalls, backgroundDecide } = lowerMod;
+  const { lowerNativeArrays, hoistLoopLastExit, hoistCommonLastExit, dropDeadFlags, mergeInitAssignments, pushLastExitToEnd, nativeForLoops, lowerPureFunctions, flattenAndOrAll, lowerDeviceRedirects, directShellFnCalls, liftLocalVars, backgroundDecide } = lowerMod;
   // awaitSyncFnCalls must run BEFORE normalizeFunctions: the sync-fnCall
   // form (a fnCall the frontend believes is await-free) becomes an
   // AwaitExpression here; markAsyncOnAwait then sets async on every
@@ -1011,6 +1011,11 @@ export async function estreeToJsMapped(program, stmtLines, a1Stmts, { repl = tru
   // reclassify the sync loop twins + async flags so the JS stays valid
   // (see reclassAsyncLoops).
   normalized = reclassAsyncLoops(normalized);
+  // lift single-function store locals to native bindings + drop the dead
+  // param-sync writes (the measured per-frame store round-trips — the
+  // vars the A1's typed lowering left in the store, e.g. cell_visible's
+  // cv_deg/cv_cs/cv_sn, and the get_cell/map_get param syncs).
+  normalized = liftLocalVars(normalized);
   // keepVariables (the A1 path's array pre-seeding) must run for the
   // debashcl path too: the wasm lowers `a=(...)` to `sh2.setArray` only
   // for the arrays it flags, and the game's module arrays (DIR_X, DIR_Z,
