@@ -31,9 +31,11 @@
 </head>
 <body>
 <div class="wrap">
-  <h1>GLSL int vs float — the results, explained</h1>
-  <div class="sub">What the benchmark measured, what the numbers mean, and why a little retro-looking game
-  cares about integer arithmetic inside your GPU.</div>
+  <h1>Shader arithmetic: integers vs floats — what's actually faster?</h1>
+  <div class="sub">Every pixel your GPU draws is decided by a tiny program called a shader. When
+  that program does colour math, it can use integers or floating point — and it turns out the
+  choice matters more than you'd think. This page summarises a real measurement of both, on a
+  real browser GPU.</div>
 
   <div class="card">
     <h2 style="margin-top:0">The question</h2>
@@ -43,9 +45,10 @@
     is exact but limited in range; floating point is smooth but can lose precision. Which is
     faster? It depends entirely on your GPU and its driver — and it's not always what you'd
     guess.</p>
-    <p>The game <b>mimecroft</b> (a maze game written in bash, rendered with WebGL) does its
-    pixel colours in integers — a deliberately careful choice made years ago. This page
-    summarises a benchmark that puts that choice to the test on a real browser GPU.</p>
+    <p>To find out, we timed a realistic shader workload — the per-pixel colour pipeline of a
+    real WebGL game, including its texture tint, scanline dim, and fade effects — written two
+    ways: all-integer and all-float. Then we also timed the precision settings and a couple of
+    other small choices that shader authors make. The answers might surprise you.</p>
   </div>
 
   <div class="card">
@@ -72,15 +75,23 @@
     <div class="metric"><div class="num">1.2×</div><div class="lbl">mediump beats highp</div></div>
     <div class="metric"><div class="num">1.13×</div><div class="lbl">/128 beats /127</div></div>
     <div class="metric"><div class="num">1.003×</div><div class="lbl">game's shader already optimal</div></div>
-    <p style="margin-top:12px"><b>The game was right all along.</b> Its integer colour pipeline is
-    ~1.6× faster than the equivalent floating-point version on this GPU — and its "mediump"
-    precision is the faster of the two allowed levels. Even its choice of divisor (<code>/128</code>,
-    a power of two, which the hardware can turn into a simple shift) is measurably faster than
-    the "more correct" <code>/127</code>.</p>
-    <p>The last row is the most interesting: taking the game's <i>actual</i> compiled shader and
-    rewriting every remaining floating-point step as an integer makes <b>no measurable
-    difference</b> — because the expensive parts were already integer. The one part that is
-    still floating-point (the colour tint) is so cheap that it doesn't matter.</p>
+    <p style="margin-top:12px">Read together, they give three practical rules for writing
+    WebGL shaders:</p>
+    <ul>
+      <li><b>Prefer integers for colour math when you can.</b> An all-integer colour pipeline
+      was ~1.6× faster than the all-float version on this GPU. Not every GPU will agree — but
+      integers are at worst tied, and they're exact.</li>
+      <li><b>The default precision is the fast one.</b> Both "mediump" runs beat "highp" by
+      ~1.2×. You don't gain speed by asking for more precision — only compatibility problems
+      (highp in the pixel stage isn't even always allowed).</li>
+      <li><b>Power-of-two divisors win.</b> Dividing by 128 (which the hardware can turn into
+      a shift) beat dividing by 127 (a "real" division) by 1.13×.</li>
+    </ul>
+    <p>But there's a catch: you can't actually write ×0.9 in integers (see below) — so the
+    practical shader is a <i>mix</i> of integer and floating-point. The last row measured that
+    mix against a hypothetical all-integer rewrite and found <b>no difference</b> — the parts
+    that were already integer were the expensive ones, and the leftover floating-point parts
+    were cheap. So: go as integer as you comfortably can, and don't sweat the rest.</p>
   </div>
 
   <div class="card">
@@ -105,13 +116,15 @@
   <div class="card">
     <h2 style="margin-top:0">Why this matters</h2>
     <ul>
-      <li><b>Shaders run billions of times a second.</b> A 1.6× difference in one multiply is a
+      <li><b>Shaders run billions of times a second.</b> A 1.6× difference in a multiply is a
       real frame-rate difference in a game that draws every pixel every frame.</li>
       <li><b>The answer is not universal.</b> The same shaders can rank differently on an AMD
       card, a phone's Mali GPU, or Apple's Metal translator. The numbers above are true for
-      this one GPU — your GPU may differ.</li>
-      <li><b>Precision and speed are the same decision here.</b> The game chose integers for
-      exactness; the benchmark shows that exactness also happened to be the fast option.</li>
+      this one GPU — your GPU may differ. The rules (prefer integers, prefer the default
+      precision, prefer power-of-two divisors) are safe bets, not guarantees.</li>
+      <li><b>Precision and speed go together here.</b> The exact option (integers) and the
+      fast option were the same one — which is the nice outcome, but not one you should
+      count on without measuring.</li>
     </ul>
   </div>
 
