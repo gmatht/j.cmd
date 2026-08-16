@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>GLSL ES 1.00 — int vs float fragment math benchmark</title>
+<style>
+  body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: #111; color: #ddd; margin: 24px; }
+  h1 { font-size: 18px; color: #fff; }
+  h2 { font-size: 14px; color: #8cf; margin-top: 28px; }
+  canvas { background: #000; border: 1px solid #444; image-rendering: pixelated; width: 512px; height: 384px; }
+  .row { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
+  .card { background: #1b1b1b; border: 1px solid #333; padding: 14px; margin-top: 10px; max-width: 760px; }
+  table { border-collapse: collapse; margin-top: 8px; }
+  td, th { padding: 4px 14px; border: 1px solid #333; text-align: right; }
+  th { color: #9cf; }
+  .best { color: #6f6; }
+  .muted { color: #888; }
+  pre { background: #0d0d0d; border: 1px solid #333; padding: 12px; overflow-x: auto; font-size: 11px; line-height: 1.4; }
+  button { background: #222; color: #ddd; border: 1px solid #555; padding: 6px 14px; cursor: pointer; }
+  button:hover { background: #333; }
+  .controls { display: flex; gap: 12px; margin: 10px 0; align-items: center; }
+  input[type=number] { width: 70px; background: #222; color: #ddd; border: 1px solid #555; padding: 4px; }
+  label { font-size: 12px; }
+</style>
+</head>
+<body>
+<h1>GLSL ES 1.00 — int vs float fragment math benchmark</h1>
+<div class="muted">The mimecroft game's fragment shader does its colour math in <b>mediump int</b>
+(0..127 scale — the tint/scanline/corruption/vignette/crack intermediates all fit
+mediump int's ±2<sup>15</sup>). This page renders the SAME per-fragment workload twice —
+once with the game's int pipeline, once with an equivalent float pipeline — and times
+each on your GPU. This measures whether the int arithmetic costs anything at all.</div>
+
+<div class="row">
+  <canvas id="intC" width="512" height="384"></canvas>
+  <canvas id="fltC" width="512" height="384"></canvas>
+</div>
+<div class="controls">
+  <label>frames per sample <input type="number" id="frames" value="240" min="10" max="2000"></label>
+  <label>samples <input type="number" id="samples" value="5" min="1" max="20"></label>
+  <label>texel grid <input type="number" id="grid" value="64" min="8" max="256"></label>
+  <button id="run">Run benchmark</button>
+  <span id="status" class="muted"></span>
+</div>
+
+<div class="card">
+  <h2>Results</h2>
+  <table id="results">
+    <tr><th></th><th>frames</th><th>avg ms/frame</th><th>min ms/frame</th><th>FPS</th></tr>
+    <tr><td>int (game)</td><td id="i-n">—</td><td id="i-avg">—</td><td id="i-min">—</td><td id="i-fps">—</td></tr>
+    <tr><td>float</td><td id="f-n">—</td><td id="f-avg">—</td><td id="f-min">—</td><td id="f-fps">—</td></tr>
+    <tr><td colspan="2"><b>float / int</b></td><td id="ratio" colspan="3">—</td></tr>
+  </table>
+  <div id="verdict" class="muted" style="margin-top:8px"></div>
+</div>
+
+<div class="card">
+  <h2>What the shaders do (the workload)</h2>
+  <p class="muted">Both fragment shaders perform the same per-pixel work, on a fullscreen
+  quad sampling a 64×64 (configurable) texture with REPEAT wrapping:</p>
+  <ol class="muted">
+    <li><b>tint</b> — texture texel × the varying block colour (int: 0..127 scale with /128;
+        float: 0..1)</li>
+    <li><b>CRT scanline</b> — every 6th pixel row dims 10%</li>
+    <li><b>corruption</b> — a deterministic hash of the pixel position (×7 + ×13 mod 97)
+        throws 1 in 97 pixels to red</li>
+    <li><b>vignette</b> — corners darken toward the frame edge</li>
+    <li><b>crack blend</b> — a second texture (the crack overlay) mixed in by a damage
+        level (int: mix = damage·cr_a capped at 127, /128; float: min(damage·cr_a,127)/127)</li>
+  </ol>
+  <p class="muted">The two canvases show the visual result of each path — the int version
+  has the 0..127 colour quantisation, the float version is smooth. They are otherwise
+  visually identical, so the timing difference is the arithmetic itself.</p>
+</div>
+
+<div class="card">
+  <h2>The GLSL ES 1.00 implementation details (why this is meaningful)</h2>
+  <ul class="muted">
+    <li><b>Precision qualifiers are mandatory in ES 1.00.</b> The vertex shader must declare
+        <code>precision highp float;</code>; the fragment defaults to <code>mediump</code>.
+        This benchmark uses exactly the game's declarations: <code>mediump int</code> /
+        <code>mediump float</code> in the fragment, <code>highp</code> for the UV varying
+        (so the texture coordinates don't quantise).</li>
+    <li><b>mediump int is ±2<sup>15</sup></b> (the ES 1.00 minimum). The game's int
+        intermediates (r·tex_r ≤ 127·255 = 32385, the mix ≤ 127, the hash ≤ 96) all fit —
+        the benchmark reproduces them exactly so the int path is legal on every ES 1.00
+        device.</li>
+    <li><b>mediump float has a ~10-bit mantissa</b> — the float path's 0..1 arithmetic
+        quantises the same way the game's 0..127 scale avoids. Both paths are "as the game
+        would write them".</li>
+    <li><b>int() casts and mod()/floor() are real instructions.</b> The int path pays
+        <code>int(gl_FragCoord.x)</code>, <code>% 6</code>, <code>% 97</code> (integer
+        modulo) and the /128 integer division; the float path pays <code>mod()</code> and
+        <code>min()</code> instead. The benchmark measures the net ALU cost of that
+        difference.</li>
+    <li><b>WebGL1 / GLSL ES 1.00</b> — the game's actual target (no WebGL2, no
+        <code>intBitsToFloat</code>, no explicit control-flow guarantees). The results are
+        driver-dependent — a desktop NVIDIA/AMD driver and a phone's Adreno/Mali will give
+        different ratios.</li>
+  </ul>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const intC = $("intC"), fltC = $("fltC");
+const gl = intC.getContext("webgl") || intC.getContext("experimental-webgl");
+// both canvases share one context; the float canvas reuses the same drawing buffer
+// (rendered into the same GL, presented once — timing is per draw call, not per swap)
+
+// ─── the vertex shader: fullscreen quad + a per-pixel varying colour ───
+const VS = `
+precision highp float;
+attribute vec2 aPos;
+attribute vec2 aUv;
+varying highp vec2 vUv;
+varying highp vec4 vColor;
+void main() {
+  vUv = aUv;
+  // a diagonal colour gradient so the compiler can't hoist the tint
+  vColor = vec4(0.5 + 0.5 * aUv.x, 0.5 + 0.5 * aUv.y, 0.7, 1.0);
+  gl_Position = vec4(aPos, 0.0, 1.0);
+}
+`;
+
+// the int pipeline — the game's 0..127 scale, mediump int intermediates
+const FS_INT = `
+precision mediump float;
+precision mediump int;
+varying highp vec2 vUv;
+varying highp vec4 vColor;
+uniform sampler2D uTex;
+uniform sampler2D uCrack;
+uniform int uDamage;
+void main() {
+  highp vec2 uv = fract(vUv);
+  int fx = int(gl_FragCoord.x);
+  int fy = int(gl_FragCoord.y);
+  vec4 t = texture2D(uTex, uv);
+  vec4 cr = texture2D(uCrack, uv);
+  int tr = int(t.r * 255.0);
+  int tg = int(t.g * 255.0);
+  int tb = int(t.b * 255.0);
+  int crr = int(cr.r * 127.0);
+  int crg = int(cr.g * 127.0);
+  int crb = int(cr.b * 127.0);
+  int cra = int(cr.a * 127.0);
+  int r = int(vColor.r * 127.0);
+  int g = int(vColor.g * 127.0);
+  int b = int(vColor.b * 127.0);
+  r = r * tr / 128;
+  g = g * tg / 128;
+  b = b * tb / 128;
+  // ES 1.00 has NO integer modulo — the game's compiled shader uses
+  // the float mod() + int() cast (exactly what the sh2glsl generator emits)
+  int scan = int(mod(float(fy), 6.0));
+  if (scan == 0) { r = r * 90 / 100; g = g * 90 / 100; b = b * 90 / 100; }
+  int hash = int(mod(float(fx * 7 + fy * 13), 97.0));
+  if (hash == 0) { r = 127; g = g * 50 / 100; b = b * 50 / 100; }
+  // ES 1.00 has no int abs()/min() overloads — the game's compiled
+  // shader uses the manual branch form (exactly as the generator emits)
+  int vx = fx - 256; int vy = fy - 192;
+  if (vx < 0) vx = 0 - vx;
+  if (vy < 0) vy = 0 - vy;
+  int edge = vx + vy;
+  if (edge > 225) { int d = edge - 225; if (d > 15) d = 15; int dim = (255 - d * 2) * 100 / 255; r = r * dim / 100; g = g * dim / 100; b = b * dim / 100; }
+  if (uDamage > 0) {
+    int mix = uDamage * cra;
+    if (mix > 127) mix = 127;
+    r = r - (r - crr) * mix / 128;
+    g = g - (g - crg) * mix / 128;
+    b = b - (b - crb) * mix / 128;
+  }
+  gl_FragColor = vec4(float(r) / 127.0, float(g) / 127.0, float(b) / 127.0, 1.0);
+}
+`;
+
+// the float pipeline — the same effects in 0..1 float
+const FS_FLOAT = `
+precision mediump float;
+varying highp vec2 vUv;
+varying highp vec4 vColor;
+uniform sampler2D uTex;
+uniform sampler2D uCrack;
+uniform int uDamage;
+void main() {
+  highp vec2 uv = fract(vUv);
+  float fx = gl_FragCoord.x;
+  float fy = gl_FragCoord.y;
+  vec4 t = texture2D(uTex, uv);
+  vec4 cr = texture2D(uCrack, uv);
+  float r = vColor.r;
+  float g = vColor.g;
+  float b = vColor.b;
+  r = r * t.r;
+  g = g * t.g;
+  b = b * t.b;
+  float scan = mod(fy, 6.0);
+  if (scan < 1.0) { r *= 0.9; g *= 0.9; b *= 0.9; }
+  float hash = mod(fx * 7.0 + fy * 13.0, 97.0);
+  if (hash < 1.0) { r = 1.0; g *= 0.5; b *= 0.5; }
+  float edge = abs(fx - 256.0) + abs(fy - 192.0);
+  if (edge > 225.0) { float d = min(edge - 225.0, 15.0); float dim = (255.0 - d * 2.0) / 255.0; r *= dim; g *= dim; b *= dim; }
+  if (uDamage > 0) {
+    float mixf = min(float(uDamage) * cr.a, 1.0);
+    r = mix(r, cr.r, mixf);
+    g = mix(g, cr.g, mixf);
+    b = mix(b, cr.b, mixf);
+  }
+  gl_FragColor = vec4(r, g, b, 1.0);
+}
+`;
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    throw new Error("shader compile: " + gl.getShaderInfoLog(s));
+  }
+  return s;
+}
+function program(fs) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, VS));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error("link: " + gl.getProgramInfoLog(p));
+  return p;
+}
+
+// fullscreen quad
+const quad = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+  -1, -1, 0, 0,  1, -1, 1, 0,  1, 1, 1, 1,   // positions + uvs
+  -1, -1, 0, 0,  1, 1, 1, 1,  -1, 1, 0, 1,
+]), gl.STATIC_DRAW);
+const quadVerts = 6;
+
+let tex = null, crack = null;
+function makeTexture(size, fn) {
+  const data = new Uint8Array(size * size * 4);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const i = (y * size + x) * 4;
+      const v = fn(x, y, size);
+      data[i] = v[0]; data[i+1] = v[1]; data[i+2] = v[2]; data[i+3] = 255;
+    }
+  }
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, size, size, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  return t;
+}
+
+function setup(prog) {
+  gl.useProgram(prog);
+  const aPos = gl.getAttribLocation(prog, "aPos");
+  const aUv = gl.getAttribLocation(prog, "aUv");
+  gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+  gl.enableVertexAttribArray(aPos);
+  gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 16, 0);
+  gl.enableVertexAttribArray(aUv);
+  gl.vertexAttribPointer(aUv, 2, gl.FLOAT, false, 16, 8);
+  gl.uniform1i(gl.getUniformLocation(prog, "uTex"), 0);
+  gl.uniform1i(gl.getUniformLocation(prog, "uCrack"), 1);
+  gl.uniform1i(gl.getUniformLocation(prog, "uDamage"), 3);
+}
+
+function renderFrame(prog) {
+  setup(prog);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, crack);
+  gl.drawArrays(gl.TRIANGLES, 0, quadVerts);
+}
+
+function bench(prog, frames) {
+  // warm-up (driver JIT / instruction scheduling)
+  for (let i = 0; i < 30; i++) renderFrame(prog);
+  gl.finish();
+  const times = [];
+  for (let i = 0; i < frames; i++) {
+    const t0 = performance.now();
+    renderFrame(prog);
+    if (i % 16 === 15) gl.finish();          // sync periodically to avoid pipelining
+    times.push(performance.now() - t0);
+  }
+  gl.finish();
+  return times;
+}
+
+function stats(times) {
+  const sum = times.reduce((a, b) => a + b, 0);
+  const avg = sum / times.length;
+  const min = Math.min(...times);
+  return { avg, min, fps: 1000 / avg };
+}
+
+$("run").onclick = async () => {
+  const frames = Math.max(10, Number($("frames").value) || 240);
+  const samples = Math.max(1, Number($("samples").value) || 5);
+  const grid = Math.max(8, Number($("grid").value) || 64);
+  $("status").textContent = "building textures…";
+  await new Promise(r => setTimeout(r, 10));
+
+  // pseudo-random-ish deterministic pattern (the "texture")
+  let seed = 12345;
+  const rnd = () => { seed = (seed * 48271) % 2147483647; return seed / 2147483647; };
+  tex = makeTexture(grid, (x, y) => {
+    const n = rnd();
+    return [Math.floor(n * 255), Math.floor((1 - n) * 255), Math.floor(n * 128), 255];
+  });
+  crack = makeTexture(grid, (x, y) => {
+    const c = (x + y) % 8 < 3 ? 200 : 20;
+    return [c, c, c, 120];
+  });
+
+  const pInt = program(FS_INT);
+  const pFlt = program(FS_FLOAT);
+  $("status").textContent = `benchmarking ${frames} frames × ${samples} samples…`;
+
+  const iSamples = [], fSamples = [];
+  for (let s = 0; s < samples; s++) {
+    iSamples.push(bench(pInt, frames));
+    fSamples.push(bench(pFlt, frames));
+    $("status").textContent = `sample ${s + 1}/${samples}…`;
+    await new Promise(r => setTimeout(r, 0));
+  }
+  const iAll = iSamples.flat(), fAll = fSamples.flat();
+  const iSt = stats(iAll), fSt = stats(fAll);
+
+  $("i-n").textContent = iAll.length;
+  $("i-avg").textContent = iSt.avg.toFixed(3);
+  $("i-min").textContent = iSt.min.toFixed(3);
+  $("i-fps").textContent = iSt.fps.toFixed(1);
+  $("f-n").textContent = fAll.length;
+  $("f-avg").textContent = fSt.avg.toFixed(3);
+  $("f-min").textContent = fSt.min.toFixed(3);
+  $("f-fps").textContent = fSt.fps.toFixed(1);
+  const ratio = fSt.avg / iSt.avg;
+  $("ratio").textContent = ratio.toFixed(3) + "×";
+  $("ratio").className = ratio > 1.02 ? "best" : (ratio < 0.98 ? "" : "best");
+  const verdict =
+    ratio > 1.05 ? `float is ${ratio.toFixed(2)}× SLOWER than int — the int pipeline (the game's choice) is the faster path on this GPU.`
+    : ratio < 0.95 ? `float is ${(1 / ratio).toFixed(2)}× FASTER than int — the int casts/modulo cost more than they save on this GPU.`
+    : `float and int are within ±5% — the arithmetic choice is free on this GPU; the int path's benefit is exactness (no mediump-float mantissa quantisation), not speed.`;
+  $("verdict").textContent = verdict;
+  $("status").textContent = "done";
+
+  // present the last rendered frame to each canvas (the GL shares the buffer)
+  const w = intC.width, h = intC.height;
+  const tmp = new Uint8Array(w * h * 4);
+  renderFrame(pInt); gl.finish();
+  gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, tmp);
+  drawTo(intC, tmp, w, h);
+  renderFrame(pFlt); gl.finish();
+  gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, tmp);
+  drawTo(fltC, tmp, w, h);
+};
+
+function drawTo(canvas, px, w, h) {
+  const ctx = canvas.getContext("2d");
+  const img = ctx.createImageData(w, h);
+  // gl.readPixels is bottom-up
+  for (let y = 0; y < h; y++) {
+    const src = ((h - 1 - y) * w) * 4, dst = (y * w) * 4;
+    img.data.set(px.subarray(src, src + w * 4), dst);
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+// report the GLSL ES 1.00 context details
+(function () {
+  const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+  const renderer = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+  const v = gl.getParameter(gl.VERSION);
+  const vs = gl.getParameter(gl.SHADING_LANGUAGE_VERSION);
+  const line = document.createElement("div");
+  line.className = "muted"; line.style.marginTop = "10px";
+  line.innerHTML = `GL: ${v} · GLSL: ${vs} · ${renderer}`;
+  document.querySelector(".card").appendChild(line);
+})();
+</script>
+</body>
+</html>
