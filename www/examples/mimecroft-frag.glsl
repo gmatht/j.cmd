@@ -2,7 +2,6 @@
 precision mediump float;
 precision mediump int;
 
-int out_buf[4];
 varying highp vec4 vColor;
 varying highp vec2 vUv;
 uniform sampler2D uTex;
@@ -10,82 +9,57 @@ uniform sampler2D uCrack;
 uniform int uDamage;
 
 void main() {
-    int g_b;
-    int g_corrupt;
-    int g_cr_a;
-    int g_cr_b;
-    int g_cr_g;
-    int g_cr_r;
-    int g_damage;
-    int g_dim;
-    int g_edge;
     int g_frag_x;
     int g_frag_y;
-    int g_fx;
-    int g_fy;
-    int g_g;
-    int g_hash;
-    int g_mix;
-    int g_r;
+    float g_fr;
+    float g_fg;
+    float g_fb;
+    float g_r;
+    float g_g;
+    float g_b;
     int g_scan;
-    int g_tex_b;
-    int g_tex_g;
-    int g_tex_r;
-    int g_uv_x;
-    int g_uv_y;
-    int g_vcolor_b;
-    int g_vcolor_g;
-    int g_vcolor_r;
+    float g_mix;
+    int g_hash;
+    int g_corrupt;
     int g_vx;
     int g_vy;
+    int g_edge;
+    int g_dim;
 
     g_frag_x = int(gl_FragCoord.x);
     g_frag_y = int(gl_FragCoord.y);
-    g_vcolor_r = int(vColor.r * 127.0);
-    g_vcolor_g = int(vColor.g * 127.0);
-    g_vcolor_b = int(vColor.b * 127.0);
-    vec4 _tex = texture2D(uTex, fract(vUv));
-    g_tex_r = int(_tex.r * 255.0);
-    g_tex_g = int(_tex.g * 255.0);
-    g_tex_b = int(_tex.b * 255.0);
-    g_damage = uDamage;
-    g_fx = g_frag_x;
-    g_fy = g_frag_y;
-    g_r = g_vcolor_r;
-    g_g = g_vcolor_g;
-    g_b = g_vcolor_b;
-    g_r = (((g_r * g_tex_r)) / 128);
-    g_g = (((g_g * g_tex_g)) / 128);
-    g_b = (((g_b * g_tex_b)) / 128);
-    g_scan = (g_fy - (6 * (g_fy / 6)));
+    // the 0..127 / 0..255 quantize boundaries are preserved — same
+    // colour scale and effect placement as the fixed-point pipeline
+    g_fr = float(int(vColor.r * 127.0));
+    g_fg = float(int(vColor.g * 127.0));
+    g_fb = float(int(vColor.b * 127.0));
+    vec2 _uv = fract(vUv);
+    vec4 _tex = texture2D(uTex, _uv);
+    g_r = (g_fr * float(int(_tex.r * 255.0))) / 128.0;
+    g_g = (g_fg * float(int(_tex.g * 255.0))) / 128.0;
+    g_b = (g_fb * float(int(_tex.b * 255.0))) / 128.0;
+    g_scan = int(mod(float(g_frag_y), 6.0));
     if ((g_scan == 0)) {
-        g_r = (((g_r * 90)) / 100);
-        g_g = (((g_g * 90)) / 100);
-        g_b = (((g_b * 90)) / 100);
+        g_r = (g_r * 0.9);
+        g_g = (g_g * 0.9);
+        g_b = (g_b * 0.9);
     }
-    if ((g_damage > 0)) {
-        vec4 _crack = texture2D(uCrack, fract(vUv));
-        g_cr_r = int(_crack.r * 127.0);
-        g_cr_g = int(_crack.g * 127.0);
-        g_cr_b = int(_crack.b * 127.0);
-        g_cr_a = int(_crack.a * 127.0);
-        g_mix = (((g_damage * g_cr_a)) / 2);
-        if ((g_mix > 127)) {
-            g_mix = 127;
-        }
-        g_r = (g_r - ((((((g_r - g_cr_r)) * g_mix)) / 256)));
-        g_g = (g_g - ((((((g_g - g_cr_g)) * g_mix)) / 256)));
-        g_b = (g_b - ((((((g_b - g_cr_b)) * g_mix)) / 256)));
+    if ((uDamage > 0)) {
+        vec4 _crack = texture2D(uCrack, _uv);
+        g_mix = min((float(uDamage) * float(int(_crack.a * 127.0))), 127.0);
+        g_r = (g_r - (((g_r - float(int(_crack.r * 127.0)))) * (g_mix / 128.0)));
+        g_g = (g_g - (((g_g - float(int(_crack.g * 127.0)))) * (g_mix / 128.0)));
+        g_b = (g_b - (((g_b - float(int(_crack.b * 127.0)))) * (g_mix / 128.0)));
     }
-    g_hash = (((g_fx * 7)) + ((g_fy * 13)));
-    g_corrupt = (g_hash - (97 * (g_hash / 97)));
+    g_hash = (((g_frag_x * 7)) + ((g_frag_y * 13)));
+    g_corrupt = int(mod(float(g_hash), 97.0));
     if ((g_corrupt == 0)) {
-        g_r = 255;
-        g_g = (g_g / 2);
-        g_b = (g_b / 2);
+        g_r = 255.0;
+        g_g = (g_g * 0.5);
+        g_b = (g_b * 0.5);
     }
-    g_vx = (g_fx - 400);
-    g_vy = (g_fy - 300);
+    g_vx = (g_frag_x - 400);
+    g_vy = (g_frag_y - 300);
     if ((g_vx < 0)) {
         g_vx = (0 - g_vx);
     }
@@ -98,23 +72,10 @@ void main() {
         if ((g_dim > 30)) {
             g_dim = 30;
         }
-        g_r = (g_r - ((((g_r * g_dim)) / 256)));
-        g_g = (g_g - ((((g_g * g_dim)) / 256)));
-        g_b = (g_b - ((((g_b * g_dim)) / 256)));
+        g_r = (g_r - ((g_r * float(g_dim)) / 256.0));
+        g_g = (g_g - ((g_g * float(g_dim)) / 256.0));
+        g_b = (g_b - ((g_b * float(g_dim)) / 256.0));
     }
-    if ((g_r < 0)) {
-        g_r = 0;
-    }
-    if ((g_g < 0)) {
-        g_g = 0;
-    }
-    if ((g_b < 0)) {
-        g_b = 0;
-    }
-    out_buf[0] = g_r;
-    out_buf[1] = g_g;
-    out_buf[2] = g_b;
-    out_buf[3] = 255;
-    gl_FragColor = vec4(float(out_buf[0]) / 255.0, float(out_buf[1]) / 255.0, float(out_buf[2]) / 255.0, float(out_buf[3]) / 255.0);
+    gl_FragColor = vec4((max(g_r, 0.0)) / 255.0, (max(g_g, 0.0)) / 255.0, (max(g_b, 0.0)) / 255.0, 1.0);
 }
 // TODO(unsupported): 0 construct(s) — see shir_to_glsl limitations

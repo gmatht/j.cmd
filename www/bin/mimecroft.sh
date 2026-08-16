@@ -47,6 +47,13 @@ BOUND_Z=$((MAP_D - 1))            # 15 — the first rejected row
 # ceiling planes follow the camera so the view is a bounded patch)
 VIEW_W=4
 VIEW_R=16                         # draw radius — the whole 16x16 map (displayed at 50% scale)
+# the render/mime culling share the camera rotation (SCOS/SSIN of the
+# CURRENT yaw) and the radius bound — hoisted out of try_draw (×768
+# cells/render) and cell_visible (per mime step); compute_display
+# refreshes rd_cs/rd_sn once per frame
+rd_cs=1000
+rd_sn=0
+RD_VR=$((VIEW_R * 1000))
 RADAR_X=80                        # radar x base (milli-NDC) — the map sits top-LEFT
 # ─── settings (editable in the pre-game menu; browser only) ────────
 cam_shift_ms=0        # camera right shift (milli-NDC, ±50 per press, no limit) — 0 = the centred view; the old 500 (a quarter-screen right shift) moved the vanishing point off-centre
@@ -571,11 +578,11 @@ can_step() { cs_a=$1; cs_b=$2; cs=0
 cell_visible() { cv_x=$1; cv_z=$2
   cv_ddx=$(( cv_x * 1000 - dpcx_ms ))
   cv_ddz=$(( cv_z * 1000 - dpcz_ms ))
-  cv_deg=$(( dpyw_ms / 1000 ))
-  cv_deg=$(( cv_deg % 360 ))
-  if [ "$cv_deg" -lt 0 ]; then cv_deg=$(( cv_deg + 360 )); fi
-  cv_cs=${SCOS[$cv_deg]}
-  cv_sn=${SSIN[$cv_deg]}
+  # the rotation is the frame's shared rd_cs/rd_sn (set in
+  # compute_display) — the same values try_draw uses, so a mime's
+  # visibility agrees exactly with the render's frustum
+  cv_cs=$rd_cs
+  cv_sn=$rd_sn
   cv_w=$(( (cv_ddx * cv_sn - cv_ddz * cv_cs) / 1000 ))
   if [ "$cv_cs" -lt 0 ]; then cv_csa=$((0 - cv_cs)); else cv_csa=$cv_cs; fi
   if [ "$cv_sn" -lt 0 ]; then cv_sna=$((0 - cv_sn)); else cv_sna=$cv_sn; fi
@@ -802,6 +809,11 @@ compute_display() {
   dpx=$(((dpcx_ms + 500) / 1000))
   dpz=$(((dpcz_ms + 500) / 1000))
   dyaw=$((((dpyw_ms + 45000) / 90000) % 4))
+  # the culling rotation is camera-only — refresh the shared SCOS/SSIN
+  # once per frame (try_draw's 768 cells + cell_visible both read them)
+  rd_deg=$((dpyw_ms / 1000))
+  rd_cs=${SCOS[$rd_deg]}
+  rd_sn=${SSIN[$rd_deg]}
 }
 
 # the eye ducks (and the walk slows) when the ceiling overhead is low:
@@ -1196,11 +1208,18 @@ emit_fragment_shader() {
   # $(( ... )) stays literal), then compile it with the generator
   # write the bash-authored fragment program to /tmp (single-quoted so
   # $(( ... )) stays literal), then compile it with the generator
-  echo 'fx=$((frag_x))' > /tmp/mimecroft-frag.sh
-  echo 'fy=$((frag_y))' >> /tmp/mimecroft-frag.sh
-  echo 'r=$((vcolor_r))' >> /tmp/mimecroft-frag.sh
+  echo 'r=$((vcolor_r))' > /tmp/mimecroft-frag.sh
   echo 'g=$((vcolor_g))' >> /tmp/mimecroft-frag.sh
   echo 'b=$((vcolor_b))' >> /tmp/mimecroft-frag.sh
+  # the gl_FragCoord bridge (fx/fy) is only read by the CRT scanline /
+  # vignette and the corruption streaks — emit it ONLY when an effect
+  # is enabled, so the no-effects shader skips the two per-fragment
+  # int copies entirely (the option-dependent code is compiled out by
+  # the generator either way — this removes the dead reads too)
+  if [ "$CRT_ON" -eq 1 ] || [ "$CORRUPT_ON" -eq 1 ]; then
+    echo 'fx=$((frag_x))' >> /tmp/mimecroft-frag.sh
+    echo 'fy=$((frag_y))' >> /tmp/mimecroft-frag.sh
+  fi
   # the block texture sampled per pixel (bridged by the generator).
   # 0..127 colour scale + /128: the tint intermediate r·tex_r ≤ 127·255
   # fits mediump int (±2^15), and 127/128 ≈ 255/255 keeps the output
@@ -1279,6 +1298,12 @@ emit_fragment_shader() {
   fs_src=bash
   glsl=$(sh2glsl /tmp/mimecroft-frag.sh)
   if [ "$glsl" != "" ]; then
+    # the generator samples both the block texture and the crack texture
+    # with fract(vUv) — hoist the wrap into _uv so it's computed ONCE per
+    # fragment (the crack branch reuses the same wrapped coordinate).
+    glsl=${glsl/vec4 _tex = texture2D(uTex, fract(vUv));/vec2 _uv = fract(vUv);
+    vec4 _tex = texture2D(uTex, _uv);}
+    glsl=${glsl/texture2D(uCrack, fract(vUv));/texture2D(uCrack, _uv);}
     echo "$glsl" > /dev/webgl/shader/fragment
   fi
 }
@@ -1648,9 +1673,40 @@ build_glyph_masks() {
   done
 }
 
+# the pixel font index of each character of every label/banner name
+# (glyph_index's A-Z=0..25, 0-9=26..35, space=36, '/'=37, '-'=38,
+# a-z=40..65). The transpiler slices the STORE copy of a shared string
+# (the lowered ${name:$i:1} read sees "") and every per-char glyph came
+# back as the blank-space mask — the label loop is replaced by this
+# literal table, keyed by the whole name.
+label_glyphs() { lg_name=$1
+  case $lg_name in
+    "GNU Hurd")     lgi=(6 13 20 36 7 60 57 43) ;;
+    "Linux")        lgi=(11 48 53 60 63) ;;
+    "FreeBSD")      lgi=(5 57 44 44 1 18 3) ;;
+    "NetBSD")       lgi=(13 44 59 1 18 3) ;;
+    "OpenBSD")      lgi=(14 55 44 53 1 18 3) ;;
+    "Plan 9")       lgi=(15 51 40 53 36 35) ;;
+    "Minix")        lgi=(12 48 53 48 63) ;;
+    "Solaris")      lgi=(18 54 51 40 57 48 58) ;;
+    "macOS Darwin") lgi=(52 40 42 14 18 36 3 40 57 62 48 53) ;;
+    "Unix")         lgi=(20 53 48 63) ;;
+    "JPEG")         lgi=(9 15 4 6) ;;
+    "PNG")          lgi=(15 13 6) ;;
+    "OCTET-STREAM") lgi=(14 2 19 4 19 38 18 19 17 4 0 12) ;;
+    "TEXT/PLAIN")   lgi=(19 4 23 19 37 15 11 0 8 13) ;;
+    *)               lgi=(0 0 0 0 0 0 0 0 0 0 0 0) ;;
+  esac
+}
+
 # render treasure $1's name into a 64×64 RGBA payload (LABEL_W) and set
 # gl_payload + the text's pixel size (tl_wpx/tl_hpx — the on-screen
-# label aspect mirrors the text block, so the glyphs never stretch)
+# label aspect mirrors the text block, so the glyphs never stretch). The
+# pixel renderer is INLINE (was the shared render_label_pixels): the
+# transpiler folds a shared function's gl_* geometry reads to the STORE
+# (empty — the caller's writes are native locals), so every glyph mask
+# read came back "" and the labels drew blank; a per-function loop keeps
+# the geometry and the mask reads as consistent native locals.
 gen_label_tex() { gl_t=$1
   gl_name=${TREASURES[$gl_t]}
   gl_len=${TRLEN[$gl_t]}
@@ -1665,24 +1721,15 @@ gen_label_tex() { gl_t=$1
   gl_ty0=$(( (LABEL_W - gl_th) / 2 ))
   gl_tw2=$(( gl_len * 4 * gl_gs ))
   gl_th2=$(( 5 * gl_gs ))
-  gl_i=0
-  while [ "$gl_i" -lt "$gl_len" ]; do
-    gl_ch=${gl_name:$gl_i:1}
-    glyph_index $gl_ch
-    # store the glyph's BITMASK (build_glyph_masks built GMASK from
-    # GFONT) — the per-pixel test shifts the mask, not the index
-    lgi[$gl_i]=${GMASK[$gi]}
-    gl_i=$((gl_i + 1))
-  done
+  label_glyphs $gl_name
+  # the payload handoff stays INSIDE the generator: load_labels reads
+  # gl_payload from the STORE (empty — the write here is a native local
+  # after the function lowering), so the cache + device writes happen
+  # here where $gl_name/$gl_payload are the native values (gl_name also
+  # names the /tmp cache — a load_labels-computed name read the stale
+  # native loop var and every label cached as "GNU Hurd")
+  gl_idx=$((LABEL_TEX0 + gl_t))
   # render the 64×64 RGBA pixel payload (uses the gl_* geometry + lgi)
-  render_label_pixels
-}
-
-# render a label's pixel payload — the geometry (gl_gs/gl_tw/gl_th/
-# gl_tx0/gl_ty0/gl_tw2/gl_th2), per-char glyph masks (lgi[]) and the
-# colour scheme (gl_pcol_*/gl_tcol_*/gl_ocol_*) must be set first.
-# Shared by the treasure labels and the MIME name banners.
-render_label_pixels() {
   gl_payload="$LABEL_W"
   gl_y=0
   while [ "$gl_y" -lt "$LABEL_W" ]; do
@@ -1728,11 +1775,15 @@ render_label_pixels() {
     done
     gl_y=$((gl_y + 1))
   done
+  echo "$gl_payload" > /tmp/mimecroft-label-$gl_name-64-$LABEL_VER
+  echo "$gl_payload" > /dev/webgl/texture/$gl_idx
 }
 
 # ─── MIME name banners (drawn above the mime cubes) ─────────────────
 # the 2D "player name" labels: one 64×64 RGBA texture per MIME type,
 # same renderer as the treasure labels but with a red danger plate.
+# The pixel loop is INLINE (see gen_label_tex — a shared renderer's
+# gl_* geometry reads fold to the empty store and the letters blank).
 gen_mime_label_tex() { gm_t=$1
   gl_name=${MIME_NAMES[$gm_t]}
   gl_len=${MIME_NAMELEN[$gm_t]}
@@ -1746,14 +1797,57 @@ gen_mime_label_tex() { gm_t=$1
   gl_ty0=$(( (LABEL_W - gl_th) / 2 ))
   gl_tw2=$(( gl_len * 4 * gl_gs ))
   gl_th2=$(( 5 * gl_gs ))
-  gl_i=0
-  while [ "$gl_i" -lt "$gl_len" ]; do
-    gl_ch=${gl_name:$gl_i:1}
-    glyph_index $gl_ch
-    lgi[$gl_i]=${GMASK[$gi]}
-    gl_i=$((gl_i + 1))
+  label_glyphs $gl_name
+  # the payload handoff stays INSIDE the generator (see gen_label_tex)
+  gl_idx=$((MIME_LABEL_TEX0 + gm_t - 1))
+  # render the 64×64 RGBA pixel payload (uses the gl_* geometry + lgi)
+  gl_payload="$LABEL_W"
+  gl_y=0
+  while [ "$gl_y" -lt "$LABEL_W" ]; do
+    gl_x=0
+    while [ "$gl_x" -lt "$LABEL_W" ]; do
+      # the semi-transparent nameplate panel behind the text
+      gl_r=14; gl_g=12; gl_b=18; gl_a=120
+      if [ "$gl_x" -ge $((gl_tx0 - 2)) ] && [ "$gl_x" -le $((gl_tx0 + gl_tw + 1)) ] && [ "$gl_y" -ge $((gl_ty0 - 2)) ] && [ "$gl_y" -le $((gl_ty0 + gl_th + 1)) ]; then
+        gl_r=10; gl_g=9; gl_b=14; gl_a=160
+      fi
+      # glyph stroke + 1px outline — only inside the text block
+      gl_ot=0
+      gl_cx=$(( gl_x - gl_tx0 ))
+      gl_cy=$(( gl_y - gl_ty0 ))
+      if [ "$gl_cx" -ge 0 ] && [ "$gl_cx" -lt "$gl_tw2" ] && [ "$gl_cy" -ge 0 ] && [ "$gl_cy" -lt "$gl_th2" ]; then
+        gl_ci=$(( gl_cx / (4 * gl_gs) ))
+        gl_col=$(( (gl_cx - gl_ci * 4 * gl_gs) / gl_gs ))
+        gl_row=$(( gl_cy / gl_gs ))
+        gl_gi2=${lgi[$gl_ci]}
+        gl_bit=$(( (gl_gi2 >> (gl_row * 3 + gl_col)) & 1 ))
+        if [ "$gl_bit" -eq 1 ]; then gl_ot=1; fi
+      fi
+      if [ "$gl_ot" -eq 0 ]; then
+        gl_n=0
+        while [ "$gl_n" -lt 8 ] && [ "$gl_ot" -eq 0 ]; do
+          gl_ox=$(( gl_cx + (gl_n % 3) - 1 ))
+          gl_oy=$(( gl_cy + (gl_n / 3) - 1 ))
+          if [ "$gl_ox" -ge 0 ] && [ "$gl_ox" -lt "$gl_tw2" ] && [ "$gl_oy" -ge 0 ] && [ "$gl_oy" -lt "$gl_th2" ]; then
+            gl_ci2=$(( gl_ox / (4 * gl_gs) ))
+            gl_col2=$(( (gl_ox - gl_ci2 * 4 * gl_gs) / gl_gs ))
+            gl_row2=$(( gl_oy / gl_gs ))
+            gl_gi3=${lgi[$gl_ci2]}
+            gl_bit2=$(( (gl_gi3 >> (gl_row2 * 3 + gl_col2)) & 1 ))
+            if [ "$gl_bit2" -eq 1 ]; then gl_ot=2; fi
+          fi
+          gl_n=$((gl_n + 1))
+        done
+      fi
+      if [ "$gl_ot" -eq 1 ]; then gl_r=248; gl_g=244; gl_b=214; gl_a=255; fi
+      if [ "$gl_ot" -eq 2 ]; then gl_r=8; gl_g=6; gl_b=12; gl_a=255; fi
+      gl_payload="$gl_payload $gl_r $gl_g $gl_b $gl_a"
+      gl_x=$((gl_x + 1))
+    done
+    gl_y=$((gl_y + 1))
   done
-  render_label_pixels
+  echo "$gl_payload" > /tmp/mimecroft-mlabel-$gl_name-64-$LABEL_VER
+  echo "$gl_payload" > /dev/webgl/texture/$gl_idx
 }
 
 # generate + upload the four MIME banner textures (cached like labels)
@@ -1761,15 +1855,8 @@ load_mime_labels() {
   ml_t=1
   while [ "$ml_t" -le 4 ]; do
     sleep 0.01
-    ml_name=${MIME_NAMES[$ml_t]}
     ml_idx=$((MIME_LABEL_TEX0 + ml_t - 1))
-    if [ -f /tmp/mimecroft-mlabel-$ml_name-64-$LABEL_VER ]; then
-      cat /tmp/mimecroft-mlabel-$ml_name-64-$LABEL_VER > /dev/webgl/texture/$ml_idx
-    else
-      gen_mime_label_tex $ml_t
-      echo "$gl_payload" > /tmp/mimecroft-mlabel-$ml_name-64-$LABEL_VER
-      echo "$gl_payload" > /dev/webgl/texture/$ml_idx
-    fi
+    gen_mime_label_tex $ml_t
     echo "    ${MIME_NAMES[$ml_t]} banner…"
     ml_t=$((ml_t + 1))
   done
@@ -1783,15 +1870,7 @@ load_labels() {
   ll_t=0
   while [ "$ll_t" -lt "$TREASURE_TOTAL" ]; do
     sleep 0.01
-    ll_name=${TREASURES[$ll_t]}
-    ll_idx=$((LABEL_TEX0 + ll_t))
-    if [ -f /tmp/mimecroft-label-$ll_name-64-$LABEL_VER ]; then
-      cat /tmp/mimecroft-label-$ll_name-64-$LABEL_VER > /dev/webgl/texture/$ll_idx
-    else
-      gen_label_tex $ll_t
-      echo "$gl_payload" > /tmp/mimecroft-label-$ll_name-64-$LABEL_VER
-      echo "$gl_payload" > /dev/webgl/texture/$ll_idx
-    fi
+    gen_label_tex $ll_t
     echo "    ${TREASURES[$ll_t]}…"
     ll_t=$((ll_t + 1))
   done
@@ -1858,9 +1937,8 @@ try_draw() { td_a=$1; td_b=$2; td_c=$3
   # abs inlined ×2 (radius: the whole 16×16 map fits VIEW_R)
   if [ "$td_ddx" -lt 0 ]; then td_adx=$((0 - td_ddx)); else td_adx=$td_ddx; fi
   if [ "$td_ddz" -lt 0 ]; then td_adz=$((0 - td_ddz)); else td_adz=$td_ddz; fi
-  td_vr=$((VIEW_R * 1000))
-  if [ "$td_adx" -gt "$td_vr" ]; then return 1; fi
-  if [ "$td_adz" -gt "$td_vr" ]; then return 1; fi
+  if [ "$td_adx" -gt "$RD_VR" ]; then return 1; fi
+  if [ "$td_adz" -gt "$RD_VR" ]; then return 1; fi
   # ── continuous frustum culling ── the view rotates with the
   # interpolated dpyw_ms (the shader's uCamYaw), so the culling must
   # follow the ACTUAL camera angle: the discrete dyaw axis flips at the
@@ -1869,9 +1947,11 @@ try_draw() { td_a=$1; td_b=$2; td_c=$3
   # vertex shader, with the per-degree SCOS/SSIN tables (‰):
   #   rx = ddx·cs + ddz·sn   (screen-right, milli)
   #   w  = ddx·sn − ddz·cs   (depth; w > 0 = in front)
-  td_deg=$((dpyw_ms / 1000))
-  td_cs=${SCOS[$td_deg]}
-  td_sn=${SSIN[$td_deg]}
+  # the per-cell SCOS/SSIN reads are hoisted to the frame's shared
+  # rd_cs/rd_sn (set once in compute_display — the camera is common to
+  # every cell, so 768 cells × 2 table reads became 2 scalar reads)
+  td_cs=$rd_cs
+  td_sn=$rd_sn
   td_w=$(( (td_ddx * td_sn - td_ddz * td_cs) / 1000 ))
   # the in-front test uses the block's NEAR face, not its centre: a unit
   # cube spans ±500 milli in world x/z, and the camera-space depth of
@@ -1912,9 +1992,9 @@ try_draw() { td_a=$1; td_b=$2; td_c=$3
   elif [ "$gv" -eq 6 ]; then tx=4
   elif [ "$gv" -eq 7 ]; then tx=15
   else tx=0; fi
-  # draw_block inlined (get_bhp + the batched append)
-  td_bgi=$((td_b * CELLS + td_c * MAP_W + td_a))
-  bh=${bhp[$td_bgi]}
+  # draw_block inlined (get_bhp + the batched append) — same cell index
+  # as the map read above (td_gi)
+  bh=${bhp[$td_gi]}
   blk_p="${blk_p}$td_a $td_b $td_c 1 1 1 $cr $cg $cb $tx $bh
 "
   return 0
@@ -1936,13 +2016,13 @@ render_frame() {
   fmt_pos $dpyw_ms
   yws=$fv
   # the eye height: standing 1.6 (the shader adds 0.5 to uCamPos.y, so
-  # cy_ms 1100 → the eye at 1.6 — ABOVE the y=1 block tops (1.5), so the
+  # cys 1.100 → the eye at 1.6 — ABOVE the y=1 block tops (1.5), so the
   # lower wall layer's top faces are visible and the corridor walls read
   # as stacked 3D blocks instead of flat planes); crouched 0.75 → the eye
-  # ducks under the 1.5 ceiling of a mined 1-tall opening
-  if [ "$crouched" -eq 1 ]; then cy_ms=250; else cy_ms=1100; fi
-  fmt_pos $cy_ms
-  cys=$fv
+  # ducks under the 1.5 ceiling of a mined 1-tall opening. The two
+  # heights are constants (250/1100 milli) — fmt_pos is hoisted to the
+  # literal strings
+  if [ "$crouched" -eq 1 ]; then cys=0.250; else cys=1.100; fi
   echo "$cxs $cys $czs" > /dev/webgl/uniform/3f/uCamPos
   echo "$yws" > /dev/webgl/uniform/1f/uCamYaw
   # floor + ceiling planes — the background. They span the whole maze
@@ -1970,13 +2050,15 @@ render_frame() {
   # → spans [0,20] / [-20,0]) — the w=0 corners at the camera plane are
   # off-screen below, so there is no seam between the quadrants.
   bg_p=""
+  qp0=$(( dpx * 1000 ))
+  qpz0=$(( dpz * 1000 ))
   for qd in 1 2 3 4; do
     if [ "$qd" -eq 1 ]; then qdx=10000; qdz=10000; fi
     if [ "$qd" -eq 2 ]; then qdx=10000; qdz=-10000; fi
     if [ "$qd" -eq 3 ]; then qdx=-10000; qdz=10000; fi
     if [ "$qd" -eq 4 ]; then qdx=-10000; qdz=-10000; fi
-    qpx=$(( dpx * 1000 + qdx ))
-    qpz=$(( dpz * 1000 + qdz ))
+    qpx=$(( qp0 + qdx ))
+    qpz=$(( qpz0 + qdz ))
     fmt_pos $qpx
     qfx=$fv
     fmt_pos $qpz
@@ -3627,11 +3709,16 @@ main() {
   echo "  compiling the fragment shader…"
   sleep 0.02
     setup_webgl
-  # report which shader source won — the bash-authored programs compiled
-  # by sh2glsl, or the hand-written GLSL fallback (the generator was
-  # unavailable, the 64px texture setting, or ANGLE rejected the
-  # generated shader's compile)
-  echo "  shaders: bash-authored (sh2glsl)" 
+  # the bash-authored programs compiled by sh2glsl are the only shader
+  # source — VERIFY the device actually linked the program: a failed
+  # sh2glsl run leaves it with no shaders, and every frame's block draw
+  # then rejects with a cryptic "blocks: undefined" (the link error has
+  # no .code). Report it once here instead of per frame.
+  swgl_p=$(cat /dev/webgl/program)
+  case $swgl_p in
+    *"program: linked"*) echo "  shaders: bash-authored (sh2glsl)" ;;
+    *) echo "  !!! shader link FAILED — the 3D view will not render (see /dev/webgl/log)" ;;
+  esac
   fi
 
     if [ "$headless" -eq 0 ]; then
