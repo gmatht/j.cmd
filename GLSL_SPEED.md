@@ -17,6 +17,7 @@ Three modes, each rendering the game's real per-pixel / per-vertex workload twic
 | fragment: mediump vs highp float | mediump float | highp float | the SAME float pipeline — isolates the precision qualifier (mediump int is NOT involved in this mode) |
 | fragment: mediump vs highp int | mediump int (the game's 0..127 scale) | highp int | the SAME int pipeline — isolates the int precision qualifier (the floats stay mediump) |
 | mimecroft: actual vs full-int | the game's ACTUAL compiled fragment (float tint + int effects, transcribed from www/examples/mimecroft-frag.glsl) | the full-int version (the tint moved to mediump int) | the use-case-specific question: how much would the game gain if the generator emitted the int colour math |
+| fragment: medp int /128 vs /127 | the game's int pipeline at /128 (power-of-two divisor — shift) | the same at /127 (exact normalisation — division) | isolates the divisor cost; everything else identical |
 
 Timing: N frames × S samples per path, order alternated to cancel clock drift; reports
 avg/min ms/frame, FPS, and the ratio.
@@ -54,6 +55,7 @@ Measured with the harness (24000 frames/sample × 5 samples):
 | fragment mediump vs highp float | mediump 0.053 ms/frame (18740 FPS) | highp 0.064 ms/frame (15630 FPS) | **highp 1.20× slower** |
 | fragment mediump vs highp int | mediump 0.123 ms/frame (8158 FPS) | highp 0.149 ms/frame (6725 FPS) | **highp 1.21× slower** |
 | mimecroft: actual vs full-int | actual (float tint + int effects — the sh2glsl output) | full int (tint moved to mediump int) | run the page for the current numbers — this is the use-case-specific question |
+| fragment: medp int /128 vs /127 | /128 (the game's power-of-two divisor) | /127 (the exact 0..127 normalisation) | run the page for the current numbers — the power-of-two divisor should be a shift |
 
 (Vertex mode on the same machine: per-vertex int vs float — run the page for the
 current numbers.)

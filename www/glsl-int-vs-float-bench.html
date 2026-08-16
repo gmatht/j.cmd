@@ -26,7 +26,7 @@
 </style>
 </head>
 <body>
-<h1>GLSL ES 1.00 — int vs float math benchmark (fragment &amp; vertex) <span class="muted" style="font-size:12px; color:#fa5">v5</span></h1>
+<h1>GLSL ES 1.00 — int vs float math benchmark (fragment &amp; vertex) <span class="muted" style="font-size:12px; color:#fa5">v6</span></h1>
 <div class="muted">The mimecroft game's <b>fragment</b> shader does its colour math in
 <b>mediump int</b> (0..127 scale — every intermediate fits mediump int's ±2<sup>15</sup>);
 its <b>vertex</b> shader is highp float (mandatory). This page times the arithmetic in
@@ -45,7 +45,11 @@ its <b>vertex</b> shader is highp float (mandatory). This page times the arithme
 (5) <b>mimecroft: actual vs full-int</b> — the use-case-specific comparison: the game's
     ACTUAL compiled fragment (float colour tint + int effects, exactly as sh2glsl emits)
     vs the FULL-INT version (the tint moved to mediump int) — directly measuring how
-    much the game would gain if the generator emitted the int colour math.
+    much the game would gain if the generator emitted the int colour math;
+(6) <b>fragment: medp int /128 vs /127</b> — the SAME mediump-int pipeline with the
+    divisor changed: /128 (the game's power-of-two divisor — a cheap shift on most
+    hardware) vs /127 (the exact 0..127 normalisation — a real division) — isolates
+    the divisor cost, everything else identical.
 The GL/GLSL/ANGLE line below the results identifies exactly which GLES→backend
 translator your browser is using, so the numbers are read in that context.</div>
 
@@ -56,6 +60,7 @@ translator your browser is using, so the numbers are read in that context.</div>
   <button id="modePrec">fragment: mediump vs highp float</button>
   <button id="modePrecInt">fragment: mediump vs highp int</button>
   <button id="modeMime">mimecroft: actual vs full-int</button>
+  <button id="modeDiv">fragment: medp int /128 vs /127</button>
   <label>frames <input type="number" id="frames" value="2400" min="10" max="20000"></label>
   <label>samples <input type="number" id="samples" value="5" min="1" max="20"></label>
   <label id="gridLbl">texel grid <input type="number" id="grid" value="64" min="8" max="256"></label>
@@ -128,7 +133,7 @@ translator your browser is using, so the numbers are read in that context.</div>
 
 <script>
 "use strict";
-const BENCH_VERSION = "5";   // bump on every page change — the header shows it so a stale browser copy is obvious
+const BENCH_VERSION = "6";   // bump on every page change — the header shows it so a stale browser copy is obvious
 const $ = (id) => document.getElementById(id);
 const intC = $("intC"), fltC = $("fltC");
 let mode = "frag";
@@ -236,6 +241,57 @@ void main() {
 `;
 
 // ────────────────────────────────────────────────────────────────
+// ─── divisor mode: the SAME mediump-int pipeline at /128 (the game's
+// power-of-two divisor — cheap shift on most hardware) vs /127 (the
+// exact 0..127 normalisation — a real division). Isolates the divisor
+// cost; everything else is identical to the game's int pipeline.
+const FS_INT_127 = `
+precision mediump float;
+precision mediump int;
+varying highp vec2 vUv;
+varying highp vec4 vColor;
+uniform sampler2D uTex;
+uniform sampler2D uCrack;
+uniform int uDamage;
+void main() {
+  highp vec2 uv = fract(vUv);
+  int fx = int(gl_FragCoord.x);
+  int fy = int(gl_FragCoord.y);
+  vec4 t = texture2D(uTex, uv);
+  vec4 cr = texture2D(uCrack, uv);
+  int tr = int(t.r * 255.0);
+  int tg = int(t.g * 255.0);
+  int tb = int(t.b * 255.0);
+  int crr = int(cr.r * 127.0);
+  int crg = int(cr.g * 127.0);
+  int crb = int(cr.b * 127.0);
+  int cra = int(cr.a * 127.0);
+  int r = int(vColor.r * 127.0);
+  int g = int(vColor.g * 127.0);
+  int b = int(vColor.b * 127.0);
+  r = r * tr / 127;
+  g = g * tg / 127;
+  b = b * tb / 127;
+  int scan = int(mod(float(fy), 6.0));
+  if (scan == 0) { r = r * 90 / 100; g = g * 90 / 100; b = b * 90 / 100; }
+  int hash = int(mod(float(fx * 7 + fy * 13), 97.0));
+  if (hash == 0) { r = 127; g = g * 50 / 100; b = b * 50 / 100; }
+  int vx = fx - 256; int vy = fy - 192;
+  if (vx < 0) vx = 0 - vx;
+  if (vy < 0) vy = 0 - vy;
+  int edge = vx + vy;
+  if (edge > 225) { int d = edge - 225; if (d > 15) d = 15; int dim = (255 - d * 2) * 100 / 255; r = r * dim / 100; g = g * dim / 100; b = b * dim / 100; }
+  if (uDamage > 0) {
+    int mix = uDamage * cra;
+    if (mix > 127) mix = 127;
+    r = r - (r - crr) * mix / 127;
+    g = g - (g - crg) * mix / 127;
+    b = b - (b - crb) * mix / 127;
+  }
+  gl_FragColor = vec4(float(r) / 127.0, float(g) / 127.0, float(b) / 127.0, 1.0);
+}
+`;
+
 // ─── mimecroft mode: the game's ACTUAL compiled fragment (float tint +
 // int effects — the sh2glsl output) vs the FULL-INT version (the tint
 // moved to mediump int — the potential optimisation). This directly
@@ -606,9 +662,11 @@ function setMode(m) {
   $("modePrec").className = m === "prec" ? "active" : "";
   $("modePrecInt").className = m === "precInt" ? "active" : "";
   $("modeMime").className = m === "mime" ? "active" : "";
+  $("modeDiv").className = m === "div" ? "active" : "";
   $("gridLbl").style.display = m === "frag" ? "" : "none";
   $("meshLbl").style.display = m === "vert" ? "" : "none";
-  if (m === "mime") { $("lbl-a").textContent = "actual (float tint)"; $("lbl-b").textContent = "full int"; $("lbl-ratio").textContent = "int / actual"; }
+  if (m === "div") { $("lbl-a").textContent = "/128 (game)"; $("lbl-b").textContent = "/127"; $("lbl-ratio").textContent = "/127 ÷ /128"; }
+  else if (m === "mime") { $("lbl-a").textContent = "actual (float tint)"; $("lbl-b").textContent = "full int"; $("lbl-ratio").textContent = "int / actual"; }
   else if (m === "prec" || m === "precInt") { $("lbl-a").textContent = "mediump"; $("lbl-b").textContent = "highp"; $("lbl-ratio").textContent = "highp / mediump"; }
   else { $("lbl-a").textContent = "int"; $("lbl-b").textContent = "float"; $("lbl-ratio").textContent = "float / int"; }
 }
@@ -617,6 +675,7 @@ $("modeVert").onclick = () => setMode("vert");
 $("modePrec").onclick = () => setMode("prec");
 $("modePrecInt").onclick = () => setMode("precInt");
 $("modeMime").onclick = () => setMode("mime");
+$("modeDiv").onclick = () => setMode("div");
 
 $("run").onclick = async () => {
   const frames = Math.max(10, Number($("frames").value) || 2400);
@@ -649,6 +708,12 @@ $("run").onclick = async () => {
     crack = makeTexture(grid, 777);
     pInt = program(VS_QUAD, FS_MIME_ACTUAL);  // the game's ACTUAL compiled fragment
     pFlt = program(VS_QUAD, FS_MIME_INT);     // the full-int version (the potential win)
+  } else if (mode === "div") {
+    const grid = Math.max(8, Number($("grid").value) || 64);
+    tex = makeTexture(grid, 12345);
+    crack = makeTexture(grid, 777);
+    pInt = program(VS_QUAD, FS_INT);          // /128 — the game's power-of-two divisor
+    pFlt = program(VS_QUAD, FS_INT_127);      // /127 — the exact normalisation
   } else {
     const n = Math.max(8, Number($("mesh").value) || 256);
     meshBuf = makeMesh(n);
@@ -659,7 +724,7 @@ $("run").onclick = async () => {
 
   $("status").textContent = `benchmarking ${frames} frames × ${samples} samples (${mode})…`;
   const iSamples = [], fSamples = [];
-  const draw = (mode === "frag" || mode === "prec" || mode === "precInt" || mode === "mime") ? drawFrag : drawVert;
+  const draw = (mode === "frag" || mode === "prec" || mode === "precInt" || mode === "mime" || mode === "div") ? drawFrag : drawVert;
   for (let s = 0; s < samples; s++) {
     iSamples.push(draw(pInt, frames));
     fSamples.push(draw(pFlt, frames));
@@ -682,7 +747,11 @@ $("run").onclick = async () => {
   $("ratio").className = "best";
   const stage = mode === "frag" ? "fragment (per-pixel)" : mode === "vert" ? "vertex (per-vertex)" : "fragment precision";
   const verdict =
-    mode === "mime"
+    mode === "div"
+      ? (ratio > 1.05 ? `/127 is ${ratio.toFixed(2)}× SLOWER than /128 on this translator — the power-of-two /128 (a shift) is the cheaper divisor, so the game's choice is the right one.`
+         : ratio < 0.95 ? `/127 is ${(1 / ratio).toFixed(2)}× FASTER than /128 on this translator — the driver folds the /127 as well as the shift.`
+         : `/127 and /128 are within ±5% on this translator — the divisor is free here (the driver constant-folds both).`)
+      : (mode === "mime"
       ? (ratio < 0.95 ? `the full-INT version is ${(1 / ratio).toFixed(2)}× FASTER than the game's actual compiled fragment (the float tint + int effects) on this translator — moving the colour tint to mediump int would save ${(1 - ratio).toFixed(0) * 1}% of the per-pixel time.`
          : ratio > 1.05 ? `the full-INT version is ${ratio.toFixed(2)}× SLOWER than the game's actual compiled fragment on this translator — the current float tint is already the better choice here.`
          : `the full-INT version and the game's actual compiled fragment are within ±5% on this translator — the int tint would not change the cost here.`)
@@ -692,7 +761,7 @@ $("run").onclick = async () => {
          : `mediump and highp ${mode === "precInt" ? "INT" : "FLOAT"} are within ±5% on this translator — the precision qualifier costs nothing here (ANGLE maps both to the full native form on desktop).`)
       : (ratio > 1.05 ? `In the ${stage} stage, the FLOAT pipeline is ${ratio.toFixed(2)}× SLOWER than the INT pipeline on this translator (float÷int = ${ratio.toFixed(2)}) — the int pipeline (the game's choice) is the faster path here.`
          : ratio < 0.95 ? `In the ${stage} stage, the FLOAT pipeline is ${(1 / ratio).toFixed(2)}× FASTER than the INT pipeline on this translator — the int casts/emulated modulo cost more than they save here.`
-         : `In the ${stage} stage, the FLOAT and INT pipelines are within ±5% on this translator — the arithmetic choice is free; the int path's benefit is exactness (no mediump-float mantissa quantisation), not speed.`));
+         : `In the ${stage} stage, the FLOAT and INT pipelines are within ±5% on this translator — the arithmetic choice is free; the int path's benefit is exactness (no mediump-float mantissa quantisation), not speed.`)));
   $("verdict").textContent = verdict;
   $("status").textContent = "done";
 
