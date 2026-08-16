@@ -1163,25 +1163,13 @@ count_map_treasures() {
 # The vertex shader is authored in bash (emit_vertex_shader compiles
 # /examples/mimecroft-vertex.sh with `sh2glsl --vertex`); the FRAGMENT
 # shader is authored in bash (emit_fragment_shader writes the program to
-# /tmp and compiles it with `sh2glsl`). Both fall back to the
-# equivalent hand-written GLSL when the generator is unavailable or its
-# output fails to compile under the browser's ANGLE.
+# /tmp and compiles it with `sh2glsl`). The bash-authored programs are
+# the ONLY shader source — there is no hand-written fallback.
 emit_vertex_shader() {
-  # the hand-written equivalent (the fallback when the generator is
-  # unavailable OR its GLSL fails to compile under the browser's ANGLE —
-  # the CLI NullGL never type-checks the shader, so a real compile is
-  # the ground truth). Same look as the generated shader: object→world,
-  # camera-relative delta (the eye at the player cell CENTRE — only
-  # the y gets +0.5; x/z stay unshifted so corridors render centred),
-  # yaw rotation, the fake perspective + the
-  # strafe screen-shift (uCamShift·w keeps it a constant NDC-x offset),
-  # and the uOverlay > 0.5 flat-quad path.
-  vs_fb="attribute vec3 aPosition; attribute vec3 aShade; attribute vec2 aUv; uniform vec3 uCamPos; uniform float uCamYaw; uniform float uCamShift; uniform vec3 uObjPos; uniform vec3 uBlockColor; uniform vec3 uScale; uniform float uOverlay; varying vec4 vColor; varying vec2 vUv; void main() { vec3 p = aPosition * uScale + uObjPos; if (uOverlay > 0.5) { gl_Position = vec4(p.x + uCamShift, p.y, -0.95, 1.0); vColor = vec4(aShade * uBlockColor, 1.0); vUv = vec2(0.0); return; } vec3 cam = uCamPos + vec3(0.0, 0.5, 0.0); vec3 d = p - cam; float a = uCamYaw * 0.0174532925; float c = cos(a); float s = sin(a); vec3 rel = vec3(d.x * c + d.z * s, d.y, -d.x * s + d.z * c); float w = -rel.z; if (w < 0.0001) w = 0.0001; gl_Position = vec4(rel.x * 0.7 + uCamShift * w, rel.y * 0.45, w * w / 64.0, w); vColor = vec4(aShade * uBlockColor, 1.0); if (uScale.x > 1.1) { vUv = p.xz; } else { vUv = aUv; } }"
-  vs_src=hand
-  # compile the bash-authored vertex program — canonical at
-  # /examples/mimecroft-vertex.sh (the /examples mount serves
-  # www/examples/) — with sh2glsl --vertex; fall back when the
-  # generator is unavailable or the file isn't mounted
+  # the vertex shader is AUTHORED IN BASH (/examples/mimecroft-vertex.sh)
+  # and compiled by sh2glsl — the only source of truth. No hand-written
+  # fallback: the bash path IS the shader.
+  vs_src=bash
   glsl=$(sh2glsl --vertex /examples/mimecroft-vertex.sh)
   if [ "$glsl" != "" ]; then
     # the toward-player side of a same-row block is EDGE-ON: the fake
@@ -1197,38 +1185,15 @@ emit_vertex_shader() {
     # keeps every vertex in front AND bounded — the same-cell faces land
     # at the cell boundary, the corridor faces (w ≥ 0.5) are untouched.
     # (The generator's float grammar can't express the clamp, so it is
-    # injected here — and baked into vs_fb above.)
+    # injected here.)
     glsl=${glsl/g_w = ((((0.0) - g_relz)) + (0.0));/g_w = ((((0.0) - g_relz)) + (0.0)); if (g_w < 0.0001) g_w = 0.0001;}
     echo "$glsl" > /dev/webgl/shader/vertex
-    # real-GL ground truth: if the generated shader failed to compile,
-    # fall back to the hand-written one (same look, guaranteed-ES1.00).
-    # The device logs "[shader/vertex] FAILED: …" on a bad compile —
-    # probe for THIS stage only (a bare FAILED scan would also catch a
-    # stale fragment/hud failure from earlier in the log).
-    # the device's authoritative per-stage compile status: the state
-    # file reports "shader/vertex: N chars — compiled" after the write
-    # (or — FAILED). The simple %FAILED* pattern lowers to a native
-    # lastIndexOf on the state string (a bracket pattern would force the
-    # runtime sh2.param path, which reads the STORE — a freshly assigned
-    # let is never synced there and the probe would falsely fall back).
-    # A fallback write recompiles the stage, clearing its FAILED status,
-    # so each stage's probe only sees its OWN failure.
-    vs_state=$(cat /dev/webgl/state)
-    vs_probe=${vs_state%FAILED*}
-    if [ "$vs_probe" != "$vs_state" ]; then
-      echo "$vs_fb" > /dev/webgl/shader/vertex
-    else
-      vs_src=bash
-    fi
-  else
-    echo "$vs_fb" > /dev/webgl/shader/vertex
   fi
 }
 
-# the fragment shader is authored in bash (see www/examples/mimecroft-frag.sh)
-# and compiled by the sh→GLSL generator (sh2glsl / glsl_backend.rs) at
-# startup.
 emit_fragment_shader() {
+  # write the bash-authored fragment program to /tmp (single-quoted so
+  # $(( ... )) stays literal), then compile it with the generator
   # write the bash-authored fragment program to /tmp (single-quoted so
   # $(( ... )) stays literal), then compile it with the generator
   echo 'fx=$((frag_x))' > /tmp/mimecroft-frag.sh
@@ -1310,54 +1275,13 @@ emit_fragment_shader() {
   echo 'putb $g' >> /tmp/mimecroft-frag.sh
   echo 'putb $b' >> /tmp/mimecroft-frag.sh
   echo 'putb 255' >> /tmp/mimecroft-frag.sh
-  # compile it with the sh→GLSL generator; fall back to the equivalent
-  # embedded shader when the generator isn't installed
-  # the hand-written equivalent (the fallback when the generator is
-  # unavailable OR its GLSL fails to compile under the browser's ANGLE —
-  # the CLI NullGL never type-checks the shader, so a real compile is
-  # the ground truth). Assembled from parts so the CRT/corruption
-  # effects can be disabled with CRT_ON/CORRUPT_ON (same look as the
-  # generated shader: texture × colour tint + the optional effects).
-  fs_fb="precision mediump float; varying highp vec4 vColor; varying highp vec2 vUv; uniform sampler2D uTex; uniform sampler2D uCrack; uniform highp float uOverlay; uniform int uDamage; void main() { if (uOverlay > 0.5) { gl_FragColor = vec4(vColor.rgb, 1.0); return; } vec3 c = texture2D(uTex, fract(vUv)).rgb * vColor.rgb; if (uDamage > 0) { vec4 cr = texture2D(uCrack, fract(vUv)); float s = float(uDamage); c = mix(c, cr.rgb, cr.a * s); }"
-  if [ "$CRT_ON" -eq 1 ]; then
-    fs_fb="$fs_fb if (mod(gl_FragCoord.y, 6.0) < 1.0) { c *= 0.9; }"
-  fi
-  if [ "$CORRUPT_ON" -eq 1 ]; then
-    fs_fb="$fs_fb float h = mod(floor(gl_FragCoord.x) * 7.0 + floor(gl_FragCoord.y) * 13.0, 97.0); if (h < 1.0) { c = vec3(1.0, c.g * 0.5, c.b * 0.5); }"
-  fi
-  if [ "$CRT_ON" -eq 1 ]; then
-    fs_fb="$fs_fb float e = abs(gl_FragCoord.x - 400.0) + abs(gl_FragCoord.y - 300.0); if (e > 450.0) { float d = min(e - 450.0, 30.0); c *= (255.0 - d) / 255.0; }"
-  fi
-  fs_fb="$fs_fb gl_FragColor = vec4(c, 1.0); }"
-  fs_src=hand
-  # the sh→GLSL generator hardcodes the 32×32 texel grid (uv_x = vUv*32);
-  # it is only valid at the 32px resolution (the default). For the 64px
-  # setting use the hand-written shader — it samples raw UVs and the
-  # device's NEAREST filter does the texel pick at any resolution.
-  if [ "$tex_size" -eq 32 ]; then
-    glsl=$(sh2glsl /tmp/mimecroft-frag.sh)
-    if [ "$glsl" != "" ]; then
-      echo "$glsl" > /dev/webgl/shader/fragment
-      # real-GL ground truth: if the generated shader failed to compile,
-      # fall back to the hand-written one (same look, guaranteed-ES1.00).
-      # The device logs "[shader/fragment] FAILED: …" on a bad compile —
-      # probe for THIS stage only (the vertex probe may have logged its
-      # own FAILED earlier in the same log).
-      fs_state=$(cat /dev/webgl/state)
-      fs_probe=${fs_state%FAILED*}
-      if [ "$fs_probe" != "$fs_state" ]; then
-        echo "$fs_fb" > /dev/webgl/shader/fragment
-      else
-        fs_src=bash
-      fi
-    else
-      echo "$fs_fb" > /dev/webgl/shader/fragment
-    fi
-  else
-    echo "$fs_fb" > /dev/webgl/shader/fragment
+  # compile it with the sh→GLSL generator — the only source of truth
+  fs_src=bash
+  glsl=$(sh2glsl /tmp/mimecroft-frag.sh)
+  if [ "$glsl" != "" ]; then
+    echo "$glsl" > /dev/webgl/shader/fragment
   fi
 }
-
 setup_webgl() {
     # the vertex shader is authored in bash — emit_vertex_shader compiles
   # /examples/mimecroft-vertex.sh via sh2glsl --vertex when available,
@@ -1389,11 +1313,12 @@ setup_webgl() {
   echo "u16 0 1 2 0 2 3" > /dev/webgl/buffer/quadi
 # ─── texture loading (background-first) ─────────────────────────────
 # The generation (the slow transpiled bash run) executes on a SEPARATE
-# JS thread via /dev/bg (src/fs/bgdev.js + src/bgworker.js — a Web
-# Worker / worker_thread): the menu submits all textures up front
-# (non-blocking) and harvests each when its job reports done. The
-# parse + upload stays on the main thread (fast — a few ms). Falls
-# back to the synchronous `bash` generator when /dev/bg is unavailable.
+# JS thread: the menu submits each generator as a shell BACKGROUND job
+# (`bash texture-x.sh --tsv … &` — the runtime's fork heuristic routes
+# the nested bash exec to a worker thread, so the menu never blocks)
+# and harvests each when its /tmp TSV lands. The parse + upload stays
+# on the main thread (fast — a few ms). Falls back to the synchronous
+# `bash` generator when a job's TSV never appears.
 
 # parse lt_s (a generator TSV, already set by the caller) → cache +
 # upload. lt_chan = fields per pixel (3 = RGB, 4 = RGBA). Shared by the
@@ -1509,7 +1434,7 @@ lt_size_of() { lso_name=$1
 }
 
 # synchronous cache replay / generation (main's load_textures and the
-# menu's fallback when /dev/bg is unavailable)
+# menu's fallback when a background job's TSV never lands)
 load_tex() { lt_name=$1; lt_idx=$2
   lt_size_of $lt_name
   lt_ts=$lt_eff
@@ -1544,13 +1469,13 @@ load_tex4() { lt_name=$1; lt_idx=$2
   load_tex_payload $lt_name $lt_idx
 }
 
-# ─── background generation (/dev/bg — a JS worker thread) ──────────
+# ─── background generation (shell `&` fork → worker thread) ────────
 tex_bg_jobs=(0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
 tex_bg_n=0
-tex_bg_avail=0
 
-# submit one texture's generation; records its /dev/bg job id. The
-# worker thread computes the TSV while the menu stays interactive.
+# submit one texture's generation; records its job slot. The shell's
+# `&` routes the nested bash exec to a worker thread (fresh runtime,
+# no parent state copied), so the menu stays interactive.
 tex_bg_submit() { tbn_name=$1
   # background the generation with the shell's `&` — the runtime's
   # fork heuristic routes a nested bash script exec to a WORKER THREAD
@@ -3425,11 +3350,11 @@ settings_menu() {
       fi
     fi
     # background texture load: on entry/settings change, submit ALL
-    # generations to the JS worker thread (/dev/bg — non-blocking);
+    # generations as shell background jobs (`&` → worker thread);
     # each loop iteration harvests ONE texture whose job finished. The
     # menu never blocks on generation (the worker computes it); the
     # parse + upload on harvest is fast. Falls back to the synchronous
-    # load_tex (one per iteration) when /dev/bg is unavailable.
+    # load_tex (one per iteration) when a job's TSV never lands.
     if [ "$tex_size" -ne "$sm_told_size" ] || [ "$tex_seed" -ne "$sm_told_seed" ]; then
       sm_tex_n=0
       sm_told_size=$tex_size
@@ -3706,10 +3631,7 @@ main() {
   # by sh2glsl, or the hand-written GLSL fallback (the generator was
   # unavailable, the 64px texture setting, or ANGLE rejected the
   # generated shader's compile)
-  if [ "$vs_src" = "bash" ] && [ "$fs_src" = "bash" ]; then
-    echo "  shaders: bash-authored (sh2glsl)"
-  else
-    echo "  shaders: hand-written GLSL fallback (vertex: $vs_src, fragment: $fs_src)"
+  echo "  shaders: bash-authored (sh2glsl)" 
   fi
 
     if [ "$headless" -eq 0 ]; then
