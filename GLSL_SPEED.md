@@ -54,7 +54,7 @@ Measured with the harness (24000 frames/sample × 5 samples):
 | fragment int vs float | int 0.079 ms/frame (12612 FPS) | float 0.125 ms/frame (7999 FPS) | **float 1.58× slower** |
 | fragment mediump vs highp float | mediump 0.053 ms/frame (18740 FPS) | highp 0.064 ms/frame (15630 FPS) | **highp 1.20× slower** |
 | fragment mediump vs highp int | mediump 0.123 ms/frame (8158 FPS) | highp 0.149 ms/frame (6725 FPS) | **highp 1.21× slower** |
-| mimecroft: actual vs full-int | actual (float tint + int effects — the sh2glsl output) | full int (tint moved to mediump int) | run the page for the current numbers — this is the use-case-specific question |
+| mimecroft: actual vs full-int | actual 0.102 ms/frame (9834 FPS) | full int 0.102 ms/frame (9801 FPS) | **1.003× — within ±5%** — the float tint costs nothing vs the int tint on this translator |
 | fragment: medp int /128 vs /127 | /128 0.122 ms/frame (8195 FPS) | /127 0.138 ms/frame (7246 FPS) | **/127 1.13× slower** — the power-of-two /128 (a shift) is the cheaper divisor on this translator; the game's choice is the right one |
 
 (Vertex mode on the same machine: per-vertex int vs float — run the page for the
@@ -128,6 +128,10 @@ Findings against the benchmark:
    are free next to the ALU work.
 
 **Verdict:** the game's fragment is already at the optimal precision, and its bash
-source is already int; the only measurable win on this basis (the compiled colour math
-in mediump int instead of float, ~1.6× on the tint portion) is a generator change, not
-a game change.
+source is already int. The use-case-specific measurement (mimecroft: actual vs
+full-int) shows the float tint the generator emits is **within ±5% of the int tint** on
+this translator (1.003×) — so moving the compiled colour math to mediump int would NOT
+help here. The synthetic full-int-vs-full-float 1.6× gap comes from the float *effects*
+(scanline/hash/vignette/blend in float) — the game already runs those in int — so the
+float tint alone is not a measurable cost. No game or generator change is warranted on
+this basis.
