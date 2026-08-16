@@ -122,7 +122,17 @@ Findings against the benchmark:
    generator** (emit the game's int arithmetic as GLSL mediump int, as the benchmark's
    int pipeline does), not in the game — the game's bash is already int.
 
-3. **Already done / trivial:** the double `fract(vUv)` (block + crack samples) is hoisted
+3. **The ×0.9 difficulty (why the game's effects end up in float):** integer shaders
+   cannot multiply by a fraction. The scanline dim (×0.9) is written `r * 90 / 100` in the
+   game's bash — a multiply + a divide by a non-power-of-two, which the /128-vs-/127 result
+   shows is measurably slower than a shift. GLSL ES 1.00 has NO bitwise/shift operators
+   (`>>`, `<<`, `&`, `|`, `^`, `~` are "supported in GLSL ES 3.00 only" — verified against
+   the compiler), so the "shifts instead of divides" trick is unavailable; the practical
+   int form is `r * N / 256` (multiply by a small constant + divide by a power of two,
+   strength-reducible to a shift), or leave the fractional effects in float. The generator
+   does the latter — and the actual-vs-full-int result shows that costs nothing (1.003×).
+
+4. **Already done / trivial:** the double `fract(vUv)` (block + crack samples) is hoisted
    to one `_uv` per fragment (the game's emit_fragment_shader post-process); the `r<0`
    clamps and the `int(gl_FragCoord)` copies are trivial int ops the benchmark confirms
    are free next to the ALU work.

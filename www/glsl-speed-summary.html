@@ -84,6 +84,25 @@
   </div>
 
   <div class="card">
+    <h2 style="margin-top:0">The catch: you can't write ×0.9 in integers</h2>
+    <p>Integers win the arithmetic — but they're awkward to <i>write</i>. A game effect that
+    dims a pixel by 10% is a multiplication by <code>0.9</code> — trivial in floating point,
+    impossible in integers. The game expresses it as <code>r * 90 / 100</code>: multiply by
+    90, then divide by 100. That division by a non-power-of-two is exactly the kind of op the
+    benchmark shows is slower than a power-of-two (<code>/128</code> beat <code>/127</code>
+    by 1.13×).</p>
+    <p>ES 1.00 makes this worse: it has <b>no bit-shift operators at all</b> (<code>>></code>,
+    <code>&lt;&lt;</code> and friends are WebGL 2 / GLSL ES 3.00 only), so you can't even
+    cheat with the "shifts instead of divides" trick. The practical options are <code>r * N / 256</code>
+    (multiply by a small constant, then divide by a power of two — which the hardware can
+    turn into a shift) or simply leave the fractional effects in floating point.</p>
+    <p>And that's exactly what happens in practice: the game's shader keeps the fractional
+    dimming (the scanline, the vignette) in floating point, and the benchmark's final row
+    shows that costs <b>nothing</b> (1.003×). The integer pipeline wins the arithmetic; the
+    awkward fractions are simply not worth forcing into integers.</p>
+  </div>
+
+  <div class="card">
     <h2 style="margin-top:0">Why this matters</h2>
     <ul>
       <li><b>Shaders run billions of times a second.</b> A 1.6× difference in one multiply is a
