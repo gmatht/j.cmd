@@ -784,7 +784,7 @@ export function liftLocalVars(program) {
         for (const a of n.arguments) {
           if (a && a.type === "Literal" && typeof a.value === "string") {
             const sm = String(a.value).match(/\$([A-Za-z_][A-Za-z0-9_]*)/g);
-            if (sm) for (const mm of sm) { scope.indirect.add(mm.slice(1)); stringRefs.add(mm.slice(1)); }
+            if (sm) for (const mm of sm) stringRefs.add(mm.slice(1));
           }
         }
         if (fn === "setVar" && a0) {
@@ -851,11 +851,39 @@ export function liftLocalVars(program) {
       s.params = new Set((st.params || []).filter((p) => p && p.type === "Identifier").map((p) => p.name));
       scan(st.body ? st.body.body : [], s);
       scopes.set(st.id.name, s);
+    } else if (st && st.type === "ExpressionStatement" && st.expression &&
+               st.expression.type === "CallExpression" && st.expression.callee && st.expression.callee.type === "MemberExpression" &&
+               st.expression.callee.object && st.expression.callee.object.type === "MemberExpression" &&
+               st.expression.callee.object.object && st.expression.callee.object.object.type === "Identifier" && st.expression.callee.object.object.name === "sh2" &&
+               st.expression.callee.object.property && st.expression.callee.object.property.type === "Identifier" && st.expression.callee.object.property.name === "functions" &&
+               st.expression.callee.property && st.expression.callee.property.type === "Identifier" && st.expression.callee.property.name === "set" &&
+               st.expression.arguments && st.expression.arguments[0] && st.expression.arguments[0].type === "Literal" &&
+               st.expression.arguments[1] && st.expression.arguments[1].type === "ArrowFunctionExpression") {
+      // a `sh2.functions.set("name", async () => { … })` registration — the
+      // A1's async functions that stay dispatch-bound (called via exec).
+      // Treat the arrow as a function scope (its store vars lift like any
+      // other function's).
+      const rname = String(st.expression.arguments[0].value);
+      if (scopes.has(rname)) continue; // the FunctionDeclaration wins
+      const arrow = st.expression.arguments[1];
+      const s = newScope();
+      s.params = new Set((arrow.params || []).filter((p) => p && p.type === "Identifier").map((p) => p.name));
+      scan(arrow.body && arrow.body.type === "BlockStatement" ? arrow.body.body : [], s);
+      scopes.set(rname, s);
     }
   }
+  // the top level excludes the function scopes AND the registration
+  // arrows (they are their own scopes — descending would mark every
+  // arrow var as a top-level use and kill the lift)
+  const isRegistration = (st) => st && st.type === "ExpressionStatement" && st.expression &&
+    st.expression.type === "CallExpression" && st.expression.callee && st.expression.callee.type === "MemberExpression" &&
+    st.expression.callee.object && st.expression.callee.object.type === "MemberExpression" &&
+    st.expression.callee.object.object && st.expression.callee.object.object.type === "Identifier" && st.expression.callee.object.object.name === "sh2" &&
+    st.expression.callee.object.property && st.expression.callee.object.property.type === "Identifier" && st.expression.callee.object.property.name === "functions" &&
+    st.expression.callee.property && st.expression.callee.property.type === "Identifier" && st.expression.callee.property.name === "set";
   const top = newScope();
   top.params = new Set();
-  scan(program.body.filter((st) => !(st && st.type === "FunctionDeclaration")), top);
+  scan(program.body.filter((st) => !(st && (st.type === "FunctionDeclaration" || isRegistration(st)))), top);
   scopes.set("__top", top);
 
   // single-function usage: v is used in exactly one NON-top scope
@@ -881,7 +909,10 @@ export function liftLocalVars(program) {
     const lifted = new Set();
     for (const v of s.ops.map((o) => o.name)) {
       if (s.arrays.has(v) || s.indirect.has(v) || s.indirect.has("*") || topUses.has(v)) continue;
-      if (stringRefs.has(v)) continue; // the runtime reads it BY NAME from a "$v" string
+      // note: vars named in "$v" string args are NOT excluded here — the
+      // post-lift interpolation converts those strings to ${v} templates
+      // (the runtime's store expansion would answer ""), so the lift stays
+      // safe AND the array-index keys become JS-evaluated.
       if (moduleLets.has(v)) continue;
       // a var used in MANY functions is fine — the module let is the
       // store's scope, so cross-function sharing still resolves (the
@@ -993,6 +1024,222 @@ export function liftLocalVars(program) {
       program.body = program.body.map((st) => rewriteCounterRefs(st, v));
     }
   }
+  return program;
+}
+
+// ── nativeArrays: fold store-backed arrays to native module bindings ──
+//
+// The game's per-frame arrays (map — the 205k maze-cell reads — an, the
+// animation frames, GMASK, mime_lookup, …) live in the runtime store and
+// every read pays `sh2.arrayIndex` (a function call + a Map.get + the
+// expandOperand/coercion machinery). After liftLocalVars the index keys
+// are JS-evaluated (templates/identifiers — the "$x" strings were
+// interpolated), so a read becomes a plain array index.
+//
+// Eligibility (all must hold for an array A):
+//   - initialized by `sh2.setArray("A", …)` (it IS an array, never a
+//     scalar — a plain `sh2.setVar("A", …)` disqualifies);
+//   - never read/written BY NAME elsewhere: getVar("A"), arrayLen("A"),
+//     bare `sh2.vars.A`, "$A"/"${A[@]}" strings, mem handles, dynamic
+//     computed names;
+//   - every arrayIndex key and element-write index is JS-evaluated (no
+//     "$x" string keys left — the runtime would expand them from the
+//     store, which a native array no longer mirrors).
+//
+// Rewrites (the runtime's arrayIndex/setVar-element semantics):
+//   setArray("A", e)        → A = (e || []).map(String)
+//   arrayIndex("A", K)      → String((A || [])[Number(K)] ?? "")
+//   setVar(`A[${K}]`, V)    → A[Number(K)] = (V == null ? "" : String(V))
+// and `let A = []` is declared at module level (the store's missing-array
+// read answers "", and `(A || [])` replicates it for reads before init).
+export function nativeArrays(program) {
+  if (!program || program.type !== "Program" || !Array.isArray(program.body)) return program;
+  const moduleLets = new Set();
+  for (const st of program.body) {
+    if (st && st.type === "VariableDeclaration" && st.kind === "let" && st.declarations) {
+      for (const d of st.declarations) if (d.id && d.id.type === "Identifier") moduleLets.add(d.id.name);
+    }
+  }
+  const isCall = (n, obj, fn) =>
+    n && n.type === "CallExpression" && n.callee && n.callee.type === "MemberExpression" &&
+    n.callee.object && n.callee.object.type === "Identifier" && n.callee.object.name === obj &&
+    n.callee.property && n.callee.property.type === "Identifier" && n.callee.property.name === fn;
+  const isVarsMember = (n) =>
+    n && n.type === "MemberExpression" && !n.computed &&
+    n.object && n.object.type === "MemberExpression" && !n.object.computed &&
+    n.object.object && n.object.object.type === "Identifier" && n.object.object.name === "sh2" &&
+    n.object.property && n.object.property.type === "Identifier" && n.object.property.name === "vars" &&
+    n.property && n.property.type === "Identifier";
+
+  const arrays = new Map(); // name → { setArray: [], reads: [], writes: [], bad: Set }
+  const get = (n) => { if (!arrays.has(n)) arrays.set(n, { setArray: [], reads: [], writes: [], bad: new Set() }); return arrays.get(n); };
+  const walk = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) { for (const x of n) walk(x); return; }
+    if (n.type === "CallExpression" && n.callee && n.callee.type === "MemberExpression" &&
+        n.callee.object && n.callee.object.type === "Identifier" && n.callee.object.name === "sh2") {
+      const fn = n.callee.property && n.callee.property.type === "Identifier" ? n.callee.property.name : "";
+      const a0 = n.arguments && n.arguments[0];
+      const nameOf = (a) => (a && a.type === "Literal" && typeof a.value === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(a.value) ? a.value : null);
+      // a mem handle (\u0001mem:<name>:<off>) — a C pointer into the array
+      // <name> — the C frontend reads/writes the STORE array through it, so
+      // the native conversion would orphan the pointer's writes
+      const memTarget = (a) => {
+        if (a && a.type === "Literal" && typeof a.value === "string" && /^\u0001mem:([A-Za-z_][A-Za-z0-9_]*):/.test(a.value)) {
+          const mm = /^\u0001mem:([A-Za-z_][A-Za-z0-9_]*):/.exec(a.value);
+          if (mm && arrays.has(mm[1])) get(mm[1]).bad.add("memHandle");
+        }
+      };
+      if (fn === "setArray") { const nm = nameOf(a0); if (nm) get(nm).setArray.push(n); return; }
+      if (fn === "arrayIndex") {
+        memTarget(a0);
+        const nm = nameOf(a0);
+        if (nm) {
+          const key = n.arguments && n.arguments[1];
+          // a "$x" string key is a runtime store expansion — the native
+          // array can't mirror it
+          if (key && key.type === "Literal" && typeof key.value === "string" && key.value.includes("$")) get(nm).bad.add("stringKey");
+          if (key && key.type === "Literal" && typeof key.value === "string" && !key.value.includes("$")) get(nm).reads.push(n);
+          if (key && key.type === "TemplateLiteral") {
+            // a template key with literal text beyond the interpolation
+            // (e.g. `${i} + 1`) carries ARITH the runtime's expandOperand
+            // evaluates — Number() can't — disqualify
+            const quasis = key.quasis || [];
+            for (let i = 0; i < quasis.length; i++) {
+              const t = quasis[i] && quasis[i].value && (quasis[i].value.cooked != null ? quasis[i].value.cooked : quasis[i].value.raw);
+              if (i === 0 && String(t || "") !== "") continue; // the opening ""
+              if (i === quasis.length - 1 && String(t || "") !== "") continue;
+              if (String(t || "") !== "") { get(nm).bad.add("arithKey"); break; }
+            }
+            get(nm).reads.push(n);
+          }
+          if (key && key.type === "Identifier") get(nm).reads.push(n);
+          if (key && (key.type === "LogicalExpression" || key.type === "CallExpression" || key.type === "BinaryExpression" || key.type === "UnaryExpression")) get(nm).reads.push(n);
+        } else if (a0 && a0.type === "Literal" && typeof a0.value === "string" && /^\u0001mem:/.test(a0.value)) {
+          // a mem handle — never an eligible array
+        }
+        return;
+      }
+      if (fn === "setVar" && a0) {
+        memTarget(a0);
+        if (a0.type === "TemplateLiteral") {
+          const q = a0.quasis && a0.quasis[0] && a0.quasis[0].value && a0.quasis[0].value.raw;
+          if (q && /^[A-Za-z_][A-Za-z0-9_]*\[$/.test(q)) {
+            const nm = q.slice(0, -1);
+            if (arrays.has(nm)) get(nm).writes.push(n);
+          }
+        } else if (a0.type === "Literal" && typeof a0.value === "string") {
+          const b = a0.value.lastIndexOf("[");
+          const nm = b > 0 && a0.value.endsWith("]") ? a0.value.slice(0, b) : a0.value;
+          if (arrays.has(nm)) {
+            if (b > 0) get(nm).bad.add("literalElem");
+            else get(nm).bad.add("plainSetVar"); // a scalar write of the array name
+          }
+        }
+        return;
+      }
+      if (fn === "getVar" && a0 && a0.type === "Literal" && typeof a0.value === "string" && arrays.has(a0.value)) { get(a0.value).bad.add("getVar"); return; }
+      if (fn === "arrayLen" && a0 && a0.type === "Literal" && typeof a0.value === "string" && arrays.has(a0.value)) { get(a0.value).bad.add("arrayLen"); return; }
+      if (fn === "param") {
+        for (const a of n.arguments) if (a && a.type === "Literal" && typeof a.value === "string" && arrays.has(a.value)) get(a.value).bad.add("param");
+        return;
+      }
+    }
+    if (isVarsMember(n)) {
+      const nm = n.property.name;
+      if (arrays.has(nm)) get(nm).bad.add("varsBare");
+      return;
+    }
+    if (n.type === "Literal" && typeof n.value === "string" && /^\$[A-Za-z_][A-Za-z0-9_]*[@*]?$/.test(n.value)) {
+      const nm = n.value.slice(1).replace(/[@*]$/, "");
+      if (arrays.has(nm)) get(nm).bad.add("wholeStr");
+      return;
+    }
+    for (const k of Object.keys(n)) if (k !== "loc") walk(n[k]);
+  };
+  walk(program);
+
+  // an array whose name is ANY function's param (the C frontend's pointer
+  // params — a/b/arr… — pass the array by name; a module let with the same
+  // name would shadow the param and the pointer walk would read the empty
+  // native binding). The game's arrays (map/mx/mz/GMASK…) are never params.
+  const paramNames = new Set();
+  const collectParams = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) { for (const x of n) collectParams(x); return; }
+    if (n.type === "FunctionDeclaration" && n.params) for (const p of n.params) if (p && p.type === "Identifier") paramNames.add(p.name);
+    if (n.type === "ArrowFunctionExpression" && n.params) for (const p of n.params) if (p && p.type === "Identifier") paramNames.add(p.name);
+    for (const k of Object.keys(n)) if (k !== "loc") collectParams(n[k]);
+  };
+  collectParams(program);
+  const eligible = [];
+  for (const [nm, a] of arrays) {
+    if (moduleLets.has(nm)) continue; // already a native binding (typed arrays)
+    if (paramNames.has(nm)) continue; // a C pointer param (or any param)
+    if (!a.setArray.length) continue;
+    if (a.bad.size) continue;
+    eligible.push(nm);
+  }
+  if (!eligible.length) return program;
+  const elig = new Set(eligible);
+
+  const id = (name) => ({ type: "Identifier", name });
+  const lit = (v) => ({ type: "Literal", value: v });
+  const num = (x) => ({
+    type: "CallExpression", callee: { type: "Identifier", name: "Number" }, arguments: [x], optional: false,
+  });
+  const str = (x) => ({
+    type: "CallExpression", callee: { type: "Identifier", name: "String" }, arguments: [x], optional: false,
+  });
+  const rewrite = (n) => {
+    if (!n || typeof n !== "object") return n;
+    if (Array.isArray(n)) return n.map(rewrite);
+    if (n.type === "CallExpression" && n.callee && n.callee.type === "MemberExpression" &&
+        n.callee.object && n.callee.object.type === "Identifier" && n.callee.object.name === "sh2") {
+      const fn = n.callee.property && n.callee.property.type === "Identifier" ? n.callee.property.name : "";
+      const a0 = n.arguments && n.arguments[0];
+      if (fn === "setArray" && a0 && a0.type === "Literal" && typeof a0.value === "string" && elig.has(a0.value)) {
+        const elems = rewrite(n.arguments[1]);
+        const mapCall = {
+          type: "CallExpression",
+          callee: { type: "MemberExpression", computed: false, optional: false, object: {
+            type: "LogicalExpression", operator: "||", left: elems || { type: "ArrayExpression", elements: [] }, right: { type: "ArrayExpression", elements: [] },
+          }, property: { type: "Identifier", name: "map" } },
+          arguments: [{ type: "Identifier", name: "String" }], optional: false,
+        };
+        return { type: "AssignmentExpression", operator: "=", left: id(a0.value), right: mapCall };
+      }
+      if (fn === "arrayIndex" && a0 && a0.type === "Literal" && typeof a0.value === "string" && elig.has(a0.value)) {
+        const K = rewrite(n.arguments[1]);
+        const arr = { type: "LogicalExpression", operator: "||", left: id(a0.value), right: { type: "ArrayExpression", elements: [] } };
+        const idx = { type: "MemberExpression", computed: true, optional: false, object: arr, property: num(K) };
+        return str({ type: "LogicalExpression", operator: "??", left: idx, right: lit("") });
+      }
+      if (fn === "setVar" && a0 && a0.type === "TemplateLiteral" && elig.has((a0.quasis[0] && a0.quasis[0].value && a0.quasis[0].value.raw || "").split("[")[0])) {
+        const nm = a0.quasis[0].value.raw.split("[")[0];
+        const K = a0.expressions && a0.expressions[0] ? rewrite(a0.expressions[0]) : lit(0);
+        const V = rewrite(n.arguments[1]);
+        const val = {
+          type: "ConditionalExpression",
+          test: { type: "BinaryExpression", operator: "==", left: V, right: lit(null) },
+          consequent: lit(""),
+          alternate: str(V),
+        };
+        const target = { type: "MemberExpression", computed: true, optional: false, object: id(nm), property: num(K) };
+        return { type: "AssignmentExpression", operator: "=", left: target, right: val };
+      }
+    }
+    const out = {};
+    for (const k of Object.keys(n)) if (k !== "loc") out[k] = rewrite(n[k]);
+    return out;
+  };
+  program.body = program.body.map(rewrite);
+  eligible.sort();
+  program.body.unshift({
+    type: "VariableDeclaration", kind: "let", declarations: eligible.map((nm) => ({
+      type: "VariableDeclarator", id: id(nm), init: { type: "ArrayExpression", elements: [] },
+    })),
+  });
   return program;
 }
 
@@ -1346,7 +1593,58 @@ function lowerPureRound(program) {
             body: {
               type: "BlockStatement",
               body: [
-                { type: "VariableDeclaration", kind: "const", declarations: [{ type: "VariableDeclarator", id: { type: "Identifier", name: "__ret" }, init: inner }] },
+                // the emitter lowers a function-body `return N` to
+                // `throw sh2.ReturnSignal(N)` — the exec/fnCall dispatch
+                // unwraps it, but a BARE direct call would leak the
+                // signal into the caller and abort it. Catch it here
+                // and unwrap the value like the dispatch does.
+                { type: "VariableDeclaration", kind: "let", declarations: [{ type: "VariableDeclarator", id: { type: "Identifier", name: "__ret" }, init: null }] },
+                {
+                  type: "TryStatement",
+                  block: {
+                    type: "BlockStatement",
+                    body: [{
+                      type: "ExpressionStatement",
+                      expression: {
+                        type: "AssignmentExpression", operator: "=",
+                        left: { type: "Identifier", name: "__ret" },
+                        right: inner,
+                      },
+                    }],
+                  },
+                  handler: {
+                    type: "CatchClause",
+                    param: { type: "Identifier", name: "__e" },
+                    body: {
+                      type: "BlockStatement",
+                      body: [{
+                        type: "IfStatement",
+                        test: {
+                          type: "BinaryExpression", operator: "instanceof",
+                          left: { type: "Identifier", name: "__e" },
+                          right: {
+                            type: "MemberExpression", computed: false, optional: false,
+                            object: { type: "Identifier", name: "sh2" },
+                            property: { type: "Identifier", name: "ReturnSignal" },
+                          },
+                        },
+                        consequent: {
+                          type: "ExpressionStatement",
+                          expression: {
+                            type: "AssignmentExpression", operator: "=",
+                            left: { type: "Identifier", name: "__ret" },
+                            right: { type: "MemberExpression", computed: false, optional: false, object: { type: "Identifier", name: "__e" }, property: { type: "Identifier", name: "value" } },
+                          },
+                        },
+                        alternate: {
+                          type: "ThrowStatement",
+                          argument: { type: "Identifier", name: "__e" },
+                        },
+                      }],
+                    },
+                  },
+                  finalizer: null,
+                },
                 {
                   type: "IfStatement",
                   test: { type: "LogicalExpression", operator: "||", left: typeofCmp("string"), right: typeofCmp("number") },
