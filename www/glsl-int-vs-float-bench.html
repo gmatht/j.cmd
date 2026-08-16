@@ -26,7 +26,7 @@
 </style>
 </head>
 <body>
-<h1>GLSL ES 1.00 — int vs float math benchmark (fragment &amp; vertex)</h1>
+<h1>GLSL ES 1.00 — int vs float math benchmark (fragment &amp; vertex) <span class="muted" style="font-size:12px; color:#fa5">v4</span></h1>
 <div class="muted">The mimecroft game's <b>fragment</b> shader does its colour math in
 <b>mediump int</b> (0..127 scale — every intermediate fits mediump int's ±2<sup>15</sup>);
 its <b>vertex</b> shader is highp float (mandatory). This page times the arithmetic in
@@ -123,6 +123,7 @@ translator your browser is using, so the numbers are read in that context.</div>
 
 <script>
 "use strict";
+const BENCH_VERSION = "4";   // bump on every page change — the header shows it so a stale browser copy is obvious
 const $ = (id) => document.getElementById(id);
 const intC = $("intC"), fltC = $("fltC");
 let mode = "frag";
@@ -624,7 +625,7 @@ $("run").onclick = async () => {
     `<tr><th>MAX_VERTEX_TEXTURE_IMAGE_UNITS</th><td>${maxVTex}</td></tr>` +
     `<tr><th>MAX_COMBINED_TEXTURE_IMAGE_UNITS</th><td>${maxCombTex}</td></tr>` +
     `<tr><th>extensions</th><td>${extensions}</td></tr></table>`;
-  $("glinfo").innerHTML =
+  $("glinfo").innerHTML = `benchmark page v${BENCH_VERSION}<br>` +
     `Detected translator: ${unmasked || renderer}<br>` +
     `Backend hint: ${/ANGLE/.test(unmasked || "") ? (/D3D11/.test(unmasked || "") ? "ANGLE → Direct3D 11 (HLSL)" : /Metal/.test(unmasked || "") ? "ANGLE → Metal (MSL)" : /Vulkan/.test(unmasked || "") ? "ANGLE → Vulkan (SPIR-V)" : "ANGLE (backend unknown)") : /Apple/.test(renderer) ? "native GL (Apple)" : /Mali|Adreno|PowerVR/.test(renderer) ? "mobile GLES driver" : "native GL"}.`;
 })();
