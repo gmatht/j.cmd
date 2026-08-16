@@ -39,7 +39,9 @@ its <b>vertex</b> shader is highp float (mandatory). This page times the arithme
     variants are the float pipeline, so this mode answers "what does the mediump
     qualifier cost" with the int question removed (mediump is the ES 1.00 fragment
     default; highp needs the OES_fragment_precision_high extension, which is why the
-    game avoids it). The mediump-int pipeline is only in mode 1.
+    game avoids it). The mediump-int pipeline is only in mode 1;
+(4) <b>fragment: mediump vs highp int</b> — the SAME int pipeline (the game's 0..127
+    scale) at mediump int vs highp int — the int precision qualifier cost in isolation.
 The GL/GLSL/ANGLE line below the results identifies exactly which GLES→backend
 translator your browser is using, so the numbers are read in that context.</div>
 
@@ -48,6 +50,7 @@ translator your browser is using, so the numbers are read in that context.</div>
   <button id="modeFrag" class="active">fragment: int vs float</button>
   <button id="modeVert">vertex: int vs float</button>
   <button id="modePrec">fragment: mediump vs highp float</button>
+  <button id="modePrecInt">fragment: mediump vs highp int</button>
   <label>frames <input type="number" id="frames" value="2400" min="10" max="20000"></label>
   <label>samples <input type="number" id="samples" value="5" min="1" max="20"></label>
   <label id="gridLbl">texel grid <input type="number" id="grid" value="64" min="8" max="256"></label>
@@ -227,6 +230,57 @@ void main() {
 `;
 
 // ────────────────────────────────────────────────────────────────
+// ─── int-precision mode: the SAME INT fragment pipeline at mediump vs
+// highp int (mediump int is the ES 1.00 fragment default; highp int needs
+// OES_fragment_precision_high, like highp float). The float maths stay
+// mediump — only the int precision qualifier changes, isolating its cost.
+const FS_INT_HIGHP = `
+precision mediump float;
+precision highp int;
+varying highp vec2 vUv;
+varying highp vec4 vColor;
+uniform sampler2D uTex;
+uniform sampler2D uCrack;
+uniform int uDamage;
+void main() {
+  highp vec2 uv = fract(vUv);
+  highp int fx = int(gl_FragCoord.x);
+  highp int fy = int(gl_FragCoord.y);
+  vec4 t = texture2D(uTex, uv);
+  vec4 cr = texture2D(uCrack, uv);
+  highp int tr = int(t.r * 255.0);
+  highp int tg = int(t.g * 255.0);
+  highp int tb = int(t.b * 255.0);
+  highp int crr = int(cr.r * 127.0);
+  highp int crg = int(cr.g * 127.0);
+  highp int crb = int(cr.b * 127.0);
+  highp int cra = int(cr.a * 127.0);
+  highp int r = int(vColor.r * 127.0);
+  highp int g = int(vColor.g * 127.0);
+  highp int b = int(vColor.b * 127.0);
+  r = r * tr / 128;
+  g = g * tg / 128;
+  b = b * tb / 128;
+  highp int scan = int(mod(float(fy), 6.0));
+  if (scan == 0) { r = r * 90 / 100; g = g * 90 / 100; b = b * 90 / 100; }
+  highp int hash = int(mod(float(fx * 7 + fy * 13), 97.0));
+  if (hash == 0) { r = 127; g = g * 50 / 100; b = b * 50 / 100; }
+  highp int vx = fx - 256; highp int vy = fy - 192;
+  if (vx < 0) vx = 0 - vx;
+  if (vy < 0) vy = 0 - vy;
+  highp int edge = vx + vy;
+  if (edge > 225) { highp int d = edge - 225; if (d > 15) d = 15; highp int dim = (255 - d * 2) * 100 / 255; r = r * dim / 100; g = g * dim / 100; b = b * dim / 100; }
+  if (uDamage > 0) {
+    highp int mix = uDamage * cra;
+    if (mix > 127) mix = 127;
+    r = r - (r - crr) * mix / 128;
+    g = g - (g - crg) * mix / 128;
+    b = b - (b - crb) * mix / 128;
+  }
+  gl_FragColor = vec4(float(r) / 127.0, float(g) / 127.0, float(b) / 127.0, 1.0);
+}
+`;
+
 // ─── precision mode: the SAME FLOAT fragment workload at mediump vs highp
 // (mediump is the ES 1.00 fragment default — what the game runs; highp
 // needs OES_fragment_precision_high). This isolates the PRECISION QUALIFIER
@@ -451,14 +505,16 @@ function setMode(m) {
   $("modeFrag").className = m === "frag" ? "active" : "";
   $("modeVert").className = m === "vert" ? "active" : "";
   $("modePrec").className = m === "prec" ? "active" : "";
+  $("modePrecInt").className = m === "precInt" ? "active" : "";
   $("gridLbl").style.display = m === "frag" ? "" : "none";
   $("meshLbl").style.display = m === "vert" ? "" : "none";
-  if (m === "prec") { $("lbl-a").textContent = "mediump"; $("lbl-b").textContent = "highp"; $("lbl-ratio").textContent = "highp / mediump"; }
+  if (m === "prec" || m === "precInt") { $("lbl-a").textContent = "mediump"; $("lbl-b").textContent = "highp"; $("lbl-ratio").textContent = "highp / mediump"; }
   else { $("lbl-a").textContent = "int"; $("lbl-b").textContent = "float"; $("lbl-ratio").textContent = "float / int"; }
 }
 $("modeFrag").onclick = () => setMode("frag");
 $("modeVert").onclick = () => setMode("vert");
 $("modePrec").onclick = () => setMode("prec");
+$("modePrecInt").onclick = () => setMode("precInt");
 
 $("run").onclick = async () => {
   const frames = Math.max(10, Number($("frames").value) || 2400);
@@ -477,8 +533,14 @@ $("run").onclick = async () => {
     const grid = Math.max(8, Number($("grid").value) || 64);
     tex = makeTexture(grid, 12345);
     crack = makeTexture(grid, 777);
-    pInt = program(VS_QUAD, FS_FLOAT);       // mediump (the ES 1.00 default)
-    pFlt = program(VS_QUAD, FS_FLOAT_HIGHP);  // highp (OES_fragment_precision_high)
+    pInt = program(VS_QUAD, FS_FLOAT);       // mediump float (the ES 1.00 default)
+    pFlt = program(VS_QUAD, FS_FLOAT_HIGHP);  // highp float (OES_fragment_precision_high)
+  } else if (mode === "precInt") {
+    const grid = Math.max(8, Number($("grid").value) || 64);
+    tex = makeTexture(grid, 12345);
+    crack = makeTexture(grid, 777);
+    pInt = program(VS_QUAD, FS_INT);          // mediump int (the game's pipeline)
+    pFlt = program(VS_QUAD, FS_INT_HIGHP);    // highp int (OES_fragment_precision_high)
   } else {
     const n = Math.max(8, Number($("mesh").value) || 256);
     meshBuf = makeMesh(n);
@@ -489,7 +551,7 @@ $("run").onclick = async () => {
 
   $("status").textContent = `benchmarking ${frames} frames × ${samples} samples (${mode})…`;
   const iSamples = [], fSamples = [];
-  const draw = (mode === "frag" || mode === "prec") ? drawFrag : drawVert;
+  const draw = (mode === "frag" || mode === "prec" || mode === "precInt") ? drawFrag : drawVert;
   for (let s = 0; s < samples; s++) {
     iSamples.push(draw(pInt, frames));
     fSamples.push(draw(pFlt, frames));
@@ -512,10 +574,10 @@ $("run").onclick = async () => {
   $("ratio").className = "best";
   const stage = mode === "frag" ? "fragment (per-pixel)" : mode === "vert" ? "vertex (per-vertex)" : "fragment precision";
   const verdict =
-    mode === "prec"
-      ? (ratio > 1.05 ? `highp FLOAT is ${ratio.toFixed(2)}× SLOWER than mediump FLOAT on this translator — the mediump default the game runs is the cheaper path (and highp in the fragment needs the OES_fragment_precision_high extension).`
-         : ratio < 0.95 ? `highp FLOAT is ${(1 / ratio).toFixed(2)}× FASTER than mediump FLOAT on this translator (ANGLE often runs mediump at full precision on desktop — the qualifier is then free).`
-         : `mediump and highp FLOAT are within ±5% on this translator — the precision qualifier costs nothing here (ANGLE maps both to the full native float on desktop).`)
+    mode === "prec" || mode === "precInt"
+      ? (ratio > 1.05 ? `highp ${mode === "precInt" ? "INT" : "FLOAT"} is ${ratio.toFixed(2)}× SLOWER than mediump ${mode === "precInt" ? "INT" : "FLOAT"} on this translator — the mediump default the game runs is the cheaper path (and highp in the fragment needs the OES_fragment_precision_high extension).`
+         : ratio < 0.95 ? `highp ${mode === "precInt" ? "INT" : "FLOAT"} is ${(1 / ratio).toFixed(2)}× FASTER than mediump ${mode === "precInt" ? "INT" : "FLOAT"} on this translator (ANGLE often runs mediump at full precision on desktop — the qualifier is then free).`
+         : `mediump and highp ${mode === "precInt" ? "INT" : "FLOAT"} are within ±5% on this translator — the precision qualifier costs nothing here (ANGLE maps both to the full native form on desktop).`)
       : (ratio > 1.05 ? `In the ${stage} stage, float is ${ratio.toFixed(2)}× SLOWER than int on this translator — the int pipeline (the game's choice) is the faster path here.`
          : ratio < 0.95 ? `In the ${stage} stage, float is ${(1 / ratio).toFixed(2)}× FASTER than int on this translator — the int casts/emulated modulo cost more than they save here.`
          : `In the ${stage} stage, float and int are within ±5% on this translator — the arithmetic choice is free; the int path's benefit is exactness (no mediump-float mantissa quantisation), not speed.`);

@@ -15,6 +15,7 @@ Three modes, each rendering the game's real per-pixel / per-vertex workload twic
 | fragment: int vs float | mediump int (0..127 scale) | equivalent float (0..1) | the game's fragment: texture tint, CRT scanline, corruption hash, vignette, crack blend |
 | vertex: int vs float | milli/‰ int transform | equivalent float | the game's vertex: yaw rotation + fake perspective, over a grid mesh |
 | fragment: mediump vs highp float | mediump float | highp float | the SAME float pipeline — isolates the precision qualifier (mediump int is NOT involved in this mode) |
+| fragment: mediump vs highp int | mediump int (the game's 0..127 scale) | highp int | the SAME int pipeline — isolates the int precision qualifier (the floats stay mediump) |
 
 Timing: N frames × S samples per path, order alternated to cancel clock drift; reports
 avg/min ms/frame, FPS, and the ratio.
@@ -49,7 +50,8 @@ Measured with the harness (24000 frames/sample × 5 samples):
 | mode | path A | path B | ratio |
 |---|---|---|---|
 | fragment int vs float | int 0.079 ms/frame (12612 FPS) | float 0.125 ms/frame (7999 FPS) | **float 1.58× slower** |
-| fragment mediump vs highp | mediump 0.053 ms/frame (18740 FPS) | highp 0.064 ms/frame (15630 FPS) | **highp 1.20× slower** |
+| fragment mediump vs highp float | mediump 0.053 ms/frame (18740 FPS) | highp 0.064 ms/frame (15630 FPS) | **highp 1.20× slower** |
+| fragment mediump vs highp int | mediump int | highp int | run the page for the current numbers |
 
 (Vertex mode on the same machine: per-vertex int vs float — run the page for the
 current numbers.)
