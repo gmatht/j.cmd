@@ -2491,7 +2491,6 @@ draw_minimap() {
 hud_static=""
 hud_static_dirty=1   # the radar base must be built before the first frame
 digits_dirty=1       # the score/hp/art/fps digits — redrawn only when they change
-flash_clear=0        # erase the muzzle flash after the last flash frame
 prev_px=-1           # the player's previous radar cell (for the erase)
 prev_pz=-1
 prev_deg=-1          # the triangle's previous rotation (turning rotates in place)
@@ -2885,22 +2884,16 @@ draw_hud_canvas() {
     labels_dirty=1
   fi
   ov_text=""
-  # the muzzle flash fades: erase the whole rotated flash (its 0.22 box
-  # rotated 20° spans ~0.28) then REDRAW the gun — the erase overlaps
-  # the barrel tip, and the gun lives in the static layer, so without
-  # the redraw a chunk of the gun would stay erased
-  if [ "$flash_clear" -eq 1 ]; then
-    ov_text="${ov_text}E 0.55 -0.08 0.32 0.32
-"
-    draw_gun
-    flash_clear=0
-  fi
   draw_minimap
+  # the muzzle flash is a TRANSIENT ON-TOP overlay (/dev/webgl/hud/flash
+  # — drawn over the persistent HUD at swap, cleared every swap): it is
+  # written ONLY while muzzle > 0, so when the flash expires the game
+  # simply stops writing it and it vanishes — no erase, no gun redraw.
+  # (The old flash_clear erase+redraw cycle is gone: the gun in the
+  # static layer is never overlapped by a persistent flash.)
   if [ "$muzzle" -gt 0 ]; then
-    ov_text="${ov_text}R 0.55 -0.08 0.22 0.22 20 1.0 0.82 0.2
-"
-    ov_text="${ov_text}R 0.55 -0.08 0.10 0.10 20 1.0 1.0 0.9
-"
+    echo "R 0.55 -0.08 0.22 0.22 20 1.0 0.82 0.2
+R 0.55 -0.08 0.10 0.10 20 1.0 1.0 0.9" > /dev/webgl/hud/flash
   fi
   if [ "$digits_dirty" -eq 1 ]; then
     draw_digits
@@ -3816,7 +3809,6 @@ main() {
     if [ "$muzzle" -gt 0 ]; then
       muzzle=$((muzzle - 1))
       if [ "$muzzle" -eq 0 ]; then
-        flash_clear=1
         dirty=1
       fi
     fi
@@ -3854,7 +3846,7 @@ main() {
       labels_dirty=1
       gspan "render"
       hud_swap=1
-    elif [ "$digits_dirty" -eq 1 ] || [ "$flash_clear" -eq 1 ] || [ "$muzzle" -gt 0 ] || [ "$hud_static_dirty" -eq 1 ]; then
+    elif [ "$digits_dirty" -eq 1 ] || [ "$muzzle" -gt 0 ] || [ "$hud_static_dirty" -eq 1 ]; then
       # HUD-only frame (FPS digits, muzzle flash, static rebuild): the
       # presented frame is retained (preserveDrawingBuffer) WITH the old
       # HUD baked in, and the HUD layer erases can't reach it — re-render
@@ -3870,7 +3862,7 @@ main() {
     # radar base was rebuilt — otherwise nothing on screen changed and
     # the frame is fully static (no swap; the keyboard heartbeat below
     # keeps the grab alive)
-    if [ "$hud_swap" -eq 1 ] || [ "$digits_dirty" -eq 1 ] || [ "$flash_clear" -eq 1 ] || [ "$muzzle" -gt 0 ] || [ "$hud_static_dirty" -eq 1 ]; then
+    if [ "$hud_swap" -eq 1 ] || [ "$digits_dirty" -eq 1 ] || [ "$muzzle" -gt 0 ] || [ "$hud_static_dirty" -eq 1 ]; then
       draw_hud_canvas
       gspan "hud"
       echo "swap" > /dev/webgl/call

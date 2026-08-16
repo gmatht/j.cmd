@@ -172,6 +172,18 @@ export class WebGLDevice {
                                     // so the first paint must be full)
     this._hudSub = null;            // cached small canvas for region uploads
     this._hudTex = null;            // WebGL texture holding the layer
+    this._hudFlash = null;          // transient ON-TOP overlay (the muzzle
+                                    // flash): NDC rects written to
+                                    // /webgl/hud/flash, drawn as solid quads
+                                    // AFTER the persistent HUD at swap, then
+                                    // cleared — an element that must not
+                                    // persist (a firing flash) is simply
+                                    // written each frame while active and
+                                    // vanishes when the game stops writing
+                                    // it — no erase, no persistent-layer
+                                    // churn
+    this._hudFlashProg = null;      // tiny color-quad shader for the overlay
+    this._hudFlashVerts = null;     // per-quad vertex buffer
     this._hudProg = null;           // built-in composite program (internal)
     this._hudVerts = null;          // fullscreen textured-quad buffer
     this._lastSwapAt = 0;            // for key-steal timeout after a game ends
@@ -920,7 +932,7 @@ export class WebGLDevice {
 
   _compositeHud() {
     const gl = this._gl;
-    if (this._null || !this._hudLayer || !gl) return;
+    if (this._null || !gl) return;
     try {
       this._compositeHudImpl();
     } catch (e) {
@@ -932,73 +944,140 @@ export class WebGLDevice {
 
   _compositeHudImpl() {
     const gl = this._gl;
-    if (this._null || !this._hudLayer || !gl) return;
-    if (this._hudDirty) {
-      const W = this._hudLayer.width, H = this._hudLayer.height;
-      if (!this._hudTex) this._hudTex = gl.createTexture();
-      gl.bindTexture(gl.TEXTURE_2D, this._hudTex);
-      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-      // upload ONLY the changed region once the layer is resident: a
-      // per-frame HUD change (a digit group, a muzzle flash, a radar
-      // blip) re-sends just that small rectangle instead of the whole
-      // 800×600 canvas — the static gun/map/status areas and the vast
-      // empty transparent regions are never re-transferred. The first
-      // paint, a full C-wipe and any change covering > half the layer
-      // still upload the whole surface (cheaper than a copy+patch).
-      const dr = this._hudDirtyRect;
-      const area = dr ? (dr[2] - dr[0]) * (dr[3] - dr[1]) : 0;
-      const full = !this._hudTexInit || !dr || area > W * H * 0.5;
-      if (full) {
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, this._hudLayer);
-        this._hudTexInit = true;
-      } else {
-        const dw = dr[2] - dr[0], dh = dr[3] - dr[1];
-        if (!this._hudSub) this._hudSub = document.createElement("canvas");
-        if (this._hudSub.width !== dw || this._hudSub.height !== dh) {
-          this._hudSub.width = dw; this._hudSub.height = dh;
+    if (this._null || !gl) return;
+    if (this._hudLayer) {
+      if (this._hudDirty) {
+        const W = this._hudLayer.width, H = this._hudLayer.height;
+        if (!this._hudTex) this._hudTex = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, this._hudTex);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+        // upload ONLY the changed region once the layer is resident: a
+        // per-frame HUD change (a digit group, a muzzle flash, a radar
+        // blip) re-sends just that small rectangle instead of the whole
+        // 800×600 canvas — the static gun/map/status areas and the vast
+        // empty transparent regions are never re-transferred. The first
+        // paint, a full C-wipe and any change covering > half the layer
+        // still upload the whole surface (cheaper than a copy+patch).
+        const dr = this._hudDirtyRect;
+        const area = dr ? (dr[2] - dr[0]) * (dr[3] - dr[1]) : 0;
+        const full = !this._hudTexInit || !dr || area > W * H * 0.5;
+        if (full) {
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, this._hudLayer);
+          this._hudTexInit = true;
+        } else {
+          const dw = dr[2] - dr[0], dh = dr[3] - dr[1];
+          if (!this._hudSub) this._hudSub = document.createElement("canvas");
+          if (this._hudSub.width !== dw || this._hudSub.height !== dh) {
+            this._hudSub.width = dw; this._hudSub.height = dh;
+          }
+          const sctx = this._hudSub.getContext("2d");
+          sctx.clearRect(0, 0, dw, dh);
+          // canvas top-left = texture (0,0) = screen top-left (no y-flip,
+          // the quad maps uv 0,0 to the top-left), so the sub-canvas lands
+          // at exactly the dirty rect's offset
+          sctx.drawImage(this._hudLayer, dr[0], dr[1], dw, dh, 0, 0, dw, dh);
+          gl.texSubImage2D(gl.TEXTURE_2D, 0, dr[0], dr[1], gl.RGBA, gl.UNSIGNED_BYTE, this._hudSub);
         }
-        const sctx = this._hudSub.getContext("2d");
-        sctx.clearRect(0, 0, dw, dh);
-        // canvas top-left = texture (0,0) = screen top-left (no y-flip,
-        // the quad maps uv 0,0 to the top-left), so the sub-canvas lands
-        // at exactly the dirty rect's offset
-        sctx.drawImage(this._hudLayer, dr[0], dr[1], dw, dh, 0, 0, dw, dh);
-        gl.texSubImage2D(gl.TEXTURE_2D, 0, dr[0], dr[1], gl.RGBA, gl.UNSIGNED_BYTE, this._hudSub);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        this._hudDirty = false;
+        this._hudDirtyRect = null;
       }
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      this._hudDirty = false;
-      this._hudDirtyRect = null;
+      if (this._hudProg || (this._hudProg = this._linkHudProgram())) {
+        gl.useProgram(this._hudProg);
+        if (!this._hudVerts) this._hudVerts = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, this._hudVerts);
+        // fullscreen quad (2 triangles): position + uv; canvas top → screen top
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+          -1,  1, 0, 0,    1,  1, 1, 0,    1, -1, 1, 1,
+           1, -1, 1, 1,   -1, -1, 0, 1,   -1,  1, 0, 0,
+        ]), gl.STATIC_DRAW);
+        const aPos = gl.getAttribLocation(this._hudProg, "aPosition");
+        const aUv = gl.getAttribLocation(this._hudProg, "aUv");
+        gl.enableVertexAttribArray(aPos);
+        gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 16, 0);
+        gl.enableVertexAttribArray(aUv);
+        gl.vertexAttribPointer(aUv, 2, gl.FLOAT, false, 16, 8);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, this._hudTex);
+        gl.uniform1i(gl.getUniformLocation(this._hudProg, "uTex"), 0);
+        const depthOn = gl.isEnabled(gl.DEPTH_TEST);
+        gl.disable(gl.DEPTH_TEST);
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+        // transient ON-TOP overlay (the muzzle flash): solid quads drawn
+        // over the persistent HUD, then cleared — next frame's swap draws
+        // only what the game wrote since; an expired flash is simply never
+        // written and stops appearing (no erase, no persistent redraw).
+        this._drawHudFlash(gl);
+        gl.disable(gl.BLEND);
+        if (depthOn) gl.enable(gl.DEPTH_TEST);
+      } else {
+        this._drawHudFlash(gl);
+      }
+      this._log += "[hud] composited texture quad\n";
+    } else {
+      // no persistent layer yet — a flash overlay can still appear
+      this._drawHudFlash(gl);
     }
-    if (!this._hudProg) this._hudProg = this._linkHudProgram();
-    if (!this._hudProg) return;
-    gl.useProgram(this._hudProg);
-    if (!this._hudVerts) this._hudVerts = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, this._hudVerts);
-    // fullscreen quad (2 triangles): position + uv; canvas top → screen top
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
-      -1,  1, 0, 0,    1,  1, 1, 0,    1, -1, 1, 1,
-       1, -1, 1, 1,   -1, -1, 0, 1,   -1,  1, 0, 0,
-    ]), gl.STATIC_DRAW);
-    const aPos = gl.getAttribLocation(this._hudProg, "aPosition");
-    const aUv = gl.getAttribLocation(this._hudProg, "aUv");
+  }
+
+  _linkFlashProgram() {
+    const gl = this._gl;
+    const vsSrc = "attribute vec2 aPosition; uniform vec4 uColor; varying vec4 vColor; void main() { vColor = uColor; gl_Position = vec4(aPosition, 0.0, 1.0); }";
+    const fsSrc = "precision mediump float; varying vec4 vColor; void main() { gl_FragColor = vColor; }";
+    const mk = (type, src) => {
+      const s = gl.createShader(type);
+      gl.shaderSource(s, src);
+      gl.compileShader(s);
+      return gl.getShaderParameter(s, gl.COMPILE_STATUS) ? s : null;
+    };
+    const vs = mk(gl.VERTEX_SHADER, vsSrc), fs = mk(gl.FRAGMENT_SHADER, fsSrc);
+    if (!vs || !fs) return null;
+    const prog = gl.createProgram();
+    gl.attachShader(prog, vs);
+    gl.attachShader(prog, fs);
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return null;
+    return prog;
+  }
+
+  // draw the transient flash quads (NDC rects, optionally rotated) with
+  // the same corner math as the persistent layer's R-rects, then drop the
+  // list — the overlay is strictly per-frame.
+  _drawHudFlash(gl) {
+    const flash = this._hudFlash;
+    if (!flash || !flash.length) { this._hudFlash = null; return; }
+    if (!this._hudFlashProg) this._hudFlashProg = this._linkFlashProgram();
+    if (!this._hudFlashProg) { this._hudFlash = null; return; }
+    gl.useProgram(this._hudFlashProg);
+    if (!this._hudFlashVerts) this._hudFlashVerts = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this._hudFlashVerts);
+    const aPos = gl.getAttribLocation(this._hudFlashProg, "aPosition");
+    const uColor = gl.getUniformLocation(this._hudFlashProg, "uColor");
     gl.enableVertexAttribArray(aPos);
-    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 16, 0);
-    gl.enableVertexAttribArray(aUv);
-    gl.vertexAttribPointer(aUv, 2, gl.FLOAT, false, 16, 8);
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this._hudTex);
-    gl.uniform1i(gl.getUniformLocation(this._hudProg, "uTex"), 0);
-    const depthOn = gl.isEnabled(gl.DEPTH_TEST);
-    gl.disable(gl.DEPTH_TEST);
-    gl.enable(gl.BLEND);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-    gl.drawArrays(gl.TRIANGLES, 0, 6);
-    gl.disable(gl.BLEND);
-    if (depthOn) gl.enable(gl.DEPTH_TEST);
-    this._log += "[hud] composited texture quad\n";
+    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 8, 0);
+    for (const [cx, cy, w, h, deg, r, g, b] of flash) {
+      // the rasterizer's R-rect corner math lifted into NDC: the layer
+      // rotates by −deg in canvas (y-down) space, which maps to the same
+      // visual rotation here
+      const rad = (-Number(deg) || 0) * Math.PI / 180;
+      const c = Math.cos(rad), sn = Math.sin(rad);
+      const hw = Number(w) / 2, hh = Number(h) / 2;
+      const verts = new Float32Array(8);
+      let o = 0;
+      for (const [vx, vy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+        verts[o++] = Number(cx) + hw * (vx * c - vy * sn);
+        verts[o++] = Number(cy) + hh * (vx * sn + vy * c);
+      }
+      gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW);
+      gl.uniform4f(uColor, Number(r), Number(g), Number(b), 1.0);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    }
+    this._hudFlash = null;
   }
 
   _frameDataURL() {
@@ -1053,6 +1132,28 @@ export class WebGLDevice {
     const p = path.replace(/\/$/, "") || "/";
     const parts = p.split("/").filter(Boolean);
     if (!parts.length) throw new Error("EROFS: /dev/webgl is a directory");
+    // /webgl/hud/flash — the transient ON-TOP overlay (the muzzle flash):
+    // solid quads drawn AFTER the persistent HUD layer at swap, cleared
+    // every swap. A transient element is written each frame while active;
+    // when the game stops writing it, nothing draws (no erase needed).
+    // Same line format as the HUD rects (R cx cy w h deg r g b, or a
+    // plain cx cy w h r g b with no rotation).
+    if (parts[0] === "hud" && parts[1] === "flash") {
+      this._hudFlash = [];
+      for (const line of String(content).split("\n")) {
+        let t = line.trim();
+        if (!t) continue;
+        // "R cx cy w h deg r g b" — a rotated rect (the muzzle flash)
+        if (t.startsWith("R ") || t.startsWith("r ")) t = t.slice(2).trim();
+        const nums = t.split(/[\s,]+/).filter(Boolean).map(Number);
+        if (nums.length >= 8 && nums.every((n) => Number.isFinite(n))) {
+          this._hudFlash.push(nums.slice(0, 8));
+        } else if (nums.length >= 7 && nums.every((n) => Number.isFinite(n))) {
+          this._hudFlash.push([nums[0], nums[1], nums[2], nums[3], 0, nums[4], nums[5], nums[6]]);
+        }
+      }
+      return;
+    }
     if (parts[0] === "shader" && parts.length === 2 &&
         (parts[1] === "vertex" || parts[1] === "fragment")) {
       this._compileShader(parts[1], String(content));
