@@ -34,7 +34,7 @@ const WASM_PATH = "wasm-bin/otranspilerl.wasm";  // browser: relative to the pag
 export const GLSL_VIEW = 800;
 // cache-buster — bump whenever www/wasm-bin/otranspilerl.wasm changes so
 // the browser (and the otranspiler GUI) never serves a stale wasm.
-const WASM_VERSION = "v26-lex";  // v25: texture samples wrap via fract(vUv) — the old (g_uv_x+0.5)/sz sample coordinate was up to ±35 for the bg planes' world-xz UVs, and a MEDIUMP (fp16) sample quantized its fraction to ±1 texel (floor texture flaked); fract() keeps the sample in [0,1) — exact at any precision, REPEAT not needed for sampling  // v24: fragment vUv/vColor highp
+const WASM_VERSION = "v27-pgso";  // v27: rebuilt with the PGSO rustc fork (-Z fn-opt-levels, LLVM 22) — ~13% faster transpile at +6% size (see build-wasm-otranspilerl.sh)  // v26-lex: texture samples wrap via fract(vUv) — the old (g_uv_x+0.5)/sz sample coordinate was up to ±35 for the bg planes' world-xz UVs, and a MEDIUMP (fp16) sample quantized its fraction to ±1 texel (floor texture flaked); fract() keeps the sample in [0,1) — exact at any precision, REPEAT not needed for sampling  // v24: fragment vUv/vColor highp
 
 let libPromise = null;
 
@@ -180,6 +180,10 @@ function wrapLibrary(instance, mem, out) {
     // shell source → target source (in-process: sh and shir only)
     transpile: (src, srcLang, tgtLang) =>
       call("otranspilerl_transpile", [String(src), srcLang || "sh", tgtLang || "js"]).output,
+    // the compile pipeline: shell → the estree AFTER the moved estreeToJs
+    // head passes (the wasm prefix) — `{"estree": …}`; the JS side
+    // continues at pass #5 (see PLAN-wasm-estree-pipeline.md)
+    compile: (src, opts = "") => call("otranspilerl_compile", [String(src), String(opts)]).output,
     // shell source → A1 shIR JSON (the neutral contract)
     shir: (src) => call("otranspilerl_shir", [String(src)]).output,
     // shell source → token dump (the CLI `lex` output — same helper the

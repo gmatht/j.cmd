@@ -36,7 +36,21 @@ if ! rustup target list --installed 2>/dev/null | grep -q '^wasm32-wasip1$'; the
 fi
 
 echo "== cargo build --release --target wasm32-wasip1 =="
-( cd "$SRC" && cargo build --release --target wasm32-wasip1 )
+# PGSO compiler (the rustloop rustc fork with -Z fn-opt-levels, built from a
+# source tarball): ~13% faster transpile at +6% size vs the stable O3 build.
+# The wasm32-wasip1 std must match the PGSO toolchain's EXACT version string
+# (the fork build in /root/src/rustloop/rust1.96.1 with --short=11 + the
+# tarball description — see the rustloop notes). Set PGSO_RUSTC to use it.
+PGSO_RUSTC="${PGSO_RUSTC:-}"
+if [ -n "$PGSO_RUSTC" ] && [ -x "$PGSO_RUSTC" ]; then
+  echo "  (PGSO compiler: $PGSO_RUSTC)"
+  ( cd "$SRC" && RUSTC="$PGSO_RUSTC" \
+    RUSTFLAGS="-Z fn-opt-levels=$(mktemp --suffix=.txt)" \
+    cargo build --release --target wasm32-wasip1 )
+else
+  echo "  (stable rustc — set PGSO_RUSTC for the PGSO compiler)"
+  ( cd "$SRC" && cargo build --release --target wasm32-wasip1 )
+fi
 
 WASM="$SRC/target/wasm32-wasip1/release/otranspilerl.wasm"
 if [ ! -f "$WASM" ]; then
