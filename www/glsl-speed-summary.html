@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GLSL int vs float — the results, explained</title>
+<style>
+  body { font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; background: #0f1220; color: #dde; margin: 0; line-height: 1.6; }
+  .wrap { max-width: 820px; margin: 0 auto; padding: 32px 20px 60px; }
+  h1 { font-size: 30px; color: #fff; margin: 8px 0 4px; }
+  h2 { font-size: 20px; color: #8cf; margin: 36px 0 8px; }
+  .sub { color: #99a; font-size: 15px; }
+  .card { background: #161b30; border: 1px solid #28304f; border-radius: 10px; padding: 18px 22px; margin: 14px 0; }
+  .metric { display: inline-block; background: #0e1226; border: 1px solid #2a3358; border-radius: 8px; padding: 10px 16px; margin: 4px 6px 4px 0; }
+  .metric .num { font-size: 22px; color: #6f6; font-weight: 600; }
+  .metric .lbl { font-size: 12px; color: #99a; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+  td, th { padding: 8px 12px; border: 1px solid #28304f; text-align: left; font-size: 14px; }
+  th { color: #9cf; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .win { color: #6f6; font-weight: 600; }
+  .lose { color: #f88; }
+  .tie { color: #cc6; }
+  code { background: #0e1226; border: 1px solid #2a3358; padding: 1px 6px; border-radius: 4px; font-size: 13px; }
+  a { color: #8cf; }
+  .btn { display: inline-block; background: #2c5fd0; color: #fff; text-decoration: none; padding: 12px 22px; border-radius: 8px; font-weight: 600; margin: 10px 0; }
+  .btn:hover { background: #3a6fe0; }
+  .note { font-size: 13px; color: #889; }
+  .footer { margin-top: 40px; font-size: 12px; color: #667; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>GLSL int vs float — the results, explained</h1>
+  <div class="sub">What the benchmark measured, what the numbers mean, and why a little retro-looking game
+  cares about integer arithmetic inside your GPU.</div>
+
+  <div class="card">
+    <h2 style="margin-top:0">The question</h2>
+    <p>Every pixel a WebGL game draws is the output of a tiny program running on your graphics
+    card — a <b>shader</b>. When that program has to multiply two colour values together, it
+    can do the arithmetic in <b>integers</b> or in <b>floating point</b>. Integer arithmetic
+    is exact but limited in range; floating point is smooth but can lose precision. Which is
+    faster? It depends entirely on your GPU and its driver — and it's not always what you'd
+    guess.</p>
+    <p>The game <b>mimecroft</b> (a maze game written in bash, rendered with WebGL) does its
+    pixel colours in integers — a deliberately careful choice made years ago. This page
+    summarises a benchmark that puts that choice to the test on a real browser GPU.</p>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0">The results (one GPU: ANGLE → Direct3D 11, Intel UHD)</h2>
+    <p>Each row renders the same work twice — once each way — and times both. The numbers
+    below are from an Intel UHD laptop GPU driven through Chrome's ANGLE translator (the
+    layer that converts WebGL into Direct3D).</p>
+    <table>
+      <tr><th>Comparison</th><th>Path A</th><th>Path B</th><th>Result</th></tr>
+      <tr><td>int vs float, per pixel</td><td class="num">int — 0.079 ms</td><td class="num">float — 0.125 ms</td><td class="win">int ≈ 1.6× faster</td></tr>
+      <tr><td>mediump vs highp float</td><td class="num">mediump — 0.053 ms</td><td class="num">highp — 0.064 ms</td><td class="win">mediump ≈ 1.2× faster</td></tr>
+      <tr><td>mediump vs highp int</td><td class="num">mediump — 0.123 ms</td><td class="num">highp — 0.149 ms</td><td class="win">mediump ≈ 1.2× faster</td></tr>
+      <tr><td>/128 vs /127 divisor</td><td class="num">/128 — 0.122 ms</td><td class="num">/127 — 0.138 ms</td><td class="win">/128 ≈ 1.13× faster</td></tr>
+      <tr><td>the game's shader vs a "full-int" rewrite</td><td class="num">current — 0.102 ms</td><td class="num">full-int — 0.102 ms</td><td class="tie">no difference (±5%)</td></tr>
+    </table>
+    <p class="note">"ms" = milliseconds per frame of the 512×384 test scene. Lower is better.
+    "mediump" and "highp" are precision levels — mediump is the default that most WebGL games
+    use; highp is double the precision but not always allowed in the fragment (pixel) stage.</p>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0">What the numbers mean</h2>
+    <div class="metric"><div class="num">1.6×</div><div class="lbl">int beats float per-pixel</div></div>
+    <div class="metric"><div class="num">1.2×</div><div class="lbl">mediump beats highp</div></div>
+    <div class="metric"><div class="num">1.13×</div><div class="lbl">/128 beats /127</div></div>
+    <div class="metric"><div class="num">1.003×</div><div class="lbl">game's shader already optimal</div></div>
+    <p style="margin-top:12px"><b>The game was right all along.</b> Its integer colour pipeline is
+    ~1.6× faster than the equivalent floating-point version on this GPU — and its "mediump"
+    precision is the faster of the two allowed levels. Even its choice of divisor (<code>/128</code>,
+    a power of two, which the hardware can turn into a simple shift) is measurably faster than
+    the "more correct" <code>/127</code>.</p>
+    <p>The last row is the most interesting: taking the game's <i>actual</i> compiled shader and
+    rewriting every remaining floating-point step as an integer makes <b>no measurable
+    difference</b> — because the expensive parts were already integer. The one part that is
+    still floating-point (the colour tint) is so cheap that it doesn't matter.</p>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0">Why this matters</h2>
+    <ul>
+      <li><b>Shaders run billions of times a second.</b> A 1.6× difference in one multiply is a
+      real frame-rate difference in a game that draws every pixel every frame.</li>
+      <li><b>The answer is not universal.</b> The same shaders can rank differently on an AMD
+      card, a phone's Mali GPU, or Apple's Metal translator. The numbers above are true for
+      this one GPU — your GPU may differ.</li>
+      <li><b>Precision and speed are the same decision here.</b> The game chose integers for
+      exactness; the benchmark shows that exactness also happened to be the fast option.</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0">Run it on your own GPU</h2>
+    <p>The benchmark is interactive — you can run all six comparisons (int vs float, the
+    precision levels, the divisors, and the game's exact shader) in your own browser in a few
+    seconds. It also shows you exactly which translator/driver your browser is using, so you
+    can see how your hardware ranks.</p>
+    <a class="btn" href="glsl-int-vs-float-bench.html" target="_blank">Open the interactive benchmark →</a>
+    <p class="note">Also available as a written report: <a href="../GLSL_SPEED.md">GLSL_SPEED.md</a>
+    — the methodology, the ES 1.00 constraints, and the full analysis.</p>
+  </div>
+
+  <div class="footer">mimecroft GLSL benchmark summary · results measured on ANGLE → Direct3D 11
+  (Intel UHD Graphics) · page version 1</div>
+</div>
+</body>
+</html>
