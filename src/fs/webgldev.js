@@ -160,10 +160,29 @@ export class WebGLDevice {
                                     // HUD texture, persists across frames;
                                     // composited onto the back buffer at swap
     this._hudDirty = false;         // layer changed → re-upload texture at swap
+    this._hudDirtyRect = null;      // canvas-pixel [x0,y0,x1,y1] of what changed
+                                    // (null = nothing since the last upload; the
+                                    // full 800×600 layer is uploaded only on the
+                                    // first paint / a full clear — every later
+                                    // change re-uploads JUST its region via
+                                    // texSubImage2D, so the gun, the map and the
+                                    // static status line never re-transfer)
+    this._hudTexInit = false;       // the texture holds the full layer (a fresh
+                                    // texture is undefined outside a sub-upload,
+                                    // so the first paint must be full)
+    this._hudSub = null;            // cached small canvas for region uploads
     this._hudTex = null;            // WebGL texture holding the layer
     this._hudProg = null;           // built-in composite program (internal)
     this._hudVerts = null;          // fullscreen textured-quad buffer
     this._lastSwapAt = 0;            // for key-steal timeout after a game ends
+    this._backDirty = false;         // the 3D back buffer changed since the last
+                                    // swap (clear / a draw) — the HUD composite
+                                    // must re-blend over it. Idle/heartbeat swaps
+                                    // (nothing changed) SKIP the composite: the
+                                    // retained back buffer already carries the
+                                    // last presented HUD, so a software/CPU
+                                    // renderer isn't charged a fullscreen
+                                    // alpha blend every heartbeat.
     this._keyListener = null;
     this._null = false;              // headless null-device mode (no DOM)
   }
@@ -494,14 +513,19 @@ export class WebGLDevice {
       // depth too — the per-frame depth buffer must reset or fragments
       // from the previous frame stay "nearer" and blocks vanish
       gl.clear(gl.COLOR_BUFFER_BIT | (gl.DEPTH_BUFFER_BIT || 0x100));
+      this._backDirty = true;
       this._lastCall = raw.trim();
       return;
     }
     if (op === "swap") {
       // Composite the transparent HUD layer (one textured quad) onto
       // the back buffer, then present. The layer persists across
-      // frames, so bash only re-writes the changed cells.
-      this._compositeHud();
+      // frames, so bash only re-writes the changed cells. SKIPPED when
+      // neither the 3D back buffer nor the HUD changed since the last
+      // swap (the retained back buffer already shows both) — the
+      // keyboard-heartbeat bare swaps cost no fullscreen blend.
+      if (this._backDirty || this._hudDirty) this._compositeHud();
+      this._backDirty = false;
       // Present to screen — the canvas stays hidden until the first swap
       gl.flush();
       if (this._canvas) this._canvas.style.display = "block";
@@ -518,6 +542,7 @@ export class WebGLDevice {
       return;
     }
     if (op === "draw") {
+      this._backDirty = true;
       this._draw(parts.slice(1));
       this._lastCall = raw.trim();
       return;
@@ -771,12 +796,31 @@ export class WebGLDevice {
     const col = (r, g, b, a) => a === undefined
       ? `rgb(${Math.round(Number(r) * 255)},${Math.round(Number(g) * 255)},${Math.round(Number(b) * 255)})`
       : `rgba(${Math.round(Number(r) * 255)},${Math.round(Number(g) * 255)},${Math.round(Number(b) * 255)},${a})`;
-    if (this._hudClearAll) ctx.clearRect(0, 0, W, H);
+    const clearedAll = this._hudClearAll;
+    if (clearedAll) ctx.clearRect(0, 0, W, H);
     this._hudClearAll = false;
+    // accumulate the canvas-pixel bounding box of everything this write
+    // touched — the composite uploads ONLY this region (texSubImage2D),
+    // so unchanged/empty areas of the 800×600 layer are never re-sent.
+    const markRect = (x, y, w, h) => {
+      const x0 = Math.max(0, Math.floor(x)), y0 = Math.max(0, Math.floor(y));
+      const x1 = Math.min(W, Math.ceil(x + w)), y1 = Math.min(H, Math.ceil(y + h));
+      if (x1 <= x0 || y1 <= y0) return;
+      if (!this._hudDirtyRect) this._hudDirtyRect = [x0, y0, x1, y1];
+      else {
+        this._hudDirtyRect[0] = Math.min(this._hudDirtyRect[0], x0);
+        this._hudDirtyRect[1] = Math.min(this._hudDirtyRect[1], y0);
+        this._hudDirtyRect[2] = Math.max(this._hudDirtyRect[2], x1);
+        this._hudDirtyRect[3] = Math.max(this._hudDirtyRect[3], y1);
+      }
+    };
+    if (clearedAll) { this._hudDirtyRect = [0, 0, W, H]; }
     for (const [cx, cy, w, h] of erases) {
+      markRect(px(cx) - pw(w) / 2, py(cy) - ph(h) / 2, pw(w), ph(h));
       ctx.clearRect(px(cx) - pw(w) / 2, py(cy) - ph(h) / 2, pw(w), ph(h));
     }
     for (const [cx, cy, w, h, r, g, b, a] of rects) {
+      markRect(px(cx) - pw(w) / 2, py(cy) - ph(h) / 2, pw(w), ph(h));
       ctx.fillStyle = col(r, g, b, a);
       ctx.fillRect(px(cx) - pw(w) / 2, py(cy) - ph(h) / 2, pw(w), ph(h));
     }
@@ -794,6 +838,7 @@ export class WebGLDevice {
         this._texImages.set(idx, c);
         img = c;
       }
+      markRect(px(cx) - pw(w) / 2, py(cy) - ph(h) / 2, pw(w), ph(h));
       ctx.drawImage(img, px(cx) - pw(w) / 2, py(cy) - ph(h) / 2, pw(w), ph(h));
     }
     for (const [cx, cy, w, h, deg, r, g, b] of rrects) {
@@ -803,6 +848,19 @@ export class WebGLDevice {
       ctx.fillStyle = col(r, g, b);
       ctx.fillRect(-pw(w) / 2, -ph(h) / 2, pw(w), ph(h));
       ctx.restore();
+      // the rotated rect's canvas bbox (the four corners rotated) — the
+      // unfiltered quad may reach further than the unrotated w×h
+      const rad = (-Number(deg)) * Math.PI / 180;
+      const c2 = Math.cos(rad), sn2 = Math.sin(rad);
+      const cx2 = px(cx), cy2 = py(cy), hw = pw(w) / 2, hh = ph(h) / 2;
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (const [vx, vy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+        const rx = cx2 + hw * (vx * c2 - vy * sn2);
+        const ry = cy2 - hh * (vx * sn2 + vy * c2);
+        x0 = Math.min(x0, rx); y0 = Math.min(y0, ry);
+        x1 = Math.max(x1, rx); y1 = Math.max(y1, ry);
+      }
+      markRect(x0, y0, x1 - x0, y1 - y0);
     }
     for (const [cx, cy, size, r, g, b, deg, a] of tris) {
       // `a` is the ALPHA field the game appends (radar_a — the minimap
@@ -825,6 +883,8 @@ export class WebGLDevice {
       ctx.lineTo(p2[0], p2[1]);
       ctx.closePath();
       ctx.fill();
+      const xs = [p0[0], p1[0], p2[0]], ys = [p0[1], p1[1], p2[1]];
+      markRect(Math.min(...xs), Math.min(...ys), Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
     }
     this._hudDirty = true;
   }
@@ -874,15 +934,43 @@ export class WebGLDevice {
     const gl = this._gl;
     if (this._null || !this._hudLayer || !gl) return;
     if (this._hudDirty) {
+      const W = this._hudLayer.width, H = this._hudLayer.height;
       if (!this._hudTex) this._hudTex = gl.createTexture();
       gl.bindTexture(gl.TEXTURE_2D, this._hudTex);
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, this._hudLayer);
+      // upload ONLY the changed region once the layer is resident: a
+      // per-frame HUD change (a digit group, a muzzle flash, a radar
+      // blip) re-sends just that small rectangle instead of the whole
+      // 800×600 canvas — the static gun/map/status areas and the vast
+      // empty transparent regions are never re-transferred. The first
+      // paint, a full C-wipe and any change covering > half the layer
+      // still upload the whole surface (cheaper than a copy+patch).
+      const dr = this._hudDirtyRect;
+      const area = dr ? (dr[2] - dr[0]) * (dr[3] - dr[1]) : 0;
+      const full = !this._hudTexInit || !dr || area > W * H * 0.5;
+      if (full) {
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, this._hudLayer);
+        this._hudTexInit = true;
+      } else {
+        const dw = dr[2] - dr[0], dh = dr[3] - dr[1];
+        if (!this._hudSub) this._hudSub = document.createElement("canvas");
+        if (this._hudSub.width !== dw || this._hudSub.height !== dh) {
+          this._hudSub.width = dw; this._hudSub.height = dh;
+        }
+        const sctx = this._hudSub.getContext("2d");
+        sctx.clearRect(0, 0, dw, dh);
+        // canvas top-left = texture (0,0) = screen top-left (no y-flip,
+        // the quad maps uv 0,0 to the top-left), so the sub-canvas lands
+        // at exactly the dirty rect's offset
+        sctx.drawImage(this._hudLayer, dr[0], dr[1], dw, dh, 0, 0, dw, dh);
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, dr[0], dr[1], gl.RGBA, gl.UNSIGNED_BYTE, this._hudSub);
+      }
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       this._hudDirty = false;
+      this._hudDirtyRect = null;
     }
     if (!this._hudProg) this._hudProg = this._linkHudProgram();
     if (!this._hudProg) return;
