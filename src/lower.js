@@ -869,6 +869,13 @@ export function liftLocalVars(program) {
   // decide lifts per function
   const lifts = new Map(); // fn name → Set of lifted var names
   const syncDrops = new Map(); // fn name → Set of param names whose syncs are dropped
+  // program-wide first mention per var (statement order across all scopes):
+  // the module let starts "" — a READ before the first write would see the
+  // default where the store proxy might have fallen back to the shell env.
+  const globalFirst = new Map();
+  for (const [, s] of scopes) {
+    for (const o of s.ops) if (!globalFirst.has(o.name)) globalFirst.set(o.name, o.kind);
+  }
   for (const [name, s] of scopes) {
     if (name === "__top") continue;
     const lifted = new Set();
@@ -876,12 +883,14 @@ export function liftLocalVars(program) {
       if (s.arrays.has(v) || s.indirect.has(v) || s.indirect.has("*") || topUses.has(v)) continue;
       if (stringRefs.has(v)) continue; // the runtime reads it BY NAME from a "$v" string
       if (moduleLets.has(v)) continue;
-      if (usageCount.get(v) !== 1) continue;
+      // a var used in MANY functions is fine — the module let is the
+      // store's scope, so cross-function sharing still resolves (the
+      // single-function guard was for function-local lets, which we no
+      // longer use). What matters is the global first mention + writes.
       if (!s.writes.has(v)) continue; // written at least once (shadows env)
-      // first mention (statement order) must be a write — no read-before-
-      // write, so the module let's "" default can never leak in
       const first = s.ops.find((o) => o.name === v);
-      if (!first || first.kind === "read") continue;
+      if (!first || first.kind === "read") continue; // write-first in this function
+      if (globalFirst.get(v) === "read") continue; // and program-wide
       if (s.params.has(v)) continue; // params are native already
       lifted.add(v);
     }
@@ -964,7 +973,8 @@ export function liftLocalVars(program) {
   // declare the lifted vars at module level (`let v = ""` — the store's
   // default; preserves cross-call persistence like the store)
   const newLets = [];
-  for (const [name, lifted] of lifts) for (const v of lifted) newLets.push(v);
+  const seenLets = new Set();
+  for (const [, lifted] of lifts) for (const v of lifted) if (!seenLets.has(v)) { seenLets.add(v); newLets.push(v); }
   if (newLets.length) {
     newLets.sort();
     program.body.unshift({
