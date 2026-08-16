@@ -29,21 +29,32 @@ const src = readFileSync("www/bin/mimecroft.sh", "utf8");
 // examples copy is mid-refactor and may lack the buffer writes)
 const bin = readFileSync("www/bin/mimecroft.sh", "utf8");
 
-// ─── 1) the clamp is present in both shader paths ─────────────────
-const vsFb = /vs_fb="([^"]+)"/.exec(src)[1];
-check("hand-written vs_fb clamps w", vsFb.includes("if (w < 0.0001) w = 0.0001;"));
+// ─── 1) the clamp in the shader path ──────────────────────────────
+// The hand-written vs_fb fallback was INTENTIONALLY removed (single GLSL
+// source of truth — the sh2glsl-compiled vertex shader). The clamp is
+// injected by the game at runtime into the compiled GLSL.
 check("game injects the clamp into the generated GLSL", src.includes("if (g_w < 0.0001) g_w = 0.0001;"));
 
-// the generated GLSL, after the game's injection
+// the generated GLSL, after the game's injection — this IS the shader
+// the game renders with (no fallback)
 const lib = await getOtranspilerl();
 const genRaw = lib.glslv(readFileSync("www/examples/mimecroft-vertex.sh", "utf8"));
-const injected = genRaw.replace(
+const vsGlsl = genRaw.replace(
   "g_w = ((((0.0) - g_relz)) + (0.0));",
   "g_w = ((((0.0) - g_relz)) + (0.0)); if (g_w < 0.0001) g_w = 0.0001;");
-check("generated GLSL has the clamp after injection", injected.includes("if (g_w < 0.0001) g_w = 0.0001;"));
+check("generated GLSL has the clamp after injection", vsGlsl.includes("if (g_w < 0.0001) g_w = 0.0001;"));
 
 // ─── 2) real-GL pixel proof ───────────────────────────────────────
-const frag = /fs_fb="([^"]+)"/.exec(src)[1] + " gl_FragColor = vec4(c, 1.0); }";
+// The hand-written fs_fb fallback is gone (single GLSL design) — the
+// fragment is the sh2glsl-compiled game program (the inline echo lines
+// emit_fragment_shader writes, exactly like __shader-test).
+const fragM = src.match(/emit_fragment_shader\(\) \{(.*?)\n\}/s);
+const fragLines = [];
+for (const line of (fragM ? fragM[1] : "").split("\n")) {
+  const mm = line.match(/^\s*echo '((?:[^'\\]|\\.)*)'\s*(?:>>|>)/);
+  if (mm) fragLines.push(mm[1]);
+}
+const frag = lib.glsl(fragLines.join("\n") + "\n");
 // distinct face colours (per vertex, in the buffer's face order):
 // top WHITE, bottom 0.5 gray, +z YELLOW, -z BLUE, +x GREEN, -x RED
 const SHADES =
@@ -112,8 +123,8 @@ function render(vs) {
   })();
 }
 
-const clampedVs = vsFb;   // the fixed hand-written shader (has the clamp)
-const unclampedVs = vsFb.replace("if (w < 0.0001) w = 0.0001;", "");
+const clampedVs = vsGlsl;   // the compiled shader (has the clamp)
+const unclampedVs = vsGlsl.replace("if (g_w < 0.0001) g_w = 0.0001;", "");
 const a = await render(clampedVs);
 const b = await render(unclampedVs);
 console.log("  clamped:   green(+x wedge)=" + a.green + " blue(-z front)=" + a.blue);

@@ -77,5 +77,15 @@
  "t74_file_test.sh",
  "t75_arith_compound.sh",
  "t76_case_alt.sh",
+ "t77_arith_unary.sh",
+ "t78_arith_ternary.sh",
+ "t79_declare_array.sh",
+ "t80_break.sh",
+ "t81_continue.sh",
+ "t82_declare.sh",
+ "t83_exit.sh",
+ "t84_incdec.sh",
+ "t85_arith_index.sh",
+ "t86_env_cmd.sh",
  "alphanumeric_compare.sh"
 ]

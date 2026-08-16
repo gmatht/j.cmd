@@ -82,8 +82,17 @@ async function runGame(args, keys, opts = {}) {
     // run per distinct sound) — disable the background pre-cache so the
     // in-game plays drive the generators, exactly as before the
     // feature. The dedicated pre-cache run turns it back on.
-    src = src.replace("precache_sounds &", "true");
+    src = src.replace(/precache_sounds &/g, "true");
   }
+  // Neutralise the MENU's background texture submits. They keep the
+  // runtime's bgThreadJobs counter positive for seconds, so the sound
+  // generator execs during that window route to the WORKER thread — the
+  // harness's main-thread shellExec counter never sees them, and the
+  // run-count checks fail ("no hit run", "runs=1 distinct=2") even
+  // though the cache is written. With the submits gone, bgThreadJobs
+  // stays 0 and every sound exec runs on the main thread where the
+  // harness counts it.
+  src = src.replace("  bash /examples/textures/texture-$tbn_name.sh --tsv --size $lt_eff --seed $tex_seed > /tmp/mimecroft-bg-$tbn_name.tsv &", "  true");
   // force the browser path AND keep sound on (the headless branch sets
   // sound=0 — the CLI has no Web Audio)
   src = src.replace("*headless*) sound=$((0)); headless=1 ;;", "*headless*) sound=$((1)); headless=0 ;;").replace(
@@ -236,6 +245,7 @@ console.log(`  [t=${((Date.now()-T0)/1000).toFixed(1)}s] game run 2 (CLI arg)…
   const { samplesWrites, soundRuns, stdout } = await runGame(["--sounds", "bash"], keys);
   check("samples device received a sound", samplesWrites.length >= 1, "writes=" + samplesWrites.length);
   check("startup echo shows bash mode", stdout.join("").includes("sound bash"));
+  console.log("DEBUG run2 soundRuns:", JSON.stringify(soundRuns));
   check("cache reused across runs (no re-generation)", soundRuns.length === 0, `runs=${soundRuns.length}`);
 }
 

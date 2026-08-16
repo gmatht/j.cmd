@@ -1622,6 +1622,8 @@ load_textures() {
   # worker already computed the TSV), so the loading screen never
   # regenerates synchronously.
   sm_bg_i=0
+  sm_bg_tries=0
+  tex_bg_pending=0
   while [ "$sm_bg_i" -lt "$tex_bg_n" ]; do
     tex_bg_done $sm_bg_i
     if [ "$tbg" -eq 1 ]; then
@@ -1633,8 +1635,21 @@ load_textures() {
           tex_bg_harvest $sm_bg_i $sm_bg_name ${sm_tex_idx[$sm_bg_i]} 3
         fi
       fi
+      sm_bg_i=$((sm_bg_i + 1))
+      sm_bg_tries=0
+    else
+      # still generating — poll until it lands (or the worker hangs)
+      tex_bg_pending=1
+      sm_bg_tries=$((sm_bg_tries + 1))
+      if [ "$sm_bg_tries" -gt 240 ]; then
+        # ~12s: the worker is stuck — give up on the background copy
+        # and let the synchronous load_tex below regenerate it
+        sm_bg_i=$((sm_bg_i + 1))
+        sm_bg_tries=0
+      else
+        sleep 0.05
+      fi
     fi
-    sm_bg_i=$((sm_bg_i + 1))
   done
   # wipe the GL back buffer first so the loading grid builds on black
   # instead of accumulating over the menu card (the HUD composite blends
@@ -1677,6 +1692,13 @@ load_textures() {
   load_tex png 12
   load_tex octet 13
   load_tex text 14
+  # the loading-screen previews (and any late background thumbnails) sit
+  # on the PERSISTENT HUD layer — the generation is fully done now, so
+  # clear them: a player who quit the menu mid-generation must not see
+  # the generated textures linger on the HUD. The game's first HUD
+  # rebuild (hud_static_dirty) redraws the static base from scratch.
+  echo "C" > /dev/webgl/hud
+  hud_static_dirty=1
 }
 
 # ─── treasure-name labels ───────────────────────────────────────────
