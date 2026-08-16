@@ -59,7 +59,7 @@ tex_seed=20240812     # texture generation seed (drives the LCG noise)
 # the mime type names) so stale session caches regenerate instead
 # of uploading the old pattern
 tex_ver=10         # stone noise cells are now fixed 4px/2px (jagged at every resolution)
-sm_sel=0              # settings-menu cursor (0=shift 1=size 2=seed 3=crt 4=corrupt 5=mime speed 6=mime names 7=sound mode 8=minimap 9=game speed)
+sm_sel=0              # settings-menu cursor (0=shift 1=size 2=seed 3=crt 4=corrupt 5=mime speed 6=mime names 7=sound mode 8=minimap 9=game speed 10=vsync)
 sm_done=0
 sm_changed=0
 headless=1            # set from /dev/webgl/state in main()
@@ -245,6 +245,9 @@ precache_done=0     # the background sound pre-cache spawns once per session
 anim_t0=0           # wall-clock ms when the current glide started
 ANIM_MS=200         # each action completes in 0.2s of wall time
 game_speed=100       # player speed as % of normal (100=normal, 10=10%, 5=5% — the settings menu's GAME SPEED item)
+vsync=1              # vsync: ON = one frame per display refresh (60Hz, 16.7ms budget — the compositor clamps
+                     # short sleeps, so the leftover is a REAL ≥4ms sleep and every frame paints);
+                     # OFF = the legacy 100fps cap (10ms budget + the clamped minimum-yield fallback)
 ANIM_MS_CROUCH=400  # a move through a 1-tall (mined) passage — half speed
 anim_ms=200         # the CURRENT glide's duration (moves slow when crouched)
 crouched=0          # 1 when the ceiling overhead is low — the eye ducks
@@ -3072,6 +3075,11 @@ settings_inc() {
     else game_speed=100
     fi
   fi
+  if [ "$sm_sel" -eq 10 ]; then
+    # vsync (the right arrow increases → ON): the frame budget is read
+    # every frame, so the toggle takes effect immediately
+    vsync=1
+  fi
 }
 
 settings_dec() {
@@ -3142,6 +3150,9 @@ settings_dec() {
     elif [ "$game_speed" -eq 50 ]; then game_speed=100
     else game_speed=1
     fi
+  fi
+  if [ "$sm_sel" -eq 10 ]; then
+    vsync=0
   fi
 }
 
@@ -3224,6 +3235,9 @@ draw_settings_menu() {
   echo "  $sm_mark  minimap     : $sm_mm"
   if [ "$sm_sel" -eq 9 ]; then sm_mark=">"; else sm_mark=" "; fi
   echo "  $sm_mark  game speed  : ${game_speed}%"
+  if [ "$sm_sel" -eq 10 ]; then sm_mark=">"; else sm_mark=" "; fi
+  if [ "$vsync" -eq 1 ]; then sm_vs="ON"; else sm_vs="OFF"; fi
+  echo "  $sm_mark  vsync       : $sm_vs"
   # canvas card
   # canvas card — the leading C must be on its OWN line (a real
   # newline) or the device never clears the layer and old rects stay
@@ -3253,6 +3267,11 @@ draw_settings_menu() {
   if [ "$MINIMAP_MODE" -eq 0 ]; then sm_mm_s="OFF"; sm_mm_len=3
   elif [ "$MINIMAP_MODE" -eq 2 ]; then sm_mm_s="50%"; sm_mm_len=3
   else sm_mm_s="ON"; sm_mm_len=2; fi
+  sm_gs_s=$(echo "$game_speed")
+  sm_gslen=1
+  if [ "$game_speed" -ge 10 ]; then sm_gslen=2; fi
+  if [ "$game_speed" -ge 100 ]; then sm_gslen=3; fi
+  if [ "$vsync" -eq 1 ]; then sm_vsync_s="ON"; sm_vsync_len=2; else sm_vsync_s="OFF"; sm_vsync_len=3; fi
   ov_text="C
 "
   draw_text "SETTINGS" 8 840 1750 10 14 0.95 0.85 0.30
@@ -3265,6 +3284,8 @@ draw_settings_menu() {
   draw_text "MIME NAMES" 10 560 1000 8 11 0.60 0.75 0.95
   draw_text "SOUND MODE" 10 560 900 8 11 0.60 0.75 0.95
   draw_text "MINIMAP" 7 560 800 8 11 0.60 0.75 0.95
+  draw_text "GAME SPEED" 10 560 700 8 11 0.60 0.75 0.95
+  draw_text "VSYNC" 5 560 600 8 11 0.60 0.75 0.95
   draw_text $sm_shift_s 5 1000 1600 8 11 0.95 0.95 0.95
   draw_text $sm_size_s 2 1000 1500 8 11 0.95 0.95 0.95
   draw_text $sm_seed_s $sm_slen 1000 1400 8 11 0.95 0.95 0.95
@@ -3274,6 +3295,8 @@ draw_settings_menu() {
   draw_text $sm_mlbl_s $sm_mlbl_len 1000 1000 8 11 0.95 0.95 0.95
   draw_text $sm_snd_s $sm_snd_len 1000 900 8 11 0.95 0.95 0.95
   draw_text $sm_mm_s $sm_mm_len 1000 800 8 11 0.95 0.95 0.95
+  draw_text $sm_gs_s $sm_gslen 1000 700 8 11 0.95 0.95 0.95
+  draw_text $sm_vsync_s $sm_vsync_len 1000 600 8 11 0.95 0.95 0.95
   if [ "$sm_sel" -eq 0 ]; then draw_rect "-0.520" "0.583" "0.016" "0.030" 1.0 0.85 0.30
   elif [ "$sm_sel" -eq 1 ]; then draw_rect "-0.520" "0.483" "0.016" "0.030" 1.0 0.85 0.30
   elif [ "$sm_sel" -eq 2 ]; then draw_rect "-0.520" "0.383" "0.016" "0.030" 1.0 0.85 0.30
@@ -3282,7 +3305,9 @@ draw_settings_menu() {
   elif [ "$sm_sel" -eq 5 ]; then draw_rect "-0.520" "0.083" "0.016" "0.030" 1.0 0.85 0.30
   elif [ "$sm_sel" -eq 6 ]; then draw_rect "-0.520" "-0.017" "0.016" "0.030" 1.0 0.85 0.30
   elif [ "$sm_sel" -eq 7 ]; then draw_rect "-0.520" "-0.117" "0.016" "0.030" 1.0 0.85 0.30
-  else draw_rect "-0.520" "-0.217" "0.016" "0.030" 1.0 0.85 0.30; fi
+  elif [ "$sm_sel" -eq 8 ]; then draw_rect "-0.520" "-0.217" "0.016" "0.030" 1.0 0.85 0.30
+  elif [ "$sm_sel" -eq 9 ]; then draw_rect "-0.520" "-0.317" "0.016" "0.030" 1.0 0.85 0.30
+  else draw_rect "-0.520" "-0.417" "0.016" "0.030" 1.0 0.85 0.30; fi
   draw_text "UP/DOWN SELECT - LEFT/RIGHT CHANGE" 34 340 250 7 10 0.85 0.85 0.85
   draw_text "SPACE/ESC START - Q QUIT" 24 500 180 7 10 0.85 0.85 0.85
   # the background-loaded texture thumbs: re-emit the loaded slots (as
@@ -3353,22 +3378,22 @@ settings_menu() {
           ;;
         *ArrowUp*)
           sm_sel=$((sm_sel - 1))
-          if [ "$sm_sel" -lt 0 ]; then sm_sel=9; fi
+          if [ "$sm_sel" -lt 0 ]; then sm_sel=10; fi
           sm_changed=1
           ;;
         *ArrowDown*)
           sm_sel=$((sm_sel + 1))
-          if [ "$sm_sel" -gt 9 ]; then sm_sel=0; fi
+          if [ "$sm_sel" -gt 10 ]; then sm_sel=0; fi
           sm_changed=1
           ;;
         *w*)
           sm_sel=$((sm_sel - 1))
-          if [ "$sm_sel" -lt 0 ]; then sm_sel=9; fi
+          if [ "$sm_sel" -lt 0 ]; then sm_sel=10; fi
           sm_changed=1
           ;;
         *s*)
           sm_sel=$((sm_sel + 1))
-          if [ "$sm_sel" -gt 9 ]; then sm_sel=0; fi
+          if [ "$sm_sel" -gt 10 ]; then sm_sel=0; fi
           sm_changed=1
           ;;
         *d*)
@@ -3460,7 +3485,7 @@ settings_menu() {
     fi
   fi
   echo ""
-  echo "  settings: camera shift $fv · textures ${tex_size}px · seed $tex_seed · mime speed $mime_speed · sound $SOUND_MODE"
+  echo "  settings: camera shift $fv · textures ${tex_size}px · seed $tex_seed · mime speed $mime_speed · sound $SOUND_MODE · vsync $vsync"
 }
 
 # ─── level progression ─────────────────────────────────────────────
@@ -3887,18 +3912,18 @@ main() {
       fi
       fps_t0=$fps_t
     fi
-    # fps cap 100 (10ms/frame): sleep the leftover budget, or a minimum
-    # YIELD on a slow frame — the browser CANNOT paint (terminal or
-    # canvas) while the transpiled script runs its microtask chain, so a
-    # frame that never yields freezes the display until the game exits.
-    # The browser clamps <4ms timeouts up to ~4ms+, so a 1-3ms leftover
-    # sleep actually costs ~4-10ms (measured 10ms here) — for those,
-    # yield with setTimeout(0) (~1.5ms) instead; the compositor still
-    # gets its paint window and the cap only paces 4ms+ leftovers.
+    # frame budget: vsync ON = one frame per display refresh (60Hz →
+    # 16.7ms), OFF = the legacy 100fps cap (10ms). Either way the
+    # leftover is the sleep; a leftover ≤3ms is a minimum YIELD instead
+    # (the browser clamps <4ms timeouts up to ~4-10ms, so sleeping
+    # 1-3ms would cost more than yielding with setTimeout(0)). With
+    # vsync on the work (~9ms) leaves a REAL ≥4ms sleep, so the clamp
+    # never bites and every frame paints exactly once.
     gtick
     fp_el=$((g_now - fp_t0))
-    if [ "$fp_el" -lt 10000 ]; then
-      fp_wait=$(((10000 - fp_el + 999) / 1000))
+    if [ "$vsync" -eq 1 ]; then fp_budget=16667; else fp_budget=10000; fi
+    if [ "$fp_el" -lt "$fp_budget" ]; then
+      fp_wait=$(((fp_budget - fp_el + 999) / 1000))
       if [ "$fp_wait" -le 3 ]; then fp_wait=0; fi
     else
       fp_wait=0
