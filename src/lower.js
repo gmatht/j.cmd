@@ -764,6 +764,7 @@ export function liftLocalVars(program) {
 
   // per-scope store usage: { reads, writes, syncs, arrays, indirect, ops }
   const scopes = new Map();
+  const stringRefs = new Set(); // program-wide: vars named in "$x" string args
   const newScope = () => ({ reads: new Set(), writes: new Set(), syncs: new Set(), arrays: new Set(), indirect: new Set(), ops: [] });
   const scan = (body, scope) => {
     const walk = (n, parent, key) => {
@@ -774,6 +775,18 @@ export function liftLocalVars(program) {
           n.callee.object && n.callee.object.type === "Identifier" && n.callee.object.name === "sh2") {
         const fn = n.callee.property && n.callee.property.type === "Identifier" ? n.callee.property.name : "";
         const a0 = n.arguments && n.arguments[0];
+        // a var referenced by NAME inside a STRING-LITERAL arg of a runtime
+        // call ("$x" / "arr[$x]") is READ FROM THE STORE by the runtime
+        // (arrayIndex/setVar/test expand "$x" via getVar) — lifting it to a
+        // JS binding would leave the store empty and the expansion resolves
+        // to "". Templates (`arr[${x}]`) are JS-evaluated, so only literal
+        // strings count. Scanned FIRST (the per-function handlers return).
+        for (const a of n.arguments) {
+          if (a && a.type === "Literal" && typeof a.value === "string") {
+            const sm = String(a.value).match(/\$([A-Za-z_][A-Za-z0-9_]*)/g);
+            if (sm) for (const mm of sm) { scope.indirect.add(mm.slice(1)); stringRefs.add(mm.slice(1)); }
+          }
+        }
         if (fn === "setVar" && a0) {
           if (a0.type === "Literal" && typeof a0.value === "string") {
             const nm = a0.value;
@@ -861,6 +874,7 @@ export function liftLocalVars(program) {
     const lifted = new Set();
     for (const v of s.ops.map((o) => o.name)) {
       if (s.arrays.has(v) || s.indirect.has(v) || s.indirect.has("*") || topUses.has(v)) continue;
+      if (stringRefs.has(v)) continue; // the runtime reads it BY NAME from a "$v" string
       if (moduleLets.has(v)) continue;
       if (usageCount.get(v) !== 1) continue;
       if (!s.writes.has(v)) continue; // written at least once (shadows env)
@@ -872,9 +886,12 @@ export function liftLocalVars(program) {
       lifted.add(v);
     }
     if (lifted.size) lifts.set(name, lifted);
-    // A) param-sync drop: a param whose ONLY store ops are its syncs
+    // A) param-sync drop: a param whose ONLY store ops are its syncs (and
+    // that is never read by name from a "$p" string — the runtime would
+    // resolve the empty store)
     const drop = new Set();
     for (const p of s.params) {
+      if (stringRefs.has(p)) continue;
       const ops = s.ops.filter((o) => o.name === p);
       if (ops.length && ops.every((o) => o.kind === "sync")) drop.add(p);
     }
@@ -955,6 +972,16 @@ export function liftLocalVars(program) {
         type: "VariableDeclarator", id: id(v), init: { type: "Literal", value: "" },
       })),
     });
+  }
+  // post-lift: the runtime reads "$name" string args (arrayIndex/setVar/
+  // test/param) FROM THE STORE — a lifted var's store is never written, so
+  // the expansion would resolve to "". Rewrite every "$lifted" token to a
+  // ${lifted} interpolation (same helper the counter promotion uses), so
+  // the value travels with the call.
+  for (const lifted of lifts.values()) {
+    for (const v of lifted) {
+      program.body = program.body.map((st) => rewriteCounterRefs(st, v));
+    }
   }
   return program;
 }
