@@ -578,9 +578,9 @@ $("run").onclick = async () => {
       ? (ratio > 1.05 ? `highp ${mode === "precInt" ? "INT" : "FLOAT"} is ${ratio.toFixed(2)}× SLOWER than mediump ${mode === "precInt" ? "INT" : "FLOAT"} on this translator — the mediump default the game runs is the cheaper path (and highp in the fragment needs the OES_fragment_precision_high extension).`
          : ratio < 0.95 ? `highp ${mode === "precInt" ? "INT" : "FLOAT"} is ${(1 / ratio).toFixed(2)}× FASTER than mediump ${mode === "precInt" ? "INT" : "FLOAT"} on this translator (ANGLE often runs mediump at full precision on desktop — the qualifier is then free).`
          : `mediump and highp ${mode === "precInt" ? "INT" : "FLOAT"} are within ±5% on this translator — the precision qualifier costs nothing here (ANGLE maps both to the full native form on desktop).`)
-      : (ratio > 1.05 ? `In the ${stage} stage, float is ${ratio.toFixed(2)}× SLOWER than int on this translator — the int pipeline (the game's choice) is the faster path here.`
-         : ratio < 0.95 ? `In the ${stage} stage, float is ${(1 / ratio).toFixed(2)}× FASTER than int on this translator — the int casts/emulated modulo cost more than they save here.`
-         : `In the ${stage} stage, float and int are within ±5% on this translator — the arithmetic choice is free; the int path's benefit is exactness (no mediump-float mantissa quantisation), not speed.`);
+      : (ratio > 1.05 ? `In the ${stage} stage, the FLOAT pipeline is ${ratio.toFixed(2)}× SLOWER than the INT pipeline on this translator (float÷int = ${ratio.toFixed(2)}) — the int pipeline (the game's choice) is the faster path here.`
+         : ratio < 0.95 ? `In the ${stage} stage, the FLOAT pipeline is ${(1 / ratio).toFixed(2)}× FASTER than the INT pipeline on this translator — the int casts/emulated modulo cost more than they save here.`
+         : `In the ${stage} stage, the FLOAT and INT pipelines are within ±5% on this translator — the arithmetic choice is free; the int path's benefit is exactness (no mediump-float mantissa quantisation), not speed.`);
   $("verdict").textContent = verdict;
   $("status").textContent = "done";
 
