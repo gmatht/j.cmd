@@ -51,7 +51,7 @@ Measured with the harness (24000 frames/sample × 5 samples):
 |---|---|---|---|
 | fragment int vs float | int 0.079 ms/frame (12612 FPS) | float 0.125 ms/frame (7999 FPS) | **float 1.58× slower** |
 | fragment mediump vs highp float | mediump 0.053 ms/frame (18740 FPS) | highp 0.064 ms/frame (15630 FPS) | **highp 1.20× slower** |
-| fragment mediump vs highp int | mediump int | highp int | run the page for the current numbers |
+| fragment mediump vs highp int | mediump 0.123 ms/frame (8158 FPS) | highp 0.149 ms/frame (6725 FPS) | **highp 1.21× slower** |
 
 (Vertex mode on the same machine: per-vertex int vs float — run the page for the
 current numbers.)
@@ -80,3 +80,50 @@ and the exact path on the measured translator, and it is legal everywhere ES 1.0
 guarantees mediump int. The float rewrite would cost ~1.6× on this hardware (and
 more on some others) purely in ALU, plus the mediump-float mantissa quantisation the
 int path avoids. No change is warranted.
+
+
+## Can the mimecroft GLSL be optimised on this basis?
+
+Inspection of the game's compiled fragment (`www/examples/mimecroft-frag.glsl`, the
+sh2glsl output the game renders with):
+
+```glsl
+precision mediump float;
+precision mediump int;
+varying highp vec4 vColor;
+varying highp vec2 vUv;
+...
+int g_frag_x = int(gl_FragCoord.x);      // mediump int — fits (≤ 512)
+...
+g_r = (g_fr * float(int(_tex.r * 255.0))) / 128.0;   // the TINT — mediump FLOAT
+g_scan = int(mod(float(g_frag_y), 6.0));              // int effects
+g_r = max(g_r, 0.0);                                   // the r<0 clamps
+```
+
+Findings against the benchmark:
+
+1. **The precision is already optimal.** The fragment is `mediump float` + `mediump int`
+   — exactly the configuration the benchmark measures as fastest (highp float +1.20×,
+   highp int +1.21×). No precision change is warranted.
+
+2. **The colour math is done in mediump FLOAT, not int.** The game's bash source does the
+   tint and the effects in int (`r=$((r * tex_r / 128))`, `r*90/100`, the mix /128), but
+   the generator lowers that to GLSL float (`g_r = (g_fr * float(int(_tex.r*255.0)))/128.0`,
+   `g_r *= 0.9`, `g_mix = min(float(uDamage)*cr.a, 127.0)`). The benchmark's full-int
+   pipeline (the tint + effects in mediump int) measured **~1.6× faster than the full
+   float pipeline** on this translator. The game's actual fragment is a MIX — float tint
+   + int effects — so it sits between the two benchmarked extremes, and the tint (the
+   per-pixel bulk: 3 mults + the `float(int())` conversions per channel) is the part the
+   int path would win back. The optimisation therefore belongs in the **sh2glsl
+   generator** (emit the game's int arithmetic as GLSL mediump int, as the benchmark's
+   int pipeline does), not in the game — the game's bash is already int.
+
+3. **Already done / trivial:** the double `fract(vUv)` (block + crack samples) is hoisted
+   to one `_uv` per fragment (the game's emit_fragment_shader post-process); the `r<0`
+   clamps and the `int(gl_FragCoord)` copies are trivial int ops the benchmark confirms
+   are free next to the ALU work.
+
+**Verdict:** the game's fragment is already at the optimal precision, and its bash
+source is already int; the only measurable win on this basis (the compiled colour math
+in mediump int instead of float, ~1.6× on the tint portion) is a generator change, not
+a game change.
