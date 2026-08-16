@@ -27,7 +27,7 @@ export class ExamplesFS {
       // bumped whenever the example files change — the query makes the
       // URL differ, so even a stubborn HTTP cache can't serve an old
       // generator script (the mime texture names, etc.)
-      const EXAMPLES_VERSION = "4";
+      const EXAMPLES_VERSION = "5";
       this._loader = async (name) => {
         // revalidate + version the URL: a stale HTTP cache would serve
         // an old example script forever (e.g. a texture generator
