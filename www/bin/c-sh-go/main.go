@@ -148,13 +148,15 @@ var macros = map[string]macro{}
 // counts.
 func cTypeSize(t string) (int, bool) {
 	switch t {
-	case "char":
+	case "char", "unsigned char", "signed char":
 		return 1, true
-	case "short":
+	case "short", "unsigned short", "signed short", "short int", "unsigned short int", "signed short int":
 		return 2, true
-	case "int", "float", "long int":
+	case "int", "float", "unsigned", "unsigned int", "signed", "signed int":
 		return 4, true
-	case "long", "double", "size_t", "long long":
+	case "long", "long int", "double", "size_t", "long long", "long long int",
+		"unsigned long", "unsigned long int", "unsigned long long", "unsigned long long int",
+		"signed long", "signed long int", "signed long long", "signed long long int":
 		return 8, true
 	}
 	// `struct Tag*` / `void*` / `char*` — a pointer member is one word
@@ -164,6 +166,48 @@ func cTypeSize(t string) (int, bool) {
 		return 8, true
 	}
 	return 0, false
+}
+
+// isTypeKw — true for any C type keyword (including modifiers that
+// combine into compound types like "unsigned long long").
+func isTypeKw(text string) bool {
+	switch text {
+	case "int", "char", "double", "float", "void",
+		"long", "short", "unsigned", "signed",
+		"va_list", "size_t":
+		return true
+	}
+	return false
+}
+
+// isTypeContinuation — true when `next` can follow `first` in a
+// compound C type (e.g. "unsigned" + "long", "long" + "long").
+func isTypeContinuation(first, next string) bool {
+	switch first {
+	case "unsigned", "signed":
+		return next == "int" || next == "long" || next == "short" || next == "char"
+	case "long", "unsigned long", "signed long":
+		return next == "long" || next == "int"
+	case "short", "unsigned short", "signed short":
+		return next == "int"
+	}
+	return false
+}
+
+// consumeTypeKeywords — after the first type keyword has been consumed,
+// greedily consume additional keywords to build a compound type name
+// like "unsigned long long" or "long long".
+func (p *parser) consumeTypeKeywords(first string) string {
+	kw := first
+	for {
+		t := p.peek()
+		if t == nil || t.kind != "id" || !isTypeContinuation(kw, t.text) {
+			break
+		}
+		p.next()
+		kw = kw + " " + t.text
+	}
+	return kw
 }
 
 // structSize — the flattened sizeof of a declared struct type.
@@ -1752,6 +1796,10 @@ func lex(src string) ([]tok, error) {
 					j++
 				}
 			}
+			// C integer suffixes: u/U, l/L, ll/LL, and combinations
+			for j < n && (src[j] == 'u' || src[j] == 'U' || src[j] == 'l' || src[j] == 'L') {
+				j++
+			}
 			out = append(out, tok{"num", src[i:j]})
 			i = j
 		case isIdent(c):
@@ -2296,6 +2344,37 @@ func (p *parser) primary() (*expr, error) {
 						}
 						continue
 					}
+					// sizeof(type) — the arg is a primitive type name
+					// like sizeof(int), sizeof(long long), sizeof(unsigned long long)
+					if t.text == "sizeof" && p.peek() != nil && p.peek().kind == "id" && isTypeKw(p.peek().text) {
+						typeName := p.next().text
+						typeName = p.consumeTypeKeywords(typeName)
+						args = append(args, &expr{kind: "id", name: typeName})
+						if p.isOp(")") {
+							break
+						}
+						if err := p.expectOp(","); err != nil {
+							return nil, err
+						}
+						continue
+					}
+					// generic expression arg — if sizeof and next is a type
+					// keyword, the type-kw handler above should have caught it;
+					// this fallback means the type wasn't recognized.
+					if t.text == "sizeof" {
+						a, err := p.expr()
+						if err != nil {
+							return nil, err
+						}
+						args = append(args, a)
+						if p.isOp(")") {
+							break
+						}
+						if err := p.expectOp(","); err != nil {
+							return nil, err
+						}
+						continue
+					}
 					a, err := p.expr()
 					if err != nil {
 						return nil, err
@@ -2346,14 +2425,20 @@ func (p *parser) primary() (*expr, error) {
 		return &expr{kind: "id", name: t.text}, nil
 	case "op":
 		if t.text == "(" {
-			// `(int) e` / `(char) e` — a C type cast (identity in the v1
-			// subset: every value is a string in the shell store)
-			if p.p+2 < len(p.ts) {
-				n1, n2 := p.ts[p.p+1], p.ts[p.p+2]
-				if n1.kind == "id" && (n1.text == "int" || n1.text == "char") && n2.kind == "op" && n2.text == ")" {
-					p.next()
-					p.next()
-					p.next()
+			// `(int) e` / `(char) e` / `(unsigned long long) e` — a C
+			// type cast (identity in the v1 subset: every value is a
+			// string in the shell store)
+			if p.p+1 < len(p.ts) && p.ts[p.p+1].kind == "id" && isTypeKw(p.ts[p.p+1].text) {
+				// scan ahead to see if all tokens until `)` are type keywords
+				j := p.p + 1
+				for j < len(p.ts) && p.ts[j].kind == "id" && isTypeKw(p.ts[j].text) {
+					j++
+				}
+				if j < len(p.ts) && p.ts[j].kind == "op" && p.ts[j].text == ")" {
+					// consume ( type-keyword* )
+					for p.p < j+1 {
+						p.next()
+					}
 					return p.unaryExpr()
 				}
 			}
@@ -3095,7 +3180,7 @@ func (p *parser) stmt() (any, error) {
 		// fall through to the type-keyword handling
 		p.next()
 		return p.stmt()
-	case p.isId("int") || p.isId("char") || p.isId("double") || p.isId("float") || p.isId("void") || p.isId("return"):
+	case p.isId("int") || p.isId("char") || p.isId("double") || p.isId("float") || p.isId("void") || p.isId("return") || p.isId("long") || p.isId("unsigned") || p.isId("short") || p.isId("signed") || p.isId("size_t") || p.isId("va_list"):
 		kw := p.next().text
 		if kw == "return" {
 			var e *expr
@@ -3112,6 +3197,8 @@ func (p *parser) stmt() (any, error) {
 			p.retExpr = e   // captured for user-function constant folding
 			return nil, nil // return: no stdout effect in the v1 subset
 		}
+		// consume compound types: unsigned long long, long long, etc.
+		kw = p.consumeTypeKeywords(kw)
 		// [int|char] [*]* NAME ( = expr )? ;  — pointers: `int *p` / `char *s`
 		isPtr := false
 		for p.isOp("*") {
@@ -3179,13 +3266,13 @@ func (p *parser) stmt() (any, error) {
 		if name.kind != "id" {
 			return nil, fmt.Errorf("expected identifier after type")
 		}
-		if kw == "char" && isPtr {
+		if strings.HasSuffix(kw, "char") && isPtr {
 			charPtrVars[name.text] = true
 		}
-		if kw == "char" && !isPtr {
+		if strings.HasSuffix(kw, "char") && !isPtr {
 			charVars[name.text] = true
 		}
-		if isPtr && kw != "char" {
+		if isPtr && !strings.HasSuffix(kw, "char") {
 			// every non-char pointer declaration starts as a heap-pointer
 			// candidate (promoted out by recordPtrTarget / heapAssignRHS)
 			ptrDecls[name.text] = kw
@@ -3250,8 +3337,8 @@ func (p *parser) stmt() (any, error) {
 							break
 						}
 						t := p.peek()
-						if t == nil || t.kind != "id" || (t.text != "int" && t.text != "char" && t.text != "void" && t.text != "struct") {
-							return nil, fmt.Errorf("expected parameter type (int|char|void|struct) at token %v", t)
+						if t == nil || t.kind != "id" || (!isTypeKw(t.text) && t.text != "struct") {
+							return nil, fmt.Errorf("expected parameter type at token %v", t)
 						}
 						// a STRUCT-POINTER parameter: `struct Node *head` — the
 						// param receives a list/struct handle (a name/box);
@@ -3282,7 +3369,8 @@ func (p *parser) stmt() (any, error) {
 							continue
 						}
 						ptype := t.text
-						p.next() // int | char
+						p.next() // first type keyword
+						ptype = p.consumeTypeKeywords(ptype)
 						isPtr := false
 						for p.isOp("*") {
 							p.next()
@@ -3905,8 +3993,9 @@ func (p *parser) forHeaderAssign() (any, error) {
 	}
 	// a declaration in the for header: `for (int i = 1; ...)` — the type
 	// keyword is consumed, the declaration lowers like a plain assignment
-	if t.kind == "id" && (t.text == "int" || t.text == "char") {
+	if t.kind == "id" && isTypeKw(t.text) {
 		p.next()
+		p.consumeTypeKeywords(t.text)
 		t = p.peek()
 	}
 	// prefix ++i / --i in the for header (v2) — same lowering as postfix
@@ -4207,11 +4296,26 @@ func (p *parser) simpleAssign() (any, error) {
 		var args []*expr
 		if !p.isOp(")") {
 			for {
-				a, err := p.expr()
-				if err != nil {
-					return nil, err
+				// sizeof(type) / sizeof(struct Tag) — the arg is a TYPE
+				// name, not an expression
+				if name == "sizeof" && p.isId("struct") {
+					p.next()
+					tg := p.next()
+					if tg == nil || tg.kind != "id" {
+						return nil, fmt.Errorf("expected struct tag in sizeof")
+					}
+					args = append(args, &expr{kind: "id", name: "struct " + tg.text})
+				} else if name == "sizeof" && p.peek() != nil && p.peek().kind == "id" && isTypeKw(p.peek().text) {
+					typeName := p.next().text
+					typeName = p.consumeTypeKeywords(typeName)
+					args = append(args, &expr{kind: "id", name: typeName})
+				} else {
+					a, err := p.expr()
+					if err != nil {
+						return nil, err
+					}
+					args = append(args, a)
 				}
-				args = append(args, a)
 				if p.isOp(")") {
 					break
 				}
@@ -4615,10 +4719,11 @@ func (p *parser) userStmt() (*uStmt, error) {
 			return nil, err
 		}
 		return &uStmt{kind: "ret", e: e}, nil
-	case p.isId("int") || p.isId("char") || p.isId("double") || p.isId("float") || p.isId("va_list"):
+	case p.isId("int") || p.isId("char") || p.isId("double") || p.isId("float") || p.isId("va_list") || p.isId("long") || p.isId("unsigned") || p.isId("short") || p.isId("signed") || p.isId("size_t"):
 		// a local declaration: `int s = 0;` / `va_list ap;` — and
 		// comma-separated names: `int i, j, t;` (a "seq" of assigns)
-		p.next()
+		kw := p.next().text
+		p.consumeTypeKeywords(kw)
 		for p.isOp("*") {
 			p.next()
 		}
