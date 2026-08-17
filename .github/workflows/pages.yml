@@ -36,10 +36,14 @@ jobs:
           # than a ca.dansted.org deploy). npm ci mirrors the dev tree;
           # --no-save keeps gl out of package.json/package-lock.json.
           sudo apt-get update
-          sudo apt-get install -y libxi-dev libglu1-mesa-dev mesa-common-dev glslang-tools
+          sudo apt-get install -y libxi-dev libglu1-mesa-dev mesa-common-dev glslang-tools xvfb
           npm ci
           npm install --no-save gl@8.1.6
-          ./deploy-gates.sh
+          # headless-gl uses the X11-backed native context on the runner;
+          # give the pixel-proof gates a virtual display. Without this,
+          # gl(800, 600) returns null in sideface/sideblocks tests while
+          # the same tests pass on the development host's :0 display.
+          xvfb-run -a ./deploy-gates.sh
       - name: Assemble the site (keep www/ + src/ as siblings so the
           ../src imports in www/index.html resolve from /j.cmd/www/)
         run: |
