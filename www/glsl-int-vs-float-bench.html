@@ -26,7 +26,7 @@
 </style>
 </head>
 <body>
-<h1>GLSL ES 1.00 — int vs float math benchmark (fragment &amp; vertex) <span class="muted" style="font-size:12px; color:#fa5">v7</span></h1>
+<h1>GLSL ES 1.00 — int vs float math benchmark (fragment &amp; vertex) <span class="muted" style="font-size:12px; color:#fa5">v8</span></h1>
 <div class="muted">The mimecroft game's <b>fragment</b> shader does its colour math in
 <b>mediump int</b> (0..127 scale — every intermediate fits mediump int's ±2<sup>15</sup>);
 its <b>vertex</b> shader is highp float (mandatory). This page times the arithmetic in
@@ -133,12 +133,18 @@ translator your browser is using, so the numbers are read in that context.</div>
     <li><b>WebGL1 / GLSL ES 1.00 only</b> — no WebGL2, no <code>intBitsToFloat</code>,
         no explicit control-flow guarantees. The results are translator/driver-dependent
         by design; the GL info line tells you which translator produced them.</li>
+    <li><b>The timing forces the GPU every frame</b> (<code>gl.finish()</code> after each
+        draw) — <code>gl.drawArrays</code> only <i>submits</i> the work, and on an async
+        driver (especially mobile) the queue defers the real rasterization, so timing the
+        submission alone showed the second shader as near-instant (the earlier ~28× "wins").
+        Finishing each frame measures the actual GPU execution; the path order also alternates
+        per sample so neither shader is always drawn cold.</li>
   </ul>
 </div>
 
 <script>
 "use strict";
-const BENCH_VERSION = "7";   // bump on every page change — the header shows it so a stale browser copy is obvious
+const BENCH_VERSION = "8";   // bump on every page change — the header shows it so a stale browser copy is obvious
 const $ = (id) => document.getElementById(id);
 const intC = $("intC"), fltC = $("fltC");
 let mode = "frag";
@@ -658,10 +664,10 @@ function drawFrag(prog, frames) {
   for (let i = 0; i < frames; i++) {
     const t0 = performance.now();
     gl.drawArrays(gl.TRIANGLES, 0, 6);
-    if (i % 16 === 15) gl.finish();
+    gl.finish();   // force the GPU work EVERY frame — the async queue would
+                   // only time the *submission*, which is near-free on mobile
     times.push(performance.now() - t0);
   }
-  gl.finish();
   return times;
 }
 function drawVert(prog, frames) {
@@ -695,10 +701,9 @@ function drawVert(prog, frames) {
   for (let i = 0; i < frames; i++) {
     const t0 = performance.now();
     gl.drawArrays(gl.POINTS, 0, meshCount);
-    if (i % 16 === 15) gl.finish();
+    gl.finish();   // force the GPU work every frame (see drawFrag)
     times.push(performance.now() - t0);
   }
-  gl.finish();
   return times;
 }
 
@@ -799,8 +804,10 @@ $("run").onclick = async () => {
   const iSamples = [], fSamples = [];
   const draw = (mode === "frag" || mode === "prec" || mode === "precInt" || mode === "mime" || mode === "div" || mode === "mix") ? drawFrag : drawVert;
   for (let s = 0; s < samples; s++) {
-    iSamples.push(draw(pInt, frames));
-    fSamples.push(draw(pFlt, frames));
+    // alternate which path runs FIRST each sample, so a cold/uncached shader
+    // is never always attributed to the same path
+    if (s % 2 === 0) { iSamples.push(draw(pInt, frames)); fSamples.push(draw(pFlt, frames)); }
+    else { fSamples.push(draw(pFlt, frames)); iSamples.push(draw(pInt, frames)); }
     $("status").textContent = `sample ${s + 1}/${samples}…`;
     await new Promise(r => setTimeout(r, 0));
   }
