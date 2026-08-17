@@ -2011,6 +2011,12 @@ try_draw() { td_a=$1; td_b=$2; td_c=$3
 # painter's algorithm without sorting: iterate the grid so cells are
 # drawn far-to-near along the facing axis (yaw 0→-z, 1→+x, 2→+z, 3→-x)
 render_frame() {
+  # scene/gl split: the whole render_frame (g_rf) is the CPU floor/planes
+  # + 768-cell cull + grass payload build (g_scene, timed below) plus the
+  # GL writes (the clear/binds at the top + the batched depthmask/blocks
+  # at the bottom) — gl-render = g_rf − g_scene.
+  gtick
+  r_rf0=$g_now
   echo "clear" > /dev/webgl/call
   echo "0.0" > /dev/webgl/uniform/1f/uOverlay
   # restore the cube bindings (the overlay HUD switches them to quad)
@@ -2057,6 +2063,8 @@ render_frame() {
   # cleanly. The boxes MEET at the camera's axes (±10 centres, 20 wide
   # → spans [0,20] / [-20,0]) — the w=0 corners at the camera plane are
   # off-screen below, so there is no seam between the quadrants.
+  gtick
+  r_sc0=$g_now
   bg_p=""
   qp0=$(( dpx * 1000 ))
   qpz0=$(( dpz * 1000 ))
@@ -2153,10 +2161,14 @@ render_frame() {
     fi
     gs_i=$((gs_i + 1))
   done
+  gtick
+  g_scene=$(( g_scene + g_now - r_sc0 ))
   echo "0" > /dev/webgl/depthmask
   echo "$bg_p" > /dev/webgl/blocks
   echo "1" > /dev/webgl/depthmask
   echo "$blk_p" > /dev/webgl/blocks
+  gtick
+  g_rf=$(( g_rf + g_now - r_rf0 ))
 }
 
 # ─── HUD (the terminal is the dashboard) ────────────────────────────
@@ -2903,6 +2915,13 @@ draw_mime_labels() {
 
 draw_hud_canvas() {
   if [ "$hud_static_dirty" -eq 1 ]; then
+    # hudb = the one-time static rebuild (radar base + labels + the
+    # instructions) — the previous gspan ended at the render, so this
+    # first gspan parks the pre-build tail in hudb too; the second
+    # parks the build itself. The main loop's later gspan "hud" then
+    # measures only the per-frame part (minimap + digits + labels +
+    # the layer write).
+    gspan "hudb"
     hud_build_static
         hud_static_dirty=0
     # the rebuild wiped the whole layer — reset the dynamic-cell state
@@ -2919,6 +2938,7 @@ draw_hud_canvas() {
     digits_dirty=1
     # the rebuild's C-wipe cleared the labels too — redraw them
     labels_dirty=1
+    gspan "hudb"
   fi
   ov_text=""
   draw_minimap
@@ -2994,15 +3014,28 @@ gtick() {
 }
 
 # per-phase accumulators (µs) — what holds the frame rate back, by how
-# much: input / anim / display / mimes / render / hud / swap / sleep
+# much: input / anim / display / mimes / render (whole phase) / hudb
+# (static HUD rebuild) / hud (per-frame HUD draw) / swap / sleepa
+# (pacing sleep during an action glide) / sleepi (idle pacing). The
+# targeted packs (gtick deltas, not gspans) split render's internals:
+# g_scene = the CPU floor/ceiling + 768-cell cull + grass payload build,
+# g_rf = the whole render_frame (scene + the GL writes), so
+# gl-render = g_rf − g_scene. g_setup = start_level (maze gen + treasures
+# + the static/base) wherever it runs (initial level + transitions).
 g_in=0
 g_anim=0
 g_disp=0
 g_mime=0
 g_render=0
+g_hudb=0
 g_hud=0
 g_swap=0
 g_sleep=0
+g_sleepa=0
+g_sleepi=0
+g_scene=0
+g_rf=0
+g_setup=0
 
 # accumulate the µs since the last gspan into a named bucket
 gspan() {
@@ -3014,8 +3047,11 @@ gspan() {
   if [ "$gs_name" = "disp" ]; then g_disp=$(( g_disp + gs_d )); fi
   if [ "$gs_name" = "mime" ]; then g_mime=$(( g_mime + gs_d )); fi
   if [ "$gs_name" = "render" ]; then g_render=$(( g_render + gs_d )); fi
+  if [ "$gs_name" = "hudb" ]; then g_hudb=$(( g_hudb + gs_d )); fi
   if [ "$gs_name" = "hud" ]; then g_hud=$(( g_hud + gs_d )); fi
   if [ "$gs_name" = "swap" ]; then g_swap=$(( g_swap + gs_d )); fi
+  if [ "$gs_name" = "sleepa" ]; then g_sleepa=$(( g_sleepa + gs_d )); fi
+  if [ "$gs_name" = "sleepi" ]; then g_sleepi=$(( g_sleepi + gs_d )); fi
   if [ "$gs_name" = "sleep" ]; then g_sleep=$(( g_sleep + gs_d )); fi
   g_last=$g_now
 }
@@ -3524,6 +3560,12 @@ settings_menu() {
 # carved) spawn pocket. The static HUD/radar/labels rebuild on the
 # next frame (hud_static_dirty / labels_dirty).
 start_level() {
+  # timed (gtick deltas — see g_setup) so the level's maze-gen +
+  # treasure-placement + base reset shows as its own setup cost instead
+  # of hiding in "other" (level transitions run between game-loop
+  # iterations, un-bucketed; the initial level runs before the loop)
+  gtick
+  r_st0=$g_now
   # the transpiled shell's async store needs a macrotask yield between
   # the phase functions (the same reason main() sleeps between its
   # startup phases) — back-to-back calls let the map writes pile up and
@@ -3578,6 +3620,8 @@ start_level() {
   prev_deg=-1
   map_ver=$((map_ver + 1))
   mimes_ver=$((mimes_ver + 1))
+  gtick
+  g_setup=$(( g_setup + g_now - r_st0 ))
 }
 
 # LEVEL CLEARED — a popup (terminal + canvas), and the next level does
@@ -3771,6 +3815,9 @@ main() {
   # "other" measure ONLY the game loop (the loading above is excluded)
   gtick
   g_t0=$g_now
+  # zero the device's GL-side HUD timers so the #stats read below
+  # covers exactly this loop window (not the menu / loading)
+  echo "reset" > /dev/webgl/stats
   while [ "$quit" -eq 0 ] && [ "$hp" -gt 0 ] && [ "$license" -gt 0 ]; do
   while [ "$quit" -eq 0 ] && [ "$hp" -gt 0 ] && [ "$license" -gt 0 ] && [ "$treasures_left" -gt 0 ]; do
     frame=$((frame + 1))
@@ -3980,8 +4027,16 @@ main() {
     fmt3 $fp_wait
     sleep 0.$fv
     fp_t0=$g_now
-    # the sleep itself + the fps-sampling tail of the frame
-    gspan "sleep"
+    # the sleep itself + the fps-sampling tail of the frame. The pacing
+    # yield is split by intent: during an ACTION GLIDE (anim=1) the
+    # frame just rendered a moving camera, so this sleep paces a busy
+    # frame; IDLE frames (nothing moved, the view cached) are pure
+    # pacing with nothing to do.
+    if [ "$anim" -eq 1 ]; then
+      gspan "sleepa"
+    else
+      gspan "sleepi"
+    fi
   done
     # the level ended: every artifact recovered, or the board mined out
     if [ "$quit" -eq 1 ] || [ "$hp" -le 0 ] || [ "$license" -le 0 ]; then
@@ -4049,7 +4104,7 @@ main() {
     echo "#stats: frames=$frame time=${g_total_ms}ms avg=${g_avg_ms}ms/frame"
     # per-phase breakdown: ms/frame and % of frame time, plus "other"
     # (unmeasured loop overhead + the gspan ticks themselves)
-    g_sum=$(( g_in + g_anim + g_disp + g_mime + g_render + g_hud + g_swap + g_sleep ))
+    g_sum=$(( g_in + g_anim + g_disp + g_mime + g_render + g_hudb + g_hud + g_swap + g_sleepa + g_sleepi ))
     g_other=$(( g_total - g_sum ))
     if [ "$g_other" -lt 0 ]; then g_other=0; fi
     g_ff=$(( g_total / frame ))
@@ -4062,12 +4117,48 @@ main() {
     s_disp=$((g_disp / frame / 1000)); s_dispp=$((g_disp * 100 / g_total))
     s_mime=$((g_mime / frame / 1000)); s_mimep=$((g_mime * 100 / g_total))
     s_render=$((g_render / frame / 1000)); s_renderp=$((g_render * 100 / g_total))
+    s_hudb=$((g_hudb / frame / 1000)); s_hudbp=$((g_hudb * 100 / g_total))
     s_hud=$((g_hud / frame / 1000)); s_hudp=$((g_hud * 100 / g_total))
     s_swap=$((g_swap / frame / 1000)); s_swapp=$((g_swap * 100 / g_total))
     s_sleep=$((g_sleep / frame / 1000)); s_sleepp=$((g_sleep * 100 / g_total))
     s_other=$((g_other / frame / 1000)); s_otherp=$((g_other * 100 / g_total))
+    # the split packs: sleepa/sleepi (already split by gspan), scene (the
+    # CPU cull/payload build) + gl-render (the render_frame GL writes =
+    # g_rf − g_scene), and the level-setup total
+    s_sa=$((g_sleepa / frame / 1000)); s_saip=$((g_sleepa * 100 / g_total))
+    s_si=$((g_sleepi / frame / 1000)); s_siip=$((g_sleepi * 100 / g_total))
+    s_sc=$((g_scene / frame / 1000))
+    s_glr=$(( (g_rf - g_scene) / frame / 1000 ))
+    s_setup=$(( g_setup / 1000 ))
     echo "#stats:   input=${s_in}ms/f(${s_inp}%) anim=${s_anim}ms/f(${s_animp}%) disp=${s_disp}ms/f(${s_dispp}%) mime=${s_mime}ms/f(${s_mimep}%)"
-    echo "#stats:   render=${s_render}ms/f(${s_renderp}%) hud=${s_hud}ms/f(${s_hudp}%) swap=${s_swap}ms/f(${s_swapp}%) sleep=${s_sleep}ms/f(${s_sleepp}%) other=${s_other}ms/f(${s_otherp}%)"
+    echo "#stats:   scene=${s_sc}ms/f gl-render=${s_glr}ms/f (render=${s_render}ms/f) hudb=${s_hudb}ms/f(${s_hudbp}%) hud=${s_hud}ms/f(${s_hudp}%) swap=${s_swap}ms/f(${s_swapp}%)"
+    echo "#stats:   sleep-anim=${s_sa}ms/f(${s_saip}%) sleep-idle=${s_si}ms/f(${s_siip}%) other=${s_other}ms/f(${s_otherp}%) · setup=${s_setup}ms"
+    # GL-side HUD cost, timed by the device on the main thread: raster =
+    # the 2D-canvas layer draw (inside the /dev/webgl/hud write), upload
+    # = the texImage2D/texSubImage2D transfer, composite = the whole
+    # swap-side blend (incl. upload + flash). Reported as µs PER
+    # OPERATION (the per-frame average hid sub-ms work behind the idle
+    # frames — only 44/858 frames touch the HUD here).
+    lt_s=$(cat /dev/webgl/stats)
+    read_tex_field
+    glh_r=$f
+    read_tex_field
+    glh_u=$f
+    read_tex_field
+    glh_c=$f
+    read_tex_field
+    glh_w=$f
+    read_tex_field
+    glh_n=$f
+    glh_rw=0
+    glh_uw=0
+    glh_cw=0
+    if [ "$glh_w" -gt 0 ]; then glh_rw=$(( glh_r / glh_w )); fi
+    if [ "$glh_n" -gt 0 ]; then
+      glh_uw=$(( glh_u / glh_n ))
+      glh_cw=$(( glh_c / glh_n ))
+    fi
+    echo "#stats:   gl-hud raster=${glh_rw}µs/write(${glh_w}) upload=${glh_uw}µs/comp composite=${glh_cw}µs/swap(${glh_n})"
   fi
   echo "GAME DONE"
 }

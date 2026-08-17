@@ -187,6 +187,17 @@ export class WebGLDevice {
     this._hudProg = null;           // built-in composite program (internal)
     this._hudVerts = null;          // fullscreen textured-quad buffer
     this._lastSwapAt = 0;            // for key-steal timeout after a game ends
+    // HUD GL timing accumulators (µs, reset via write("reset") to
+    // /dev/webgl/stats): raster = the 2D-canvas layer rasterization
+    // (in the /dev/webgl/hud write), upload = the texImage2D/
+    // texSubImage2D transfer, composite = the whole swap-side blend
+    // (upload + quad draw + flash). Exposed as a read of /dev/webgl/
+    // stats so the game can report per-frame GL-side HUD cost.
+    this._glHudRasterUs = 0;
+    this._glHudUploadUs = 0;
+    this._glHudCompositeUs = 0;
+    this._glHudCalls = 0;
+    this._glHudCompCalls = 0;
     this._backDirty = false;         // the 3D back buffer changed since the last
                                     // swap (clear / a draw) — the HUD composite
                                     // must re-blend over it. Idle/heartbeat swaps
@@ -197,6 +208,13 @@ export class WebGLDevice {
                                     // alpha blend every heartbeat.
     this._keyListener = null;
     this._null = false;              // headless null-device mode (no DOM)
+  }
+
+  // µs wall clock for the HUD GL timings — performance.now has sub-ms
+  // resolution (Date.now is ms-only, too coarse for the raster/upload)
+  _tickUs() {
+    const t = typeof performance !== "undefined" && performance.now ? performance.now() : Date.now();
+    return Math.round(t * 1000);
   }
 
   // ─── Context ────────────────────────────────────────────────
@@ -536,7 +554,12 @@ export class WebGLDevice {
       // neither the 3D back buffer nor the HUD changed since the last
       // swap (the retained back buffer already shows both) — the
       // keyboard-heartbeat bare swaps cost no fullscreen blend.
-      if (this._backDirty || this._hudDirty) this._compositeHud();
+      if (this._backDirty || this._hudDirty) {
+        const t0 = this._tickUs();
+        this._compositeHud();
+        this._glHudCompositeUs += this._tickUs() - t0;
+        this._glHudCompCalls++;
+      }
       this._backDirty = false;
       // Present to screen — the canvas stays hidden until the first swap
       gl.flush();
@@ -947,6 +970,7 @@ export class WebGLDevice {
     if (this._null || !gl) return;
     if (this._hudLayer) {
       if (this._hudDirty) {
+        const tUp = this._tickUs();
         const W = this._hudLayer.width, H = this._hudLayer.height;
         if (!this._hudTex) this._hudTex = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, this._hudTex);
@@ -982,6 +1006,8 @@ export class WebGLDevice {
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        // the CPU→GPU transfer slice of the composite
+        this._glHudUploadUs += this._tickUs() - tUp;
         this._hudDirty = false;
         this._hudDirtyRect = null;
       }
@@ -1103,6 +1129,11 @@ export class WebGLDevice {
     if (p === "/" || parts[0] === "info") return this._info();
     if (parts[0] === "extensions") return this._extensions();
     if (parts[0] === "state") return this._state();
+    if (parts[0] === "stats") {
+      // HUD GL timings since the last reset — TSV, one value per field:
+      // raster_us upload_us composite_us hud_writes composite_calls
+      return `${this._glHudRasterUs}\t${this._glHudUploadUs}\t${this._glHudCompositeUs}\t${this._glHudCalls}\t${this._glHudCompCalls}\n`;
+    }
     if (parts[0] === "log") return this._log + "\n";
     if (parts[0] === "frame") return this._frameDataURL();
     if (parts[0] === "call") return this._lastCall + "\n";
@@ -1236,6 +1267,7 @@ export class WebGLDevice {
       // that persists across frames; composited onto the back buffer
       // with ONE textured quad at swap, re-uploaded only when this
       // write changed it ("update only when it changes").
+      const t0 = this._tickUs();
       this._hudRects = [];
       this._hudTris = [];
       this._hudRectsR = [];
@@ -1283,10 +1315,25 @@ export class WebGLDevice {
         }
       }
       this._rasterHud();
+      // time the 2D-canvas rasterization (this write is awaited by the
+      // game, so it already shows in the hud bucket — this is the GL/
+      // canvas-side slice of it)
+      this._glHudRasterUs += this._tickUs() - t0;
+      this._glHudCalls++;
       return;
     }
     if (parts[0] === "key") {
       if (String(content).trim().toLowerCase() === "clear") this._keys = [];
+      return;
+    }
+    if (parts[0] === "stats") {
+      if (String(content).trim().toLowerCase() === "reset") {
+        this._glHudRasterUs = 0;
+        this._glHudUploadUs = 0;
+        this._glHudCompositeUs = 0;
+        this._glHudCalls = 0;
+        this._glHudCompCalls = 0;
+      }
       return;
     }
     throw new Error(`EROFS: cannot write /dev/webgl/${p}`);
