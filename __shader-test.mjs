@@ -39,7 +39,7 @@ const es100 = (glsl) => "#version 100\n" + glsl;
 
 // ─── 1) pipeline: generate both shaders from bash ────────────────
 console.log("bash → GLSL generation…");
-let vs, fragInline, fragInlineHoisted;
+let vs, fragInline;
 try {
   vs = lib.glslv(readFileSync("www/examples/mimecroft-vertex.sh", "utf8"));
   ok(`vertex: www/examples/mimecroft-vertex.sh → ${vs.length} bytes`);
@@ -56,13 +56,6 @@ try {
   }
   const program = lines.join("\n") + "\n";
   fragInline = lib.glsl(program);
-  // the game hoists the double fract(vUv) (block + crack samples) into
-  // one _uv wrap per fragment — mirror it ONLY for the committed
-  // reference .glsl identity (the drift checks compare the raw compiles)
-  const hoistFract = (g) => g
-    .replace("vec4 _tex = texture2D(uTex, fract(vUv));", "vec2 _uv = fract(vUv);\n    vec4 _tex = texture2D(uTex, _uv);")
-    .replace("texture2D(uCrack, fract(vUv));", "texture2D(uCrack, _uv);");
-  fragInlineHoisted = hoistFract(fragInline);
   ok(`fragment: game inline program (${lines.length} lines) → ${fragInline.length} bytes`);
 } catch (e) { bad("fragment generation: " + e.message); }
 
@@ -105,7 +98,7 @@ if (fragInline) {
 console.log("reference .glsl identity…");
 for (const [refFile, genGlsl] of [
   ["www/examples/mimecroft-vertex.glsl", vs],
-  ["www/examples/mimecroft-frag.glsl", fragInlineHoisted],
+  ["www/examples/mimecroft-frag.glsl", fragInline],
 ]) {
   if (!genGlsl) continue;
   const ref = readFileSync(refFile, "utf8");
