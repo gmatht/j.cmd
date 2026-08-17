@@ -314,6 +314,52 @@ export function flattenAndOrAll(program) {
   return program;
 }
 
+// ── plainIfTests: strip the dead `$?` framing from IF conditions ──
+//
+// The wasm's condition renderer threads every test as
+//   if ((sh2._g = COND, sh2.lastExit = sh2._g ? 0 : 1, sh2._g))
+// so the test's `$?` status exists for a later read. But an `if`
+// statement consumes ONLY the condition VALUE (the trailing `sh2._g`);
+// the `sh2.lastExit` SET inside is always overwritten by the next
+// statement's condition before anything reads it (surveyed: 0 of 421
+// framed ifs in mimecroft have a lastExit READ between the if and the
+// next write — the else-branch `sh2.lastExit = 0` clears confirm the
+// lifecycle). Emit `if (COND)` with the framing stripped: 3 store
+// writes + the conditional vanish per test. The `&&`/`||` CHAINED
+// tests (the `sh2.lastExit === 0` intermediate form) are left alone —
+// those genuinely consume the status.
+export function plainIfTests(program) {
+  if (!program || program.type !== "Program") return program;
+  const isSh2Member = (n, prop) =>
+    n && n.type === "MemberExpression" && !n.computed &&
+    n.object && n.object.type === "Identifier" && n.object.name === "sh2" &&
+    n.property && n.property.type === "Identifier" && n.property.name === prop;
+  const framed = (test) => {
+    if (!test || test.type !== "SequenceExpression" || !Array.isArray(test.expressions) || test.expressions.length !== 3) return null;
+    const [a, b, c] = test.expressions;
+    if (!(a && a.type === "AssignmentExpression" && a.operator === "=" && isSh2Member(a.left, "_g"))) return null;
+    if (!(b && b.type === "AssignmentExpression" && b.operator === "=" && isSh2Member(b.left, "lastExit"))) return null;
+    // the trailing value is `sh2._g` (the generator renders the member)
+    if (!(c && c.type === "MemberExpression" && isSh2Member(c, "_g"))) return null;
+    return a.right;
+  };
+  const rewrite = (node) => {
+    if (!node || typeof node !== "object") return node;
+    if (Array.isArray(node)) return node.map(rewrite);
+    if (node.type === "IfStatement" && node.test) {
+      const plain = framed(node.test);
+      if (plain) node.test = plain;
+    }
+    for (const k of Object.keys(node)) {
+      if (k === "loc" || k === "parent") continue;
+      node[k] = rewrite(node[k]);
+    }
+    return node;
+  };
+  rewrite(program);
+  return program;
+}
+
 // ── lowerDeviceRedirects: compile `echo X > /dev/…` into fs.write ──
 //
 // `await sh2.redirect(async () => await sh2.exec("echo", [ARG]), [{fd: 1,

@@ -1042,7 +1042,7 @@ function reclassAsyncLoops(program) {
 
 export async function estreeToJsMapped(program, stmtLines, a1Stmts, { repl = true, precompiledHead = false } = {}) {
   const lowerMod = await import("./lower.js");
-  const { lowerNativeArrays, hoistLoopLastExit, hoistCommonLastExit, dropDeadFlags, mergeInitAssignments, pushLastExitToEnd, nativeForLoops, lowerPureFunctions, flattenAndOrAll, lowerDeviceRedirects, directShellFnCalls, liftLocalVars, nativeArrays, lowerI32Trunc, backgroundDecide, safeWordListCoercion, paramLiveValue } = lowerMod;
+  const { lowerNativeArrays, hoistLoopLastExit, hoistCommonLastExit, dropDeadFlags, mergeInitAssignments, pushLastExitToEnd, nativeForLoops, lowerPureFunctions, flattenAndOrAll, lowerDeviceRedirects, directShellFnCalls, liftLocalVars, nativeArrays, lowerI32Trunc, backgroundDecide, safeWordListCoercion, paramLiveValue, plainIfTests } = lowerMod;
   // ── transpile progress: the whole-game transpile can take seconds;
   // once it exceeds 500ms, stream `[n/m passes completed (xx%)]` per
   // pass so the terminal shows forward progress instead of a silent
@@ -1143,6 +1143,10 @@ export async function estreeToJsMapped(program, stmtLines, a1Stmts, { repl = tru
     // (thread vs fork); fork bodies become native fn().catch(() => {})
     ["backgroundDecide", () => { if (typeof backgroundDecide === "function") backgroundDecide(lowered); }],
     // astring — the JS code generation
+    // strip the dead `$?` framing from IF conditions (the condition
+    // value is the only consumer — the lastExit set inside is always
+    // overwritten before any read; 0/421 consumed in mimecroft)
+    ["plainIfTests", () => { if (typeof plainIfTests === "function") plainIfTests(lowered); }],
     ["generate", async () => { genFn = (await getAstring()).generate; js = genFn(lowered, { comments: true }); }],
   ];
   for (let i = 0; i < passChain.length; i++) {
