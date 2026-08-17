@@ -18,7 +18,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-TESTS=(__mini-test.mjs __my_qsort-test.mjs __linked-list-test.mjs __qsort-builtin-test.mjs __shell-regression.mjs __shader-test.mjs __sound-test.mjs __sideface-test.mjs __sideblocks-test.mjs __frag-example-test.mjs __texture-test.mjs)
+TESTS=(__mini-test.mjs __my_qsort-test.mjs __linked-list-test.mjs __qsort-builtin-test.mjs __shell-regression.mjs __shader-test.mjs __sound-test.mjs __sideface-test.mjs __sideblocks-test.mjs __frag-example-test.mjs __texture-test.mjs __flash-test.mjs __claim2-live.mjs)
 
 # ── gates 2+3: the harnesses and the C corpus ───────────────────────
 echo "── harnesses ──"
@@ -30,9 +30,11 @@ for t in "${TESTS[@]}"; do
   # ~10K samples) — give it a longer window than the unit tests
   tl=150
   if [ "$t" = "__sound-test.mjs" ]; then tl=240; fi
-  # the texture generators are per-pixel bash (value-noise DSP) —
-  # ~2 min for the whole batch
-  if [ "$t" = "__texture-test.mjs" ]; then tl=240; fi
+  # the texture generators are per-pixel bash (value-noise DSP) — the
+  # four 64×64 MIME-name textures (jpeg/octet/png/text) are ~15-18 s
+  # EACH under real bash, and the wasm transpile phase is CPU-bound:
+  # observed totals 164-212 s, so 240 s is a coin flip on a loaded box
+  if [ "$t" = "__texture-test.mjs" ]; then tl=300; fi
   if timeout $tl node "$t" > "$log" 2>&1; then
     echo "PASS"
   else

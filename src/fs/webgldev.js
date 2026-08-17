@@ -1067,15 +1067,23 @@ export class WebGLDevice {
       const rad = (-Number(deg) || 0) * Math.PI / 180;
       const c = Math.cos(rad), sn = Math.sin(rad);
       const hw = Number(w) / 2, hh = Number(h) / 2;
-      const verts = new Float32Array(8);
+      // TWO TRIANGLES (BL BR TR / TR TL BL) — a 4-vertex TRIANGLE_STRIP
+      // (BL BR TR TL) rasterizes only ~75% of the quad on ANGLE-class
+      // drivers: the second strip triangle overlaps the first instead of
+      // completing the quad, so each flash rect drew with a visible
+      // missing corner ("a triangle is missing from the muzzle flash").
+      // The 6-vertex triangulation tiles the quad under any strip
+      // semantics (verified in headless-gl: full 5808px vs the strip's
+      // 4356px for a 0.22-width rect).
+      const verts = new Float32Array(12);
       let o = 0;
-      for (const [vx, vy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      for (const [vx, vy] of [[-1, -1], [1, -1], [1, 1], [1, 1], [-1, 1], [-1, -1]]) {
         verts[o++] = Number(cx) + hw * (vx * c - vy * sn);
         verts[o++] = Number(cy) + hh * (vx * sn + vy * c);
       }
       gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW);
       gl.uniform4f(uColor, Number(r), Number(g), Number(b), 1.0);
-      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
     this._hudFlash = null;
   }

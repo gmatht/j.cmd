@@ -1,6 +1,6 @@
 ---
 name: use-locate
-description: Find files fast. Never run a whole-filesystem 'find /' — use locate, targeted finds with -maxdepth, or known paths. Load when searching the filesystem for files, modules, or interfaces.
+description: Find files fast. Never run a whole-filesystem 'find /' or 'grep -r /' — use locate, targeted finds with -maxdepth, or known paths. Load for ANY filesystem search: finding files, modules, binaries, interfaces, wasm binaries, or unknown paths.
 ---
 
 # Use Locate, Not `find /`

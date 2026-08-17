@@ -264,6 +264,9 @@ fps=0               # rendered frames/sec (measured over ~10-frame windows)
 fps_t0=0
 fps_rendered=0
 muzzle=0            # muzzle-flash lifetime (loop frames remaining)
+flash_done=0        # the frame the flash expires: forces one clear render
+# (the retained back buffer would otherwise keep showing the last flash
+# frame until the next camera move — the flash "sticks" on a static view)
 dpyw_raw_ms=0       # unwrapped yaw arc (can be negative) for the radar
 # triangle to take the short path while the shader uniform stays positive
 seed=20240812
@@ -436,9 +439,14 @@ play_sound() { ps_name=$1
 # (skips existing cache files), so re-runs and mid-list plays are
 # no-ops; the order puts the sounds the game plays first (the opening
 # shot hits the obsidian border → thud; the first blocks mined are the
-# hit materials) ahead of the long ones.
+# hit materials) ahead of the long ones. treasure/shatter jump right
+# after the hit materials: the FIRST claim/shatter plays the treasure
+# sound then, and a COLD cache would otherwise run the ~10K-sample
+# generator synchronously inside the game loop (a multi-second freeze
+# that stalls every swap and lets the webgl device's 2s keyboard-
+# capture window expire mid-game).
 PRECACHE_N=15
-PRECACHE_LIST=(hit hit-stone hit-dirt hit-wood hit-gold hit-gem thud break shoot walk damage kill mime shatter treasure)
+PRECACHE_LIST=(hit hit-stone hit-dirt hit-wood hit-gold hit-gem treasure shatter thud break shoot walk damage kill mime)
 precache_sounds() {
   pc_i=0
   while [ "$pc_i" -lt "$PRECACHE_N" ]; do
@@ -3677,13 +3685,15 @@ main() {
   esac
   gtick
   g_t0=$g_now
-  # immediate feedback FIRST: the banner + map print before the slow
-  # parts (the wasm shader compile + the texture generation), so the
-  # terminal is never silent during startup. The sleeps between phases
-  # are macrotask yields — the browser can't PAINT while a transpiled
-  # script runs (its exec calls are one microtask chain), so without
-  # them every startup message appears at once when the game loop
-  # starts instead of streaming as it loads.
+  # immediate feedback FIRST: the banner prints before the slow parts
+  # (the wasm shader compile + the texture generation), so the terminal
+  # is never silent during startup. The terminal map prints later, after
+  # start_level has generated the maze (a pre-maze print showed an
+  # all-AIR placeholder). The sleeps between phases are macrotask yields
+  # — the browser can't PAINT while a transpiled script runs (its exec
+  # calls are one microtask chain), so without them every startup
+  # message appears at once when the game loop starts instead of
+  # streaming as it loads.
     echo "╔══════════════════════════════════════════════════╗"
   echo "║  MIMEcrofT v6.1 — 3D treasure hunt written in bash ║"
   echo "║  The filesystem is infested with evil MIMEs.     ║"
@@ -3693,8 +3703,6 @@ main() {
   echo "║  WASD move · arrows turn · SPACE shoot · q quit  ║"
   echo "╚══════════════════════════════════════════════════╝"
   echo ""
-  sleep 0.02
-    print_map_once
   sleep 0.02
   # background sound warm-up: as soon as bash sounds are enabled (the
   # menu's SOUND MODE row or --sounds bash), generate every sound's TSV
@@ -3716,10 +3724,12 @@ main() {
   # no .code). Report it once here instead of per frame.
   swgl_p=$(cat /dev/webgl/program)
   case $swgl_p in
-    *"program: linked"*) echo "  shaders: bash-authored (sh2glsl)" ;;
+    # NOTE: the quoted glob *"program: linked"* transpiles to a regex with
+    # LITERAL quotes (a case-lowering bug) and never matches — keep the
+    # pattern unquoted (bash case patterns don't need the quotes)
+    *program: linked*) echo "  shaders: bash-authored (sh2glsl)" ;;
     *) echo "  !!! shader link FAILED — the 3D view will not render (see /dev/webgl/log)" ;;
   esac
-  fi
 
     if [ "$headless" -eq 0 ]; then
     settings_menu
@@ -3731,6 +3741,10 @@ main() {
     sleep 0.02
   fi
   start_level
+  # the terminal map needs the maze too — print it AFTER gen/placement
+  # (before it showed an all-AIR placeholder: the maze is generated in
+  # start_level, and the old print ran ahead of it)
+  print_map_once
     # the radar base needs the maze — build it now (after gen/placement),
   # not before, so the first static layer has the real walls/treasures
   hud_build_static
@@ -3836,11 +3850,14 @@ main() {
     # cell read; render_frame reads crouched for the camera height)
     update_crouch
     # muzzle flash lifetime: a few loop frames of flash, then force a
-    # clear render so the flash doesn't linger frozen on a static scene
+    # clear render so the flash doesn't linger frozen on a static scene.
+    # `dirty` is a DEAD flag (the view_key cache made it a no-op), so
+    # the expiry needs its own flag or the retained back buffer keeps
+    # showing the last flash frame until the next camera move.
     if [ "$muzzle" -gt 0 ]; then
       muzzle=$((muzzle - 1))
       if [ "$muzzle" -eq 0 ]; then
-        dirty=1
+        flash_done=1
       fi
     fi
     gspan "disp"
@@ -3877,7 +3894,7 @@ main() {
       labels_dirty=1
       gspan "render"
       hud_swap=1
-    elif [ "$digits_dirty" -eq 1 ] || [ "$muzzle" -gt 0 ] || [ "$hud_static_dirty" -eq 1 ]; then
+    elif [ "$digits_dirty" -eq 1 ] || [ "$muzzle" -gt 0 ] || [ "$hud_static_dirty" -eq 1 ] || [ "$flash_done" -eq 1 ]; then
       # HUD-only frame (FPS digits, muzzle flash, static rebuild): the
       # presented frame is retained (preserveDrawingBuffer) WITH the old
       # HUD baked in, and the HUD layer erases can't reach it — re-render
@@ -3887,6 +3904,7 @@ main() {
       prev_view_key=$view_key
       gspan "render"
       hud_swap=1
+      flash_done=0
     fi
     # the HUD needs presenting when the view changed, a digit group is
     # dirty (score/hp/art/fps), the muzzle flash is live, or the static
