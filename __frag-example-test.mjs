@@ -25,7 +25,8 @@ if (fresh === committed) {
   console.log("ok  committed mimecroft-frag.glsl matches a fresh compile");
 } else {
   console.log("bad committed mimecroft-frag.glsl is STALE — regenerate with:");
-  console.log("  node --input-type=module -e \"import{getOtranspilerl}from'./src/otranspilerl.js';const l=await getOtranspilerl();process.stdout.write(l.glsl(require('fs').readFileSync('www/examples/mimecroft-frag.sh','utf8')))\" > www/examples/mimecroft-frag.glsl");
+  console.log("node --input-type=module -e \"import{readFileSync}from'node:fs';import{getOtranspilerl}from'./src/otranspilerl.js';const l=await getOtranspilerl();process.stdout.write(l.glsl(readFileSync('www/examples/mimecroft-frag.sh','utf8')))\" > www/examples/mimecroft-frag.glsl");
+        //OLD: node --input-type=module -e \"import{getOtranspilerl}from'./src/otranspilerl.js';const l=await getOtranspilerl();process.stdout.write(l.glsl(require('fs').readFileSync('www/examples/mimecroft-frag.sh','utf8')))\" > www/examples/mimecroft-frag.glsl");
   process.exitCode = 1;
 }
 
