@@ -31,7 +31,11 @@ export class DevFS {
     this._webgl = new WebGLDevice();
     this._camera = new CameraDevice();
     this._audio = new AudioDevice();
-    this._bg = new BgDevice();
+    this._bg = new BgDevice();  // /dev/bg — MAY BE DEPRECATED: the game
+    // backgrounds texture generation with the shell `&` fork now (which
+    // calls bgworker.js directly), so nothing writes this device; it
+    // stays mounted for older callers — candidate for removal (bgworker
+    // itself is the live `&` backend and must stay)
     this._init();
   }
 

@@ -19,7 +19,7 @@
 //   busyboxA1(source, srcLang) → parsed A1 shIR JSON contract
 // -----------------------------------------------------------------
 
-const FRONTEND_DIRS = { bat: "bat-sh-go", c: "c-sh-go", fish: "fish-sh-go", go: "go-sh", pl: "perl-sh-go", py: "py-sh-go", sh: "posix-sh-go", zsh: "zsh-sh-go" };
+const FRONTEND_DIRS = { bat: "bat-sh-go", c: "c-sh-go", fish: "fish-sh-go", go: "go-sh", pl: "perl-sh-go", py: "py-sh-go", sh: "posix-sh-go", zsh: "zsh-sh-go", cpp: "cpp-sh-go", zig: "zig-sh-go" };
 const FRONTEND_FILES = {
   bat:  ["bat.go"],
   c:    ["main.go"],
@@ -29,6 +29,8 @@ const FRONTEND_FILES = {
   py:   ["main.go"],
   sh:   ["main.go", "analysis.go", "lowering.go"],
   zsh:  ["main.go", "analysis.go", "lowering.go"],
+  cpp:  ["main.go", "parser.go"],
+  zig:  ["main.go"],
 };
 const PREFIX_MAIN = { sh: true };                  // posix-sh-go's main() → sh_main (dispatcher owns main)
 const DISPATCH_CLI = "busybox/main.go";            // the merged CLI (browser dispatcher)
@@ -39,7 +41,7 @@ const PREBUILT = "wasm-bin/otranspiler-busybox.wasm";  // shipped static build
 // changes so a browser never reuses a stale staged copy (the staged
 // VFS file at /usr/bin/otranspiler-busybox.wasm persists across page
 // loads; ensureBusyboxWasm re-fetches when this version differs).
-export const BUSYBOX_VERSION = "v28-cfor";  // v28: c-sh-go emits ForInit + first-class Break/Continue  // v27: user-fn for/seq decls, non-cast param lift, ptr-param index via mem seam
+export const BUSYBOX_VERSION = "v29-cppzig";  // v29: cpp-sh-go + zig-sh-go merged into the busybox (pure-Go tokenizers onto clib)  // v28: c-sh-go emits ForInit + first-class Break/Continue  // v27: user-fn for/seq decls, non-cast param lift, ptr-param index via mem seam
 
 // Read one vendored frontend source file (browser: fetch; node: disk).
 // `base` is unused in node (paths resolve against the repo root); in the
@@ -150,6 +152,10 @@ export async function mergedBusyboxSource(base) {
       allSrc.push(src);
       body += (body ? "\n" : "") + stripImports(stripPkg(src));
     }
+    // cpp/zig lower onto the shared clib (c-sh-go, merged as the c
+    // frontend below) — rewrite `clib.X` to the merged prefix `c_X`
+    // before the decl-prefix pass (the same mechanism as shiremit.).
+    body = body.replace(/clib\./g, "c_");
     parts.push(prefixBody(body.replace(/shiremit\./g, "shiremit_"), lang + "_", PREFIX_MAIN[lang]));
   }
   const emit = await readVendoredFile(base, SHIR_EMIT);
@@ -161,6 +167,11 @@ export async function mergedBusyboxSource(base) {
   allSrc.forEach((f) => {
     extractImports(f).forEach((i) => { impSet[i] = true; });
   });
+  // stdlib-only merge: drop module (dotted) imports — the cpp/zig
+  // frontends import clib (c-sh-go), which is merged in as the c
+  // frontend, not linked as a module. (stdlib imports have no dot)
+  delete impSet["github.com/gmatht/sh2loop/frontends/c-sh-go"];
+  delete impSet["github.com/gmatht/sh2loop/frontends/shir-emit-go"];
   const imports = Object.keys(impSet).sort();
   return (
     "// Generated unified frontend (busybox): eight frontend libs + shir-emit-go + the dispatcher CLI.\n" +

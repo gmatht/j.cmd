@@ -1,5 +1,15 @@
 // ─── BgDevice: /dev/bg — background script execution via a JS thread ─
 //
+// MAY BE DEPRECATED — the /dev/bg FILE INTERFACE is unused. mimecroft.sh
+// previously submitted its texture generation here (`echo "submit …" >
+// /dev/bg`) and polled the jobs; it now backgrounds the generators with
+// the shell `&` operator, and the RUNTIME's `&` fork heuristic calls
+// bgworker.js's bgSubmit DIRECTLY (src/sh2runtime.js) — no device
+// involvement. No current game/shell code writes to /dev/bg; the device
+// is retained for backward compatibility (older examples may still
+// submit) but is a candidate for removal: drop BgDevice and the DevFS
+// mount. NOTE: bgworker.js is NOT deprecated — it is the `&` backend.
+//
 // Plan 9-style device for the worker-backed background compute
 // (src/bgworker.js): the shell writes a submit line, polls /dev/bg/
 // status, and cats the result when the job is done. The generation

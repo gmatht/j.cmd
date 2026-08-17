@@ -268,8 +268,15 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     // Ctrl+C aborts even command-based loop conditions (`while true`
     // transpiles to exec("true"), not test()).
     if (interrupted) throw new Error("interrupted by Ctrl+C");
-    const isCapTarget = mode.type === "capture" && !!mode.target;
-    if (isCapTarget) mode.target = false;
+    // `mode` is a SHARED var — an AWAITED exec lets the game's other
+    // async flow (the backgrounded sound precache) set/restore another
+    // capture/redirect in between, so the exec's own output routing
+    // must use the mode it STARTED with (the worker path already does
+    // this — entryMode — the normal path raced it and a `$(cat …)`
+    // substitution's script leaked to the terminal as mode=plain).
+    const entryMode = mode;
+    const isCapTarget = entryMode.type === "capture" && !!entryMode.target;
+    if (isCapTarget) entryMode.target = false;
     // ── the `&` thread heuristic: a backgrounded `bash <script>` exec
     // (the texture/sound generators — self-contained pure compute) runs
     // on a WORKER THREAD; the args here are ALREADY evaluated by the
@@ -348,11 +355,11 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       : "");
     const res = await shellExec(cmdline, mode.type === "pipe" ? mode.buf.stdin : "", mode.type);
     lastStatus = res.code;
-    if (mode.type === "capture" || mode.type === "pipe") mode.buf.out += res.out;
-    else if (mode.type === "redirect") mode.buf.out += res.out;
+    if (entryMode.type === "capture" || entryMode.type === "pipe") entryMode.buf.out += res.out;
+    else if (entryMode.type === "redirect") entryMode.buf.out += res.out;
     else if (res.out) stdout.write(res.out);
     if (res.err) {
-      if (mode.type === "redirect") mode.buf.err += res.err;
+      if (entryMode.type === "redirect") entryMode.buf.err += res.err;
       else stderr.write(res.err);
     }
     // the capture target returns its stdout directly (the capture
@@ -1206,6 +1213,11 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     const val = getVar(name);
     const isSet = has && String(val).length > 0;
     const defaultVal = rest.length ? String(rest[0]) : "";
+    // a lifted (module-`let`) var never writes its STORE copy, so the
+    // strip forms (`${v#pat}` → sh2.param("#", "v", pat)) would read ""
+    // — the paramLive pass appends the LIVE value as a 4th arg; use it
+    // when the store is empty (the slice form already does this).
+    const fallbackLive = (v, r) => (String(v) === "" && r.length > 1 ? r[1] : v);
     switch (op) {
       case "-": return has ? val : defaultVal;
       case ":-": return isSet ? val : defaultVal;
@@ -1217,10 +1229,10 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
         return val;
       case ":?": if (!isSet) throw new Error(`bash: ${name}: ${defaultVal || "parameter not set"}`);
         return val;
-      case "#": return trimByPattern(val, defaultVal, true, false);
-      case "##": return trimByPattern(val, defaultVal, true, true);
-      case "%": return trimByPattern(val, defaultVal, false, false);
-      case "%%": return trimByPattern(val, defaultVal, false, true);
+      case "#": return trimByPattern(fallbackLive(val, rest), defaultVal, true, false);
+      case "##": return trimByPattern(fallbackLive(val, rest), defaultVal, true, true);
+      case "%": return trimByPattern(fallbackLive(val, rest), defaultVal, false, false);
+      case "%%": return trimByPattern(fallbackLive(val, rest), defaultVal, false, true);
       case "slice": {
         const start = Number(expandOperand(String(rest[0]))) || 0;
         const len = rest.length > 1 ? Number(expandOperand(String(rest[1]))) : undefined;
@@ -1231,7 +1243,13 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
           const elems = len === undefined ? raw.slice(start) : raw.slice(start, start + len);
           return elems.length === 1 ? String(elems[0]) : elems;
         }
-        return len === undefined ? String(val).slice(start) : String(val).slice(start, start + len);
+        // a native PARAM's store copy is never written (the lift drops the
+        // param-sync), so the emitter passes the live value as a 5th arg —
+        // use it when the store is empty (draw_text's ${t:$i:1} sliced ""
+        // and every canvas glyph fell to the blank-space mask).
+        const str = String(raw);
+        const src = str === "" && rest.length > 2 ? String(rest[2]) : str;
+        return len === undefined ? src.slice(start) : src.slice(start, start + len);
       }
       default: return val;
     }

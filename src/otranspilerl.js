@@ -31,6 +31,8 @@ const WASM_PATH = "wasm-bin/otranspilerl.wasm";  // browser: relative to the pag
 // authored against the same value (the game's shaders write `fx - 400`
 // = half of 800). Pass the canvas width explicitly; the default keeps
 // old callers (GUI transpile) working.
+import { optimizeFragmentGLSL } from "./shglsl-opt.js";
+
 export const GLSL_VIEW = 800;
 // cache-buster — bump whenever www/wasm-bin/otranspilerl.wasm changes so
 // the browser (and the otranspiler GUI) never serves a stale wasm.
@@ -192,8 +194,13 @@ function wrapLibrary(instance, mem, out) {
     // A1 shIR JSON → target source (lang: c|go|java|js|perl|python|rs|sh|zig)
     render: (a1, lang) => call("otranspilerl_render", [String(a1), lang]).output,
     // shell → GLSL ES 1.00 render fragment (the MIMEcroft shader pipeline;
-    // the `sh2glsl` shell command drives this)
-    glsl: (src, view = GLSL_VIEW) => call("otranspilerl_glsl", [String(src)], [view]).output,
+    // the `sh2glsl` shell command drives this). The wasm's output is the
+    // faithful fixed-point transcription; shglsl-opt.js lowers it (exact
+    // float modulos + a native mediump-float colour chain — ~38% fewer
+    // fragment ALU on the game's common path, measured) and passes
+    // anything that doesn't match the generated shape through unchanged.
+    glsl: (src, view = GLSL_VIEW) =>
+      optimizeFragmentGLSL(call("otranspilerl_glsl", [String(src)], [view]).output),
     // shell → GLSL ES 1.00 render VERTEX shader (the other MIMEcroft
     // stage; `sh2glsl --vertex` drives this)
     glslv: (src, view = GLSL_VIEW) => call("otranspilerl_glslv", [String(src)], [view]).output,

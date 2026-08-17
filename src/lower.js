@@ -535,6 +535,39 @@ export function safeWordListCoercion(program) {
   return program;
 }
 
+// ── paramLiveValue: the `${v#pat}` strip forms transpile to
+// `sh2.param("#", "v", pat)` with NO live value — the runtime reads the
+// STORE, which a module-lifted var (`let v`) never writes → the strip
+// returns "" and any parse built on it empties (the game's texture
+// payload: `lt_s=${lt_s#?}` kept erasing the TSV to a bare newline).
+// Append the live identifier as a 4th arg (the slice form already
+// carries it); the runtime's param falls back to it when the store is
+// empty. The op may be a Literal ("#") or, for a dynamic pattern, an
+// Identifier — only the literal ops are the strip forms.
+export function paramLiveValue(program) {
+  const STRIP_OPS = new Set(["#", "##", "%", "%%"]);
+  const walk = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) { for (const x of n) walk(x); return; }
+    if (n.type === "CallExpression" && n.callee && n.callee.type === "MemberExpression" &&
+        n.callee.object && n.callee.object.type === "Identifier" && n.callee.object.name === "sh2" &&
+        n.callee.property && n.callee.property.type === "Identifier" && n.callee.property.name === "param" &&
+        n.arguments && n.arguments.length >= 2 && n.arguments[0] && n.arguments[0].type === "Literal" &&
+        STRIP_OPS.has(n.arguments[0].value)) {
+      const name = n.arguments[1];
+      let live = null;
+      if (name && name.type === "Identifier") live = name;
+      else if (name && name.type === "Literal" && typeof name.value === "string") live = { type: "Identifier", name: name.value };
+      if (live && n.arguments.length < 4 && !n.arguments.some((a) => a.type === "Identifier" && a.name === live.name)) {
+        n.arguments.push(live);
+      }
+    }
+    for (const k of Object.keys(n)) if (k !== "loc") walk(n[k]);
+  };
+  walk(program);
+  return program;
+}
+
 // ── directShellFnCalls: rewrite dispatch call sites of the NORMALIZED
 // shell functions to direct JS calls ─────────────────────────────────
 //
@@ -570,8 +603,41 @@ export function directShellFnCalls(program) {
         hasReturn = true;
         if (inLoopBody > 0) canThrowReturn = true;
       }
+      // returnInLoop has ALREADY converted a `return N` inside a loop
+      // body into a `sh2.return(N)` CALL (not a ReturnStatement) by the
+      // time this pass runs — flag it exactly like a ReturnStatement, or
+      // canThrowReturn stays false and the direct call's ReturnSignal
+      // escapes to the top (claim_treasure's return 0 silently ended the
+      // game the frame the first treasure was claimed — the signal was
+      // unwrapped by exec("main") as main's own return value).
+      if (n.type === "CallExpression" && n.callee && n.callee.type === "MemberExpression" &&
+          n.callee.object && n.callee.object.type === "Identifier" && n.callee.object.name === "sh2" &&
+          n.callee.property && n.callee.property.type === "Identifier" &&
+          n.callee.property.name === "return") {
+        hasReturn = true;
+        if (inLoopBody > 0) canThrowReturn = true;
+      }
+      // NATIVE loop statements (While/For/DoWhile) — this pass runs
+      // BEFORE reclassAsyncLoops lowers them to sh2.whileLoop calls, so
+      // the twin-detection below never fires for the game's loops; the
+      // return_in_loop conversion's ReturnSignal throws from the NATIVE
+      // body too. Track the body depth the same way.
+      if (n.type === "WhileStatement" || n.type === "ForStatement" || n.type === "DoWhileStatement") {
+        for (const k of Object.keys(n)) if (k !== "loc" && k !== "body" && k !== "test") scan(n[k]);
+        if (n.test) scan(n.test);
+        inLoopBody++;
+        scan(n.body);
+        inLoopBody--;
+        return;
+      }
       // the sh2 loop twins' BODY arrow (arguments[1]) is where the
-      // return_in_loop conversion throws the ReturnSignal
+      // return_in_loop conversion throws the ReturnSignal. The arrow is a
+      // NESTED function (the $1..$9 check below skips nested functions) —
+      // descend INTO its body block directly or the loop's returns are
+      // never seen and canThrowReturn stays false (claim_treasure's
+      // return 0 ended the game the frame the first treasure was
+      // claimed — the signal was unwrapped by exec("main") as main's own
+      // return value).
       if (n.type === "CallExpression" && n.callee && n.callee.type === "MemberExpression" &&
           n.callee.object && n.callee.object.type === "Identifier" && n.callee.object.name === "sh2" &&
           n.callee.property && n.callee.property.type === "Identifier" &&
@@ -579,7 +645,13 @@ export function directShellFnCalls(program) {
           n.arguments && n.arguments.length > 1) {
         scan(n.arguments[0]);
         inLoopBody++;
-        scan(n.arguments[1]);
+        if (n.arguments[1] &&
+            (n.arguments[1].type === "ArrowFunctionExpression" || n.arguments[1].type === "FunctionExpression") &&
+            n.arguments[1].body) {
+          scan(n.arguments[1].body);
+        } else {
+          scan(n.arguments[1]);
+        }
         inLoopBody--;
         for (const k of Object.keys(n)) if (k !== "loc" && k !== "arguments") scan(n[k]);
         return;
@@ -810,6 +882,19 @@ export function directShellFnCalls(program) {
     if (node.type === "AwaitExpression" && node.argument && node.argument.type === "CallExpression") {
       const info = shellFnCallInfo(node.argument);
       if (info && fns.has(info.name) && !fns.get(info.name).hasReturn) return directStmt(info);
+      // an ALREADY-DIRECT call to a canThrowReturn function — the wasm
+      // compile head performs the direct-call rewrite too (the game's
+      // AST arrives with `await claim_treasure(...)` in place), but that
+      // rewrite predates the catchReturn wrapper, so a loop-return's
+      // ReturnSignal escapes the direct call and is unwrapped by the
+      // NEXT exec() as THAT function's return value — for claim_treasure
+      // the next exec is exec("main"), which silently ended the game the
+      // frame the first treasure was claimed. Wrap it like directStmt
+      // would have.
+      if (node.argument.callee && node.argument.callee.type === "Identifier" &&
+          fns.has(node.argument.callee.name) && fns.get(node.argument.callee.name).canThrowReturn) {
+        return catchReturn(node);
+      }
     }
     const out = {};
     for (const k of Object.keys(node)) out[k] = rewrite(node[k]);

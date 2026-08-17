@@ -40,7 +40,16 @@ function escapeJsComment(text) {
 // emits the STORE SYNC. Returns { js, ast, arrayVals }.
 async function bashToJSA1(fs, bashSource) {
   const lib = await getOtranspilerl();
-  const program = JSON.parse(lib.transpile(String(bashSource), "sh", "js"));
+  // the compile pipeline runs the moved estreeToJs head passes in the
+  // wasm (the tree arrives post-#4); the JS side continues at #5. Fall
+  // back to the plain transpile when the export is missing (a stale
+  // wasm).
+  let program;
+  if (lib.compile) {
+    program = JSON.parse(lib.compile(String(bashSource))).estree;
+  } else {
+    program = JSON.parse(lib.transpile(String(bashSource), "sh", "js"));
+  }
   const scriptArrays = [];
   const arrayVals = new Map();
   // The A1 shIR is built INSIDE the transpile call — the wasm's
@@ -89,7 +98,7 @@ async function bashToJSA1(fs, bashSource) {
     "// bash source:\n" +
     escapeJsComment(bashSource) + "\n" +
     "// ── transpiled statements ─────────────────────────────\n" +
-    await estreeToJs(program, { repl: false });
+    await estreeToJs(program, { repl: false, precompiledHead: !!lib.compile });
   return { js, ast: program, arrayVals };
 }
 

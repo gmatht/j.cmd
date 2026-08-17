@@ -42,8 +42,8 @@ const SYNC_BUILTINS = new Set(["echo", "printf", "true", "false", "date", "pwd",
 // return is "" and the discard is harmless.
 const OUTPUT_BUILTINS = new Set(["echo", "printf", "date", "pwd", "cat", "ls"]);
 
-export async function estreeToJs(program, { repl = true } = {}) {
-  return (await estreeToJsMapped(program, null, null, { repl })).js;
+export async function estreeToJs(program, { repl = true, precompiledHead = false } = {}) {
+  return (await estreeToJsMapped(program, null, null, { repl, precompiledHead })).js;
 }
 
 // ─── asyncCatCommandSubstitution: `$(cat FILE)` with a DYNAMIC path ──
@@ -987,77 +987,7 @@ export function normalizeFunctions(program) {
 // statement ORDER doesn't line up: A1 Assigns map to the declarations,
 // every other A1 stmt maps to the meaningful statements, each in order).
 // Returns { js, map } where map[i] = { jsStart, jsEnd, sourceLine }.
-export async function estreeToJsMapped(program, stmtLines, a1Stmts, { repl = true } = {}) {
-  const lowerMod = await import("./lower.js");
-  const { lowerNativeArrays, hoistLoopLastExit, hoistCommonLastExit, dropDeadFlags, mergeInitAssignments, pushLastExitToEnd, nativeForLoops, lowerPureFunctions, flattenAndOrAll, lowerDeviceRedirects, directShellFnCalls, liftLocalVars, nativeArrays, lowerI32Trunc, backgroundDecide } = lowerMod;
-  // awaitSyncFnCalls must run BEFORE normalizeFunctions: the sync-fnCall
-  // form (a fnCall the frontend believes is await-free) becomes an
-  // AwaitExpression here; markAsyncOnAwait then sets async on every
-  // function whose body awaits (a non-async function with `await` inside
-  // is a SyntaxError), and normalizeFunctions keeps the flag.
-
-  let normalized = normalizeFunctions(awaitAsyncDirectCalls(markAsyncOnAwait(forceAsyncFileRedirects(awaitSyncFnCalls(stripProcessEnv(program), false)))));
-  normalized = unwrapStoreString(normalized);
-  normalized = nullSentinel(normalized);
-  normalized = returnInLoop(normalized, false);
-  // normalizeFunctions made the shell functions native declarations but
-  // left their CALL SITES as sh2.fnCall/callDirect dispatches — direct
-  // them now (the texture generators' per-pixel helper calls are the
-  // measured hot cost; output vars are module-level so the direct call
-  // is identical).
-  normalized = directShellFnCalls(normalized);
-  // directShellFnCalls can insert awaits into a body the frontend typed
-  // SYNC (an async target's direct call is awaited wherever it sits) —
-  // reclassify the sync loop twins + async flags so the JS stays valid
-  // (see reclassAsyncLoops).
-  normalized = reclassAsyncLoops(normalized);
-  // lift single-function store locals to native bindings + drop the dead
-  // param-sync writes (the measured per-frame store round-trips — the
-  // vars the A1's typed lowering left in the store, e.g. cell_visible's
-  // cv_deg/cv_cs/cv_sn, and the get_cell/map_get param syncs).
-  normalized = liftLocalVars(normalized);
-  // fold the store-backed arrays (map, an, GMASK, mime_lookup…) to native
-  // module bindings — the per-frame arrayIndex reads become plain index
-  // ops (the keys are JS-evaluated after the lift's interpolation). Whole-
-  // script evals only (repl: false): a REPL line's array must stay in the
-  // store — the NEXT line (or a sourced C function) reads it by name, and
-  // a native binding would orphan those writes.
-  if (!repl) normalized = nativeArrays(normalized);
-  // Math.trunc(<i32-provable compound>) → (<compound>) | 0 — the trailing
-  // ToInt32 is cheaper than the JIT's Math.trunc sequence on compound FP
-  // chains (see lowerI32Trunc's comment + the docs for the measurement).
-  normalized = lowerI32Trunc(normalized);
-  // keepVariables (the A1 path's array pre-seeding) must run for the
-  // debashcl path too: the wasm lowers `a=(...)` to `sh2.setArray` only
-  // for the arrays it flags, and the game's module arrays (DIR_X, DIR_Z,
-  // CAM_YAW, TREASURES, MIME_DMG, GFONT …) arrive as plain `let`
-  // declarators — `sh2.arrayIndex("DIR_X", "$yaw")` then reads an EMPTY
-  // store (facing vectors "" → the shot ray went (0,0) → shots missed).
-  // The pass collects `let a = [...]` declarators, splits them out of
-  // the multi-declarator statement and syncs them into the store.
-  keepVariables(normalized, [], { repl });
-  const lowered = lowerNativeArrays(normalized);
-  hoistLoopLastExit(lowered);
-  hoistCommonLastExit(lowered);
-  dropDeadFlags(lowered);
-  pushLastExitToEnd(lowered);
-  mergeInitAssignments(lowered);
-  // nativeForLoops is a pure optimisation (recover native `for` from
-  // counter while-loops) — a stale cached lower.js without it must not
-  // break the game, the while-loop form still works.
-  if (typeof nativeForLoops === "function") nativeForLoops(lowered);
-  else console.warn("[estree] nativeForLoops missing from lower.js (stale cache?) — skipping the for-recovery pass");
-  // flatten and/or AFTER the loop recovery (loop conds flatten inside
-  // whileLoopParts): a loop body still carrying the and() await lets the
-  // counter promotion's maybeYield guard pass, and the flattened
-  // function then becomes pure for the fixpoint below.
-  if (typeof flattenAndOrAll === "function") flattenAndOrAll(lowered);
-  else console.warn("[estree] flattenAndOrAll missing from lower.js (stale cache?) — skipping the and/or lowering");
-  if (typeof lowerDeviceRedirects === "function") lowerDeviceRedirects(lowered);
-  else console.warn("[estree] lowerDeviceRedirects missing from lower.js (stale cache?) — skipping the device-redirect lowering");
-  if (typeof lowerPureFunctions === "function") lowerPureFunctions(lowered);
-  else console.warn("[estree] lowerPureFunctions missing from lower.js (stale cache?) — skipping the pure-helper lowering");
-  // ─── reclassAsyncLoops: the direct-call rewrite (directShellFnCalls)
+// ─── reclassAsyncLoops: the direct-call rewrite (directShellFnCalls)
 // can inject an AwaitExpression into a body the frontend classified
 // SYNC — a direct call of an async target is awaited wherever it sits,
 // including inside a `sh2.whileLoopSync(cond, () => …)` body (the
@@ -1110,25 +1040,115 @@ function reclassAsyncLoops(program) {
   return program;
 }
 
-// statement-level sh2.builtin calls for the OUTPUT builtins must stream
-  // their return to stdout (a printf with a variable in its format is
-  // otherwise emitted as a bare call whose value is discarded — the
-  // texture generators' TSV header vanished and blocks rendered flat)
-  writeBuiltinOutput(lowered);
-  // `$(cat "/constant/path")` lowers to the async sh2.fs.readFile
-  // bridge, but a DYNAMIC path (`$(cat "…/sound-$cs_base.sh")` — the
-  // game's sound staging) falls back to the SYNC builtin cat, whose
-  // fs.readSync can't serve /examples (an async loader) → the staged
-  // generator became just the lib. Rewrite that exact shape to the
-  // async readFile bridge (capture awaits the fn).
-  asyncCatCommandSubstitution(lowered);
-  // `&` (sh2.background): the emitter classifies each backgrounded body
-  // statically (thread vs fork) and annotates the generated code —
-  // fork bodies become native `fn().catch(() => {})`, no runtime call.
-  if (typeof backgroundDecide === "function") backgroundDecide(lowered);
-  else console.warn("[estree] backgroundDecide missing from lower.js (stale cache?) — keeping the runtime fork heuristic");
-  const { generate } = await getAstring();
-  const js = generate(lowered, { comments: true });
+export async function estreeToJsMapped(program, stmtLines, a1Stmts, { repl = true, precompiledHead = false } = {}) {
+  const lowerMod = await import("./lower.js");
+  const { lowerNativeArrays, hoistLoopLastExit, hoistCommonLastExit, dropDeadFlags, mergeInitAssignments, pushLastExitToEnd, nativeForLoops, lowerPureFunctions, flattenAndOrAll, lowerDeviceRedirects, directShellFnCalls, liftLocalVars, nativeArrays, lowerI32Trunc, backgroundDecide, safeWordListCoercion, paramLiveValue } = lowerMod;
+  // ── transpile progress: the whole-game transpile can take seconds;
+  // once it exceeds 500ms, stream `[n/m passes completed (xx%)]` per
+  // pass so the terminal shows forward progress instead of a silent
+  // wait (the browser can paint the shell between the pass awaits).
+  // stderr — never corrupts a stdout capture. The `m` comes from the
+  // passChain array length below — exact, no magic constant.
+  const PROGRESS_MS = 500;
+  let passT0 = Date.now(), passOn = false;
+  const passProgress = (done, total, name) => {
+    if (!passOn) {
+      if (Date.now() - passT0 <= PROGRESS_MS) return;
+      passOn = true;
+    }
+    const pct = Math.min(100, Math.round((done / total) * 100));
+    (console.error || console.log)(`[${done}/${total} passes completed (${pct}%)] — ${name}`);
+  };
+  // awaitSyncFnCalls must run BEFORE normalizeFunctions: the sync-fnCall
+  // form (a fnCall the frontend believes is await-free) becomes an
+  // AwaitExpression here; markAsyncOnAwait then sets async on every
+  // function whose body awaits (a non-async function with `await` inside
+  // is a SyntaxError), and normalizeFunctions keeps the flag.
+
+  // ── the pass chain as a data-driven pipeline ────────────────────
+  // Each entry names a pass and runs it against the scoped AST
+  // (`normalized` until the lowerNativeArrays switch, then `lowered`).
+  // The precompiledHead / repl / typeof guards live inside the closures;
+  // iterating the ARRAY drives the progress counter, so [n/m] and the
+  // percentage are exact (the array length is the total) as passes are
+  // added or removed.
+  let normalized = precompiledHead ? program : null;
+  let lowered = null;
+  let js = "";
+  let genFn = null;   // the astring code generator (set by the generate pass)
+  const passChain = [
+    // the whole frontend expression (bash → ESTree via the A1 renderers)
+    ["normalizeFunctions", () => { if (!precompiledHead) normalized = normalizeFunctions(awaitAsyncDirectCalls(markAsyncOnAwait(forceAsyncFileRedirects(awaitSyncFnCalls(stripProcessEnv(program), false))))); }],
+    // the first five run only on the non-precompiled path (the wasm
+    // compile already did them)
+    ["unwrapStoreString*", () => { if (!precompiledHead) normalized = unwrapStoreString(normalized); }],
+    ["nullSentinel*", () => { if (!precompiledHead) normalized = nullSentinel(normalized); }],
+    ["returnInLoop*", () => { if (!precompiledHead) normalized = returnInLoop(normalized, false); }],
+    ["directShellFnCalls*", () => { if (!precompiledHead) normalized = directShellFnCalls(normalized); }],
+    ["reclassAsyncLoops*", () => { if (!precompiledHead) normalized = reclassAsyncLoops(normalized); }],
+    ["unwrapStoreString", () => { normalized = unwrapStoreString(normalized); }],
+    ["nullSentinel", () => { normalized = nullSentinel(normalized); }],
+    ["returnInLoop", () => { normalized = returnInLoop(normalized, false); }],
+    // the A1 word-split on dispatch args must be coerced safely first
+    // (a NUMBER var has no .split — the game's load_textures crashed at
+    // `tex_bg_done $sm_bg_i`); the pass mutates the tree in place
+    ["safeWordListCoercion", () => { safeWordListCoercion(normalized); }],
+    // `${v#pat}` strips carry the live value so a module-lifted var
+    // (whose store copy is never written) strips correctly
+    ["paramLiveValue", () => { paramLiveValue(normalized); }],
+    // directShellFnCalls: the shell functions became native declarations
+    // but their call sites stayed sh2.fnCall/callDirect dispatches —
+    // direct them now (the texture generators' per-pixel helpers are the
+    // measured hot cost)
+    ["directShellFnCalls", () => { normalized = directShellFnCalls(normalized); }],
+    // the direct-call rewrite can insert awaits into a body typed SYNC —
+    // flip such sync loop twins + mark the enclosing functions async
+    ["reclassAsyncLoops", () => { normalized = reclassAsyncLoops(normalized); }],
+    // lift single-function store locals to native bindings + drop the
+    // dead param-sync writes (the measured per-frame store round-trips)
+    ["liftLocalVars", () => { normalized = liftLocalVars(normalized); }],
+    // fold store-backed arrays (map, an, GMASK, mime_lookup…) to native
+    // module bindings — whole-script evals only (repl: false): a REPL
+    // line's array must stay in the store for the NEXT line to read it
+    ["nativeArrays", () => { if (!repl) normalized = nativeArrays(normalized); }],
+    // Math.trunc(<i32-provable compound>) → (<compound>) | 0
+    ["lowerI32Trunc", () => { normalized = lowerI32Trunc(normalized); }],
+    // keepVariables (the A1 path's array pre-seeding): the wasm lowers
+    // `a=(...)` to sh2.setArray only for flagged arrays — the module
+    // arrays (DIR_X, DIR_Z, CAM_YAW, TREASURES, GFONT …) arrive as plain
+    // `let` declarators and the store would read empty → sync them
+    ["keepVariables", () => { keepVariables(normalized, [], { repl }); }],
+    ["lowerNativeArrays", () => { lowered = lowerNativeArrays(normalized); }],
+    ["hoistLoopLastExit", () => { hoistLoopLastExit(lowered); }],
+    ["hoistCommonLastExit", () => { hoistCommonLastExit(lowered); }],
+    ["dropDeadFlags", () => { dropDeadFlags(lowered); }],
+    ["pushLastExitToEnd", () => { pushLastExitToEnd(lowered); }],
+    ["mergeInitAssignments", () => { mergeInitAssignments(lowered); }],
+    // a stale cached lower.js without a new pass must not break the
+    // game — the typeof guards keep the while-loop form working
+    ["nativeForLoops", () => { if (typeof nativeForLoops === "function") nativeForLoops(lowered); }],
+    ["flattenAndOrAll", () => { if (typeof flattenAndOrAll === "function") flattenAndOrAll(lowered); }],
+    ["lowerDeviceRedirects", () => { if (typeof lowerDeviceRedirects === "function") lowerDeviceRedirects(lowered); }],
+    ["lowerPureFunctions", () => { if (typeof lowerPureFunctions === "function") lowerPureFunctions(lowered); }],
+    // statement-level sh2.builtin calls for the OUTPUT builtins must
+    // stream their return to stdout (a printf with a variable in its
+    // format is otherwise emitted as a bare call whose value is
+    // discarded — the texture generators' TSV header vanished)
+    ["writeBuiltinOutput", () => { writeBuiltinOutput(lowered); }],
+    // `$(cat "/constant/path")` → the async readFile bridge (a dynamic
+    // path falls back to the sync builtin cat whose fs.readSync can't
+    // serve /examples)
+    ["asyncCatCommandSubstitution", () => { asyncCatCommandSubstitution(lowered); }],
+    // `&` (sh2.background): classify each backgrounded body statically
+    // (thread vs fork); fork bodies become native fn().catch(() => {})
+    ["backgroundDecide", () => { if (typeof backgroundDecide === "function") backgroundDecide(lowered); }],
+    // astring — the JS code generation
+    ["generate", async () => { genFn = (await getAstring()).generate; js = genFn(lowered, { comments: true }); }],
+  ];
+  for (let i = 0; i < passChain.length; i++) {
+    await passChain[i][1]();
+    passProgress(i + 1, passChain.length, passChain[i][0]);
+  }
 
   const srcLineOf = new Map();
   for (const e of stmtLines || []) srcLineOf.set(e.stmt, e.line);
@@ -1141,7 +1161,7 @@ function reclassAsyncLoops(program) {
   const map = [];
   let line = 1, ai = 0, oi = 0;
   for (const st of lowered.body || []) {
-    const one = generate({ type: "Program", body: [st] });
+    const one = genFn({ type: "Program", body: [st] });
     const n = one.split("\n").filter(Boolean).length;
     let a1Idx = null;
     if (st.type === "VariableDeclaration") {
