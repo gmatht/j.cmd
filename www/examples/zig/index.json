@@ -1,15 +1,1 @@
-[
-"t01_print.zig",
-"t02_arith.zig",
-"t03_if_else.zig",
-"t04_while.zig",
-"t05_for_range.zig",
-"t06_for_items.zig",
-"t07_fn.zig",
-"t08_pointers.zig",
-"t09_string.zig",
-"t10_defer.zig",
-"t11_switch.zig",
-"t12_comptime_const.zig",
-"t13_const_cast.zig"
-]
+["t01_print.zig", "t02_arith.zig", "t03_if_else.zig", "t04_while.zig", "t05_for_range.zig", "t06_for_items.zig", "t07_fn.zig", "t08_pointers.zig", "t09_string.zig", "t10_defer.zig", "t11_switch.zig", "t12_comptime_const.zig", "t13_const_cast.zig", "t14_unary.zig", "t15_array_type.zig", "t16_assign.zig", "t17_binary.zig"]

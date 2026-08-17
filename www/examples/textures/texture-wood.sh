@@ -73,9 +73,9 @@ SHADE=" .:-=+*#%@"
 # clobber any value exported by the caller.
 SIZE=16
 if [ "$TEX_SIZE" != "" ]; then SIZE=$TEX_SIZE; fi
-if [ "$SIZE" -lt 4 ]; then SIZE=4; fi
+if [ "$SIZE" -lt 1 ]; then SIZE=1; fi
 m4=$(( SIZE % 4 ))
-if [ "$m4" -ne 0 ]; then SIZE=$(( (SIZE / 4) * 4 )); fi
+if [ "$m4" -ne 0 ] && [ "$SIZE" -gt 4 ]; then SIZE=$(( (SIZE / 4) * 4 )); fi
 LAST=$(( SIZE - 1 ))
 
 if [ "$TEX_SEED" = "" ]; then TEX_SEED=20240812; fi
@@ -86,6 +86,7 @@ noise_seed=$TEX_SEED
 # value-noise lattice geometry, derived from SIZE so the textures
 # scale up without changing their character
 LOW_CELL=$(( SIZE / 4 ))
+if [ "$LOW_CELL" -lt 1 ]; then LOW_CELL=1; fi
 HIGH_CELL=$(( SIZE / 8 ))
 if [ "$HIGH_CELL" -lt 1 ]; then HIGH_CELL=1; fi
 LOW_WRAP=4

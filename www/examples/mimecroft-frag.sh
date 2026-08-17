@@ -21,7 +21,12 @@
 # 32767 and the backend can emit `precision mediump int;`:
 #   tint  r·tex_r/128:  r ≤ 127, tex_r ≤ 255  → 32385
 #   CRT   r·90/100:  r ≤ 254  → 22860   (runs BEFORE the blend)
-#   blend (r-cr_r)·mix/256:  |r-cr_r| ≤ 228, mix ≤ 127  → 28956
+#   blend (r-cr_r)·mix/128:  |r-cr_r| ≤ 228, mix ≤ 127  → 28956
+#   (mix = damage·cr_a caps at 127 on the FIRST hit, so the crack texel
+#   takes ~99% of the blend at ANY damage level — the dark GRAY crack
+#   colour dominates from the first shot and the block's own hue never
+#   tints the crack lines; the crack appears fully at damage 1 and the
+#   block breaks at its hardness)
 #   vig   r·dim/256:  r ≤ 342, dim ≤ 30  → 10260
 # 127/128 ≈ 255/255 keeps the output range (tint max 253 ≈ 255), so
 # the 0..127 colour scale is visually identical to the old 0..255.
@@ -34,6 +39,12 @@
 #   • corruption:    a deterministic hash of the pixel position throws
 #                    1 in 97 pixels into red (the evil-MIME glare)
 #   • vignette:      corners darken toward the 800×600 frame edge
+#
+# fx/fy (the gl_FragCoord bridge) are used ONLY by those effects — the
+# game emits them conditionally (emit_fragment_shader adds them only
+# when CRT or corruption is enabled), so the no-effects shader has no
+# per-fragment gl_FragCoord reads. This file is the FULL program (all
+# effects on) — the canonical reference for the shader gate.
 # ─────────────────────────────────────────────────────────────────────
 fx=$((frag_x))
 fy=$((frag_y))
@@ -50,11 +61,11 @@ if [ "$scan" -eq 0 ]; then
   b=$((b * 90 / 100))
 fi
 if [ "$damage" -gt 0 ]; then
-  mix=$((damage * cr_a / 2))
+  mix=$((damage * cr_a))
   if [ "$mix" -gt 127 ]; then mix=127; fi
-  r=$((r - (r - cr_r) * mix / 256))
-  g=$((g - (g - cr_g) * mix / 256))
-  b=$((b - (b - cr_b) * mix / 256))
+  r=$((r - (r - cr_r) * mix / 128))
+  g=$((g - (g - cr_g) * mix / 128))
+  b=$((b - (b - cr_b) * mix / 128))
 fi
 hash=$((fx * 7 + fy * 13))
 corrupt=$((hash % 97))

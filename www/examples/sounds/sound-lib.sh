@@ -201,7 +201,7 @@ pcm_bytes() {
 # per sample, clamps, and routes the sample to the active writer
 # (preview accumulates per-column peaks, then finish() prints it).
 sound_main() {
-  if [ "$NSAMP" = "" ]; then NSAMP=$(( DUR_MS * SR / 1000 )); fi
+  if [ "$NSAMP" = "" ] || [ "$NSAMP" = "0" ]; then NSAMP=$(( DUR_MS * SR / 1000 )); fi
   if [ "$DO_NOTES" -eq 1 ]; then
     notes_out
     return 0

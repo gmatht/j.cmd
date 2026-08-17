@@ -4,8 +4,9 @@
 # Refuses to deploy when:
 #   • the working tree has uncommitted changes (git push deploys main,
 #     rsync deploys the tree — they must agree), or
-#   • any harness fails, or
-#   • any example C file stops parsing through the c-sh-go frontend.
+#   • any gate in deploy-gates.sh fails (harnesses, c-sh-go corpus,
+#     www/index.html parse) — the SAME gates the GitHub Pages workflow
+#     runs before publishing to gmatht.github.io.
 #
 # On success it pushes main (auto GitHub Pages), rsyncs www/ + src/ +
 # version.txt + the landing index.html to ca.dansted.org, and verifies
@@ -23,7 +24,6 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-TESTS=(__mini-test.mjs __my_qsort-test.mjs __linked-list-test.mjs __qsort-builtin-test.mjs __shell-regression.mjs __shader-test.mjs __sound-test.mjs __sideface-test.mjs)
 ALLOW_DIRTY=false
 SKIP_TESTS=false
 for a in "$@"; do
@@ -37,85 +37,25 @@ done
 # ── gate 1: the tree must be the deploy state ───────────────────────
 if ! git diff --quiet; then
   echo "✗ uncommitted changes — commit them first (git push ships main, rsync ships the tree)" >&2
-  git status --short | head -20 >&2
+  git status --short | head -20 >&2 || true
   if [ "$ALLOW_DIRTY" != true ]; then exit 1; fi
   echo "  (--allow-dirty: deploying the tree as-is)"
 fi
 
-# ── gates 2+3: the harnesses and the C corpus ───────────────────────
+# ── gates 2+3+4: shared with the GitHub Pages workflow ─────────────
+# deploy-gates.sh runs the harnesses, the c-sh-go corpus and the
+# www/index.html parse; .github/workflows/pages.yml runs the same
+# script before the Pages build, so gmatht.github.io gets identical
+# checks to ca.dansted.org even for pushes that bypass deploy.sh.
 if [ "$SKIP_TESTS" != true ]; then
-  echo "── harnesses ──"
-  for t in "${TESTS[@]}"; do
-    log="/tmp/deploy-$(basename "$t" .mjs).log"
-    printf '  %-26s ' "$t"
-    # __sound-test.mjs boots mimecroft twice and synthesises every
-    # sound under real bash (per-sample DSP — the 460 ms treasure is
-    # ~10K samples) — give it a longer window than the unit tests
-    tl=150
-    if [ "$t" = "__sound-test.mjs" ]; then tl=240; fi
-    if timeout $tl node "$t" > "$log" 2>&1; then
-      echo "PASS"
-    else
-      echo "FAIL — refusing to deploy (log: $log)"
-      tail -15 "$log" >&2
-      exit 1
-    fi
-  done
-
-  echo "── c-sh-go corpus ──"
-  CB=/tmp/cshgo-check
-  if [ ! -x "$CB" ]; then
-    echo "  building c-sh-go frontend…"
-    (cd www/bin/c-sh-go && GOOS=linux GOARCH=amd64 go build -o "$CB" ./cmd/c-sh-go)
-  fi
-  files=(www/examples/*.c www/examples/c/*.c)
-  for f in "${files[@]}"; do
-    [ -f "$f" ] || continue
-    if ! "$CB" --shir "$f" --raw > /dev/null 2>/tmp/deploy-corpus.log; then
-      echo "  ✗ $f: $(head -1 /tmp/deploy-corpus.log)" >&2
-      exit 1
-    fi
-  done
-  echo "  ${#files[@]} example .c files parse"
-fi
-
-# ── gate 4: the browser app must PARSE (module-scope duplicates and stray
-# brace/comma artifacts from automated edits have broken the page twice) ──
-if [ "$SKIP_TESTS" != true ]; then
-  python3 - <<'PY' || { echo "✗ www/index.html module fails to parse — refusing to deploy" >&2; exit 1; }
-import re, collections, sys
-html = open("www/index.html").read()
-blocks = re.findall(r"<script[^>]*>(.*?)</script>", html, re.S)
-big = max(blocks, key=len)
-open("/tmp/deploy-app-check.js", "w").write(big)
-decls = re.findall(r"^(?:export )?(?:const|let|var|function|async function|class)\s+([A-Za-z_$][\w$]*)", big, re.M)
-dups = {k: v for k, v in collections.Counter(decls).items() if v > 1}
-if dups:
-    print("module-scope duplicates:", dups); sys.exit(1)
-if re.search(r",\s*,|\}\s*\},\s*\},|\}\s*\}\s*\},\s*\{", big):
-    print("stray brace/comma artifact"); sys.exit(1)
-# ctx shorthand keys must resolve to module-scope declarations/imports
-i = big.find("const shellCtx = {")
-if i >= 0:
-    seg = big[i:i+6000]
-    for s in re.findall(r"^\s{2}([A-Za-z_$][\w$]*),$", seg, re.M):
-        if not re.search(r"^(?:const|let|var|function|async function|class)\s+" + re.escape(s) + r"\b", big, re.M) \
-           and not re.search(r"^import [^;]*\b" + re.escape(s) + r"\b[^;]*;", big, re.M):
-            print("ctx shorthand not in scope:", s); sys.exit(1)
-PY
-  if node --check /tmp/deploy-app-check.js > /tmp/deploy-app-check.log 2>&1; then
-    echo "  www/index.html module parses"
-  else
-    echo "✗ www/index.html module syntax error — refusing to deploy" >&2
-    head -3 /tmp/deploy-app-check.log >&2
-    exit 1
-  fi
+  ./deploy-gates.sh
 fi
 
 # ── deploy ──────────────────────────────────────────────────────────
 # Targets: ca.dansted.org's PUBLIC host (racknerd, 72.11.150.147 — where
 # the DNS points and the user actually loads the site) + the eu origin
-# (81.4.105.17) as backup, + gh-pages (auto via the push).
+# (81.4.105.17) as backup, + gh-pages (auto via the push — gated in CI
+# by pages.yml, which runs deploy-gates.sh before the Pages build).
 echo "── deploy ──"
 SHA=$(git rev-parse HEAD)
 git push origin main

@@ -41,16 +41,18 @@ var langAliases = map[string]string{
 var frontends = map[string]frontend{
 	"bat":  {"bat-sh-go", bat_Shir},
 	"c":    {"c-sh-go", c_Shir},
+	"cpp":  {"cpp-sh-go", cpp_Shir},
 	"fish": {"fish-sh-go", fish_Shir},
 	"go":   {"go-sh", go_Shir},
 	"perl": {"perl-sh-go", pl_Shir},
 	"py":   {"py-sh-go", py_Shir},
 	"sh":   {"posix-sh-go", sh_shirForSource},
+	"zig":  {"zig-sh-go", zig_Shir},
 	"zsh":  {"zsh-sh-go", zsh_Shir},
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: frontend [--lang <bat|c|fish|go|perl|py|sh|zsh>] --shir <file> [--raw]")
+	fmt.Fprintln(os.Stderr, "usage: frontend [--lang <bat|c|cpp|fish|go|perl|py|sh|zig|zsh>] --shir <file> [--raw]")
 	os.Exit(2)
 }
 
@@ -60,6 +62,8 @@ func inferLang(path string) string {
 		return "bat"
 	case ".c":
 		return "c"
+	case ".cc", ".cpp":
+		return "cpp"
 	case ".fish":
 		return "fish"
 	case ".go":
@@ -70,6 +74,8 @@ func inferLang(path string) string {
 		return "py"
 	case ".sh", "":
 		return "sh"
+	case ".zig":
+		return "zig"
 	case ".zsh":
 		return "zsh"
 	}
@@ -110,7 +116,7 @@ func main() {
 	}
 	fe, ok := frontends[lang]
 	if !ok {
-		fmt.Fprintf(os.Stderr, "frontend: unknown language %q (c, fish, go, perl, py, sh, zsh)\n", lang)
+		fmt.Fprintf(os.Stderr, "frontend: unknown language %q (bat, c, cpp, fish, go, perl, py, sh, zig, zsh)\n", lang)
 		os.Exit(2)
 	}
 	src := rest[1]

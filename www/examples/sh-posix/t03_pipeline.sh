@@ -1,6 +1,6 @@
 name="world"
 echo "hello $name" | tr a-z A-Z
-files=$(ls /tmp)
+files=$(ls -d /tmp)
 echo "files: $files"
 count=$(echo one; echo two | wc -l)
 echo "count=$count"

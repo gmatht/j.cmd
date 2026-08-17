@@ -4,4 +4,4 @@ l = [1, 2]
 l.append(3)
 print(len(l))
 
-// DRIVER: frontend emit gap (red gate — the worker's work item).
+# DRIVER: frontend emit gap (red gate — the worker's work item).

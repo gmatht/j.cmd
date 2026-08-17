@@ -59,6 +59,9 @@ const testSrc = `
 AIR=0
 STONE=1
 VIEW_R=16
+RD_VR=$((VIEW_R * 1000))
+rd_cs=1000
+rd_sn=0
 crouched=0
 CELLS=256
 MAP_W=16
@@ -95,6 +98,16 @@ map[376]=$STONE   # 1,8,7
 ${SCOS_SRC}
 ${SSIN_SRC}
 
+# the hoisted rotation — the game's compute_display refreshes rd_cs/
+# rd_sn once per frame from dpyw_ms; the test drives try_draw directly,
+# so each scenario derives them the same way
+setcam() { sc_x=$1; sc_z=$2; sc_cx=$3; sc_cz=$4; sc_y=$5
+  dpx=$sc_x; dpz=$sc_z; dpcx_ms=$sc_cx; dpcz_ms=$sc_cz; dpyw_ms=$sc_y
+  rd_deg=$((dpyw_ms / 1000))
+  rd_cs=\${SCOS[$rd_deg]}
+  rd_sn=\${SSIN[$rd_deg]}
+}
+
 # banner_visible still calls these two helpers
 get_cell() { g_a=$1; g_b=$2; g_c=$3; gv=$AIR; gi=$((g_b * CELLS + g_c * MAP_W + g_a)); gv=\${map[$gi]}; }
 abs() { ab_v=$1; if [ "$ab_v" -lt 0 ]; then ab_v=$((0 - ab_v)); fi; av=$ab_v; }
@@ -109,7 +122,7 @@ fails=0
 check() { if [ "$3" = "$2" ]; then echo "PASS: $1"; else echo "FAIL: $1 (want $2, got $3)"; fails=$((fails + 1)); fi; }
 
 # ── yaw 0 (facing -z): standing at (8,8)
-dpx=8; dpz=8; dpcx_ms=8000; dpcz_ms=8000; dpyw_ms=0
+setcam 8 8 8000 8000 0
 try_one 7 7; check "stand: left-ahead (7,7)" DRAWN "$res"
 try_one 9 7; check "stand: right-ahead (9,7)" DRAWN "$res"
 try_one 8 7; check "stand: straight-ahead (8,7)" DRAWN "$res"
@@ -120,7 +133,7 @@ banner_visible 7 7; check "stand: banner at (7,7)" 1 "$bv"
 
 # ── yaw 0: 60% through the move (8,8)→(8,7): camera at z=7.4, so the
 # ROUNDED cell is already 7 — the old code culled the whole row here
-dpx=8; dpz=7; dpcx_ms=8000; dpcz_ms=7400; dpyw_ms=0
+setcam 8 7 8000 7400 0
 try_one 7 7; check "midmove: left-ahead (7,7) STAYS" DRAWN "$res"
 try_one 9 7; check "midmove: right-ahead (9,7) STAYS" DRAWN "$res"
 try_one 8 7; check "midmove: straight-ahead (8,7)" DRAWN "$res"
@@ -130,14 +143,14 @@ banner_visible 7 7; check "midmove: banner at (7,7) STAYS" 1 "$bv"
 
 # ── yaw 0: arrived at (8,7) — the side blocks are now BESIDE the player
 # (centre w=0) yet still visible (near face half a cell in front)
-dpx=8; dpz=7; dpcx_ms=8000; dpcz_ms=7000; dpyw_ms=0
+setcam 8 7 8000 7000 0
 try_one 7 7; check "arrived: left beside (7,7) DRAWN (near face)" DRAWN "$res"
 try_one 9 7; check "arrived: right beside (9,7) DRAWN (near face)" DRAWN "$res"
 try_one 8 6; check "arrived: row ahead (8,6)" DRAWN "$res"
 try_one 7 8; check "arrived: row behind (7,8) culled" hidden "$res"
 
 # ── yaw 1 (facing +x): moving (8,8)→(9,8), 60% in (x=8.6, rounded 9)
-dpx=9; dpz=8; dpcx_ms=8600; dpcz_ms=8000; dpyw_ms=90000
+setcam 9 8 8600 8000 90000
 try_one 9 7; check "yaw1 midmove: right-ahead (9,7) STAYS" DRAWN "$res"
 try_one 9 9; check "yaw1 midmove: right-ahead (9,9) STAYS" DRAWN "$res"
 try_one 8 7; check "yaw1 midmove: row behind (8,7) culled" hidden "$res"
@@ -147,7 +160,7 @@ try_one 8 7; check "yaw1 midmove: row behind (8,7) culled" hidden "$res"
 # culling had already flipped to the +x axis, so the left half of the
 # view (cells at x = dpx, z < dpz) was culled and the world looked
 # empty. The continuous frustum keeps both sides of the 45° view.
-dpx=8; dpz=8; dpcx_ms=8000; dpcz_ms=8000; dpyw_ms=45000
+setcam 8 8 8000 8000 45000
 try_one 9 8; check "turn45: right side (9,8) DRAWN" DRAWN "$res"
 try_one 8 7; check "turn45: left-front (8,7) DRAWN" DRAWN "$res"
 try_one 7 8; check "turn45: behind-left (7,8) culled" hidden "$res"

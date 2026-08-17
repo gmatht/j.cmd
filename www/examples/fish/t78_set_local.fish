@@ -8,4 +8,3 @@ set v 2
 inner
 echo "outer=$v"
 
-// DRIVER: frontend emit gap (red gate — the worker's work item).

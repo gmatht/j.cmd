@@ -4,4 +4,4 @@ d = {"a": 1, "b": 2}
 print(d["a"])
 print(d.get("b"))
 
-// DRIVER: frontend emit gap (red gate — the worker's work item).
+# DRIVER: frontend emit gap (red gate — the worker's work item).

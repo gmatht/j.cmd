@@ -1,7 +1,1 @@
-[
-"t01_echo.ps1",
-"t02_braced_variable.ps1",
-"t03_cast.ps1",
-"t04_invocation_operator.ps1",
-"t05_concatenated_argument.ps1"
-]
+["t01_echo.ps1", "t02_braced_variable.ps1", "t03_cast.ps1", "t04_invocation_operator.ps1", "t05_concatenated_argument.ps1", "t06_do_statement.ps1", "t07_if_else.ps1", "t08_empty_statement.ps1", "t09_expandable_bareword.ps1", "t10_here_string.ps1", "t11_exit.ps1", "t12_for_condition.ps1", "t13_foreach.ps1", "t14_format.ps1", "t15_generic_type_arguments.ps1", "t16_hexadecimal_integer_literal.ps1", "t17_format_expression.ps1", "t18_label.ps1", "t19_merging_redirection.ps1", "t20_null_coalesce.ps1", "t21_null_coalesce_expression.ps1", "t22_param_block.ps1", "t23_path_command_name.ps1", "t24_range.ps1", "t25_range_expression.ps1", "t26_pipeline_chain.ps1", "t27_real_literal.ps1", "t28_requires_directive.ps1", "t29_stop_parsing.ps1", "t30_sub_expression.ps1", "t31_switch.ps1", "t32_ternary.ps1", "t33_ternary_expression.ps1", "t34_single_quoted_string.ps1", "t35_while_statement.ps1", "t36_arithmetic.ps1"]

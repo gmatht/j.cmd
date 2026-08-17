@@ -27,6 +27,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Sanity gates (the same checks deploy.sh runs for ca.dansted.org)
+        run: |
+          # The harnesses need headless-gl (the only native dep — it is
+          # NOT in package.json; "allowScripts" there is pnpm-only) and
+          # glslangValidator for the shader test's ES 1.00 compile step
+          # (without it that test skips the step and the gate is weaker
+          # than a ca.dansted.org deploy). npm ci mirrors the dev tree;
+          # --no-save keeps gl out of package.json/package-lock.json.
+          sudo apt-get update
+          sudo apt-get install -y libxi-dev libglu1-mesa-dev mesa-common-dev glslang-tools
+          npm ci
+          npm install --no-save gl@8.1.6
+          ./deploy-gates.sh
       - name: Assemble the site (keep www/ + src/ as siblings so the
           ../src imports in www/index.html resolve from /j.cmd/www/)
         run: |

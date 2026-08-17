@@ -2425,6 +2425,12 @@ func arithNode(e *expr) any {
 		}
 		refuse("ternary in an arithmetic context (lower it to a temp: int v = c ? a : b)")
 	case "bin":
+		if e.r == nil {
+			// the unary-`!` shape (`b = !b`): the A1 Arith Un node — a nil
+			// RHS would crash the Bin lowering (fleet parity: the shared
+			// lowering emits Un for nil-RHS bin nodes).
+			return map[string]any{"type": "Un", "op": e.op, "arg": arithNode(e.l)}
+		}
 		return map[string]any{"type": "Bin", "lhs": arithNode(e.l), "op": e.op, "rhs": arithNode(e.r)}
 	case "index", "deref", "addr":
 		// an array element / pointer deref inside arithmetic — the A1

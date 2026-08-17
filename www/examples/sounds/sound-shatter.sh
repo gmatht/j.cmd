@@ -91,7 +91,7 @@ render_sample() {
     sh_i=0
     while [ "$sh_i" -lt "$SH_N" ]; do
       if [ "$i" -ge "${SH_START_N[$sh_i]}" ]; then
-        if [ "$sh_env16" -gt 0 ]; then
+        if [ "${sh_env16[0]}" -gt 0 ]; then
           sin16 ${sh_ph[$sh_i]}
           shard=$(( sv * ${sh_env16[$sh_i]} / 65536 * ${SH_AMP[$sh_i]} / 256 ))
           samp=$(( samp + shard ))

@@ -1,18 +1,1 @@
-[
-"t01_echo.bat",
-"t02_set.bat",
-"t03_arith.bat",
-"t04_if.bat",
-"t05_if_not.bat",
-"t06_goto.bat",
-"t07_for.bat",
-"t08_block.bat",
-"t08_exit.bat",
-"t09_args.bat",
-"t10_mixed.bat",
-"t11_commands.bat",
-"t12_forf.bat",
-"t13_v11.bat",
-"t14_call.bat",
-"t15_fallthrough.bat"
-]
+["t01_echo.bat", "t02_set.bat", "t03_arith.bat", "t04_if.bat", "t05_if_not.bat", "t06_goto.bat", "t07_for.bat", "t08_block.bat", "t08_exit.bat", "t09_args.bat", "t10_mixed.bat", "t11_commands.bat", "t12_forf.bat", "t13_v11.bat", "t14_call.bat", "t15_fallthrough.bat", "t16_case.bat", "t17_amp.bat", "t18_comments.bat", "t19_arith.bat", "t20_forblock.bat", "t21_exist.bat", "t22_subargs.bat", "t23_labels.bat", "t24_forf2.bat", "t25_err.bat", "t26_echoforms.bat", "t27_defined.bat", "t28_redirects2.bat", "t29_mixed2.bat", "t30_substar.bat", "t34_dirs.bat", "t35_arith3.bat", "t36_redirect_var.bat", "t37_ifexist_path.bat", "t38_setvar.bat", "t39_varblock.bat", "t40_echooff.bat", "t41_nestedfor.bat", "t42_nestedcall.bat", "t43_midsub.bat", "t44_erase.bat", "t45_fileflags.bat", "t46_forftok.bat", "t47_exitval.bat", "t48_robocopy.bat", "t49_robocopy2.bat", "t50_conjunction.bat", "t51_shift.bat", "t52_pipeline.bat", "t53_renpattern.bat"]
