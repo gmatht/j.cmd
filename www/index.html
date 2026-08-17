@@ -1199,39 +1199,12 @@ function write(text, cls = "out", opts = {}) {
     }
     term.scrollTop = term.scrollHeight;
   };
-  // A leading \r overwrites the current (unfinished) output line in
-  // place — a real terminal's carriage return. The transpiler's
-  // progress reports (`__sh2PassProgress` → "\r[14/32] …") come as
-  // \r-prefixed stderr lines and must replace the previous progress
-  // span, not append another (which is how the single live line stays
-  // one line). The trailing newline (which ends a progress burst) is
-  // stripped here so the overwrite targets the line content only.
-  let _carriage = false;
-  if (text.startsWith("\r")) {
-    _carriage = true;
-    text = text.slice(1);
-  }
   // Fast path: plain text (the common case) — no escape processing.
   if (!text.includes("\x1b[")) {
-    if (_carriage) {
-      // replace the last appended output span (the current line), or
-      // append a fresh one if there isn't one yet
-      let target = term.lastElementChild;
-      while (target && target !== promptLine && !(target.tagName === "SPAN")) target = target.previousElementSibling;
-      if (target && target !== promptLine) {
-        target.textContent = text;
-      } else {
-        const plain = document.createElement("span");
-        plain.className = cls;
-        plain.textContent = text;
-        appendSpan(plain);
-      }
-    } else {
-      const plain = document.createElement("span");
-      plain.className = cls;
-      plain.textContent = text;
-      appendSpan(plain);
-    }
+    const plain = document.createElement("span");
+    plain.className = cls;
+    plain.textContent = text;
+    appendSpan(plain);
     lastCharNewline = text.endsWith("\n");
     return;
   }
@@ -1625,13 +1598,23 @@ function spinnerStop() {
 // (write() handles a leading \r by replacing the current line) so the
 // user sees a single live progress line during the transpile. The last
 // pass appends the trailing \n so the game's own banner starts fresh.
+let transpileProgressEl = null;
 globalThis.__sh2PassProgress = (line, done, total) => {
-  // `
-`-prefixed stderr line → write(..., "err") replaces the current
-  // line in place (no scrollback spam, like a real terminal's \r).
-  const s = line.startsWith("\r") ? line : "\r" + line;
-  if (done >= total) s = s + "\n";
-  write(s, "err");
+  // The terminal's output spans are INLINE (`#terminal` is pre-wrap) and
+  // write() appends a new span per call — so a `\r` can't overwrite a
+  // previous span by DOM-search. Own ONE dedicated progress span and
+  // replace its textContent each pass (a real terminal's carriage
+  // return); the final pass appends the trailing newline so the game's
+  // banner starts fresh.
+  const text = (line.startsWith("\r") ? line.slice(1) : line) + (done >= total ? "\n" : "");
+  if (!transpileProgressEl) {
+    const span = document.createElement("span");
+    span.className = "err";
+    term.insertBefore(span, spinner.active ? spinner.el : promptLine);
+    transpileProgressEl = span;
+  }
+  transpileProgressEl.textContent = text;
+  if (done >= total) transpileProgressEl = null;
 };
 
 // ─── Async command tasks ─────────────────────────────────────
