@@ -1056,8 +1056,22 @@ export async function estreeToJsMapped(program, stmtLines, a1Stmts, { repl = tru
       if (Date.now() - passT0 <= PROGRESS_MS) return;
       passOn = true;
     }
-    const pct = Math.min(100, Math.round((done / total) * 100));
-    (console.error || console.log)(`[${done}/${total} passes completed (${pct}%)] — ${name}`);
+    const line = `[${done}/${total} passes completed (${Math.min(100, Math.round((done / total) * 100))}%)] — ${name}`;
+    // surface the transpile progress on a SINGLE line of the j.cmd
+    // Terminal, not the web console — devtools is invisible to the
+    // user. The shell sets `globalThis.__sh2PassProgress` (index.html)
+    // to a single overwriting stderr line (`write("\r"+line, "err")`);
+    // the terminal's write() treats a leading \r as "replace the
+    // current line". The send func passes the \r-prefix + a trailing-
+    // newline flag (the shell appends \n on the LAST pass). Without the
+    // hook (Node CLI / unit tests — captured stdout must stay clean) we
+    // fall back to the console for the benchmark/debug path.
+    const hook = globalThis.__sh2PassProgress;
+    if (typeof hook === "function") {
+      hook(`\r${line}`, done, total);
+    } else {
+      (console.error || console.log)(line);
+    }
   };
   // awaitSyncFnCalls must run BEFORE normalizeFunctions: the sync-fnCall
   // form (a fnCall the frontend believes is await-free) becomes an
@@ -1152,6 +1166,15 @@ export async function estreeToJsMapped(program, stmtLines, a1Stmts, { repl = tru
   for (let i = 0; i < passChain.length; i++) {
     await passChain[i][1]();
     passProgress(i + 1, passChain.length, passChain[i][0]);
+    // let the browser PAINT the progress line: awaiting each (mostly sync)
+    // pass only schedules microtasks, which the compositor batches until a
+    // macrotask — so without a real yield the whole transpile blocks paint
+    // and the user sees the banner + settings only AFTER it finishes. Yield
+    // a macrotask between passes when a progress sink is active (the shell
+    // browser sets __sh2PassProgress; Node/tests don't, so no slowdown).
+    if (typeof globalThis.__sh2PassProgress === "function" && i < passChain.length - 1) {
+      await new Promise((r) => setTimeout(r, 0));
+    }
   }
 
   const srcLineOf = new Map();
