@@ -36,7 +36,7 @@ jobs:
           # than a ca.dansted.org deploy). npm ci mirrors the dev tree;
           # --no-save keeps gl out of package.json/package-lock.json.
           sudo apt-get update
-          sudo apt-get install -y libxi-dev libglu1-mesa-dev mesa-common-dev glslang-tools xvfb
+          sudo apt-get install -y libxi-dev libglu1-mesa-dev mesa-common-dev glslang-tools imagemagick xvfb
           npm ci
           npm install --no-save gl@8.1.6
           # headless-gl uses the X11-backed native context on the runner;
