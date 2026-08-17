@@ -3683,8 +3683,12 @@ main() {
     *headless*) sound=$((0)); headless=1 ;;
     *) sound=$((1)); headless=0 ;;
   esac
-  gtick
-  g_t0=$g_now
+  # the stats clock starts at the GAME LOOP, not here: g_total used to
+  # include the whole startup phase (shader compile, maze gen, texture
+  # + label generation, the "ready." sleep) while no gspan bucket did —
+  # the loading time amortized into the opaque "other" line (seconds of
+  # 32px texture generation spread over the frames). gtick below the
+  # loop start re-zeroes the per-frame measurement.
   # immediate feedback FIRST: the banner prints before the slow parts
   # (the wasm shader compile + the texture generation), so the terminal
   # is never silent during startup. The terminal map prints later, after
@@ -3763,6 +3767,10 @@ main() {
   frame=$((0))
   quit=$((0))
   dirty=1
+  # the stats window: just before the loop, so the frame buckets and
+  # "other" measure ONLY the game loop (the loading above is excluded)
+  gtick
+  g_t0=$g_now
   while [ "$quit" -eq 0 ] && [ "$hp" -gt 0 ] && [ "$license" -gt 0 ]; do
   while [ "$quit" -eq 0 ] && [ "$hp" -gt 0 ] && [ "$license" -gt 0 ] && [ "$treasures_left" -gt 0 ]; do
     frame=$((frame + 1))
