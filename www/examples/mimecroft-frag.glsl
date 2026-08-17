@@ -33,7 +33,8 @@ void main() {
     g_fr = float(int(vColor.r * 127.0));
     g_fg = float(int(vColor.g * 127.0));
     g_fb = float(int(vColor.b * 127.0));
-    vec4 _tex = texture2D(uTex, fract(vUv));
+    vec2 _uv = fract(vUv);
+    vec4 _tex = texture2D(uTex, _uv);
     g_r = (g_fr * float(int(_tex.r * 255.0))) / 128.0;
     g_g = (g_fg * float(int(_tex.g * 255.0))) / 128.0;
     g_b = (g_fb * float(int(_tex.b * 255.0))) / 128.0;
@@ -44,7 +45,7 @@ void main() {
         g_b = (g_b * 0.9);
     }
     if ((uDamage > 0)) {
-        vec4 _crack = texture2D(uCrack, fract(vUv));
+        vec4 _crack = texture2D(uCrack, _uv);
         g_mix = min((float(uDamage) * float(int(_crack.a * 127.0))), 127.0);
         g_r = (g_r - (((g_r - float(int(_crack.r * 127.0)))) * (g_mix / 128.0)));
         g_g = (g_g - (((g_g - float(int(_crack.g * 127.0)))) * (g_mix / 128.0)));
