@@ -3776,7 +3776,8 @@ main() {
     # LITERAL quotes (a case-lowering bug) and never matches — keep the
     # pattern unquoted (bash case patterns don't need the quotes)
     *program: linked*) echo "  shaders: bash-authored (sh2glsl)" ;;
-    *) echo "  !!! shader link FAILED — the 3D view will not render (see /dev/webgl/log)" ;;
+    *) echo "  !!! shader link FAILED — the 3D view will not render:"
+       cat /dev/webgl/log ;;
   esac
 
     if [ "$headless" -eq 0 ]; then

@@ -68,5 +68,32 @@ for HOST in root@72.11.150.147 us; do
 done
 ssh -o ConnectTimeout=8 root@72.11.150.147 "curl -s -o /dev/null -w 'public: %{http_code}\n' http://localhost/j.cmd/version.txt"
 ssh -o ConnectTimeout=8 us "curl -s -o /dev/null -w 'origin:  %{http_code}\n' http://localhost/j.cmd/version.txt"
-curl -s -o /dev/null -w "gh-pages: %{http_code}\n" https://gmatht.github.io/j.cmd/www/version.txt
+
+# A GitHub Pages push is asynchronous.  The old check below only verified
+# that GitHub returned *some* HTTP 200, so a failed/cancelled Pages workflow
+# was reported as a successful deploy while the site continued serving the
+# previous commit.  Wait for the build stamp produced by pages.yml instead.
+# Add a query string so a cached version.txt cannot make an old deployment
+# look current.
+PAGES_VERSION_URL="https://gmatht.github.io/j.cmd/www/version.txt"
+PAGES_READY=false
+for attempt in $(seq 1 30); do
+  pages_version=$(curl -fsS --max-time 20 \
+    "${PAGES_VERSION_URL}?deploy=${SHA}" 2>/dev/null || true)
+  if printf '%s\n' "$pages_version" | grep -Fq "commit: $SHA"; then
+    PAGES_READY=true
+    echo "gh-pages: 200 ($SHA)"
+    break
+  fi
+  if [ "$attempt" -lt 30 ]; then
+    echo "gh-pages: waiting for Pages workflow ($attempt/30)"
+    sleep 20
+  fi
+done
+if [ "$PAGES_READY" != true ]; then
+  echo "✗ GitHub Pages did not publish $SHA" >&2
+  echo "  The push succeeded, but the Pages workflow may have failed;" >&2
+  echo "  inspect: https://github.com/gmatht/j.cmd/actions/workflows/pages.yml" >&2
+  exit 1
+fi
 echo "✓ deployed $(git rev-parse --short HEAD)"

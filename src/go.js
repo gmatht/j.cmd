@@ -491,7 +491,21 @@ export class GoRunner {
       go = new globalThis.Go();
     }
     go.argv = args;
-    go.env = { ...(isNodeEnv() ? process.env : {}), GOROOT };
+    // Go's wasm_exec.js copies every entry into argv/env at startup and
+    // rejects the run when their combined size exceeds its fixed limit.
+    // Passing the whole Node/GitHub Actions environment made otherwise
+    // small frontend programs fail only in CI (where GITHUB_* variables
+    // can be large).  The bundled tools only need the virtual GOROOT;
+    // retain the conventional process values for programs that inspect
+    // them, but keep the bridge bounded and deterministic.
+    const hostEnv = isNodeEnv() ? process.env : {};
+    go.env = {
+      GOROOT,
+      HOME: hostEnv.HOME || "/home",
+      PATH: hostEnv.PATH || "/usr/bin:/bin",
+      LANG: hostEnv.LANG || "C",
+      TMPDIR: hostEnv.TMPDIR || "/tmp",
+    };
     go.exit = (code) => { this._exitCode = code; };
 
     this._exitCode = 0;
