@@ -151,6 +151,9 @@ labels_dirty=1       # redraw the labels when the 3D view changes
 MIME_LABEL_TEX0=31
 MIME_NAMES=(dummy "JPEG" "PNG" "OCTET-STREAM" "TEXT/PLAIN")
 MIME_NAMELEN=(dummy 4 3 12 10)
+# Full media types for the terminal event log. Keep MIME_NAMES short for
+# the 64px floating banners; the log can identify the actual MIME clearly.
+MIME_TYPES=(dummy "image/jpeg" "image/png" "application/octet-stream" "text/plain")
 mbw=(0 0 0 0 0)
 mbh=(0 0 0 0 0)
 mblx=(-1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1)
@@ -483,6 +486,8 @@ kill_mime_at() { ka_a=$1; ka_b=$2; ka_i=0
     ka_ex=${mx[$ka_i]}
     ka_ez=${mz[$ka_i]}
     if [ "$ka_ex" -eq "$ka_a" ] && [ "$ka_ez" -eq "$ka_b" ]; then
+      ka_type=${mtype[$ka_i]}
+      ka_type_name=${MIME_TYPES[$ka_type]}
       score=$((score + 5))
       ka_last=$((mime_count - 1))
       mx[$ka_i]=${mx[$ka_last]}
@@ -517,7 +522,7 @@ kill_mime_at() { ka_a=$1; ka_b=$2; ka_i=0
       mime_count=$ka_last
       hud_static_dirty=1
       play "G5 0.08"
-      echo "  MIME sanitised  +5  ($mime_count left)"
+      echo "  MIME sanitised: $ka_type_name  +5  ($mime_count left)"
       return 0
     fi
     ka_i=$((ka_i + 1))
