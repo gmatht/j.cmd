@@ -1093,6 +1093,13 @@ export async function estreeToJsMapped(program, stmtLines, a1Stmts, { repl = tru
   const passChain = [
     // the whole frontend expression (bash → ESTree via the A1 renderers)
     ["normalizeFunctions", () => { if (!precompiledHead) normalized = normalizeFunctions(awaitAsyncDirectCalls(markAsyncOnAwait(forceAsyncFileRedirects(awaitSyncFnCalls(stripProcessEnv(program), false))))); }],
+    // The wasm compile path has already run its head passes, but it has not
+    // run this JS-side safety rewrite. Keep file redirects on the async
+    // bridge even when the backend classified the enclosing function as
+    // sync: VirtualFS.write is asynchronous, while redirectSync cannot
+    // await it. Without this pass, generated programs can race the next
+    // command (MIMEcroft's sh2glsl read saw an empty fragment file).
+    ["forceAsyncFileRedirects", () => { normalized = forceAsyncFileRedirects(normalized); }],
     // the first five run only on the non-precompiled path (the wasm
     // compile already did them)
     ["unwrapStoreString*", () => { if (!precompiledHead) normalized = unwrapStoreString(normalized); }],

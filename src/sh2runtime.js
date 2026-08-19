@@ -504,10 +504,30 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     const prev = mode;
     const buf = { out: "", err: "" };
     mode = { type: "redirect", buf };
+    // Native echo/printf lowering writes directly through the process shim,
+    // bypassing the runtime mode buffer. Capture those writes here just as
+    // capture() does; otherwise a native write inside an async redirect is
+    // lost before the file/device target is flushed.
+    const stdoutObj = stdout;
+    const stderrObj = stderr;
+    // Some embedders (including the headless MIMEcroft harness) expose the
+    // generated `process.stdout` as a different object from the runtime's
+    // stdout sink. Capture both so native echo lowering cannot bypass the
+    // redirect merely because it used the host process shim.
+    const hostOut = typeof globalThis !== "undefined" && globalThis.process && globalThis.process.stdout;
+    const hostErr = typeof globalThis !== "undefined" && globalThis.process && globalThis.process.stderr;
+    const outObjs = [stdoutObj, hostOut].filter((x, i, a) => x && typeof x.write === "function" && a.indexOf(x) === i);
+    const errObjs = [stderrObj, hostErr].filter((x, i, a) => x && typeof x.write === "function" && a.indexOf(x) === i);
+    const origOuts = outObjs.map((x) => x.write);
+    const origErrs = errObjs.map((x) => x.write);
+    outObjs.forEach((x) => { x.write = (s) => { buf.out += String(s); return true; }; });
+    errObjs.forEach((x) => { x.write = (s) => { buf.err += String(s); return true; }; });
     let ret;
     try {
       ret = await fn();
     } finally {
+      outObjs.forEach((x, i) => { x.write = origOuts[i]; });
+      errObjs.forEach((x, i) => { x.write = origErrs[i]; });
       mode = prev;
     }
     const handled = { 1: false, 2: false };
@@ -1788,15 +1808,28 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       },
       redirectSync(fn, redirects) {
         // fd-dup targets (`>&2` → target "&2") are SYNCHRONOUS — the
-        // content routes straight to the fd's sink. Only FILE targets
-        // need the async fs bridge (and refuse here).
+        // content routes straight to the fd's sink. File targets are only
+        // safe here when the mounted backend exposes writeSync; the
+        // ESTree safety pass normally rewrites them to redirect().
         const buf = { out: "", err: "" };
         const prevMode = mode;
+        const stdoutObj = stdout;
+        const stderrObj = stderr;
+        const hostOut = typeof globalThis !== "undefined" && globalThis.process && globalThis.process.stdout;
+        const hostErr = typeof globalThis !== "undefined" && globalThis.process && globalThis.process.stderr;
+        const outObjs = [stdoutObj, hostOut].filter((x, i, a) => x && typeof x.write === "function" && a.indexOf(x) === i);
+        const errObjs = [stderrObj, hostErr].filter((x, i, a) => x && typeof x.write === "function" && a.indexOf(x) === i);
+        const origOuts = outObjs.map((x) => x.write);
+        const origErrs = errObjs.map((x) => x.write);
+        outObjs.forEach((x) => { x.write = (s) => { buf.out += String(s); return true; }; });
+        errObjs.forEach((x) => { x.write = (s) => { buf.err += String(s); return true; }; });
         mode = { type: "redirect", buf };
         let ret;
         try {
           ret = fn();
         } finally {
+          outObjs.forEach((x, i) => { x.write = origOuts[i]; });
+          errObjs.forEach((x, i) => { x.write = origErrs[i]; });
           mode = prevMode;
         }
         for (const r of redirects || []) {
@@ -1815,12 +1848,20 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
             // read (`cat /home/... > /dev/webgl/texture/N`) lands here
             // on the cache-hit path.
             const content = typeof ret === "string" ? ret : (fd === 2 ? buf.err : buf.out);
+            if (typeof fs.writeSync !== "function") {
+              throw new Error("redirectSync: file target requires async redirect");
+            }
             if (r.mode === "a") {
               let existing = "";
-              try { existing = String(fs.readSync ? fs.readSync(target) : ""); } catch { /* new file */ }
-              fs.write(target, existing + content);
-            } else {
-              fs.write(target, content);
+              try {
+                const prior = fs.readSync ? fs.readSync(target) : null;
+                existing = typeof prior === "string" ? prior : prior ? new TextDecoder().decode(prior) : "";
+              } catch { /* new file */ }
+              if (!fs.writeSync(target, existing + content)) {
+                throw new Error("redirectSync: file target requires async redirect");
+              }
+            } else if (!fs.writeSync(target, content)) {
+              throw new Error("redirectSync: file target requires async redirect");
             }
             continue;
           }
