@@ -2972,8 +2972,9 @@ R 0.55 -0.08 0.10 0.10 20 1.0 1.0 0.9" > /dev/webgl/hud/flash
 }
 
 print_map_once() {
-  if [ -f /tmp/mimecroft-map-shown ]; then return 0; fi
-  echo "shown" > /tmp/mimecroft-map-shown
+  # This is called exactly once per game invocation, after start_level.
+  # Do not use a persistent /tmp sentinel: it suppresses the map on every
+  # later run in the same shell/session, making a healthy game look silent.
   echo ""
   echo "MIMEcroft  artifacts $found_count/$TREASURE_TOTAL  hp $hp/$maxhp  score $score  mimes $mime_count  licence $license"
   po_z=0
@@ -3789,6 +3790,7 @@ main() {
     settings_menu
     if [ "$quit" -eq 1 ]; then
       echo "== Quit."
+      echo "#stats: frames=0 time=0ms avg=0ms/frame (quit in settings)"
       echo "hide" > /dev/webgl/call
       return
     fi
