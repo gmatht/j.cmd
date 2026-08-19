@@ -278,6 +278,13 @@ anim_ayd=0
 fps=0               # rendered frames/sec (measured over ~10-frame windows)
 fps_t0=0
 fps_rendered=0
+cfps=0              # CPU frames/sec (60 / cpu_time_for_last_60_frames)
+cpu_us_acc=0        # accumulated CPU µs over the last 60 frames
+cpu_frame_count=0   # frames in the current CPU measurement window
+cpu_us_t0=0
+cpu_us_prev=""
+cpu_us_now=0
+cpu_us_delta=0
 muzzle=0            # muzzle-flash lifetime (loop frames remaining)
 flash_done=0        # the frame the flash expires: forces one clear render
 # (the retained back buffer would otherwise keep showing the last flash
@@ -2605,10 +2612,11 @@ hud_build_static() {
   # ART line
   draw_text "ART" 3 760 1840 8 11 0.60 0.75 0.95
   draw_char 37 952 1840 8 11 0.60 0.75 0.95
-  # fps label (right of the ART digits, same line)
-  draw_text "FPS" 3 1130 1840 8 11 0.55 0.95 0.95
-  # licence label (right of FPS — strikes remaining)
-  draw_text "LIC" 3 1370 1840 8 11 0.95 0.60 0.30
+  # cpu fps + wall fps labels (right of the ART digits, same line)
+  draw_text "C" 1 1060 1840 8 11 0.45 0.85 0.85
+  draw_text "W" 1 1200 1840 8 11 0.55 0.95 0.95
+  # licence label (right of fps digits — strikes remaining)
+  draw_text "LIC" 3 1410 1840 8 11 0.95 0.60 0.30
   # instructions (bottom centre)
   draw_text "WASD MOVE ARROWS TURN SPACE SHOOT" 33 538 100 7 10 0.85 0.85 0.85
   # radar base: walls + treasure cells (air stays dark; the player and
@@ -2668,7 +2676,7 @@ draw_digits() {
   erase_rect 296 1818 96 62
   erase_rect 572 1818 160 62
   erase_rect 964 1818 160 62
-  erase_rect 1302 1818 96 62
+  erase_rect 1060 1818 320 62
   erase_rect 1490 1818 48 62
   # score digits
   dh_a=$((score/100%10+26))
@@ -2700,16 +2708,25 @@ draw_digits() {
   draw_char $dh_a 984 1840 8 11 0.60 0.75 0.95
   draw_char $dh_b 1016 1840 8 11 0.60 0.75 0.95
   draw_char 37 952 1840 8 11 0.60 0.75 0.95
-  # fps digits (right of the ART total, same line as the score/hp/art)
+  # fps labels + digits (right of the ART total, same line as the score/hp/art)
+  # C = CPU frames/sec, W = wall-clock frames/sec
+  draw_text "C" 1 1060 1840 8 11 0.45 0.85 0.85
+  dh_a=$((cfps/100+26))
+  dh_b=$((cfps/10%10+26))
+  dh_c=$((cfps%10+26))
+  draw_char $dh_a 1080 1840 8 11 0.45 0.85 0.85
+  draw_char $dh_b 1112 1840 8 11 0.45 0.85 0.85
+  draw_char $dh_c 1144 1840 8 11 0.45 0.85 0.85
+  draw_text "W" 1 1200 1840 8 11 0.55 0.95 0.95
   dh_a=$((fps/100+26))
   dh_b=$((fps/10%10+26))
   dh_c=$((fps%10+26))
-  draw_char $dh_a 1258 1840 8 11 0.55 0.95 0.95
-  draw_char $dh_b 1290 1840 8 11 0.55 0.95 0.95
-  draw_char $dh_c 1322 1840 8 11 0.55 0.95 0.95
+  draw_char $dh_a 1288 1840 8 11 0.55 0.95 0.95
+  draw_char $dh_b 1320 1840 8 11 0.55 0.95 0.95
+  draw_char $dh_c 1352 1840 8 11 0.55 0.95 0.95
   # licence digits (right of FPS — strikes remaining)
   dh_a=$((license+26))
-  draw_char $dh_a 1490 1840 8 11 0.95 0.60 0.30
+  draw_char $dh_a 1530 1840 8 11 0.95 0.60 0.30
 }
 
 # ─── treasure name labels ───────────────────────────────────────────
@@ -3056,6 +3073,13 @@ gtick() {
 }
 
 # per-phase accumulators (µs) — what holds the frame rate back, by how
+gtick_cpu() {
+  cpu_us_now=$EPOCHCPUTIME
+  if [ "$cpu_us_prev" = "" ]; then cpu_us_prev=$cpu_us_now; fi
+  cpu_us_delta=$((cpu_us_now - cpu_us_prev))
+  if [ "$cpu_us_delta" -lt 0 ]; then cpu_us_delta=0; fi
+  cpu_us_prev=$cpu_us_now
+}
 # much: input / anim / display / mimes / render (whole phase) / hudb
 # (static HUD rebuild) / hud (per-frame HUD draw) / swap / sleepa
 # (pacing sleep during an action glide) / sleepi (idle pacing). The
@@ -4118,6 +4142,23 @@ main() {
         fps_rendered=0
       fi
       fps_t0=$fps_t
+    fi
+    # cpu fps: accumulated CPU µs over the last 60 rendered frames
+    if [ "$fps_rendered" -gt 0 ]; then
+      gtick_cpu
+      cpu_us_acc=$((cpu_us_acc + cpu_us_delta))
+      cpu_frame_count=$((cpu_frame_count + 1))
+      if [ "$cpu_frame_count" -ge 60 ]; then
+        if [ "$cpu_us_acc" -gt 0 ]; then
+          cfps_nv=$((3600000000 / cpu_us_acc))
+          if [ "$cfps_nv" -ne "$cfps" ]; then
+            cfps=$cfps_nv
+            digits_dirty=1
+          fi
+        fi
+        cpu_us_acc=0
+        cpu_frame_count=0
+      fi
     fi
     # frame budget: vsync ON = one frame per display refresh (60Hz →
     # 16.7ms), OFF = the legacy 100fps cap (10ms). Either way the

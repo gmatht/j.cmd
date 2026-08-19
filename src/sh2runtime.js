@@ -216,6 +216,14 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     // matches the consumers' `${var%.*}${var#*.}` dot-strip exactly.
     if (name === "EPOCHREALTIME") return String(Date.now() * 1000);
     if (name === "EPOCHSECONDS") return String(Math.floor(Date.now() / 1000));
+    // EPOCHCPUTIME — user+system µs (Node.js only; browser returns 0).
+    if (name === "EPOCHCPUTIME") {
+      if (typeof process !== "undefined" && process.cpuUsage) {
+        const cu = process.cpuUsage();
+        return String((cu.user || 0) + (cu.system || 0));
+      }
+      return "0";
+    }
     if (env && env[name] !== undefined) return String(env[name]);
     return "";
   }
