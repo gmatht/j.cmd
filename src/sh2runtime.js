@@ -510,14 +510,12 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     // lost before the file/device target is flushed.
     const stdoutObj = stdout;
     const stderrObj = stderr;
-    // Some embedders (including the headless MIMEcroft harness) expose the
-    // generated `process.stdout` as a different object from the runtime's
-    // stdout sink. Capture both so native echo lowering cannot bypass the
-    // redirect merely because it used the host process shim.
-    const hostOut = typeof globalThis !== "undefined" && globalThis.process && globalThis.process.stdout;
-    const hostErr = typeof globalThis !== "undefined" && globalThis.process && globalThis.process.stderr;
-    const outObjs = [stdoutObj, hostOut].filter((x, i, a) => x && typeof x.write === "function" && a.indexOf(x) === i);
-    const errObjs = [stderrObj, hostErr].filter((x, i, a) => x && typeof x.write === "function" && a.indexOf(x) === i);
+    // The generated process shim shares these stdout/stderr sink objects.
+    // Do not patch the host process streams: unrelated terminal output
+    // (progress, prompts, and diagnostics) must not be swallowed while a
+    // redirect is active.
+    const outObjs = [stdoutObj].filter((x) => x && typeof x.write === "function");
+    const errObjs = [stderrObj].filter((x) => x && typeof x.write === "function");
     const origOuts = outObjs.map((x) => x.write);
     const origErrs = errObjs.map((x) => x.write);
     outObjs.forEach((x) => { x.write = (s) => { buf.out += String(s); return true; }; });
@@ -1815,10 +1813,8 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
         const prevMode = mode;
         const stdoutObj = stdout;
         const stderrObj = stderr;
-        const hostOut = typeof globalThis !== "undefined" && globalThis.process && globalThis.process.stdout;
-        const hostErr = typeof globalThis !== "undefined" && globalThis.process && globalThis.process.stderr;
-        const outObjs = [stdoutObj, hostOut].filter((x, i, a) => x && typeof x.write === "function" && a.indexOf(x) === i);
-        const errObjs = [stderrObj, hostErr].filter((x, i, a) => x && typeof x.write === "function" && a.indexOf(x) === i);
+        const outObjs = [stdoutObj].filter((x) => x && typeof x.write === "function");
+        const errObjs = [stderrObj].filter((x) => x && typeof x.write === "function");
         const origOuts = outObjs.map((x) => x.write);
         const origErrs = errObjs.map((x) => x.write);
         outObjs.forEach((x) => { x.write = (s) => { buf.out += String(s); return true; }; });
