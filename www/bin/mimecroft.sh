@@ -3733,6 +3733,74 @@ mined_out_popup() {
   echo "C" > /dev/webgl/hud
 }
 
+print_stats() {
+  gtick
+  g_total=$(( g_now - g_t0 ))
+  if [ "$frame" -gt 0 ]; then
+    g_total_ms=$(( g_total / 1000 ))
+    g_avg_ms=$(( g_total / frame / 1000 ))
+    echo "#stats: frames=$frame time=${g_total_ms}ms avg=${g_avg_ms}ms/frame"
+    # per-phase breakdown: ms/frame and % of frame time, plus "other"
+    # (unmeasured loop overhead + the gspan ticks themselves)
+    g_sum=$(( g_in + g_anim + g_disp + g_mime + g_render + g_hudb + g_hud + g_swap + g_sleepa + g_sleepi ))
+    g_other=$(( g_total - g_sum ))
+    if [ "$g_other" -lt 0 ]; then g_other=0; fi
+    g_ff=$(( g_total / frame ))
+    if [ "$g_ff" -lt 1 ]; then g_ff=1; fi
+    # the $(…) captures hit the transpiled shell's broken captureSync —
+    # compute the values into plain vars first (direct interpolation
+    # works on both engines)
+    s_in=$((g_in / frame / 1000)); s_inp=$((g_in * 100 / g_total))
+    s_anim=$((g_anim / frame / 1000)); s_animp=$((g_anim * 100 / g_total))
+    s_disp=$((g_disp / frame / 1000)); s_dispp=$((g_disp * 100 / g_total))
+    s_mime=$((g_mime / frame / 1000)); s_mimep=$((g_mime * 100 / g_total))
+    s_render=$((g_render / frame / 1000)); s_renderp=$((g_render * 100 / g_total))
+    s_hudb=$((g_hudb / frame / 1000)); s_hudbp=$((g_hudb * 100 / g_total))
+    s_hud=$((g_hud / frame / 1000)); s_hudp=$((g_hud * 100 / g_total))
+    s_swap=$((g_swap / frame / 1000)); s_swapp=$((g_swap * 100 / g_total))
+    s_sleep=$((g_sleep / frame / 1000)); s_sleepp=$((g_sleep * 100 / g_total))
+    s_other=$((g_other / frame / 1000)); s_otherp=$((g_other * 100 / g_total))
+    # the split packs: sleepa/sleepi (already split by gspan), scene (the
+    # CPU cull/payload build) + gl-render (the render_frame GL writes =
+    # g_rf − g_scene), and the level-setup total
+    s_sa=$((g_sleepa / frame / 1000)); s_saip=$((g_sleepa * 100 / g_total))
+    s_si=$((g_sleepi / frame / 1000)); s_siip=$((g_sleepi * 100 / g_total))
+    s_sc=$((g_scene / frame / 1000))
+    s_glr=$(( (g_rf - g_scene) / frame / 1000 ))
+    s_setup=$(( g_setup / 1000 ))
+    echo "#stats:   input=${s_in}ms/f(${s_inp}%) anim=${s_anim}ms/f(${s_animp}%) disp=${s_disp}ms/f(${s_dispp}%) mime=${s_mime}ms/f(${s_mimep}%)"
+    echo "#stats:   scene=${s_sc}ms/f gl-render=${s_glr}ms/f (render=${s_render}ms/f) hudb=${s_hudb}ms/f(${s_hudbp}%) hud=${s_hud}ms/f(${s_hudp}%) swap=${s_swap}ms/f(${s_swapp}%)"
+    echo "#stats:   sleep-anim=${s_sa}ms/f(${s_saip}%) sleep-idle=${s_si}ms/f(${s_siip}%) other=${s_other}ms/f(${s_otherp}%) · setup=${s_setup}ms"
+    # GL-side HUD cost, timed by the device on the main thread: raster =
+    # the 2D-canvas layer draw (inside the /dev/webgl/hud write), upload
+    # = the texImage2D/texSubImage2D transfer, composite = the whole
+    # swap-side blend (incl. upload + flash). Reported as µs PER
+    # OPERATION (the per-frame average hid sub-ms work behind the idle
+    # frames — only 44/858 frames touch the HUD here).
+    lt_s=$(cat /dev/webgl/stats)
+    read_tex_field
+    glh_r=$f
+    read_tex_field
+    glh_u=$f
+    read_tex_field
+    glh_c=$f
+    read_tex_field
+    glh_w=$f
+    read_tex_field
+    glh_n=$f
+    glh_rw=0
+    glh_uw=0
+    glh_cw=0
+    if [ "$glh_w" -gt 0 ]; then glh_rw=$(( glh_r / glh_w )); fi
+    if [ "$glh_n" -gt 0 ]; then
+      glh_uw=$(( glh_u / glh_n ))
+      glh_cw=$(( glh_c / glh_n ))
+    fi
+    echo "#stats:   gl-hud raster=${glh_rw}µs/write(${glh_w}) upload=${glh_uw}µs/comp composite=${glh_cw}µs/swap(${glh_n})"
+  fi
+  echo "GAME DONE"
+}
+
 main() {
   st=$(cat /dev/webgl/state)
   case $st in
@@ -3796,7 +3864,7 @@ main() {
     settings_menu
     if [ "$quit" -eq 1 ]; then
       echo "== Quit."
-      echo "#stats: frames=0 time=0ms avg=0ms/frame (quit in settings)"
+      print_stats
       echo "hide" > /dev/webgl/call
       return
     fi
@@ -4113,71 +4181,7 @@ main() {
     echo "║  Score: $score                             ║"
     echo "╚════════════════════════════════════════════╝"
   fi
-  gtick
-  g_total=$(( g_now - g_t0 ))
-  if [ "$frame" -gt 0 ]; then
-    g_total_ms=$(( g_total / 1000 ))
-    g_avg_ms=$(( g_total / frame / 1000 ))
-    echo "#stats: frames=$frame time=${g_total_ms}ms avg=${g_avg_ms}ms/frame"
-    # per-phase breakdown: ms/frame and % of frame time, plus "other"
-    # (unmeasured loop overhead + the gspan ticks themselves)
-    g_sum=$(( g_in + g_anim + g_disp + g_mime + g_render + g_hudb + g_hud + g_swap + g_sleepa + g_sleepi ))
-    g_other=$(( g_total - g_sum ))
-    if [ "$g_other" -lt 0 ]; then g_other=0; fi
-    g_ff=$(( g_total / frame ))
-    if [ "$g_ff" -lt 1 ]; then g_ff=1; fi
-    # the $(…) captures hit the transpiled shell's broken captureSync —
-    # compute the values into plain vars first (direct interpolation
-    # works on both engines)
-    s_in=$((g_in / frame / 1000)); s_inp=$((g_in * 100 / g_total))
-    s_anim=$((g_anim / frame / 1000)); s_animp=$((g_anim * 100 / g_total))
-    s_disp=$((g_disp / frame / 1000)); s_dispp=$((g_disp * 100 / g_total))
-    s_mime=$((g_mime / frame / 1000)); s_mimep=$((g_mime * 100 / g_total))
-    s_render=$((g_render / frame / 1000)); s_renderp=$((g_render * 100 / g_total))
-    s_hudb=$((g_hudb / frame / 1000)); s_hudbp=$((g_hudb * 100 / g_total))
-    s_hud=$((g_hud / frame / 1000)); s_hudp=$((g_hud * 100 / g_total))
-    s_swap=$((g_swap / frame / 1000)); s_swapp=$((g_swap * 100 / g_total))
-    s_sleep=$((g_sleep / frame / 1000)); s_sleepp=$((g_sleep * 100 / g_total))
-    s_other=$((g_other / frame / 1000)); s_otherp=$((g_other * 100 / g_total))
-    # the split packs: sleepa/sleepi (already split by gspan), scene (the
-    # CPU cull/payload build) + gl-render (the render_frame GL writes =
-    # g_rf − g_scene), and the level-setup total
-    s_sa=$((g_sleepa / frame / 1000)); s_saip=$((g_sleepa * 100 / g_total))
-    s_si=$((g_sleepi / frame / 1000)); s_siip=$((g_sleepi * 100 / g_total))
-    s_sc=$((g_scene / frame / 1000))
-    s_glr=$(( (g_rf - g_scene) / frame / 1000 ))
-    s_setup=$(( g_setup / 1000 ))
-    echo "#stats:   input=${s_in}ms/f(${s_inp}%) anim=${s_anim}ms/f(${s_animp}%) disp=${s_disp}ms/f(${s_dispp}%) mime=${s_mime}ms/f(${s_mimep}%)"
-    echo "#stats:   scene=${s_sc}ms/f gl-render=${s_glr}ms/f (render=${s_render}ms/f) hudb=${s_hudb}ms/f(${s_hudbp}%) hud=${s_hud}ms/f(${s_hudp}%) swap=${s_swap}ms/f(${s_swapp}%)"
-    echo "#stats:   sleep-anim=${s_sa}ms/f(${s_saip}%) sleep-idle=${s_si}ms/f(${s_siip}%) other=${s_other}ms/f(${s_otherp}%) · setup=${s_setup}ms"
-    # GL-side HUD cost, timed by the device on the main thread: raster =
-    # the 2D-canvas layer draw (inside the /dev/webgl/hud write), upload
-    # = the texImage2D/texSubImage2D transfer, composite = the whole
-    # swap-side blend (incl. upload + flash). Reported as µs PER
-    # OPERATION (the per-frame average hid sub-ms work behind the idle
-    # frames — only 44/858 frames touch the HUD here).
-    lt_s=$(cat /dev/webgl/stats)
-    read_tex_field
-    glh_r=$f
-    read_tex_field
-    glh_u=$f
-    read_tex_field
-    glh_c=$f
-    read_tex_field
-    glh_w=$f
-    read_tex_field
-    glh_n=$f
-    glh_rw=0
-    glh_uw=0
-    glh_cw=0
-    if [ "$glh_w" -gt 0 ]; then glh_rw=$(( glh_r / glh_w )); fi
-    if [ "$glh_n" -gt 0 ]; then
-      glh_uw=$(( glh_u / glh_n ))
-      glh_cw=$(( glh_c / glh_n ))
-    fi
-    echo "#stats:   gl-hud raster=${glh_rw}µs/write(${glh_w}) upload=${glh_uw}µs/comp composite=${glh_cw}µs/swap(${glh_n})"
-  fi
-  echo "GAME DONE"
+  print_stats
 }
 
 main
