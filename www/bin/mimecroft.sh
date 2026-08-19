@@ -243,6 +243,12 @@ frame=0
 quit=0
 sound=1
 demo=0
+# the stats clock reference — initialized here so print_stats can run
+# from ANY exit path (e.g. quitting at the settings menu, before the
+# loop's g_t0=$g_now re-zeroes the window): an EMPTY g_t0 makes the
+# transpiled $(( g_now - g_t0 )) skip print_stats' whole body
+# (even the GAME DONE line) on that path
+g_t0=0
 DEMO_FRAMES=60   # `--demo`: run 60 loop frames, then quit + print the stats
 SOUND_MODE=notes    # notes = /dev/audio oscillator blips (default);
                     # bash = the sample-accurate examples/sounds
@@ -909,7 +915,7 @@ damage_cell() { dc_a=$1; dc_b=$2; dc_t=$3
       # WALK into a hidden treasure): -50 score and the Board takes a
       # licence strike (three strikes = licence revoked = game over)
       set_cell $dc_a 1 $dc_b $AIR
-      shot_treasure
+      shot_treasure $dc_a $dc_b
     else
       set_cell $dc_a 1 $dc_b $AIR
       score_block $dc_t
@@ -932,21 +938,45 @@ score_block() { sb_t=$1
 }
 
 # shooting a treasure — the artifact shatters: -50 points and a licence
-# strike (three strikes revoke your archeology licence = game over)
-shot_treasure() {
+# strike (three strikes revoke your archeology licence = game over).
+# The shattered artifact is looked up by its cell (coords arrive as
+# args) so the log can name the OS you denied the world. One forgivable
+# exception: macOS Darwin — RMS forgives you, so no licence strike.
+shot_treasure() { st_a=$1; st_b=$2; st_t=0
+  # which artifact did we just shatter? (the same tpx/tpz scan
+  # claim_treasure uses to identify a claimed treasure)
+  st_name=""
+  while [ "$st_t" -lt "$TREASURE_TOTAL" ]; do
+    st_txv=${tpx[$st_t]}
+    st_tzv=${tpz[$st_t]}
+    if [ "$st_txv" -eq "$st_a" ] && [ "$st_tzv" -eq "$st_b" ]; then
+      st_name=${TREASURES[$st_t]}
+    fi
+    st_t=$((st_t + 1))
+  done
   # the shattered artifact is gone from the board — the mined-out count
   # drops with it (a board with no treasures left ends the game)
   treasures_left=$((treasures_left - 1))
   score=$((score - 50))
   if [ "$score" -lt 0 ]; then score=0; fi
-  license=$((license - 1))
-  if [ "$license" -lt 0 ]; then license=0; fi
+  # the licence strike: three strikes revoke your licence — but shooting
+  # macOS Darwin is forgiven (RMS), so no strike is deducted
+  st_rms=0
+  if [ "$st_name" = "macOS Darwin" ]; then st_rms=1; fi
+  if [ "$st_rms" -eq 0 ]; then
+    license=$((license - 1))
+    if [ "$license" -lt 0 ]; then license=0; fi
+  fi
   digits_dirty=1
   play "C4 0.12"
   play "E2 0.18"
   echo ""
   echo "  !!! You SHOT an artifact — it shattered into dust!"
+  echo "  !!! You have denied the world: $st_name"
   echo "  !!! -50 score · archeology licence $license / 3"
+  if [ "$st_rms" -eq 1 ]; then
+    echo "  ...but RMS forgives you."
+  fi
   if [ "$license" -le 0 ]; then
     echo "  !!! LICENCE REVOKED — the game is over."
   fi
@@ -3403,28 +3433,12 @@ draw_settings_menu() {
 settings_menu() {
   if [ "$headless" -eq 1 ]; then return; fi
   sm_mode=$1
-  sm_size_old=$tex_size
-  sm_seed_old=$tex_seed
-  sm_crt_old=$CRT_ON
-  sm_corrupt_old=$CORRUPT_ON
-  sm_mm_old=$MINIMAP_MODE
-  # the background texture load restarts when the size/seed changes
-  # (the /tmp cache keys change → fresh generation at the new settings)
-  sm_told_size=$tex_size
-  sm_told_seed=$tex_seed
-  # initial background submit: all textures go to the JS worker thread
-  # now (non-blocking), harvested one per loop iteration as they finish
   tex_bg_n=0
   sm_bg_i=0
   while [ "$sm_bg_i" -lt "$sm_tex_total" ]; do
     tex_bg_submit ${sm_tex_name[$sm_bg_i]}
     sm_bg_i=$((sm_bg_i + 1))
   done
-  # show the canvas first so /dev/webgl/key starts capturing. The HUD
-  # composite BLENDS the layer over the back buffer and the drawing
-  # buffer is preserved now (preserveDrawingBuffer:true) — so the back
-  # buffer must be CLEARED before every present or the old card (dots,
-  # digits) stays visible underneath the new one.
   echo "clear" > /dev/webgl/call
   echo "swap" > /dev/webgl/call
   draw_settings_menu
@@ -3797,6 +3811,12 @@ print_stats() {
       glh_cw=$(( glh_c / glh_n ))
     fi
     echo "#stats:   gl-hud raster=${glh_rw}µs/write(${glh_w}) upload=${glh_uw}µs/comp composite=${glh_cw}µs/swap(${glh_n})"
+  else
+    # no game frames ran (quit at the settings menu) — nothing was
+    # measured, but print the header so a non-demo run still reports
+    # its stats block (the same shape the demo prints)
+    g_total_ms=$(( g_total / 1000 ))
+    echo "#stats: frames=0 time=${g_total_ms}ms avg=0ms/frame — the game was never started"
   fi
   echo "GAME DONE"
 }
@@ -3860,6 +3880,12 @@ main() {
        cat /dev/webgl/log ;;
   esac
 
+  # the stats window covers the settings menu too: a menu quit (q at
+  # the pre-game menu) still reports a stats block with the menu
+  # elapsed time. The game loop re-zeroes g_t0 right before its own
+  # window starts, so a normal play-through is unaffected.
+  gtick
+  g_t0=$g_now
     if [ "$headless" -eq 0 ] && [ "$demo" -ne 1 ]; then
     settings_menu
     if [ "$quit" -eq 1 ]; then

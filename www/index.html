@@ -1531,11 +1531,19 @@ function syncCwdUrl() {
   if ((env.PWD || "").includes("\u0001mem:")) return;
   const cwd = fs.view ? fs.view(fs.cwd) : fs.cwd;
   const params = new URLSearchParams(location.search);
-  params.set("cwd", cwd);
+  // the shell starts at /home anyway — a ?cwd=/home is redundant, so
+  // drop it (and any stale copy) instead of re-adding it on every sync
+  if (cwd === "/home") {
+    params.delete("cwd");
+  } else {
+    params.set("cwd", cwd);
+  }
   try {
     // preserve any #hash (a #try=… / #prefill=… share link) — only the
-    // ?cwd= query is updated here
-    window.history.replaceState(null, "", "?" + params.toString() + location.hash);
+    // ?cwd= query is updated here; a bare `?` is dropped when no query
+    // params remain (the shell starts at /home, so ?cwd=/home is redundant)
+    const qs = params.toString();
+    window.history.replaceState(null, "", (qs ? "?" + qs : "") + location.hash);
   } catch {}  // file:// / sandboxed frames may forbid URL changes — cwd still works
 }
 
@@ -4680,6 +4688,14 @@ async function complete(line, cursorPos) {
         }
       } catch { /* dir doesn't exist */ }
     }
+    // www/bin/ .sh command templates are materialized lazily (first
+    // use), so they're not in /bin yet — offer them by name so
+    // `MIME<Tab>` completes the bundled game before it's ever run.
+    for (const name of SH_TEMPLATES) {
+      if (name.startsWith(prefix) && !matches.includes(name)) {
+        matches.push(name);
+      }
+    }
 
     // Real shells also offer runnable files in the cwd: after `cd`ing
     // somewhere with foo.js, `foo<Tab>` completes it (it IS runnable).
@@ -5668,9 +5684,14 @@ const tbCmdPop = document.getElementById("tb-cmd-pop");
 
 // Everything the shell can run: builtins + auto-loadable wasm-bin
 // binaries (listed even before they've been run once — tcc, cproc,
-// grep, …) + PATH command files (.js/.wasm). Returns [name, category].
-// Keep WASM_BIN in step with the actual www/wasm-bin/*.wasm files.
+// grep, …) + PATH command files (.js/.wasm) + the www/bin/ .sh
+// command templates (lazy-materialized, so also listed by name).
+// Returns [name, category]. Keep WASM_BIN in step with the actual
+// www/wasm-bin/*.wasm files.
 const WASM_BIN = ["cproc", "echo", "echoc", "go", "grep", "link", "make", "markdown", "python", "tcc", "wasm-diff", "zig", "zstd"];
+// www/bin/ .sh command templates (the bundled bash game). Listed so
+// tab completion and the CMD popup know them before first use.
+const SH_TEMPLATES = ["MIMEcroft.sh", "mimecroft.sh"];
 
 async function listAllCommands() {
   const cmds = new Map(); // name → category (first category wins)
@@ -5680,6 +5701,7 @@ async function listAllCommands() {
   };
   for (const k of Object.keys(builtins)) add(k, "builtin");
   for (const w of WASM_BIN) add(w, "wasm");
+  for (const s of SH_TEMPLATES) add(s, "js");
   for (const dir of (env.PATH || "/bin:/usr/bin").split(":").filter(Boolean)) {
     try {
       for (const e of await fs.list(dir)) {
@@ -6309,7 +6331,7 @@ document.addEventListener("click", (e) => {
     line.append(game);
     line.append("  ·  ");
     const demo = document.createElement("a");
-    demo.href = "./index.html?demo=mimecroft.sh";
+    demo.href = "./index.html?demo=MIMEcroft.sh";
     demo.className = "banner-link";
     demo.textContent = "play";
     line.append(demo, "\n");
@@ -6413,14 +6435,15 @@ document.addEventListener("click", (e) => {
   // SECURITY: the value is URL-supplied, so it must NEVER be treated
   // as an arbitrary command (a crafted link could otherwise run any
   // command line in the user's shell).  It is checked against a fixed
-  // allow-list of trusted strings — currently just "mimecroft.sh" —
+  // allow-list of trusted strings — currently "MIMEcroft.sh" (and the
+  // legacy lowercase "mimecroft.sh") —
   // and anything else is silently ignored.  Unlike #try/#prefill
   // (which only pre-fill a line for the user's Enter), a demo is
   // deliberately auto-run — that is the point of the link — but only
   // because the allow-list bounds it to the page's own bundled,
   // self-contained games.  Read it HERE, before syncCwdUrl() below
   // replaces the URL with ?cwd=… (which would drop the parameter).
-  const DEMO_ALLOWLIST = ["mimecroft.sh"];
+  const DEMO_ALLOWLIST = ["MIMEcroft.sh", "mimecroft.sh"];
   const demoParam = new URLSearchParams(location.search).get("demo");
 
   // Restore the working directory from ?cwd= (set by cd) so a refresh
@@ -6533,7 +6556,7 @@ document.addEventListener("click", (e) => {
   // map turns a trusted name into the bundled command line that runs
   // it; anything outside the allow-list never reaches this point.
   if (demoParam !== null && DEMO_ALLOWLIST.includes(demoParam)) {
-    const DEMO_CMD = { "mimecroft.sh": "mimecroft --demo" };
+    const DEMO_CMD = { "MIMEcroft.sh": "MIMEcroft --demo", "mimecroft.sh": "mimecroft --demo" };
     const demoCmd = DEMO_CMD[demoParam];
     if (demoCmd) {
       try {

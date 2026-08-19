@@ -39,8 +39,13 @@ export function customExecDenied(path) {
 export async function resolveCommand(ctx, name) {
   const found = await resolveCommandExact(ctx, name);
   if (found) return found;
-  if (!name.includes("/") && /^[A-Z]/.test(name)) {
-    return await resolveCommandExact(ctx, name[0].toLowerCase() + name.slice(1));
+  // Case-insensitive fallback: the runner already folds a bare name's
+  // FIRST letter (mobile keyboards auto-capitalize), but that only turns
+  // `MIMEcroft.sh` into `mIMEcroft.sh` — still not the lowercase file.
+  // Fold the WHOLE name when it contains any uppercase (exact match
+  // above already won, so a genuinely mixed-case command is untouched).
+  if (!name.includes("/") && /[A-Z]/.test(name)) {
+    return await resolveCommandExact(ctx, name.toLowerCase());
   }
   return null;
 }

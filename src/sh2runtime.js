@@ -402,6 +402,39 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     return finalOut;
   }
 
+  // ── shared write-stack for capture/redirect ─────────────────────
+  // capture()/redirect()/redirectSync() wrap the SAME stdout/stderr
+  // objects (the generated process shim shares them with the runtime),
+  // and backgrounded `&` jobs (the texture/sound generators) run their
+  // redirects on this runtime CONCURRENTLY with the main flow's own
+  // redirects. A naive save/restore of x.write clobbers when they
+  // interleave: a background redirect that started while a main redirect
+  // was active restores the STALE main capture after the main redirect
+  // already unwound, and every later terminal write vanishes into the
+  // dead buffer (mimecroft.sh's settings menu spawns 15 background
+  // texture jobs, each wrapping its exec in a redirect — the last one to
+  // finish left the terminal silent). Instead, keep a per-object stack
+  // of active capture buffers: writes route to the TOP (most recently
+  // started) entry, and unwinding removes the entry and re-points the
+  // object at the next live entry (or the original write).
+  const writeStacks = new Map();
+  const pushWrite = (obj, capture) => {
+    let st = writeStacks.get(obj);
+    if (!st) {
+      st = { orig: obj.write, stack: [] };
+      writeStacks.set(obj, st);
+    }
+    st.stack.push(capture);
+    obj.write = (s) => st.stack[st.stack.length - 1](s);
+    return st;
+  };
+  const popWrite = (obj, st, capture) => {
+    const i = st.stack.indexOf(capture);
+    if (i >= 0) st.stack.splice(i, 1);
+    obj.write = st.stack.length ? (s) => st.stack[st.stack.length - 1](s) : st.orig;
+    if (!st.stack.length) writeStacks.delete(obj);
+  };
+
   async function capture(fn) {
     const prev = mode;
     const buf = { out: "" };
@@ -424,20 +457,17 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     // one program and captured in another (`cmp_call` → sh2.capture)
     // lands its echoed -1/0/1 here instead of the terminal.
     const stdoutObj = stdout;
-    const origWrite = stdoutObj && typeof stdoutObj.write === "function" ? stdoutObj.write : null;
-    let inCapture = true;
-    if (origWrite) {
-      stdoutObj.write = (s) => {
-        if (inCapture) { buf.out += String(s); return true; }
-        return origWrite(s);
-      };
+    let st = null;
+    let capFn = null;
+    if (stdoutObj && typeof stdoutObj.write === "function") {
+      capFn = (s) => { buf.out += String(s); return true; };
+      st = pushWrite(stdoutObj, capFn);
     }
     let ret;
     try {
       ret = await fn();
     } finally {
-      inCapture = false;
-      if (origWrite) stdoutObj.write = origWrite;
+      if (st) popWrite(stdoutObj, st, capFn);
       mode = prev;
     }
     // the worker path returns the script's stdout as the exec's return
@@ -514,18 +544,21 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     // Do not patch the host process streams: unrelated terminal output
     // (progress, prompts, and diagnostics) must not be swallowed while a
     // redirect is active.
-    const outObjs = [stdoutObj].filter((x) => x && typeof x.write === "function");
-    const errObjs = [stderrObj].filter((x) => x && typeof x.write === "function");
-    const origOuts = outObjs.map((x) => x.write);
-    const origErrs = errObjs.map((x) => x.write);
-    outObjs.forEach((x) => { x.write = (s) => { buf.out += String(s); return true; }; });
-    errObjs.forEach((x) => { x.write = (s) => { buf.err += String(s); return true; }; });
+    let stOut = null, stErr = null, capOutFn = null, capErrFn = null;
+    if (stdoutObj && typeof stdoutObj.write === "function") {
+      capOutFn = (s) => { buf.out += String(s); return true; };
+      stOut = pushWrite(stdoutObj, capOutFn);
+    }
+    if (stderrObj && typeof stderrObj.write === "function") {
+      capErrFn = (s) => { buf.err += String(s); return true; };
+      stErr = pushWrite(stderrObj, capErrFn);
+    }
     let ret;
     try {
       ret = await fn();
     } finally {
-      outObjs.forEach((x, i) => { x.write = origOuts[i]; });
-      errObjs.forEach((x, i) => { x.write = origErrs[i]; });
+      if (stOut) popWrite(stdoutObj, stOut, capOutFn);
+      if (stErr) popWrite(stderrObj, stErr, capErrFn);
       mode = prev;
     }
     const handled = { 1: false, 2: false };
@@ -1813,19 +1846,22 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
         const prevMode = mode;
         const stdoutObj = stdout;
         const stderrObj = stderr;
-        const outObjs = [stdoutObj].filter((x) => x && typeof x.write === "function");
-        const errObjs = [stderrObj].filter((x) => x && typeof x.write === "function");
-        const origOuts = outObjs.map((x) => x.write);
-        const origErrs = errObjs.map((x) => x.write);
-        outObjs.forEach((x) => { x.write = (s) => { buf.out += String(s); return true; }; });
-        errObjs.forEach((x) => { x.write = (s) => { buf.err += String(s); return true; }; });
+        let stOut = null, stErr = null, capOutFn = null, capErrFn = null;
+        if (stdoutObj && typeof stdoutObj.write === "function") {
+          capOutFn = (s) => { buf.out += String(s); return true; };
+          stOut = pushWrite(stdoutObj, capOutFn);
+        }
+        if (stderrObj && typeof stderrObj.write === "function") {
+          capErrFn = (s) => { buf.err += String(s); return true; };
+          stErr = pushWrite(stderrObj, capErrFn);
+        }
         mode = { type: "redirect", buf };
         let ret;
         try {
           ret = fn();
         } finally {
-          outObjs.forEach((x, i) => { x.write = origOuts[i]; });
-          errObjs.forEach((x, i) => { x.write = origErrs[i]; });
+          if (stOut) popWrite(stdoutObj, stOut, capOutFn);
+          if (stErr) popWrite(stderrObj, stErr, capErrFn);
           mode = prevMode;
         }
         for (const r of redirects || []) {

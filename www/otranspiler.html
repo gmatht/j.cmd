@@ -316,6 +316,20 @@
         <div class="panel-head"><span class="arrow">▾</span><span class="panel-title">stdout diff</span><span class="panel-tag" id="tag-diff"></span><button type="button" class="copy-btn" data-copy="diff">Copy</button></div>
         <div class="panel-body"><div class="diff-summary" id="diff-summary"></div><div id="diff-lines"></div></div>
       </div>
+      <div class="panel collapsed" id="sec-shir" data-persist="otp:sec-shir">
+        <div class="panel-head"><span class="arrow">▾</span><span class="panel-title">A1 shIR</span><span class="panel-tag" id="tag-shir"></span></div>
+        <div class="panel-body">
+          <div class="map-hint">the neutral contract the backends render from — produced from the bash AST (pipeline: lex → parse → AST → shIR → target). Source-side, target-independent.</div>
+          <div class="ta-wrap"><textarea id="out-shir" class="out-ta" readonly spellcheck="false" aria-label="A1 shIR">—</textarea><button type="button" class="copy-btn ta-copy" data-copy="shir">Copy</button></div>
+        </div>
+      </div>
+      <div class="panel collapsed" id="sec-lex" data-persist="otp:sec-lex">
+        <div class="panel-head"><span class="arrow">▾</span><span class="panel-title">Lex (tokens)</span><span class="panel-tag" id="tag-lex"></span></div>
+        <div class="panel-body">
+          <div class="map-hint">the token stream (stage 1) — sh sources only (the frontends feed the parser directly, no token dump).</div>
+          <div class="ta-wrap"><textarea id="out-lex" class="out-ta" readonly spellcheck="false" aria-label="Lex tokens">—</textarea><button type="button" class="copy-btn ta-copy" data-copy="lex">Copy</button></div>
+        </div>
+      </div>
     </div>
       <div class="panel" id="sec-map" data-persist="otp:sec-map">
         <div class="panel-head"><span class="arrow">▾</span><span class="panel-title">source ↔ generated line map</span><span class="panel-tag" id="tag-map"></span></div>
@@ -671,8 +685,9 @@ function setOut(id, text) {
 function initPanels() {
   document.querySelectorAll(".panel").forEach((panel) => {
     const key = panel.dataset.persist;
-    let collapsed = false;
-    try { collapsed = localStorage.getItem(key) === "1"; } catch {}
+    // a `collapsed` class in the markup is the default; a saved value wins
+    let collapsed = panel.classList.contains("collapsed");
+    try { if (localStorage.getItem(key) !== null) collapsed = localStorage.getItem(key) === "1"; } catch {}
     panel.classList.toggle("collapsed", collapsed);
     panel.querySelector(".panel-head").addEventListener("click", (e) => {
       if (e.target.closest("button")) return;
@@ -834,13 +849,13 @@ async function transpile(source, srcLang, tgt) {
     const estree = JSON.parse(text);
     keepVariables(estree, []);
     const r = await estreeToJsMapped(estree, (a1 && a1.stmt_lines) || [], (a1 && a1.stmts) || []);
-    return { text: r.js, map: r.map };
+    return { text: r.js, map: r.map, a1 };
   }
   if (a1 && a1.stmt_lines && a1.stmt_lines.length && TARGETS_TEXT.indexOf(tgt) >= 0) {
     // text targets: build the line map from the A1 statements
     map = buildTextMap(text, tgt, a1.stmts, a1.stmt_lines);
   }
-  return { text, map };
+  return { text, map, a1 };
 }
 
 // ─── runtimes (stdout capture) ──────────────────────────────────
@@ -1272,6 +1287,26 @@ async function execute() {
       renderCodeLines(code);
       setTag("code", srcLang + " → " + tgtLang + " · " + code.split("\n").length + " lines");
       renderLineMap(source, lineMap);
+      // intermediate-stage views: the A1 shIR (already computed for the
+      // line map — downstream of the bash AST) and the token stream
+      // (sh only — the in-process core's lexer).
+      const a1 = tr.a1 || null;
+      setOut("shir", a1 ? JSON.stringify(a1, null, 2) : "no A1 for this path (sh→shader targets skip the shIR parse)");
+      setTag("shir", a1 ? "A1 contract v" + (a1.contract_version || 1) + " · " + (a1.stmts || []).length + " statements" : "");
+      if (srcLang === "sh") {
+        try {
+          const lexText = (await libPromise).lex(source);
+          setOut("lex", lexText);
+          const tm = /Total tokens: (\d+)/.exec(lexText);
+          setTag("lex", tm ? tm[1] + " tokens" : "");
+        } catch (e) {
+          setOut("lex", "lex failed: " + e.message);
+          setTag("lex", "error");
+        }
+      } else {
+        setOut("lex", "no token dump — the " + srcLang + " frontend feeds the parser directly (sh-only in-process core)");
+        setTag("lex", "");
+      }
     } catch (e) {
       renderCodeLines("transpile error: " + e.message);
       setTag("code", srcLang + " → " + tgtLang);
