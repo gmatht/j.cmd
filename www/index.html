@@ -6533,7 +6533,7 @@ document.addEventListener("click", (e) => {
   // map turns a trusted name into the bundled command line that runs
   // it; anything outside the allow-list never reaches this point.
   if (demoParam !== null && DEMO_ALLOWLIST.includes(demoParam)) {
-    const DEMO_CMD = { "mimecroft.sh": "mimecroft" };
+    const DEMO_CMD = { "mimecroft.sh": "mimecroft --demo" };
     const demoCmd = DEMO_CMD[demoParam];
     if (demoCmd) {
       try {

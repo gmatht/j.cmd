@@ -242,14 +242,20 @@ done
 frame=0
 quit=0
 sound=1
+demo=0
+DEMO_FRAMES=60   # `--demo`: run 60 loop frames, then quit + print the stats
 SOUND_MODE=notes    # notes = /dev/audio oscillator blips (default);
                     # bash = the sample-accurate examples/sounds
                     # generators, played through /dev/audio/samples
 # CLI: `mimecroft --sounds bash|notes` — the sound backend (also
-# toggleable in the pre-game settings menu)
+# toggleable in the pre-game settings menu). `mimecroft --demo` — the
+# page's auto-start demo mode: skip the settings menu, print the
+# terminal map, run a short silent game loop, then quit and print the
+# benchmark stats (so the demo URL always shows the full output).
 if [ "$1" = "--sounds" ] || [ "$1" = "--sound" ]; then
   if [ "$2" = "bash" ]; then SOUND_MODE=bash; fi
 fi
+if [ "$1" = "--demo" ]; then demo=1; fi
 anim=0              # 1 while an action glides the camera
 precache_done=0     # the background sound pre-cache spawns once per session
 anim_t0=0           # wall-clock ms when the current glide started
@@ -3786,7 +3792,7 @@ main() {
        cat /dev/webgl/log ;;
   esac
 
-    if [ "$headless" -eq 0 ]; then
+    if [ "$headless" -eq 0 ] && [ "$demo" -ne 1 ]; then
     settings_menu
     if [ "$quit" -eq 1 ]; then
       echo "== Quit."
@@ -3829,6 +3835,9 @@ main() {
   while [ "$quit" -eq 0 ] && [ "$hp" -gt 0 ] && [ "$license" -gt 0 ]; do
   while [ "$quit" -eq 0 ] && [ "$hp" -gt 0 ] && [ "$license" -gt 0 ] && [ "$treasures_left" -gt 0 ]; do
     frame=$((frame + 1))
+    # demo mode: a short silent run, then quit so the terminal map
+    # above and the #stats block below both print.
+    if [ "$demo" -eq 1 ] && [ "$frame" -ge "$DEMO_FRAMES" ]; then quit=1; fi
     gtick
     g_last=$g_now
     fp_t0=$g_now
