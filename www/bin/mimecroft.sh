@@ -1245,15 +1245,17 @@ emit_vertex_shader() {
     # a straddling polygon is degenerate (the w=0 clip point fails the
     # -w≤x≤w clip volume unless x=0), so the whole face vanishes — the
     # block renders FLAT (axis-aligned edges, no visible side) and the
-    # corridor walls look longer in depth than they are wide. Clamp w
-    # to half a cell: a straddling vertex at w→0 would divide to ±∞ and
-    # the face exploded to the window edge (the grass patches beside the
-    # player looked twice as long in depth as wide). The w=0.5 floor
-    # keeps every vertex in front AND bounded — the same-cell faces land
-    # at the cell boundary, the corridor faces (w ≥ 0.5) are untouched.
+    # corridor walls look longer in depth than they are wide. Clamp the
+    # NEGATIVE half only to a small floor: the camera sits at the cell
+    # centre, so every genuinely-in-front face has w ≥ 0.5 and is never
+    # touched. A magnitude clamp is wrong both ways — 0.5 jumps MIME
+    # faces (same-row mimes are scale 0.7 → w=0.35 < 0.5) and 0.0001
+    # lets the back half divide to ±∞ (the face explodes to the window
+    # edge, the grass/black flash beside the player). 0.05 bounds the
+    # back half off-screen while every legitimate face stays exact.
     # (The generator's float grammar can't express the clamp, so it is
     # injected here.)
-    glsl=${glsl/g_w = ((((0.0) - g_relz)) + (0.0));/g_w = ((((0.0) - g_relz)) + (0.0)); if (g_w < 0.0001) g_w = 0.0001;}
+    glsl=${glsl/g_w = ((((0.0) - g_relz)) + (0.0));/g_w = ((((0.0) - g_relz)) + (0.0)); if (g_w < 0.0) g_w = 0.05;}
     echo "$glsl" > /dev/webgl/shader/vertex
   fi
 }
