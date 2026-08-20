@@ -847,8 +847,14 @@ async function transpile(source, srcLang, tgt) {
     // blank.
     const { estreeToJsMapped, keepVariables } = await import("../src/estree.js");
     const estree = JSON.parse(text);
-    keepVariables(estree, []);
-    const r = await estreeToJsMapped(estree, (a1 && a1.stmt_lines) || [], (a1 && a1.stmts) || []);
+    // whole-program transpile + fresh-runtime run (runJs creates a NEW
+    // sh2 runtime per execute) — no REPL cross-line persistence needed, so
+    // use the whole-script path (repl: false) and get the native-array /
+    // scalar-lift optimisations the game runs (the GUI's displayed JS is
+    // then the same code the shell actually executes, not the slow
+    // store-routed form).
+    keepVariables(estree, [], { repl: false });
+    const r = await estreeToJsMapped(estree, (a1 && a1.stmt_lines) || [], (a1 && a1.stmts) || [], { repl: false });
     return { text: r.js, map: r.map, a1 };
   }
   if (a1 && a1.stmt_lines && a1.stmt_lines.length && TARGETS_TEXT.indexOf(tgt) >= 0) {
