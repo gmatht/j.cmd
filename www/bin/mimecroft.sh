@@ -2094,13 +2094,13 @@ render_frame() {
   # the eye height: standing 1.6 (the shader adds 0.5 to uCamPos.y, so
   # cys 1.100 → the eye at 1.6 — ABOVE the y=1 block tops (1.5), so the
   # lower wall layer's top faces are visible and the corridor walls read
-  # as stacked 3D blocks instead of flat planes); crouched 0.80 → the eye
+  # as stacked 3D blocks instead of flat planes); crouched 0.85 → the eye
   # ducks under the 1.5 ceiling of a mined 1-tall opening. The two
-  # heights are constants (300/1100 milli — the crouch eye was raised
-  # 0.05 (1/20 block) from 0.75 to clear the grass plane enough that
-  # nearby grass boxes don't smear at grazing angles) — fmt_pos is
-  # hoisted to the literal strings
-  if [ "$crouched" -eq 1 ]; then cys=0.300; else cys=1.100; fi
+  # heights are constants (350/1100 milli — the crouch eye was raised
+  # 0.10 total (two 1/20-block steps) from 0.75 to clear the grass plane
+  # enough that nearby grass boxes don't smear at grazing angles) —
+  # fmt_pos is hoisted to the literal strings
+  if [ "$crouched" -eq 1 ]; then cys=0.350; else cys=1.100; fi
   echo "$cxs $cys $czs" > /dev/webgl/uniform/3f/uCamPos
   echo "$yws" > /dev/webgl/uniform/1f/uCamYaw
   # floor + ceiling planes — the background. They span the whole maze
@@ -2221,9 +2221,9 @@ render_frame() {
       gs_x=$((gs_i % MAP_W))
       gs_z=$((gs_i / MAP_W))
       gs_draw=1
-      # crouched: the eye drops to 0.80, only 0.275 above the grass
+      # crouched: the eye drops to 0.85, only 0.325 above the grass
       # top (0.525) — a grass box 1-3 cells ahead is viewed at a
-      # grazing angle (atan(0.275/d): 15.4° at d=1, 7.8° at d=2, 5.2°
+      # grazing angle (atan(0.325/d): 18.0° at d=1, 9.2° at d=2, 6.2°
       # at d=3), so the horizontal top face is nearly edge-on and
       # projects huge across the lower screen — a green flash.
       # Cull within 3 cells of the CAMERA cell dpx/dpz (the rounded
@@ -2882,7 +2882,7 @@ project_banner() { pb_x=$1; pb_z=$2; pb_wpx=$3; pb_hpx=$4; pb_lw=$5
   pndc_x_ms=-1
   pj_dx=$(( pb_x * 1000 - dpcx_ms ))
   pj_dz=$(( pb_z * 1000 - dpcz_ms ))
-  if [ "$crouched" -eq 1 ]; then pj_eye=800; else pj_eye=1600; fi
+  if [ "$crouched" -eq 1 ]; then pj_eye=850; else pj_eye=1600; fi
   pj_dy=$(( 1650 - pj_eye ))
   pj_deg=$(( dpyw_ms / 1000 ))
   pj_c=${SCOS[$pj_deg]}
