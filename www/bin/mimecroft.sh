@@ -2614,11 +2614,11 @@ hud_build_static() {
   d_W=32
   d_Y=1840
   # score
-  d_score_x=60;  d_score_dx=252
+  d_score_x=60;  d_score_dx=252;  d_score_end=$((60+5*8+8))
   # HP
-  d_hp_x=400;  d_hp_dx=496;  d_hp_sx=$((d_hp_dx+2*d_W))
+  d_hp_x=400;  d_hp_dx=496;  d_hp_sx=$((d_hp_dx+2*d_W));  d_hp_end=$((400+2*8+8))
   # ART
-  d_art_x=680;  d_art_dx=808;  d_art_sx=$((d_art_dx+2*d_W))
+  d_art_x=680;  d_art_dx=808;  d_art_sx=$((d_art_dx+2*d_W));  d_art_end=$((680+3*8+8))
   # FPS labels and digit start positions (space = d_W/2 after each label)
   d_fps_x=$((d_art_dx+4*d_W+2*d_W))
   d_w_x=$((d_fps_x+4*d_W+d_W/2))
@@ -2694,7 +2694,7 @@ draw_digits() {
   # score digits (3 digits, no slash)
   dh_val=$((score))
   if [ "$dh_val" != "$prev_score" ]; then
-    erase_rect $((d_score_dx-4)) $((d_Y-24)) $((d_W*3+8)) 62
+    erase_rect $d_score_end $((d_Y-24)) $((d_W*3+8)) 62
     dh_a=$((dh_val/100%10+26))
     dh_b=$((dh_val/10%10+26))
     dh_c=$((dh_val%10+26))
@@ -2706,7 +2706,7 @@ draw_digits() {
   # HP digits (current / max, slash between)
   dh_val=$((hp*1000+maxhp))
   if [ "$dh_val" != "$prev_hp" ]; then
-    erase_rect $((d_hp_dx-4)) $((d_Y-24)) $((d_W*4+8+8)) 62
+    erase_rect $d_hp_end $((d_Y-24)) $((d_W*4+8+8)) 62
     dh_a=$((hp/10+26))
     dh_b=$((hp%10+26))
     draw_char $dh_a $d_hp_dx $d_Y 8 11 0.35 0.90 0.40
@@ -2721,7 +2721,7 @@ draw_digits() {
   # ART digits (found / total, slash between)
   dh_val=$((found_count*1000+TREASURE_TOTAL))
   if [ "$dh_val" != "$prev_art" ]; then
-    erase_rect $((d_art_dx-4)) $((d_Y-24)) $((d_W*4+8+8)) 62
+    erase_rect $d_art_end $((d_Y-24)) $((d_W*4+8+8)) 62
     dh_a=$((found_count/10+26))
     dh_b=$((found_count%10+26))
     draw_char $dh_a $d_art_dx $d_Y 8 11 0.60 0.75 0.95
