@@ -2610,13 +2610,15 @@ hud_build_static() {
   draw_text "HP" 2 400 1840 8 11 0.35 0.90 0.40
   draw_char 37 560 1840 8 11 0.35 0.90 0.40
   # ART line
-  draw_text "ART" 3 760 1840 8 11 0.60 0.75 0.95
-  draw_char 37 952 1840 8 11 0.60 0.75 0.95
-  # cpu fps + wall fps labels (right of the ART digits, same line)
-  draw_text "C" 1 1060 1840 8 11 0.45 0.85 0.85
-  draw_text "W" 1 1200 1840 8 11 0.55 0.95 0.95
+  draw_text "ART" 3 680 1840 8 11 0.60 0.75 0.95
+  draw_char 37 872 1840 8 11 0.60 0.75 0.95
+  # fps labels (right of the ART digits, same line)
+  draw_text "FPS:" 4 980 1840 8 11 0.70 0.70 0.70
+  draw_text "C" 1 1028 1840 8 11 0.45 0.85 0.85
+  draw_text "/" 1 1144 1840 8 11 0.70 0.70 0.70
+  draw_text "W" 1 1164 1840 8 11 0.55 0.95 0.95
   # licence label (right of fps digits — strikes remaining)
-  draw_text "LIC" 3 1410 1840 8 11 0.95 0.60 0.30
+  draw_text "LIC" 3 1300 1840 8 11 0.95 0.60 0.30
   # instructions (bottom centre)
   draw_text "WASD MOVE ARROWS TURN SPACE SHOOT" 33 538 100 7 10 0.85 0.85 0.85
   # radar base: walls + treasure cells (air stays dark; the player and
@@ -2675,9 +2677,9 @@ draw_digits() {
   # never survive into the redraw
   erase_rect 296 1818 96 62
   erase_rect 572 1818 160 62
-  erase_rect 964 1818 160 62
-  erase_rect 1060 1818 420 62
-  erase_rect 1490 1818 48 62
+  erase_rect 800 1818 176 62
+  erase_rect 980 1818 300 62
+  erase_rect 1380 1818 48 62
   # score digits
   dh_a=$((score/100%10+26))
   dh_b=$((score/10%10+26))
@@ -2698,34 +2700,32 @@ draw_digits() {
   # 492..652, which CLEARS the static slash (x=560), so redraw it with
   # the digits (the ART group's erase does the same to x=952)
   draw_char 37 560 1840 8 11 0.35 0.90 0.40
-  # ART digits (found / total)
+  # ART digits (found / total) — shifted 80px left
   dh_a=$((found_count/10+26))
   dh_b=$((found_count%10+26))
-  draw_char $dh_a 888 1840 8 11 0.60 0.75 0.95
-  draw_char $dh_b 920 1840 8 11 0.60 0.75 0.95
+  draw_char $dh_a 808 1840 8 11 0.60 0.75 0.95
+  draw_char $dh_b 840 1840 8 11 0.60 0.75 0.95
   dh_a=$((TREASURE_TOTAL/10+26))
   dh_b=$((TREASURE_TOTAL%10+26))
-  draw_char $dh_a 984 1840 8 11 0.60 0.75 0.95
-  draw_char $dh_b 1016 1840 8 11 0.60 0.75 0.95
-  draw_char 37 952 1840 8 11 0.60 0.75 0.95
-  # fps labels + digits (right of the ART total, same line as the score/hp/art)
-  # FPS: Cnnn Wnnn — CPU fps (dim cyan) and wall-clock fps (bright cyan)
-  draw_text "FPS:" 4 1060 1840 8 11 0.70 0.70 0.70
+  draw_char $dh_a 904 1840 8 11 0.60 0.75 0.95
+  draw_char $dh_b 936 1840 8 11 0.60 0.75 0.95
+  draw_char 37 872 1840 8 11 0.60 0.75 0.95
+  # fps digits: Cnnn/Wnnn — digits in bright white, labels already drawn in static
   dh_a=$((cfps/100+26))
   dh_b=$((cfps/10%10+26))
   dh_c=$((cfps%10+26))
-  draw_char $dh_a 1108 1840 8 11 0.45 0.85 0.85
-  draw_char $dh_b 1140 1840 8 11 0.45 0.85 0.85
-  draw_char $dh_c 1172 1840 8 11 0.45 0.85 0.85
+  draw_char $dh_a 1048 1840 8 11 0.95 0.95 0.95
+  draw_char $dh_b 1080 1840 8 11 0.95 0.95 0.95
+  draw_char $dh_c 1112 1840 8 11 0.95 0.95 0.95
   dh_a=$((fps/100+26))
   dh_b=$((fps/10%10+26))
   dh_c=$((fps%10+26))
-  draw_char $dh_a 1228 1840 8 11 0.55 0.95 0.95
-  draw_char $dh_b 1260 1840 8 11 0.55 0.95 0.95
-  draw_char $dh_c 1292 1840 8 11 0.55 0.95 0.95
+  draw_char $dh_a 1184 1840 8 11 0.95 0.95 0.95
+  draw_char $dh_b 1216 1840 8 11 0.95 0.95 0.95
+  draw_char $dh_c 1248 1840 8 11 0.95 0.95 0.95
   # licence digits (right of FPS — strikes remaining)
   dh_a=$((license+26))
-  draw_char $dh_a 1460 1840 8 11 0.95 0.60 0.30
+  draw_char $dh_a 1380 1840 8 11 0.95 0.60 0.30
 }
 
 # ─── treasure name labels ───────────────────────────────────────────
