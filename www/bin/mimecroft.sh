@@ -2613,14 +2613,14 @@ hud_build_static() {
   d_hp_x=400;  d_hp_dx=496;  d_hp_sx=$((d_hp_dx+2*d_W))
   # ART
   d_art_x=680;  d_art_dx=808;  d_art_sx=$((d_art_dx+2*d_W))
-  # FPS labels and digit start positions
+  # FPS labels and digit start positions (space = d_W/2 after each label)
   d_fps_x=$((d_art_dx+4*d_W+2*d_W))
-  d_w_x=$((d_fps_x+3*d_W))
-  d_w_dx=$((d_w_x+d_W/2))
-  d_slash_x=$((d_w_dx+3*d_W))
-  d_c_x=$d_slash_x
-  d_c_dx=$((d_c_x+d_W/2))
-  d_lic_x=$((d_c_dx+3*d_W+2*d_W))
+  d_w_x=$((d_fps_x+4*d_W+d_W/2))
+  d_w_dx=$((d_w_x+d_W/2+d_W/2))
+  d_slash_x=$((d_w_dx+3*d_W+d_W/2))
+  d_c_x=$((d_slash_x+d_W+d_W/2))
+  d_c_dx=$((d_c_x+d_W/2+d_W/2))
+  d_lic_x=$((d_c_dx+3*d_W+2*d_W+d_W/2))
   d_lic_dx=$((d_lic_x+3*d_W+d_W/2))
   # draw static labels
   draw_text "SCORE" 5 $d_score_x $d_Y 8 11 0.95 0.85 0.30
