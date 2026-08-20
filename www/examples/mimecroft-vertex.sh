@@ -82,16 +82,12 @@ else
   w=$(echo "scale=4; 0.0 - $relz + 0.0" | bc)
   # fake perspective: x scaled 0.7, y 0.45 (x + the strafe screen-shift
   # uCamShift·w), z = w²/64 (depth-ordered), w = depth. w is CLAMPED by the
-  # game at compile time (emit_vertex_shader injects `if (g_w < 0.0)…`
+  # game at compile time (emit_vertex_shader injects `if (g_w < 0.0001)…`
   # into the generated GLSL — the generator's float grammar can't express
   # it): a cube face that straddles the camera plane (the toward-player
   # side of a same-row block) has w<0 vertices, the GPU near-plane clip
   # of the straddling polygon is degenerate and the face vanishes (the
-  # block renders flat); clamping ONLY the negative half to a small
-  # floor (0.05) keeps every vertex in front — the camera sits at the
-  # cell centre, so every genuinely-in-front face has w ≥ 0.5 and is
-  # never touched (a magnitude clamp like 0.5 or 0.0001 clamps MIME
-  # faces at w=0.35 or explodes the back half — both wrong).
+  # block renders flat); clamping keeps every vertex in front.
   vp_x=$(echo "scale=4; $relx * 0.7 + $ucs * $w / 1000.0 + 0.0" | bc)
   vp_y=$(echo "scale=4; $rely * 0.45" | bc)
   vp_z=$(echo "scale=4; $w * $w / 64.0" | bc)

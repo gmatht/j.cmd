@@ -1245,17 +1245,15 @@ emit_vertex_shader() {
     # a straddling polygon is degenerate (the w=0 clip point fails the
     # -w≤x≤w clip volume unless x=0), so the whole face vanishes — the
     # block renders FLAT (axis-aligned edges, no visible side) and the
-    # corridor walls look longer in depth than they are wide. Clamp the
-    # NEGATIVE half only to a small floor: the camera sits at the cell
-    # centre, so every genuinely-in-front face has w ≥ 0.5 and is never
-    # touched. A magnitude clamp is wrong both ways — 0.5 jumps MIME
-    # faces (same-row mimes are scale 0.7 → w=0.35 < 0.5) and 0.0001
-    # lets the back half divide to ±∞ (the face explodes to the window
-    # edge, the grass/black flash beside the player). 0.05 bounds the
-    # back half off-screen while every legitimate face stays exact.
+    # corridor walls look longer in depth than they are wide. Clamp w
+    # to half a cell: a straddling vertex at w→0 would divide to ±∞ and
+    # the face exploded to the window edge (the grass patches beside the
+    # player looked twice as long in depth as wide). The w=0.5 floor
+    # keeps every vertex in front AND bounded — the same-cell faces land
+    # at the cell boundary, the corridor faces (w ≥ 0.5) are untouched.
     # (The generator's float grammar can't express the clamp, so it is
     # injected here.)
-    glsl=${glsl/g_w = ((((0.0) - g_relz)) + (0.0));/g_w = ((((0.0) - g_relz)) + (0.0)); if (g_w < 0.0) g_w = 0.05;}
+    glsl=${glsl/g_w = ((((0.0) - g_relz)) + (0.0));/g_w = ((((0.0) - g_relz)) + (0.0)); if (g_w < 0.0001) g_w = 0.0001;}
     echo "$glsl" > /dev/webgl/shader/vertex
   fi
 }
@@ -2076,29 +2074,16 @@ render_frame() {
   cxs=$fv
   fmt_pos $dpcz_ms
   czs=$fv
-  # crawl sway: the main loop computes the offset into swv[] (array —
-  # store-consistent; a scalar read here of crouched/anim/dyaw written
-  # in compute_display/start_anim desyncs in the transpiled shell).
-  # Only the RENDERED camera moves: the culling cell (dpx/dpz) and the
-  # collision position stay true.
-  if [ "${swv[0]}" -ne 0 ] || [ "${swv[1]}" -ne 0 ]; then
-    fmt_pos $((dpcx_ms + swv[0]))
-    cxs=$fv
-    fmt_pos $((dpcz_ms + swv[1]))
-    czs=$fv
-  fi
   fmt_pos $dpyw_ms
   yws=$fv
   # the eye height: standing 1.6 (the shader adds 0.5 to uCamPos.y, so
   # cys 1.100 → the eye at 1.6 — ABOVE the y=1 block tops (1.5), so the
   # lower wall layer's top faces are visible and the corridor walls read
-  # as stacked 3D blocks instead of flat planes); crouched 0.85 → the eye
+  # as stacked 3D blocks instead of flat planes); crouched 0.75 → the eye
   # ducks under the 1.5 ceiling of a mined 1-tall opening. The two
-  # heights are constants (350/1100 milli — the crouch eye was raised
-  # 0.10 total (two 1/20-block steps) from 0.75 to clear the grass plane
-  # enough that nearby grass boxes don't smear at grazing angles) —
-  # fmt_pos is hoisted to the literal strings
-  if [ "$crouched" -eq 1 ]; then cys=0.350; else cys=1.100; fi
+  # heights are constants (250/1100 milli) — fmt_pos is hoisted to the
+  # literal strings
+  if [ "$crouched" -eq 1 ]; then cys=0.250; else cys=1.100; fi
   echo "$cxs $cys $czs" > /dev/webgl/uniform/3f/uCamPos
   echo "$yws" > /dev/webgl/uniform/1f/uCamYaw
   # floor + ceiling planes — the background. They span the whole maze
@@ -2219,20 +2204,20 @@ render_frame() {
       gs_x=$((gs_i % MAP_W))
       gs_z=$((gs_i / MAP_W))
       gs_draw=1
-      # crouched: the eye drops to 0.85, only 0.325 above the grass
-      # top (0.525) — a grass box 1-3 cells ahead is viewed at a
-      # grazing angle (atan(0.325/d): 18.0° at d=1, 9.2° at d=2, 6.2°
-      # at d=3), so the horizontal top face is nearly edge-on and
-      # projects huge across the lower screen — a green flash.
-      # Cull within 3 cells of the CAMERA cell dpx/dpz (the rounded
-      # view cell render_frame already reads for all world culling;
-      # px/pz lag during a glide — they snap only at arrival).
+      # crouched: the eye drops to 0.75, only 0.225 above the grass
+      # top (0.525) — a thin box under the camera is viewed edge-on at
+      # a grazing angle and its green face foreshortens to span the
+      # whole screen (the "green flash when crouching" bug). Cull the
+      # patch within 1 cell of the eye (the camera cell + neighbours,
+      # covering the glide interpolation) so it can't blow up.
       if [ "$crouched" -eq 1 ]; then
-        gs_dx=$((gs_x - dpx))
+        gs_eye_x=$((dpcx_ms / 1000))
+        gs_eye_z=$((dpcz_ms / 1000))
+        gs_dx=$((gs_x - gs_eye_x))
         if [ "$gs_dx" -lt 0 ]; then gs_dx=$((0 - gs_dx)); fi
-        gs_dz=$((gs_z - dpz))
+        gs_dz=$((gs_z - gs_eye_z))
         if [ "$gs_dz" -lt 0 ]; then gs_dz=$((0 - gs_dz)); fi
-        if [ "$gs_dx" -le 3 ] && [ "$gs_dz" -le 3 ]; then
+        if [ "$gs_dx" -le 1 ] && [ "$gs_dz" -le 1 ]; then
           gs_draw=0
         fi
       fi
@@ -2880,7 +2865,7 @@ project_banner() { pb_x=$1; pb_z=$2; pb_wpx=$3; pb_hpx=$4; pb_lw=$5
   pndc_x_ms=-1
   pj_dx=$(( pb_x * 1000 - dpcx_ms ))
   pj_dz=$(( pb_z * 1000 - dpcz_ms ))
-  if [ "$crouched" -eq 1 ]; then pj_eye=850; else pj_eye=1600; fi
+  if [ "$crouched" -eq 1 ]; then pj_eye=750; else pj_eye=1600; fi
   pj_dy=$(( 1650 - pj_eye ))
   pj_deg=$(( dpyw_ms / 1000 ))
   pj_c=${SCOS[$pj_deg]}
@@ -4154,22 +4139,7 @@ main() {
     # Idle frames keep a constant key (px·1000 / yaw·90000), so the
     # static view still caches. map_ver bumps on every cell write,
     # mimes_ver on every mime move/die.
-    # the crawl sway: crouched AND mid-glide (a crawl), the camera
-    # sways ~1/4 block (250 milli) left-right, perpendicular to the
-    # facing — a lazy sine sweep (period 1.2s, from the SCOS table) so
-    # the crawl reads as a body sway instead of a static duck. swr[]
-    # (array = store-consistent) carries the offset into render_frame;
-    # the sway phase also keys the view cache (crouched+glide only).
-    swr=(0 0)
-    swk=0
-    if [ "$crouched" -eq 1 ] && [ "$anim" -eq 1 ]; then
-      sw_ph=$(( (g_now % 1200000) * 360 / 1200000 ))
-      sw_v=$(( SCOS[$sw_ph] * 250 / 1000 ))
-      swr[0]=$(( sw_v * (0 - DIR_Z[$dyaw]) ))
-      swr[1]=$(( sw_v * DIR_X[$dyaw] ))
-      swk=$((g_now / 50000))
-    fi
-    view_key="$dpcx_ms $dpcz_ms $dpyw_ms $crouched $map_ver $mimes_ver $swk"
+    view_key="$dpcx_ms $dpcz_ms $dpyw_ms $crouched $map_ver $mimes_ver"
     hud_swap=0
     if [ "$view_key" != "$prev_view_key" ]; then
       render_frame
