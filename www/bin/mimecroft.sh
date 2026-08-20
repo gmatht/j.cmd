@@ -2074,13 +2074,14 @@ render_frame() {
   cxs=$fv
   fmt_pos $dpcz_ms
   czs=$fv
-  # crawl sway: crouched, the camera sways ~1/4 block (250 milli)
-  # left-right, perpendicular to the facing — a lazy sine sweep
-  # (period 1.2s, from the SCOS table) so the crawl reads as a body
-  # sway instead of a static duck. Only the RENDERED camera moves:
-  # the culling cell (dpx/dpz) and the collision position stay true.
-  if [ "$crouched" -eq 1 ]; then
-    sw_ph=$(( g_now % 1200000 * 100 / 1200000 ))
+  # crawl sway: crouched AND mid-glide (a crawl), the camera sways
+  # ~1/4 block (250 milli) left-right, perpendicular to the facing — a
+  # lazy sine sweep (period 1.2s, from the SCOS table) so the crawl
+  # reads as a body sway instead of a static duck. Only the RENDERED
+  # camera moves: the culling cell (dpx/dpz) and the collision
+  # position stay true.
+  if [ "$crouched" -eq 1 ] && [ "$anim" -eq 1 ]; then
+    sw_ph=$(( (g_now % 1200000) * 360 / 1200000 ))
     sw_v=$(( SCOS[$sw_ph] * 250 / 1000 ))
     sw_lx=$(( 0 - DIR_Z[$dyaw] ))
     sw_lz=$(( DIR_X[$dyaw] ))
@@ -4156,10 +4157,11 @@ main() {
     # Idle frames keep a constant key (px·1000 / yaw·90000), so the
     # static view still caches. map_ver bumps on every cell write,
     # mimes_ver on every mime move/die.
-    # the crawl sway phase: crouched only — otherwise the view caches
-    # (a standing idle frame must NOT re-render as the clock advances)
+    # the crawl sway phase: crouched AND mid-glide only — otherwise
+    # the view caches (a static crouch must NOT re-render as the clock
+    # advances, and the sway only animates while actually crawling)
     swk=0
-    if [ "$crouched" -eq 1 ]; then swk=$((g_now / 50000)); fi
+    if [ "$crouched" -eq 1 ] && [ "$anim" -eq 1 ]; then swk=$((g_now / 50000)); fi
     view_key="$dpcx_ms $dpcz_ms $dpyw_ms $crouched $map_ver $mimes_ver $swk"
     hud_swap=0
     if [ "$view_key" != "$prev_view_key" ]; then
