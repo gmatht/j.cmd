@@ -31,19 +31,21 @@ user's explicit Enter.
 
 ### `?demo=<name>` — auto-start a bundled demo
 
-`https://…/?demo=mimecroft.sh` starts the MIMEcroft game automatically
-when the page loads.
+`https://…/?demo=MIMEcroft.sh` starts the MIMEcroft game automatically
+when the page loads (the legacy lowercase `?demo=mimecroft.sh` is also
+accepted).
 
 The value is URL-supplied, so it is checked against a **fixed
 allow-list of trusted strings** before anything runs:
 
 ```js
 // www/index.html — the only place a URL parameter is auto-executed
-const DEMO_ALLOWLIST = ["mimecroft.sh"];
+const DEMO_ALLOWLIST = ["MIMEcroft.sh", "mimecroft.sh"];
 ```
 
-Currently the only allowed value is `"mimecroft.sh"` (mapped to the
-page's own bundled `mimecroft` command). Any other value — including
+Currently the only allowed values are `"MIMEcroft.sh"` and the legacy
+lowercase `"mimecroft.sh"` (mapped to the page's own bundled
+`MIMEcroft` command). Any other value — including
 anything that looks like a command — is **silently ignored**. This is
 the deliberate exception to the "pre-fill, never auto-run" rule: a demo
 link is meant to start the game, but the allow-list bounds it to the

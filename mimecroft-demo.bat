@@ -1,8 +1,8 @@
 @echo off
 REM ─────────────────────────────────────────────────────────────────
 REM mimecroft-demo.bat — serve the shell page locally and open the
-REM MIMEcroft demo (?demo=mimecroft.sh — the demo allow-list is
-REM [ "mimecroft.sh" ]; see SECURITY.md).
+REM MIMEcroft demo (?demo=MIMEcroft.sh — the demo allow-list is
+REM [ "MIMEcroft.sh", "mimecroft.sh" ]; see SECURITY.md).
 REM
 REM   double-click, or:  mimecroft-demo.bat
 REM
@@ -33,10 +33,10 @@ if %ERRORLEVEL%==0 (
 
 REM ── give the server a moment to bind, then open the demo ────────
 timeout /t 1 /nobreak >nul
-start "" "http://127.0.0.1:%PORT%/www/?demo=mimecroft.sh"
+start "" "http://127.0.0.1:%PORT%/www/?demo=MIMEcroft.sh"
 
 echo.
-echo  MIMEcroft demo:  http://127.0.0.1:%PORT%/www/?demo=mimecroft.sh
+echo  MIMEcroft demo:  http://127.0.0.1:%PORT%/www/?demo=MIMEcroft.sh
 echo  (the server runs in the minimized "mimecroft-httpd" window; close it to stop)
 echo.
 popd

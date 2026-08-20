@@ -1599,7 +1599,7 @@ function spinnerStop() {
 }
 
 // ─── Transpile progress line ──────────────────────────────────
-// The bash→JS transpiler can take seconds (the whole-game mimecroft.sh
+// The bash→JS transpiler can take seconds (the whole-game MIMEcroft.sh
 // goes through all 32 passes), and the wasm's passProgress used to dump
 // `[n/32 passes completed]` lines to the WEB CONSOLE — invisible to the
 // user. Stream them to the terminal's stderr as overwriting `\r` lines
@@ -4101,7 +4101,7 @@ async function runNestedCommand(cmdLine, stdin = "", modeType = "") {
   // A top-level (plain) dispatch — a command the transpiled line runs
   // just to show its output — must STREAM, not capture: holding the
   // output until the command completes is what made long-running
-  // commands (mimecroft.sh) appear to print nothing until they quit.
+  // commands (MIMEcroft.sh) appear to print nothing until they quit.
   // Only substitutions/pipes/redirects (capture/pipe/redirect modes)
   // need the output returned.
   if (modeType === "plain") {
@@ -6324,7 +6324,7 @@ document.addEventListener("click", (e) => {
     const line = document.createElement("span");
     line.className = "info";
     const game = document.createElement("a");
-    game.href = "./mimecroft.html";
+    game.href = "./MIMEcroft.html";
     game.className = "banner-link";
     game.textContent = "MIMEcroft — a 3D maze treasure hunt written in bash";
     line.append("\u2b50 ");
