@@ -33,7 +33,7 @@ const bin = readFileSync("www/bin/mimecroft.sh", "utf8");
 // The hand-written vs_fb fallback was INTENTIONALLY removed (single GLSL
 // source of truth — the sh2glsl-compiled vertex shader). The clamp is
 // injected by the game at runtime into the compiled GLSL.
-check("game injects the clamp into the generated GLSL", src.includes("if (g_w < 0.0001) g_w = 0.0001;"));
+check("game injects the clamp into the generated GLSL", src.includes("if (g_w < 0.0) g_w = 0.05;"));
 
 // the generated GLSL, after the game's injection — this IS the shader
 // the game renders with (no fallback)
@@ -41,8 +41,8 @@ const lib = await getOtranspilerl();
 const genRaw = lib.glslv(readFileSync("www/examples/mimecroft-vertex.sh", "utf8"));
 const vsGlsl = genRaw.replace(
   "g_w = ((((0.0) - g_relz)) + (0.0));",
-  "g_w = ((((0.0) - g_relz)) + (0.0)); if (g_w < 0.0001) g_w = 0.0001;");
-check("generated GLSL has the clamp after injection", vsGlsl.includes("if (g_w < 0.0001) g_w = 0.0001;"));
+  "g_w = ((((0.0) - g_relz)) + (0.0)); if (g_w < 0.0) g_w = 0.05;");
+check("generated GLSL has the clamp after injection", vsGlsl.includes("if (g_w < 0.0) g_w = 0.05;"));
 
 // ─── 2) real-GL pixel proof ───────────────────────────────────────
 // The hand-written fs_fb fallback is gone (single GLSL design) — the
@@ -124,7 +124,7 @@ function render(vs) {
 }
 
 const clampedVs = vsGlsl;   // the compiled shader (has the clamp)
-const unclampedVs = vsGlsl.replace("if (g_w < 0.0001) g_w = 0.0001;", "");
+const unclampedVs = vsGlsl.replace("if (g_w < 0.0) g_w = 0.05;", "");
 const a = await render(clampedVs);
 const b = await render(unclampedVs);
 console.log("  clamped:   green(+x wedge)=" + a.green + " blue(-z front)=" + a.blue);
