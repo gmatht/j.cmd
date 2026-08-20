@@ -2688,50 +2688,75 @@ hud_build_static() {
 # zero most frames
 draw_digits() {
   # reuse d_W, d_Y and d_*_dx positions computed in hud_build_static
-  # digits overwrite in place (no erase_rects — they erased the static
-  # labels drawn earlier in the same ov_text stream)
+  # erase ONLY the digit areas (never the labels — the erase rects sit
+  # at d_*_dx, after the label text ends), then redraw changed groups
   # score digits (3 digits, no slash)
-  dh_a=$((score/100%10+26))
-  dh_b=$((score/10%10+26))
-  dh_c=$((score%10+26))
-  draw_char $dh_a $d_score_dx $d_Y 8 11 0.95 0.85 0.30
-  draw_char $dh_b $((d_score_dx+d_W)) $d_Y 8 11 0.95 0.85 0.30
-  draw_char $dh_c $((d_score_dx+2*d_W)) $d_Y 8 11 0.95 0.85 0.30
+  dh_val=$((score))
+  if [ "$dh_val" != "$prev_score" ]; then
+    erase_rect $d_score_dx $((d_Y-24)) $((3*d_W)) 62
+    dh_a=$((dh_val/100%10+26))
+    dh_b=$((dh_val/10%10+26))
+    dh_c=$((dh_val%10+26))
+    draw_char $dh_a $d_score_dx $d_Y 8 11 0.95 0.85 0.30
+    draw_char $dh_b $((d_score_dx+d_W)) $d_Y 8 11 0.95 0.85 0.30
+    draw_char $dh_c $((d_score_dx+2*d_W)) $d_Y 8 11 0.95 0.85 0.30
+    prev_score=$dh_val
+  fi
   # HP digits (current / max, slash between)
-  dh_a=$((hp/10+26))
-  dh_b=$((hp%10+26))
-  draw_char $dh_a $d_hp_dx $d_Y 8 11 0.35 0.90 0.40
-  draw_char $dh_b $((d_hp_dx+d_W)) $d_Y 8 11 0.35 0.90 0.40
-  draw_char 37 $d_hp_sx $d_Y 8 11 0.35 0.90 0.40
-  dh_a=$((maxhp/10+26))
-  dh_b=$((maxhp%10+26))
-  draw_char $dh_a $((d_hp_sx+d_W)) $d_Y 8 11 0.35 0.90 0.40
-  draw_char $dh_b $((d_hp_sx+2*d_W)) $d_Y 8 11 0.35 0.90 0.40
+  dh_val=$((hp*1000+maxhp))
+  if [ "$dh_val" != "$prev_hp" ]; then
+    erase_rect $d_hp_dx $((d_Y-24)) $((4*d_W+d_W)) 62
+    dh_a=$((hp/10+26))
+    dh_b=$((hp%10+26))
+    draw_char $dh_a $d_hp_dx $d_Y 8 11 0.35 0.90 0.40
+    draw_char $dh_b $((d_hp_dx+d_W)) $d_Y 8 11 0.35 0.90 0.40
+    draw_char 37 $d_hp_sx $d_Y 8 11 0.35 0.90 0.40
+    dh_a=$((maxhp/10+26))
+    dh_b=$((maxhp%10+26))
+    draw_char $dh_a $((d_hp_sx+d_W)) $d_Y 8 11 0.35 0.90 0.40
+    draw_char $dh_b $((d_hp_sx+2*d_W)) $d_Y 8 11 0.35 0.90 0.40
+    prev_hp=$dh_val
+  fi
   # ART digits (found / total, slash between)
-  dh_a=$((found_count/10+26))
-  dh_b=$((found_count%10+26))
-  draw_char $dh_a $d_art_dx $d_Y 8 11 0.60 0.75 0.95
-  draw_char $dh_b $((d_art_dx+d_W)) $d_Y 8 11 0.60 0.75 0.95
-  draw_char 37 $d_art_sx $d_Y 8 11 0.60 0.75 0.95
-  dh_a=$((TREASURE_TOTAL/10+26))
-  dh_b=$((TREASURE_TOTAL%10+26))
-  draw_char $dh_a $((d_art_sx+d_W)) $d_Y 8 11 0.60 0.75 0.95
-  draw_char $dh_b $((d_art_sx+2*d_W)) $d_Y 8 11 0.60 0.75 0.95
+  dh_val=$((found_count*1000+TREASURE_TOTAL))
+  if [ "$dh_val" != "$prev_art" ]; then
+    erase_rect $d_art_dx $((d_Y-24)) $((4*d_W+d_W)) 62
+    dh_a=$((found_count/10+26))
+    dh_b=$((found_count%10+26))
+    draw_char $dh_a $d_art_dx $d_Y 8 11 0.60 0.75 0.95
+    draw_char $dh_b $((d_art_dx+d_W)) $d_Y 8 11 0.60 0.75 0.95
+    draw_char 37 $d_art_sx $d_Y 8 11 0.60 0.75 0.95
+    dh_a=$((TREASURE_TOTAL/10+26))
+    dh_b=$((TREASURE_TOTAL%10+26))
+    draw_char $dh_a $((d_art_sx+d_W)) $d_Y 8 11 0.60 0.75 0.95
+    draw_char $dh_b $((d_art_sx+2*d_W)) $d_Y 8 11 0.60 0.75 0.95
+    prev_art=$dh_val
+  fi
   # fps digits: Wnnn/Annn — wall-clock first, then active, bright white
-  dh_a=$((fps/100+26))
-  dh_b=$((fps/10%10+26))
-  dh_c=$((fps%10+26))
-  draw_char $dh_a $d_w_dx $d_Y 8 11 0.95 0.95 0.95
-  draw_char $dh_b $((d_w_dx+d_W)) $d_Y 8 11 0.95 0.95 0.95
-  draw_char $dh_c $((d_w_dx+2*d_W)) $d_Y 8 11 0.95 0.95 0.95
-  dh_a=$((afps/100+26))
-  dh_b=$((afps/10%10+26))
-  dh_c=$((afps%10+26))
-  draw_char $dh_a $d_c_dx $d_Y 8 11 0.95 0.95 0.95
-  draw_char $dh_b $((d_c_dx+d_W)) $d_Y 8 11 0.95 0.95 0.95
-  draw_char $dh_c $((d_c_dx+2*d_W)) $d_Y 8 11 0.95 0.95 0.95
+  dh_val=$((fps*10000+afps))
+  if [ "$dh_val" != "$prev_fps" ]; then
+    erase_rect $d_w_dx $((d_Y-24)) $((6*d_W+d_W)) 62
+    dh_a=$((fps/100+26))
+    dh_b=$((fps/10%10+26))
+    dh_c=$((fps%10+26))
+    draw_char $dh_a $d_w_dx $d_Y 8 11 0.95 0.95 0.95
+    draw_char $dh_b $((d_w_dx+d_W)) $d_Y 8 11 0.95 0.95 0.95
+    draw_char $dh_c $((d_w_dx+2*d_W)) $d_Y 8 11 0.95 0.95 0.95
+    dh_a=$((afps/100+26))
+    dh_b=$((afps/10%10+26))
+    dh_c=$((afps%10+26))
+    draw_char $dh_a $d_c_dx $d_Y 8 11 0.95 0.95 0.95
+    draw_char $dh_b $((d_c_dx+d_W)) $d_Y 8 11 0.95 0.95 0.95
+    draw_char $dh_c $((d_c_dx+2*d_W)) $d_Y 8 11 0.95 0.95 0.95
+    prev_fps=$dh_val
+  fi
   # licence digit (right of LIC label — strikes remaining)
-  draw_char $((license+26)) $d_lic_dx $d_Y 8 11 0.95 0.60 0.30
+  dh_val=$((license))
+  if [ "$dh_val" != "$prev_lic" ]; then
+    erase_rect $d_lic_dx $((d_Y-24)) $d_W 62
+    draw_char $((dh_val+26)) $d_lic_dx $d_Y 8 11 0.95 0.60 0.30
+    prev_lic=$dh_val
+  fi
 }
 
 # ─── treasure name labels ───────────────────────────────────────────
