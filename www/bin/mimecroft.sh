@@ -279,12 +279,10 @@ fps=0               # rendered frames/sec (measured over ~10-frame windows)
 fps_t0=0
 fps_rendered=0
 cfps=0              # CPU frames/sec (60 / cpu_time_for_last_60_frames)
-cpu_us_acc=0        # accumulated CPU µs over the last 60 frames
-cpu_frame_count=0   # frames in the current CPU measurement window
-cpu_us_t0=0
-cpu_us_prev=""
-cpu_us_now=0
-cpu_us_delta=0
+afps=0              # ACTIVE frames/sec (frames / (wall time - sleep time))
+active_us=0         # accumulated active µs (frame work, excluding sleeps)
+active_frames=0     # frames in the active measurement window
+active_us_t0=0
 muzzle=0            # muzzle-flash lifetime (loop frames remaining)
 flash_done=0        # the frame the flash expires: forces one clear render
 # (the retained back buffer would otherwise keep showing the last flash
@@ -2637,7 +2635,7 @@ hud_build_static() {
   draw_text "FPS:" 4 $d_fps_x $d_Y 8 11 0.70 0.70 0.70
   draw_text "W" 1 $d_w_x $d_Y 8 11 0.55 0.95 0.95
   draw_text "/" 1 $d_slash_x $d_Y 8 11 0.70 0.70 0.70
-  draw_text "C" 1 $d_c_x $d_Y 8 11 0.45 0.85 0.85
+  draw_text "A" 1 $d_c_x $d_Y 8 11 0.45 0.85 0.85
   draw_text "LIC" 3 $d_lic_x $d_Y 8 11 0.95 0.60 0.30
   # instructions (bottom centre)
   draw_text "WASD MOVE ARROWS TURN SPACE SHOOT" 33 538 100 7 10 0.85 0.85 0.85
@@ -2690,74 +2688,50 @@ hud_build_static() {
 # zero most frames
 draw_digits() {
   # reuse d_W, d_Y and d_*_dx positions computed in hud_build_static
-  # track previous values — only erase+redraw groups that changed
+  # digits overwrite in place (no erase_rects — they erased the static
+  # labels drawn earlier in the same ov_text stream)
   # score digits (3 digits, no slash)
-  dh_val=$((score))
-  if [ "$dh_val" != "$prev_score" ]; then
-    erase_rect $d_score_dx $((d_Y-24)) $((d_score_dx+3*d_W-d_score_dx)) 62
-    dh_a=$((dh_val/100%10+26))
-    dh_b=$((dh_val/10%10+26))
-    dh_c=$((dh_val%10+26))
-    draw_char $dh_a $d_score_dx $d_Y 8 11 0.95 0.85 0.30
-    draw_char $dh_b $((d_score_dx+d_W)) $d_Y 8 11 0.95 0.85 0.30
-    draw_char $dh_c $((d_score_dx+2*d_W)) $d_Y 8 11 0.95 0.85 0.30
-    prev_score=$dh_val
-  fi
+  dh_a=$((score/100%10+26))
+  dh_b=$((score/10%10+26))
+  dh_c=$((score%10+26))
+  draw_char $dh_a $d_score_dx $d_Y 8 11 0.95 0.85 0.30
+  draw_char $dh_b $((d_score_dx+d_W)) $d_Y 8 11 0.95 0.85 0.30
+  draw_char $dh_c $((d_score_dx+2*d_W)) $d_Y 8 11 0.95 0.85 0.30
   # HP digits (current / max, slash between)
-  dh_val=$((hp*1000+maxhp))
-  if [ "$dh_val" != "$prev_hp" ]; then
-    erase_rect $d_hp_dx $((d_Y-24)) $((d_hp_sx+3*d_W-d_hp_dx)) 62
-    dh_a=$((hp/10+26))
-    dh_b=$((hp%10+26))
-    draw_char $dh_a $d_hp_dx $d_Y 8 11 0.35 0.90 0.40
-    draw_char $dh_b $((d_hp_dx+d_W)) $d_Y 8 11 0.35 0.90 0.40
-    draw_char 37 $d_hp_sx $d_Y 8 11 0.35 0.90 0.40
-    dh_a=$((maxhp/10+26))
-    dh_b=$((maxhp%10+26))
-    draw_char $dh_a $((d_hp_sx+d_W)) $d_Y 8 11 0.35 0.90 0.40
-    draw_char $dh_b $((d_hp_sx+2*d_W)) $d_Y 8 11 0.35 0.90 0.40
-    prev_hp=$dh_val
-  fi
+  dh_a=$((hp/10+26))
+  dh_b=$((hp%10+26))
+  draw_char $dh_a $d_hp_dx $d_Y 8 11 0.35 0.90 0.40
+  draw_char $dh_b $((d_hp_dx+d_W)) $d_Y 8 11 0.35 0.90 0.40
+  draw_char 37 $d_hp_sx $d_Y 8 11 0.35 0.90 0.40
+  dh_a=$((maxhp/10+26))
+  dh_b=$((maxhp%10+26))
+  draw_char $dh_a $((d_hp_sx+d_W)) $d_Y 8 11 0.35 0.90 0.40
+  draw_char $dh_b $((d_hp_sx+2*d_W)) $d_Y 8 11 0.35 0.90 0.40
   # ART digits (found / total, slash between)
-  dh_val=$((found_count*1000+TREASURE_TOTAL))
-  if [ "$dh_val" != "$prev_art" ]; then
-    erase_rect $d_art_dx $((d_Y-24)) $((d_art_sx+3*d_W-d_art_dx)) 62
-    dh_a=$((found_count/10+26))
-    dh_b=$((found_count%10+26))
-    draw_char $dh_a $d_art_dx $d_Y 8 11 0.60 0.75 0.95
-    draw_char $dh_b $((d_art_dx+d_W)) $d_Y 8 11 0.60 0.75 0.95
-    draw_char 37 $d_art_sx $d_Y 8 11 0.60 0.75 0.95
-    dh_a=$((TREASURE_TOTAL/10+26))
-    dh_b=$((TREASURE_TOTAL%10+26))
-    draw_char $dh_a $((d_art_sx+d_W)) $d_Y 8 11 0.60 0.75 0.95
-    draw_char $dh_b $((d_art_sx+2*d_W)) $d_Y 8 11 0.60 0.75 0.95
-    prev_art=$dh_val
-  fi
-  # fps digits: Wnnn/Cnnn — wall-clock first, then CPU, bright white
-  dh_val=$((fps*10000+cfps))
-  if [ "$dh_val" != "$prev_fps" ]; then
-    erase_rect $d_w_dx $((d_Y-24)) $((d_c_dx+3*d_W-d_w_dx)) 62
-    dh_a=$((fps/100+26))
-    dh_b=$((fps/10%10+26))
-    dh_c=$((fps%10+26))
-    draw_char $dh_a $d_w_dx $d_Y 8 11 0.95 0.95 0.95
-    draw_char $dh_b $((d_w_dx+d_W)) $d_Y 8 11 0.95 0.95 0.95
-    draw_char $dh_c $((d_w_dx+2*d_W)) $d_Y 8 11 0.95 0.95 0.95
-    dh_a=$((cfps/100+26))
-    dh_b=$((cfps/10%10+26))
-    dh_c=$((cfps%10+26))
-    draw_char $dh_a $d_c_dx $d_Y 8 11 0.95 0.95 0.95
-    draw_char $dh_b $((d_c_dx+d_W)) $d_Y 8 11 0.95 0.95 0.95
-    draw_char $dh_c $((d_c_dx+2*d_W)) $d_Y 8 11 0.95 0.95 0.95
-    prev_fps=$dh_val
-  fi
+  dh_a=$((found_count/10+26))
+  dh_b=$((found_count%10+26))
+  draw_char $dh_a $d_art_dx $d_Y 8 11 0.60 0.75 0.95
+  draw_char $dh_b $((d_art_dx+d_W)) $d_Y 8 11 0.60 0.75 0.95
+  draw_char 37 $d_art_sx $d_Y 8 11 0.60 0.75 0.95
+  dh_a=$((TREASURE_TOTAL/10+26))
+  dh_b=$((TREASURE_TOTAL%10+26))
+  draw_char $dh_a $((d_art_sx+d_W)) $d_Y 8 11 0.60 0.75 0.95
+  draw_char $dh_b $((d_art_sx+2*d_W)) $d_Y 8 11 0.60 0.75 0.95
+  # fps digits: Wnnn/Annn — wall-clock first, then active, bright white
+  dh_a=$((fps/100+26))
+  dh_b=$((fps/10%10+26))
+  dh_c=$((fps%10+26))
+  draw_char $dh_a $d_w_dx $d_Y 8 11 0.95 0.95 0.95
+  draw_char $dh_b $((d_w_dx+d_W)) $d_Y 8 11 0.95 0.95 0.95
+  draw_char $dh_c $((d_w_dx+2*d_W)) $d_Y 8 11 0.95 0.95 0.95
+  dh_a=$((afps/100+26))
+  dh_b=$((afps/10%10+26))
+  dh_c=$((afps%10+26))
+  draw_char $dh_a $d_c_dx $d_Y 8 11 0.95 0.95 0.95
+  draw_char $dh_b $((d_c_dx+d_W)) $d_Y 8 11 0.95 0.95 0.95
+  draw_char $dh_c $((d_c_dx+2*d_W)) $d_Y 8 11 0.95 0.95 0.95
   # licence digit (right of LIC label — strikes remaining)
-  dh_val=$((license))
-  if [ "$dh_val" != "$prev_lic" ]; then
-    erase_rect $d_lic_dx $((d_Y-24)) $d_W 62
-    draw_char $((dh_val+26)) $d_lic_dx $d_Y 8 11 0.95 0.60 0.30
-    prev_lic=$dh_val
-  fi
+  draw_char $((license+26)) $d_lic_dx $d_Y 8 11 0.95 0.60 0.30
 }
 
 # ─── treasure name labels ───────────────────────────────────────────
@@ -3104,13 +3078,6 @@ gtick() {
 }
 
 # per-phase accumulators (µs) — what holds the frame rate back, by how
-gtick_cpu() {
-  cpu_us_now=$EPOCHCPUTIME
-  if [ "$cpu_us_prev" = "" ]; then cpu_us_prev=$cpu_us_now; fi
-  cpu_us_delta=$((cpu_us_now - cpu_us_prev))
-  if [ "$cpu_us_delta" -lt 0 ]; then cpu_us_delta=0; fi
-  cpu_us_prev=$cpu_us_now
-}
 # much: input / anim / display / mimes / render (whole phase) / hudb
 # (static HUD rebuild) / hud (per-frame HUD draw) / swap / sleepa
 # (pacing sleep during an action glide) / sleepi (idle pacing). The
@@ -4174,21 +4141,21 @@ main() {
       fi
       fps_t0=$fps_t
     fi
-    # cpu fps: accumulated CPU µs over the last 60 rendered frames
+    # active fps: frames / (wall time − sleep time) over the last 60
+    # frames — measures rendering throughput, not pacing. fp_el (below)
+    # is the frame work time (fp_t0 is set after the previous sleep).
     if [ "$fps_rendered" -gt 0 ]; then
-      gtick_cpu
-      cpu_us_acc=$((cpu_us_acc + cpu_us_delta))
-      cpu_frame_count=$((cpu_frame_count + 1))
-      if [ "$cpu_frame_count" -ge 60 ]; then
-        if [ "$cpu_us_acc" -gt 0 ]; then
-          cfps_nv=$((3600000000 / cpu_us_acc))
-          if [ "$cfps_nv" -ne "$cfps" ]; then
-            cfps=$cfps_nv
+      active_frames=$((active_frames + 1))
+      if [ "$active_frames" -ge 60 ]; then
+        if [ "$active_us" -gt 0 ]; then
+          afps_nv=$((active_frames * 1000000 / active_us))
+          if [ "$afps_nv" -ne "$afps" ]; then
+            afps=$afps_nv
             digits_dirty=1
           fi
         fi
-        cpu_us_acc=0
-        cpu_frame_count=0
+        active_us=0
+        active_frames=0
       fi
     fi
     # frame budget: vsync ON = one frame per display refresh (60Hz →
@@ -4200,6 +4167,7 @@ main() {
     # never bites and every frame paints exactly once.
     gtick
     fp_el=$((g_now - fp_t0))
+    active_us=$((active_us + fp_el))
     if [ "$vsync" -eq 1 ]; then fp_budget=16667; else fp_budget=10000; fi
     if [ "$fp_el" -lt "$fp_budget" ]; then
       fp_wait=$(((fp_budget - fp_el + 999) / 1000))
