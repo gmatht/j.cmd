@@ -29,7 +29,7 @@ const FRONTEND_FILES = {
   py:   ["main.go"],
   sh:   ["main.go", "analysis.go", "lowering.go"],
   zsh:  ["main.go", "analysis.go", "lowering.go"],
-  cpp:  ["main.go", "parser.go"],
+  cpp:  ["main.go"],
   zig:  ["main.go"],
 };
 const PREFIX_MAIN = { sh: true };                  // posix-sh-go's main() → sh_main (dispatcher owns main)
@@ -41,7 +41,7 @@ const PREBUILT = "wasm-bin/otranspiler-busybox.wasm";  // shipped static build
 // changes so a browser never reuses a stale staged copy (the staged
 // VFS file at /usr/bin/otranspiler-busybox.wasm persists across page
 // loads; ensureBusyboxWasm re-fetches when this version differs).
-export const BUSYBOX_VERSION = "v29-cppzig";  // v29: cpp-sh-go + zig-sh-go merged into the busybox (pure-Go tokenizers onto clib)  // v28: c-sh-go emits ForInit + first-class Break/Continue  // v27: user-fn for/seq decls, non-cast param lift, ptr-param index via mem seam
+export const BUSYBOX_VERSION = "v30-purecpp";  // v30: rebuild with the pure-Go cpp tokenizer (main.go only — the tree-sitter parser.go is cgo, not wasm-buildable; otranspiler.html serves cpp via the merged busybox)  // v29: cpp-sh-go + zig-sh-go merged into the busybox (pure-Go tokenizers onto clib)  // v28: c-sh-go emits ForInit + first-class Break/Continue  // v27: user-fn for/seq decls, non-cast param lift, ptr-param index via mem seam
 
 // Read one vendored frontend source file (browser: fetch; node: disk).
 // `base` is unused in node (paths resolve against the repo root); in the
