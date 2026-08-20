@@ -52,7 +52,16 @@ try {
   const lines = [];
   for (const line of m[1].split("\n")) {
     const mm = line.match(/^\s*echo '((?:[^'\\]|\\.)*)'\s*(?:>>|>)/);
-    if (mm) lines.push(mm[1]);
+    if (mm) { lines.push(mm[1]); continue; }
+    // the display-size CRT centring is emitted DOUBLE-quoted so the
+    // runtime substitutes the canvas half-width/height:
+    //   echo "vx=\$((fx - $disp_hw))"
+    // Extract it with the DEFAULT 800x600 halves (the canonical is the
+    // default-size program) — un-escape \$ and substitute $disp_hw/hh.
+    const md = line.match(/^\s*echo "((?:[^"\\]|\\.)*)"\s*(?:>>|>)/);
+    if (md) {
+      lines.push(md[1].replace(/\\\$/g, "$").replace(/\$disp_hw/g, "400").replace(/\$disp_hh/g, "300"));
+    }
   }
   const program = lines.join("\n") + "\n";
   fragInline = lib.glsl(program);
