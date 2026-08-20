@@ -2676,7 +2676,7 @@ draw_digits() {
   erase_rect 296 1818 96 62
   erase_rect 572 1818 160 62
   erase_rect 964 1818 160 62
-  erase_rect 1060 1818 320 62
+  erase_rect 1060 1818 420 62
   erase_rect 1490 1818 48 62
   # score digits
   dh_a=$((score/100%10+26))
@@ -2709,24 +2709,23 @@ draw_digits() {
   draw_char $dh_b 1016 1840 8 11 0.60 0.75 0.95
   draw_char 37 952 1840 8 11 0.60 0.75 0.95
   # fps labels + digits (right of the ART total, same line as the score/hp/art)
-  # C = CPU frames/sec, W = wall-clock frames/sec
-  draw_text "C" 1 1060 1840 8 11 0.45 0.85 0.85
+  # FPS: Cnnn Wnnn — CPU fps (dim cyan) and wall-clock fps (bright cyan)
+  draw_text "FPS:" 4 1060 1840 8 11 0.70 0.70 0.70
   dh_a=$((cfps/100+26))
   dh_b=$((cfps/10%10+26))
   dh_c=$((cfps%10+26))
-  draw_char $dh_a 1080 1840 8 11 0.45 0.85 0.85
-  draw_char $dh_b 1112 1840 8 11 0.45 0.85 0.85
-  draw_char $dh_c 1144 1840 8 11 0.45 0.85 0.85
-  draw_text "W" 1 1200 1840 8 11 0.55 0.95 0.95
+  draw_char $dh_a 1108 1840 8 11 0.45 0.85 0.85
+  draw_char $dh_b 1140 1840 8 11 0.45 0.85 0.85
+  draw_char $dh_c 1172 1840 8 11 0.45 0.85 0.85
   dh_a=$((fps/100+26))
   dh_b=$((fps/10%10+26))
   dh_c=$((fps%10+26))
-  draw_char $dh_a 1288 1840 8 11 0.55 0.95 0.95
-  draw_char $dh_b 1320 1840 8 11 0.55 0.95 0.95
-  draw_char $dh_c 1352 1840 8 11 0.55 0.95 0.95
+  draw_char $dh_a 1228 1840 8 11 0.55 0.95 0.95
+  draw_char $dh_b 1260 1840 8 11 0.55 0.95 0.95
+  draw_char $dh_c 1292 1840 8 11 0.55 0.95 0.95
   # licence digits (right of FPS — strikes remaining)
   dh_a=$((license+26))
-  draw_char $dh_a 1530 1840 8 11 0.95 0.60 0.30
+  draw_char $dh_a 1460 1840 8 11 0.95 0.60 0.30
 }
 
 # ─── treasure name labels ───────────────────────────────────────────
