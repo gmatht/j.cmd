@@ -14,10 +14,9 @@ let shellExec = async (cmdline) => {
   else if (cmd === "cat") { try { out = await fs.read(fs._resolve(rest.split(/\s+/)[0])); } catch { out = ""; } }
   else if (cmd === "sleep") { await new Promise(r => setTimeout(r, 0)); }
   else if (cmd === "sh2glsl") {
-    const m = cl.match(/^sh2glsl\s+(--vertex\s+)?(\S+)/);
-    if (m) { const vert = !!m[1];
-      try { const s2 = String(await fs.read(fs._resolve(m[2])));
-        const { getOtranspilerl } = await import("./src/otranspilerl.js");
+    const m = cl.match(/^sh2glsl\s+(--view\s+\S+\s+)?(--vertex\s+)?(\S+)/);
+    if (m) { const vert = !!m[2];
+      try { const s2 = String(await fs.read(fs._resolve(m[3])));
         const lib = await getOtranspilerl();
         out = vert ? lib.glslv(s2) : lib.glsl(s2);
       } catch { out = ""; } }

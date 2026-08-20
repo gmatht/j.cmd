@@ -90,9 +90,12 @@ const shellExec = async (cmdline, stdin) => {
   else if (cmd === "sh2glsl") {
 
     // compile the bash-authored shader with the Rust backend
-    // (`--vertex` = the vertex stage, else the fragment)
-    const vert = rest.startsWith("--vertex");
-    const vfsPath = (vert ? rest.slice(8) : rest).trim().split(/\s+/)[0];
+    // (`--view N` = the display width for pixel-space effects, `--vertex`
+    // = the vertex stage, else the fragment)
+    let v2 = rest;
+    if (v2.startsWith("--view ")) v2 = v2.replace(/^--view\s+\S+\s*/, "");
+    const vert = v2.startsWith("--vertex");
+    const vfsPath = (vert ? v2.slice(8) : v2).trim().split(/\s+/)[0];
     const bashSrc = String(await fs.read(vfsPath));
     if (sh2glslBin) {
       const dir = mkdtempSync(join(tmpdir(), "sh2glsl-"));

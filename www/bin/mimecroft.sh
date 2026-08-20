@@ -66,10 +66,18 @@ tex_seed=20240812     # texture generation seed (drives the LCG noise)
 # the mime type names) so stale session caches regenerate instead
 # of uploading the old pattern
 tex_ver=10         # stone noise cells are now fixed 4px/2px (jagged at every resolution)
-sm_sel=0              # settings-menu cursor (0=shift 1=size 2=seed 3=crt 4=corrupt 5=mime speed 6=mime names 7=sound mode 8=minimap 9=game speed 10=vsync)
+sm_sel=0              # settings-menu cursor (0=shift 1=size 2=seed 3=crt 4=corrupt 5=mime speed 6=mime names 7=sound mode 8=minimap 9=game speed 10=vsync 11=display size)
 sm_done=0
 sm_changed=0
 headless=1            # set from /dev/webgl/state in main()
+# display size (the settings menu's DISPLAY row): 0=320p 1=480p 2=600p
+# (800x600, the default) 3=720p 4=1080p 5=1440p 6=FULL WINDOW. The 3D
+# view + HUD are NDC-based (resolution-independent); only the fragment
+# shader's pixel effects (fx-400 CRT/vignette) need the view width, so
+# emit_fragment_shader re-compiles with --view <width> on a change.
+disp_size=2
+disp_w=800
+disp_h=600
 RANGE=12                          # shoot range
 TREASURE_TOTAL=10
 MIME_CAP=12
@@ -249,7 +257,7 @@ demo=0
 # transpiled $(( g_now - g_t0 )) skip print_stats' whole body
 # (even the GAME DONE line) on that path
 g_t0=0
-DEMO_FRAMES=60   # `--demo`: run 60 loop frames, then quit + print the stats
+DEMO_FRAMES=1200  # `--demo`: auto-play ~10s of movement, then quit + print the stats
 SOUND_MODE=notes    # notes = /dev/audio oscillator blips (default);
                     # bash = the sample-accurate examples/sounds
                     # generators, played through /dev/audio/samples
@@ -262,6 +270,20 @@ if [ "$1" = "--sounds" ] || [ "$1" = "--sound" ]; then
   if [ "$2" = "bash" ]; then SOUND_MODE=bash; fi
 fi
 if [ "$1" = "--demo" ]; then demo=1; fi
+# `--view <width>` — start at a display size by its pixel width (320/480/
+# 600/720/1080/1440); anything else is ignored (the menu can still change
+# it). Maps to the DISPLAY row presets so disp_size stays coherent.
+if [ "$1" = "--view" ]; then
+  case $2 in
+    320)  disp_size=0 ;;
+    480)  disp_size=1 ;;
+    600)  disp_size=2 ;;
+    720)  disp_size=3 ;;
+    1080) disp_size=4 ;;
+    1440) disp_size=5 ;;
+    *)    disp_size=6 ;;
+  esac
+fi
 anim=0              # 1 while an action glides the camera
 precache_done=0     # the background sound pre-cache spawns once per session
 anim_t0=0           # wall-clock ms when the current glide started
@@ -270,7 +292,9 @@ swr=(0 0)           # crawl sway offset: [0]=x milli, [1]=z milli (0 0 = no sway
                     # (array — the transpiler desyncs scalar anim vars)
 ANIM_MS=200         # each action completes in 0.2s of wall time
 game_speed=100       # player speed as % of normal (100=normal, 10=10%, 5=5% — the settings menu's GAME SPEED item)
-vsync=1              # vsync: ON = one frame per display refresh (60Hz, 16.7ms budget — the compositor clamps
+vsync=1              # vsync: ON = one frame per display refresh (60Hz — the swap's requestAnimationFrame
+                      # presents at the refresh; the CPU budget is the same 10ms for ON and OFF, since the
+                      # rAF is the real pacing — the old 16.7ms sleep budget double-paced and missed slots
                      # short sleeps, so the leftover is a REAL ≥4ms sleep and every frame paints);
                      # OFF = the legacy 100fps cap (10ms budget + the clamped minimum-yield fallback)
 ANIM_MS_CROUCH=400  # a move through a 1-tall (mined) passage — half speed
@@ -1327,8 +1351,13 @@ emit_fragment_shader() {
     echo 'fi' >> /tmp/mimecroft-frag.sh
   fi
   if [ "$CRT_ON" -eq 1 ]; then
-    echo 'vx=$((fx - 400))' >> /tmp/mimecroft-frag.sh
-    echo 'vy=$((fy - 300))' >> /tmp/mimecroft-frag.sh
+    # the vignette is centred on the CANVAS — the half-width/height come
+    # from the DISPLAY row (disp_w/disp_h are the actual canvas size,
+    # read back from the device after the resize)
+    disp_hw=$((disp_w / 2))
+    disp_hh=$((disp_h / 2))
+    echo "vx=\$((fx - $disp_hw))" >> /tmp/mimecroft-frag.sh
+    echo "vy=\$((fy - $disp_hh))" >> /tmp/mimecroft-frag.sh
     echo 'if [ "$vx" -lt 0 ]; then vx=$((0 - vx)); fi' >> /tmp/mimecroft-frag.sh
     echo 'if [ "$vy" -lt 0 ]; then vy=$((0 - vy)); fi' >> /tmp/mimecroft-frag.sh
     echo 'edge=$((vx + vy))' >> /tmp/mimecroft-frag.sh
@@ -1350,9 +1379,12 @@ emit_fragment_shader() {
   echo 'putb $g' >> /tmp/mimecroft-frag.sh
   echo 'putb $b' >> /tmp/mimecroft-frag.sh
   echo 'putb 255' >> /tmp/mimecroft-frag.sh
-  # compile it with the sh→GLSL generator — the only source of truth
+  # compile it with the sh→GLSL generator — the only source of truth.
+  # The view width (disp_w) feeds the fragment shader's pixel-space
+  # effects (fx − W/2 for the CRT/vignette centre) so they stay centred
+  # at any display size.
   fs_src=bash
-  glsl=$(sh2glsl /tmp/mimecroft-frag.sh)
+  glsl=$(sh2glsl --view $disp_w /tmp/mimecroft-frag.sh)
   if [ "$glsl" != "" ]; then
     # the generator samples both the block texture and the crack texture
     # with fract(vUv) — hoist the wrap into _uv so it's computed ONCE per
@@ -3190,6 +3222,39 @@ gspan() {
 # The device captures keys only while the canvas is visible and a swap
 # happened < 2s ago, so the menu shows the canvas (first swap) and keeps
 # swapping. W/S select · A/D change · SPACE start · Q quit.
+
+# set disp_w/disp_h from the DISPLAY row and write the new canvas size to
+# /dev/webgl/size (the device resizes the drawing buffer; the 3D view +
+# HUD are NDC-based so they re-render at the new resolution). For FULL
+# WINDOW the device resolves the size — read it back so disp_w/disp_h
+# hold the ACTUAL canvas dimensions (the fragment shader's fx-400
+# effects use them).
+set_display_size() {
+  case $disp_size in
+    0) disp_w=568; disp_h=320 ;;
+    1) disp_w=854; disp_h=480 ;;
+    2) disp_w=800; disp_h=600 ;;
+    3) disp_w=1280; disp_h=720 ;;
+    4) disp_w=1920; disp_h=1080 ;;
+    5) disp_w=2560; disp_h=1440 ;;
+    *)
+      # FULL WINDOW — the device resolves the size; read it back so
+      # disp_w/disp_h hold the ACTUAL canvas dimensions (the fragment
+      # shader's fx-centring uses them)
+      echo "full" > /dev/webgl/size
+      disp_sz=$(cat /dev/webgl/size)
+      case $disp_sz in
+        *x*)
+          disp_w=${disp_sz%x*}
+          disp_h=${disp_sz#*x}
+          ;;
+      esac
+      return
+      ;;
+  esac
+  echo "${disp_w}x${disp_h}" > /dev/webgl/size
+}
+
 settings_inc() {
   if [ "$sm_sel" -eq 0 ]; then
     # no limit — the camera may shift arbitrarily far, even negative
@@ -3271,9 +3336,14 @@ settings_inc() {
     fi
   fi
   if [ "$sm_sel" -eq 10 ]; then
-    # vsync (the right arrow increases → ON): the frame budget is read
-    # every frame, so the toggle takes effect immediately
+    # vsync (the right arrow increases → ON): the swap's requestAnimationFrame
+    # presents at the display refresh either way, so the toggle only flips
+    # the settings row — the frame pacing is the same 10ms budget + rAF
     vsync=1
+  fi
+  if [ "$sm_sel" -eq 11 ]; then
+    # display size ladder (the right arrow increases the resolution)
+    if [ "$disp_size" -lt 6 ]; then disp_size=$((disp_size + 1)); else disp_size=0; fi
   fi
 }
 
@@ -3348,6 +3418,10 @@ settings_dec() {
   fi
   if [ "$sm_sel" -eq 10 ]; then
     vsync=0
+  fi
+  if [ "$sm_sel" -eq 11 ]; then
+    # display size (the left arrow decreases the resolution)
+    if [ "$disp_size" -gt 0 ]; then disp_size=$((disp_size - 1)); else disp_size=6; fi
   fi
 }
 
@@ -3433,6 +3507,18 @@ draw_settings_menu() {
   if [ "$sm_sel" -eq 10 ]; then sm_mark=">"; else sm_mark=" "; fi
   if [ "$vsync" -eq 1 ]; then sm_vs="ON"; else sm_vs="OFF"; fi
   echo "  $sm_mark  vsync       : $sm_vs"
+  # display size (0=320p 1=480p 2=600p 3=720p 4=1080p 5=1440p 6=FULL)
+  case $disp_size in
+    0) sm_disp_s="320p"; sm_displen=4 ;;
+    1) sm_disp_s="480p"; sm_displen=4 ;;
+    2) sm_disp_s="600p"; sm_displen=4 ;;
+    3) sm_disp_s="720p"; sm_displen=4 ;;
+    4) sm_disp_s="1080p"; sm_displen=5 ;;
+    5) sm_disp_s="1440p"; sm_displen=5 ;;
+    *) sm_disp_s="FULL"; sm_displen=4 ;;
+  esac
+  if [ "$sm_sel" -eq 11 ]; then sm_mark=">"; else sm_mark=" "; fi
+  echo "  $sm_mark  canvas size : $sm_disp_s"
   # canvas card
   # canvas card — the leading C must be on its OWN line (a real
   # newline) or the device never clears the layer and old rects stay
@@ -3481,6 +3567,7 @@ draw_settings_menu() {
   draw_text "MINIMAP" 7 560 800 8 11 0.60 0.75 0.95
   draw_text "GAME SPEED" 10 560 700 8 11 0.60 0.75 0.95
   draw_text "VSYNC" 5 560 600 8 11 0.60 0.75 0.95
+  draw_text "CANVAS SIZE" 11 560 500 8 11 0.60 0.75 0.95
   draw_text $sm_shift_s 5 1000 1600 8 11 0.95 0.95 0.95
   draw_text $sm_size_s 2 1000 1500 8 11 0.95 0.95 0.95
   draw_text $sm_seed_s $sm_slen 1000 1400 8 11 0.95 0.95 0.95
@@ -3492,6 +3579,7 @@ draw_settings_menu() {
   draw_text $sm_mm_s $sm_mm_len 1000 800 8 11 0.95 0.95 0.95
   draw_text $sm_gs_s $sm_gslen 1000 700 8 11 0.95 0.95 0.95
   draw_text $sm_vsync_s $sm_vsync_len 1000 600 8 11 0.95 0.95 0.95
+  draw_text $sm_disp_s $sm_displen 1000 500 8 11 0.95 0.95 0.95
   if [ "$sm_sel" -eq 0 ]; then draw_rect "-0.520" "0.583" "0.016" "0.030" 1.0 0.85 0.30
   elif [ "$sm_sel" -eq 1 ]; then draw_rect "-0.520" "0.483" "0.016" "0.030" 1.0 0.85 0.30
   elif [ "$sm_sel" -eq 2 ]; then draw_rect "-0.520" "0.383" "0.016" "0.030" 1.0 0.85 0.30
@@ -3502,6 +3590,8 @@ draw_settings_menu() {
   elif [ "$sm_sel" -eq 7 ]; then draw_rect "-0.520" "-0.117" "0.016" "0.030" 1.0 0.85 0.30
   elif [ "$sm_sel" -eq 8 ]; then draw_rect "-0.520" "-0.217" "0.016" "0.030" 1.0 0.85 0.30
   elif [ "$sm_sel" -eq 9 ]; then draw_rect "-0.520" "-0.317" "0.016" "0.030" 1.0 0.85 0.30
+  elif [ "$sm_sel" -eq 10 ]; then draw_rect "-0.520" "-0.417" "0.016" "0.030" 1.0 0.85 0.30
+  elif [ "$sm_sel" -eq 11 ]; then draw_rect "-0.520" "-0.517" "0.016" "0.030" 1.0 0.85 0.30
   else draw_rect "-0.520" "-0.417" "0.016" "0.030" 1.0 0.85 0.30; fi
   draw_text "UP/DOWN SELECT - LEFT/RIGHT CHANGE" 34 340 250 7 10 0.85 0.85 0.85
   draw_text "SPACE/ESC START - Q QUIT" 24 500 180 7 10 0.85 0.85 0.85
@@ -3520,6 +3610,7 @@ draw_settings_menu() {
 settings_menu() {
   if [ "$headless" -eq 1 ]; then return; fi
   sm_mode=$1
+  sm_disp_old=$disp_size
   tex_bg_n=0
   sm_bg_i=0
   while [ "$sm_bg_i" -lt "$sm_tex_total" ]; do
@@ -3557,22 +3648,22 @@ settings_menu() {
           ;;
         *ArrowUp*)
           sm_sel=$((sm_sel - 1))
-          if [ "$sm_sel" -lt 0 ]; then sm_sel=10; fi
+          if [ "$sm_sel" -lt 0 ]; then sm_sel=11; fi
           sm_changed=1
           ;;
         *ArrowDown*)
           sm_sel=$((sm_sel + 1))
-          if [ "$sm_sel" -gt 10 ]; then sm_sel=0; fi
+          if [ "$sm_sel" -gt 11 ]; then sm_sel=0; fi
           sm_changed=1
           ;;
         *w*)
           sm_sel=$((sm_sel - 1))
-          if [ "$sm_sel" -lt 0 ]; then sm_sel=10; fi
+          if [ "$sm_sel" -lt 0 ]; then sm_sel=11; fi
           sm_changed=1
           ;;
         *s*)
           sm_sel=$((sm_sel + 1))
-          if [ "$sm_sel" -gt 10 ]; then sm_sel=0; fi
+          if [ "$sm_sel" -gt 11 ]; then sm_sel=0; fi
           sm_changed=1
           ;;
         *d*)
@@ -3662,9 +3753,20 @@ settings_menu() {
         dm_bi=$((dm_bi + 1))
       done
     fi
+    if [ "$disp_size" -ne "$sm_disp_old" ]; then
+      # display size changed: resize the canvas and re-emit the fragment
+      # shader with the new view width (its fx-400 effects must stay
+      # centred); the retained back buffer is stale at the new size, so
+      # force a full re-render + HUD rebuild
+      set_display_size
+      emit_fragment_shader
+      prev_view_key=""
+      hud_static_dirty=1
+      labels_dirty=1
+    fi
   fi
   echo ""
-  echo "  settings: camera shift $fv · textures ${tex_size}px · seed $tex_seed · mime speed $mime_speed · sound $SOUND_MODE · vsync $vsync"
+  echo "  settings: camera shift $fv · textures ${tex_size}px · seed $tex_seed · mime speed $mime_speed · sound $SOUND_MODE · vsync $vsync · display ${disp_w}x${disp_h}"
 }
 
 # ─── level progression ─────────────────────────────────────────────
@@ -3898,6 +4000,27 @@ print_stats() {
       glh_cw=$(( glh_c / glh_n ))
     fi
     echo "#stats:   gl-hud raster=${glh_rw}µs/write(${glh_w}) upload=${glh_uw}µs/comp composite=${glh_cw}µs/swap(${glh_n})"
+    # vsync deadline breakdown (separate section): how many frames missed
+    # the 16.67ms refresh slot — each miss costs 2+ refresh periods, which
+    # is the 55fps drop. avg-period = the mean top→top frame interval;
+    # worst = the longest; extra = the total vsync slots wasted by misses.
+    if [ "$vsync" -eq 1 ] && [ "$vsync_n" -gt 0 ]; then
+      s_avgp=$(( vsync_sum / vsync_n / 1000 ))
+      echo "#stats: vsync: missed=$vsync_miss/$vsync_n frames ($((vsync_miss * 100 / vsync_n))%) · avg-period=${s_avgp}ms worst=${vsync_max}µs · $vsync_extra extra refresh periods (60Hz 16.7ms)"
+      if [ "$vsync_miss" -gt 0 ]; then
+        # the average time each subsection spent in the frames that MISSED
+        # the vsync deadline — the breakdown of where the overshoot came from
+        v_in=$((vm_in / vsync_miss / 1000)); v_anim=$((vm_anim / vsync_miss / 1000))
+        v_disp=$((vm_disp / vsync_miss / 1000)); v_mime=$((vm_mime / vsync_miss / 1000))
+        v_render=$((vm_render / vsync_miss / 1000)); v_hudb=$((vm_hudb / vsync_miss / 1000))
+        v_hud=$((vm_hud / vsync_miss / 1000)); v_swap=$((vm_swap / vsync_miss / 1000))
+        v_sleep=$(( (vm_sleepa + vm_sleepi) / vsync_miss / 1000 ))
+        v_other=$((vm_other / vsync_miss / 1000))
+        v_scene=$((vm_scene / vsync_miss / 1000))
+        v_glr=$(( (vm_rf - vm_scene) / vsync_miss / 1000 ))
+        echo "#stats: vsync-missed avg: input=${v_in}ms anim=${v_anim}ms disp=${v_disp}ms mime=${v_mime}ms scene=${v_scene}ms gl-render=${v_glr}ms (render=${v_render}ms) hudb=${v_hudb}ms hud=${v_hud}ms swap=${v_swap}ms sleep=${v_sleep}ms other=${v_other}ms"
+      fi
+    fi
   else
     # no game frames ran (quit at the settings menu) — nothing was
     # measured, but print the header so a non-demo run still reports
@@ -3951,6 +4074,9 @@ main() {
   fi
   echo "  compiling the fragment shader…"
   sleep 0.02
+  # apply the DISPLAY row (the canvas size) BEFORE the shader emit —
+  # emit_fragment_shader reads disp_w for its pixel-space effects
+  set_display_size
     setup_webgl
   # the bash-authored programs compiled by sh2glsl are the only shader
   # source — VERIFY the device actually linked the program: a failed
@@ -3981,6 +4107,12 @@ main() {
       echo "hide" > /dev/webgl/call
       return
     fi
+    # the pre-game menu can change the DISPLAY row — apply the new canvas
+    # size + re-emit the fragment shader with the new view width
+    if [ "$disp_size" -ne "$sm_disp_old" ]; then
+      set_display_size
+      emit_fragment_shader
+    fi
     sleep 0.02
   fi
   start_level
@@ -4006,6 +4138,25 @@ main() {
   frame=$((0))
   quit=$((0))
   dirty=1
+  # vsync deadline tracking: measure the actual frame period (frame-top →
+  # frame-top) against the 60Hz refresh (16667µs). A period that clears
+  # 20ms means the frame missed its vsync slot — it cost 2+ refresh
+  # periods (the 55fps drop). Reported in the #stats vsync section.
+  vsync_miss=0
+  vsync_extra=0
+  vsync_sum=0
+  vsync_max=0
+  vsync_n=0
+  fp_prev_top=0
+  # per-phase accumulation for the frames that MISSED the vsync deadline
+  # (attributed from the fd_* deltas captured at each frame's end)
+  vm_in=0; vm_anim=0; vm_disp=0; vm_mime=0; vm_render=0; vm_hudb=0
+  vm_hud=0; vm_swap=0; vm_sleepa=0; vm_sleepi=0; vm_scene=0; vm_rf=0; vm_other=0
+  # the previous frame's per-phase deltas + the running totals they diff
+  fd_in=0; fd_anim=0; fd_disp=0; fd_mime=0; fd_render=0; fd_hudb=0
+  fd_hud=0; fd_swap=0; fd_sleepa=0; fd_sleepi=0; fd_scene=0; fd_rf=0
+  pl_in=0; pl_anim=0; pl_disp=0; pl_mime=0; pl_render=0; pl_hudb=0
+  pl_hud=0; pl_swap=0; pl_sleepa=0; pl_sleepi=0; pl_scene=0; pl_rf=0
   # the stats window: just before the loop, so the frame buckets and
   # "other" measure ONLY the game loop (the loading above is excluded)
   gtick
@@ -4016,15 +4167,67 @@ main() {
   while [ "$quit" -eq 0 ] && [ "$hp" -gt 0 ] && [ "$license" -gt 0 ]; do
   while [ "$quit" -eq 0 ] && [ "$hp" -gt 0 ] && [ "$license" -gt 0 ] && [ "$treasures_left" -gt 0 ]; do
     frame=$((frame + 1))
-    # demo mode: a short silent run, then quit so the terminal map
-    # above and the #stats block below both print.
-    if [ "$demo" -eq 1 ] && [ "$frame" -ge "$DEMO_FRAMES" ]; then quit=1; fi
+    # demo mode: auto-play for ~10s of movement (the patrol above), then
+    # quit so the terminal map + the #stats block (incl. the vsync
+    # breakdown) print. Wall-clock so the demo length is the same on any
+    # fps; DEMO_FRAMES stays as a safety cap.
+    if [ "$demo" -eq 1 ]; then
+      demo_el=$((g_now - g_t0))
+      if [ "$demo_el" -ge 10000000 ] || [ "$frame" -ge "$DEMO_FRAMES" ]; then quit=1; fi
+    fi
     gtick
     g_last=$g_now
+    # the previous frame's TOTAL period (top→top) — the vsync deadline
+    # check. >20ms (1.2× the 16.67ms refresh) = the frame missed its
+    # slot and cost 2+ refresh periods. The first frame has no prior top.
+    if [ "$vsync" -eq 1 ] && [ "$fp_prev_top" -gt 0 ]; then
+      fp_period=$((g_now - fp_prev_top))
+      vsync_n=$((vsync_n + 1))
+      vsync_sum=$((vsync_sum + fp_period))
+      if [ "$fp_period" -gt "$vsync_max" ]; then vsync_max=$fp_period; fi
+      if [ "$fp_period" -gt 20000 ]; then
+        vsync_miss=$((vsync_miss + 1))
+        vsync_slots=$(( (fp_period + 16666) / 16667 ))
+        vsync_extra=$((vsync_extra + vsync_slots - 1))
+        # attribute the missed frame's phases (its fd_* deltas, captured
+        # at the end of the previous iteration)
+        vm_in=$((vm_in + fd_in))
+        vm_anim=$((vm_anim + fd_anim))
+        vm_disp=$((vm_disp + fd_disp))
+        vm_mime=$((vm_mime + fd_mime))
+        vm_render=$((vm_render + fd_render))
+        vm_hudb=$((vm_hudb + fd_hudb))
+        vm_hud=$((vm_hud + fd_hud))
+        vm_swap=$((vm_swap + fd_swap))
+        vm_sleepa=$((vm_sleepa + fd_sleepa))
+        vm_sleepi=$((vm_sleepi + fd_sleepi))
+        vm_scene=$((vm_scene + fd_scene))
+        vm_rf=$((vm_rf + fd_rf))
+        vm_other=$((vm_other + fp_period - fd_in - fd_anim - fd_disp - fd_mime - fd_render - fd_hudb - fd_hud - fd_swap - fd_sleepa - fd_sleepi))
+      fi
+    fi
+    fp_prev_top=$g_now
     fp_t0=$g_now
     # one action at a time: input is queued until the current glide ends
     if [ "$anim" -eq 0 ]; then
-      keys=$(cat /dev/webgl/key)
+      # demo auto-play: scripted patrol so the demo exercises MOVEMENT + the
+      # per-frame renders (an idle demo never re-renders — the view is
+      # cached — so the vsync stats would show nothing). Keys land when the
+      # previous glide finished (anim=0, 25-frame spacing > the 0.2s glide).
+      if [ "$demo" -eq 1 ]; then
+        case $((frame % 200)) in
+          25)  keys="w" ;;
+          50)  keys="w" ;;
+          75)  keys="w" ;;
+          100) keys="ArrowRight" ;;
+          125) keys="w" ;;
+          150) keys="w" ;;
+          175) keys="w" ;;
+          *)   keys="" ;;
+        esac
+      else
+        keys=$(cat /dev/webgl/key)
+      fi
       fx=${DIR_X[$yaw]}
       fz=${DIR_Z[$yaw]}
       bx=$((0 - fx))
@@ -4251,7 +4454,15 @@ main() {
     # never bites and every frame paints exactly once.
     gtick
     fp_el=$((g_now - fp_t0))
-    if [ "$vsync" -eq 1 ]; then fp_budget=16667; else fp_budget=10000; fi
+    # frame budget: the swap's requestAnimationFrame (webgldev) is the REAL
+    # vsync — it presents every rendered frame exactly at the display
+    # refresh, so a CPU budget near the 16.7ms period would double-pace
+    # and overshoot the slot (the 55fps misses). Keep a single modest
+    # budget (10ms — the legacy 100fps cap) for BOTH vsync settings: the
+    # rAF absorbs the remainder and every presented frame lands on a
+    # refresh. "vsync OFF" therefore still runs at the display's 60Hz —
+    # only the CPU yield is shorter.
+    fp_budget=10000
     if [ "$fp_el" -lt "$fp_budget" ]; then
       fp_wait=$(((fp_budget - fp_el + 999) / 1000))
       if [ "$fp_wait" -le 3 ]; then fp_wait=0; fi
@@ -4272,6 +4483,20 @@ main() {
     else
       gspan "sleepi"
     fi
+    # capture this frame's per-phase deltas — attributed to the vsync-miss
+    # stats when the NEXT frame-top detects this frame overshot the refresh
+    fd_in=$((g_in - pl_in)); pl_in=$g_in
+    fd_anim=$((g_anim - pl_anim)); pl_anim=$g_anim
+    fd_disp=$((g_disp - pl_disp)); pl_disp=$g_disp
+    fd_mime=$((g_mime - pl_mime)); pl_mime=$g_mime
+    fd_render=$((g_render - pl_render)); pl_render=$g_render
+    fd_hudb=$((g_hudb - pl_hudb)); pl_hudb=$g_hudb
+    fd_hud=$((g_hud - pl_hud)); pl_hud=$g_hud
+    fd_swap=$((g_swap - pl_swap)); pl_swap=$g_swap
+    fd_sleepa=$((g_sleepa - pl_sleepa)); pl_sleepa=$g_sleepa
+    fd_sleepi=$((g_sleepi - pl_sleepi)); pl_sleepi=$g_sleepi
+    fd_scene=$((g_scene - pl_scene)); pl_scene=$g_scene
+    fd_rf=$((g_rf - pl_rf)); pl_rf=$g_rf
   done
     # the level ended: every artifact recovered, or the board mined out
     if [ "$quit" -eq 1 ] || [ "$hp" -le 0 ] || [ "$license" -le 0 ]; then

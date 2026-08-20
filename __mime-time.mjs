@@ -43,7 +43,9 @@ const shellExec = async (cmdline) => {
     await new Promise((r) => setTimeout(r, 0));
   }
   else if (cmd === "sh2glsl" && SH2GLSL) {
-    const vfsPath = rest.split(/\s+/)[0];
+    let r2 = rest;
+    if (r2.startsWith("--view ")) r2 = r2.slice(r2.indexOf(" ") + 1);
+    const vfsPath = r2.split(/\s+/)[0];
     const bashSrc = String(await fs.read(vfsPath));
     const dir = mkdtempSync(join(tmpdir(), "sh2glsl-"));
     const f = join(dir, "frag.sh");

@@ -41,6 +41,17 @@
     word-wrap: break-word;
   }
 
+  /* While a game presents (the webgl canvas is active), the terminal's
+     scrollbar is dead weight — the game owns the keyboard and the
+     terminal isn't scrolled during play. Hide it (the webgldev toggles
+     body.game-active on canvas show/hide). */
+  body.game-active #terminal {
+    overflow-y: hidden;
+  }
+  body.game-active #terminal::-webkit-scrollbar {
+    display: none;
+  }
+
   /* Faint touch/mouse toolbar pinned to the top of the terminal:
      arrow keys, a Ctrl-key popup, history popup, home and cd .. */
   #term-toolbar {
@@ -4226,8 +4237,14 @@ async function interceptCompilers(cmd, args, stdin, isLast, { outputRedirect, ap
   // GLSL; `>` redirects it (the game writes /dev/webgl/shader/fragment
   // or /dev/webgl/shader/vertex).
   if (cmd === "sh2glsl" && args.length > 0) {
-    const vert = args[0] === "--vertex";
-    const srcArg = vert ? args[1] : args[0];
+    // `--view N` — the view width for the fragment shader's pixel-based
+    // effects (fx − N/2 for the CRT/vignette centre). The display-size
+    // setting re-emits the fragment shader with the new width.
+    let view = null;
+    let i2 = 0;
+    if (args[i2] === "--view" && args[i2 + 1]) { view = Number(args[i2 + 1]); i2 += 2; }
+    const vert = args[i2] === "--vertex";
+    const srcArg = vert ? args[i2 + 1] : args[i2];
     if (!srcArg) {
       stderr.write(`sh2glsl: missing source file\n`);
       return { ok: false, code: 1, output: "" };
@@ -4243,7 +4260,7 @@ async function interceptCompilers(cmd, args, stdin, isLast, { outputRedirect, ap
     const lib = await getOtranspilerl();
     let glsl;
     try {
-      glsl = vert ? lib.glslv(src) : lib.glsl(src);
+      glsl = vert ? lib.glslv(src, view || undefined) : lib.glsl(src, view || undefined);
     } catch (e) {
       stderr.write(`sh2glsl: ${e.message}\n`);
       return { ok: false, code: 1, output: "" };

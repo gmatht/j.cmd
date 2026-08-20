@@ -137,6 +137,9 @@ export class WebGLDevice {
     this._program = null;
     this._programLinked = false;
     this._log = "WebGL device ready.\n";
+    this._logCap = 512 * 1024;    // cap the device log (keep the tail) so a
+                                  // long session's per-frame lines can't grow
+                                  // it without bound
     this._buffers = new Map();    // name → { buffer, arr, type }
     this._textures = new Map();   // texture index → WebGLTexture (R G B …)
     this._texPixels = new Map();  // texture index → { size, rgba } raw pixels
@@ -186,6 +189,9 @@ export class WebGLDevice {
     this._hudFlashVerts = null;     // per-quad vertex buffer
     this._hudProg = null;           // built-in composite program (internal)
     this._hudVerts = null;          // fullscreen textured-quad buffer
+    this._hudPosLoc = null;         // cached attrib/uniform locations (set once)
+    this._hudUvLoc = null;
+    this._hudTexLoc = null;
     this._lastSwapAt = 0;            // for key-steal timeout after a game ends
     // HUD GL timing accumulators (µs, reset via write("reset") to
     // /dev/webgl/stats): raster = the 2D-canvas layer rasterization
@@ -207,6 +213,8 @@ export class WebGLDevice {
                                     // renderer isn't charged a fullscreen
                                     // alpha blend every heartbeat.
     this._keyListener = null;
+    this._fullWindow = false;       // canvas sized to the window ("full" — the
+                                    // only mode that hides the terminal scrollbar)
     this._null = false;              // headless null-device mode (no DOM)
   }
 
@@ -280,6 +288,10 @@ export class WebGLDevice {
           const fresh = Date.now() - this._lastSwapAt < 2000;
           if (!visible || !fresh) return;
           if (e.ctrlKey || e.metaKey || e.altKey) return;
+          // browser-chrome keys (F1–F12 — F11 fullscreen, F12 devtools) are
+          // NOT the game's: let them fall through untouched (preventDefault
+          // would block the browser's fullscreen/devtools while playing)
+          if (/^F[1-9]$|^F1[0-2]$/.test(e.key || "")) return;
           if (this._keys.length < 64) this._keys.push(e.key === " " ? "space" : e.key);
           e.preventDefault();
           e.stopPropagation();
@@ -294,6 +306,75 @@ export class WebGLDevice {
 
   _glOrNull() {
     try { return this._ensureGL(); } catch { return null; }
+  }
+
+  // Toggle a `game-active` class on the document while the game canvas
+  // is presenting — the page CSS hides the terminal's scrollbar then
+  // (it does nothing useful during a game and clutters the view). Only in
+  // FULL WINDOW mode: at the fixed sizes the terminal stays scrollable.
+  _setGameActive(active) {
+    if (typeof document === "undefined") return;
+    try {
+      const body = document.body;
+      if (!body) return;
+      body.classList.toggle("game-active", !!(active && this._fullWindow));
+    } catch {}
+  }
+
+  // Resize the drawing buffer + the offscreen HUD layer (a display-size
+  // change). WebGL keeps the context; only the drawing buffer is
+  // resized and cleared, so the shaders/textures/buffers survive and the
+  // next frame re-renders. The HUD texture must re-upload (its backing
+  // canvas changed), so drop it + force a full composite next swap.
+  _resizeCanvas(w, h) {
+    if (this._null || typeof document === "undefined") { this._viewW = w; this._viewH = h; return; }
+    if (this._canvas) {
+      this._canvas.width = w;
+      this._canvas.height = h;
+      // FULL WINDOW covers the whole window (flush, no border/shadow);
+      // the fixed sizes keep the floating corner-overlay look
+      this._canvas.style.right = this._fullWindow ? "0px" : "12px";
+      this._canvas.style.bottom = this._fullWindow ? "0px" : "12px";
+      this._canvas.style.border = this._fullWindow ? "none" : "1px solid #444";
+      this._canvas.style.borderRadius = this._fullWindow ? "0" : "4px";
+      this._canvas.style.boxShadow = this._fullWindow ? "none" : "0 4px 20px rgba(0,0,0,.5)";
+    }
+    if (this._hudLayer) {
+      this._hudLayer.width = w;
+      this._hudLayer.height = h;
+      this._hudTexInit = false;
+    }
+    // the GL viewport does NOT follow the drawing-buffer resize in every
+    // browser — without an explicit gl.viewport the 3D scene keeps
+    // rendering into the ORIGINAL 800×600 region, leaving the bigger
+    // canvas black (the game "didn't scale"). Set it explicitly.
+    const gl = this._gl;
+    if (gl && !this._null && typeof gl.viewport === "function") {
+      gl.viewport(0, 0, w, h);
+    }
+    this._viewW = w;
+    this._viewH = h;
+    this._backDirty = true;
+    this._hudDirty = true;
+    this._hudDirtyRect = null;
+  }
+
+  // Append to the device log, capping the string so a long game session
+  // (which logs a line per draw call / HUD write / composite — tens of
+  // thousands of lines) can't grow it unboundedly: the string concat and
+  // `cat /dev/webgl/log` reads are O(n) on the whole history. Keep the
+  // TAIL (the recent activity — the useful part for debugging a running
+  // game); the startup lines only matter at startup, before the log grows.
+  _logAppend(s) {
+    // keep the log's HEAD (the startup diagnostics + early activity are
+    // what `cat /dev/webgl/log` and the tests read) and FREEZE it at the
+    // cap: once full, the per-frame appends are just a length check — no
+    // rope growth, no O(n) slice on the hot path, and a long session's
+    // log stays bounded (a few MB) instead of growing a line per draw.
+    const cap = this._logCap || 0;
+    if (cap && this._log.length >= cap) return;
+    this._log += s;
+    if (cap && this._log.length > cap) this._log = this._log.slice(0, cap);
   }
 
   // ─── Shaders / program ──────────────────────────────────────
@@ -554,7 +635,8 @@ export class WebGLDevice {
       // neither the 3D back buffer nor the HUD changed since the last
       // swap (the retained back buffer already shows both) — the
       // keyboard-heartbeat bare swaps cost no fullscreen blend.
-      if (this._backDirty || this._hudDirty) {
+      const hadFrame = this._backDirty || this._hudDirty;
+      if (hadFrame) {
         const t0 = this._tickUs();
         this._compositeHud();
         this._glHudCompositeUs += this._tickUs() - t0;
@@ -567,14 +649,21 @@ export class WebGLDevice {
       // The game's own sleep-based frame budget then lands within the repaint
       // window instead of drifting against it. Node (CLI/NullGL) has no rAF —
       // fall back to a zero-delay setTimeout so the tests still pace.
-      if (typeof requestAnimationFrame === "function") {
-        await new Promise((r) => requestAnimationFrame(() => r()));
-      } else {
-        await new Promise((r) => setTimeout(r, 0));
+      // A bare keyboard-heartbeat swap (hadFrame=false, nothing changed on
+      // screen) is a KEEPALIVE for the key-grab window, not a presentation —
+      // pacing it with rAF would stall the game loop up to a frame for a
+      // frame that changes nothing.
+      if (hadFrame) {
+        if (typeof requestAnimationFrame === "function") {
+          await new Promise((r) => requestAnimationFrame(() => r()));
+        } else {
+          await new Promise((r) => setTimeout(r, 0));
+        }
       }
       // Present to screen — the canvas stays hidden until the first swap
       gl.flush();
       if (this._canvas) this._canvas.style.display = "block";
+      this._setGameActive(true);
       this._lastSwapAt = Date.now();
       this._lastCall = raw.trim();
       return;
@@ -584,6 +673,7 @@ export class WebGLDevice {
       // keyboard returns to the shell immediately.
       this._keys = [];
       if (this._canvas) this._canvas.style.display = "none";
+      this._setGameActive(false);
       this._lastCall = raw.trim();
       return;
     }
@@ -677,7 +767,7 @@ export class WebGLDevice {
       if (n <= 0) throw new Error("no vertices to draw (are buffers bound to attributes?)");
       gl.drawArrays(glMode, offset, n);
     }
-    this._log += `[call] draw ${kind} ${mode} count=${count !== undefined ? count : "auto"} offset=${offset}\n`;
+    this._logAppend(`[call] draw ${kind} ${mode} count=${count !== undefined ? count : "auto"} offset=${offset}\n`);
   }
 
   // Binds every active attribute to a same-named buffer (or an explicit
@@ -832,7 +922,7 @@ export class WebGLDevice {
     this._hudRectsR = null;
     this._hudErase = null;
     this._hudImages = null;
-    this._log += `[hud] ${rects.length} rects ${rrects.length} rrects ${tris.length} tris ${erases.length} erases ${images.length} images\n`;
+    this._logAppend(`[hud] ${rects.length} rects ${rrects.length} rrects ${tris.length} tris ${erases.length} erases ${images.length} images\n`);
     if (!ctx) return;                       // headless: nothing to rasterize
     const W = this._hudLayer.width, H = this._hudLayer.height;
     const px = (x) => ((Number(x) + 1) / 2) * W;    // NDC → canvas x
@@ -1024,22 +1114,33 @@ export class WebGLDevice {
       }
       if (this._hudProg || (this._hudProg = this._linkHudProgram())) {
         gl.useProgram(this._hudProg);
-        if (!this._hudVerts) this._hudVerts = gl.createBuffer();
-        gl.bindBuffer(gl.ARRAY_BUFFER, this._hudVerts);
-        // fullscreen quad (2 triangles): position + uv; canvas top → screen top
-        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
-          -1,  1, 0, 0,    1,  1, 1, 0,    1, -1, 1, 1,
-           1, -1, 1, 1,   -1, -1, 0, 1,   -1,  1, 0, 0,
-        ]), gl.STATIC_DRAW);
-        const aPos = gl.getAttribLocation(this._hudProg, "aPosition");
-        const aUv = gl.getAttribLocation(this._hudProg, "aUv");
-        gl.enableVertexAttribArray(aPos);
-        gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 16, 0);
-        gl.enableVertexAttribArray(aUv);
-        gl.vertexAttribPointer(aUv, 2, gl.FLOAT, false, 16, 8);
+        // the fullscreen quad is STATIC — create the buffer and upload the
+        // vertices ONCE, and cache the program's attrib/uniform locations;
+        // the old code re-allocated a Float32Array + re-uploaded the buffer
+        // and re-queried the locations on EVERY composite (pure per-frame
+        // CPU waste on the hot path)
+        if (!this._hudVerts) {
+          this._hudVerts = gl.createBuffer();
+          gl.bindBuffer(gl.ARRAY_BUFFER, this._hudVerts);
+          gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+            -1,  1, 0, 0,    1,  1, 1, 0,    1, -1, 1, 1,
+             1, -1, 1, 1,   -1, -1, 0, 1,   -1,  1, 0, 0,
+          ]), gl.STATIC_DRAW);
+        } else {
+          gl.bindBuffer(gl.ARRAY_BUFFER, this._hudVerts);
+        }
+        if (this._hudPosLoc === null) {
+          this._hudPosLoc = gl.getAttribLocation(this._hudProg, "aPosition");
+          this._hudUvLoc = gl.getAttribLocation(this._hudProg, "aUv");
+          this._hudTexLoc = gl.getUniformLocation(this._hudProg, "uTex");
+        }
+        gl.enableVertexAttribArray(this._hudPosLoc);
+        gl.vertexAttribPointer(this._hudPosLoc, 2, gl.FLOAT, false, 16, 0);
+        gl.enableVertexAttribArray(this._hudUvLoc);
+        gl.vertexAttribPointer(this._hudUvLoc, 2, gl.FLOAT, false, 16, 8);
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, this._hudTex);
-        gl.uniform1i(gl.getUniformLocation(this._hudProg, "uTex"), 0);
+        gl.uniform1i(this._hudTexLoc, 0);
         const depthOn = gl.isEnabled(gl.DEPTH_TEST);
         gl.disable(gl.DEPTH_TEST);
         gl.enable(gl.BLEND);
@@ -1055,7 +1156,7 @@ export class WebGLDevice {
       } else {
         this._drawHudFlash(gl);
       }
-      this._log += "[hud] composited texture quad\n";
+      this._logAppend("[hud] composited texture quad\n");
     } else {
       // no persistent layer yet — a flash overlay can still appear
       this._drawHudFlash(gl);
@@ -1154,6 +1255,7 @@ export class WebGLDevice {
       return keys.join(",") + "\n";
     }
     if (parts[0] === "clearcolor") return this._clearColor.join(" ") + "\n";
+    if (parts[0] === "size") return (this._canvas ? this._canvas.width : this._viewW || 800) + "x" + (this._canvas ? this._canvas.height : this._viewH || 600) + "\n";
     if (parts[0] === "program") return this._programStatus();
     if (parts[0] === "bind") {
       if (!this._bindings.size) return "(auto: buffers bind to attributes by name)\n";
@@ -1257,6 +1359,27 @@ export class WebGLDevice {
     }
     if (parts[0] === "call") {
       await this._doCall(String(content));
+      return;
+    }
+    if (parts[0] === "size") {
+      // display size: "WxH" resizes the drawing buffer + HUD layer (the
+      // game's NDC/milli-NDC rendering is resolution-independent; the
+      // fragment shader is re-emitted with the new view width). WebGL
+      // keeps the context (only the drawing buffer resizes + clears), so
+      // textures/buffers survive; the next frame re-renders. "full" = the
+      // current window.
+      const t = String(content).trim();
+      if (t === "full") {
+        this._fullWindow = true;
+        const w = (typeof window !== "undefined" && window.innerWidth) || 800;
+        const h = (typeof window !== "undefined" && window.innerHeight) || 600;
+        this._resizeCanvas(w, h);
+        return;
+      }
+      this._fullWindow = false;
+      const m = /^(\d+)x(\d+)$/.exec(t);
+      if (!m) throw new Error("size: expected WxH or full");
+      this._resizeCanvas(Number(m[1]), Number(m[2]));
       return;
     }
     if (parts[0] === "blocks") {

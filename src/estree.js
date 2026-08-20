@@ -1042,7 +1042,7 @@ function reclassAsyncLoops(program) {
 
 export async function estreeToJsMapped(program, stmtLines, a1Stmts, { repl = true, precompiledHead = false } = {}) {
   const lowerMod = await import("./lower.js");
-  const { lowerNativeArrays, hoistLoopLastExit, hoistCommonLastExit, dropDeadFlags, mergeInitAssignments, pushLastExitToEnd, nativeForLoops, lowerPureFunctions, flattenAndOrAll, lowerDeviceRedirects, directShellFnCalls, liftLocalVars, nativeArrays, lowerI32Trunc, backgroundDecide, safeWordListCoercion, paramLiveValue, plainIfTests } = lowerMod;
+  const { lowerNativeArrays, hoistLoopLastExit, hoistCommonLastExit, dropDeadFlags, mergeInitAssignments, pushLastExitToEnd, nativeForLoops, lowerPureFunctions, flattenAndOrAll, lowerDeviceRedirects, directShellFnCalls, liftLocalVars, nativeArrays, nativeSharedScalars, foldArrayReads, lowerI32Trunc, backgroundDecide, safeWordListCoercion, paramLiveValue, plainIfTests } = lowerMod;
   // ── transpile progress: the whole-game transpile can take seconds;
   // once it exceeds 500ms, stream `[n/m passes completed (xx%)]` per
   // pass so the terminal shows forward progress instead of a silent
@@ -1132,6 +1132,14 @@ export async function estreeToJsMapped(program, stmtLines, a1Stmts, { repl = tru
     // module bindings — whole-script evals only (repl: false): a REPL
     // line's array must stay in the store for the NEXT line to read it
     ["nativeArrays", () => { if (!repl) normalized = nativeArrays(normalized); }],
+    // the scalar twin — lift cross-function shared scalars (the helper-
+    // output vars, the frame-shared display vars) to the module `let`s
+    // nativeArrays/keepVariables already declared, killing the per-access
+    // store round-trips in the hot loops
+    ["nativeSharedScalars", () => { if (!repl) normalized = nativeSharedScalars(normalized); }],
+    // collapse `(arr || [])[Number(k)] ?? ""` → `arr[k] ?? ""` for the
+    // module-folded arrays (the guard and coercion are dead there)
+    ["foldArrayReads", () => { if (!repl) normalized = foldArrayReads(normalized); }],
     // Math.trunc(<i32-provable compound>) → (<compound>) | 0
     ["lowerI32Trunc", () => { normalized = lowerI32Trunc(normalized); }],
     // keepVariables (the A1 path's array pre-seeding): the wasm lowers
