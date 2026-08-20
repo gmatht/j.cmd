@@ -282,9 +282,6 @@ fps_t0=0
 fps_rendered=0
 cfps=0              # CPU frames/sec (60 / cpu_time_for_last_60_frames)
 afps=0              # ACTIVE frames/sec (frames / (wall time - sleep time))
-active_us=0         # accumulated active µs (frame work, excluding sleeps)
-active_frames=0     # frames in the active measurement window
-active_us_t0=0
 muzzle=0            # muzzle-flash lifetime (loop frames remaining)
 flash_done=0        # the frame the flash expires: forces one clear render
 # (the retained back buffer would otherwise keep showing the last flash
@@ -4208,23 +4205,11 @@ main() {
       fi
       fps_t0=$fps_t
     fi
-    # active fps: frames / (wall time − sleep time) over the last 60
-    # frames — measures rendering throughput, not pacing. fp_el (below)
-    # is the frame work time (fp_t0 is set after the previous sleep).
-    if [ "$fps_rendered" -gt 0 ]; then
-      active_frames=$((active_frames + 1))
-      if [ "$active_frames" -ge 60 ]; then
-        if [ "$active_us" -gt 0 ]; then
-          afps_nv=$((active_frames * 1000000 / active_us))
-          if [ "$afps_nv" -ne "$afps" ]; then
-            afps=$afps_nv
-            digits_dirty=1
-          fi
-        fi
-        active_us=0
-        active_frames=0
-      fi
-    fi
+    # A-FPS is updated ONLY at glide completion (see the animation-end
+    # block above) — the old 60-frame window sampled wall time including
+    # idle pacing and assumed a fixed 60-frame window. The glide formula
+    # uses the animation's ACTUAL frame count (afr[0]) and active time
+    # (glide duration − sleeps), so it needs no window assumption.
     # frame budget: vsync ON = one frame per display refresh (60Hz →
     # 16.7ms), OFF = the legacy 100fps cap (10ms). Either way the
     # leftover is the sleep; a leftover ≤3ms is a minimum YIELD instead
@@ -4234,7 +4219,6 @@ main() {
     # never bites and every frame paints exactly once.
     gtick
     fp_el=$((g_now - fp_t0))
-    active_us=$((active_us + fp_el))
     if [ "$vsync" -eq 1 ]; then fp_budget=16667; else fp_budget=10000; fi
     if [ "$fp_el" -lt "$fp_budget" ]; then
       fp_wait=$(((fp_budget - fp_el + 999) / 1000))
