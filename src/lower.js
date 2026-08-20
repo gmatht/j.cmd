@@ -1590,6 +1590,226 @@ export function nativeArrays(program) {
 // the ×1000 scales — and emit `(N/D)|0` at the division render); this
 // pass is the sound JS-side half + the place the A1 annotation would
 // hook.
+// ── nativeSharedScalars: fold cross-function shared scalars to the
+//    module-level `let` bindings the transpiler already emits ──
+//
+// The game's discipline passes helper outputs through the runtime store:
+// `sh2.setVar("gv", v)` writes and `sh2.vars.gv ?? (sh2.env.gv ?? "")`
+// reads (map_get/hardness/block_color/… outputs, the frame-shared display
+// vars rd_cs/rd_sn/dpcx_ms/…). Every round-trip is a Map get + a Proxy
+// get + a nullish chain per ACCESS — the hot paths (try_draw's 768-cell
+// cull, draw_char's glyph loop) do dozens per call. The module already
+// declares `let gv = "" …` (the same bindings nativeArrays folds arrays
+// into), so folding a scalar means: setVar("gv", v) → `gv = String(v)`
+// and `sh2.vars.gv ?? (sh2.env.gv ?? "")` → `gv` — no store, no Proxy,
+// no nullish chain. Mirrors nativeArrays' eligibility discipline: a
+// symbol folds only when EVERY access is via the foldable forms; any
+// other read path (getVar / param / arrayLen / whole-string "$gv" / bare
+// sh2.env / a shadowing param / a stale native read elsewhere)
+// disqualifies it and leaves it on the store.
+
+// ── foldArrayReads: collapse the nativeArrays output shape ──
+// nativeArrays rewrites `sh2.arrayIndex("map", k)` to
+// `(map || [])[Number(k)] ?? ""`. Once `map` is a module-level `let`
+// binding (always an array), the `|| []` guard and the `Number()` are
+// dead — `(map || [])` is always `map`, and `map[k]` treats a numeric
+// key identically (property keys are strings anyway). Rewrite to
+// `map[k] ?? ""`.
+export function foldArrayReads(program) {
+  if (!program || program.type !== "Program" || !Array.isArray(program.body)) return program;
+  // the arrays folded by nativeArrays are module-level `let a = [...]`
+  const moduleArrays = new Set();
+  for (const st of program.body) {
+    if (st && st.type === "VariableDeclaration" && st.kind === "let" && st.declarations) {
+      for (const d of st.declarations) {
+        if (d.id && d.id.type === "Identifier" && d.init && d.init.type === "ArrayExpression") moduleArrays.add(d.id.name);
+      }
+    }
+  }
+  if (!moduleArrays.size) return program;
+  const id = (nm) => ({ type: "Identifier", name: nm });
+  const rewrite = (n) => {
+    if (!n || typeof n !== "object") return n;
+    if (Array.isArray(n)) return n.map(rewrite);
+    // `(arr || [])[Number(k)] ?? ""`
+    if (n.type === "LogicalExpression" && n.operator === "??" && n.right &&
+        n.right.type === "Literal" && n.right.value === "" &&
+        n.left && n.left.type === "MemberExpression" && n.left.computed) {
+      const mem = n.left;
+      if (mem.object && mem.object.type === "LogicalExpression" && mem.object.operator === "||" &&
+          mem.object.left && mem.object.left.type === "Identifier" && moduleArrays.has(mem.object.left.name) &&
+          mem.object.right && mem.object.right.type === "ArrayExpression") {
+        const K = mem.property;
+        if (K && K.type === "CallExpression" && K.callee && K.callee.type === "Identifier" && K.callee.name === "Number" && K.arguments && K.arguments.length === 1) {
+          return {
+            type: "LogicalExpression", operator: "??",
+            left: { type: "MemberExpression", computed: true, optional: false, object: id(mem.object.left.name), property: rewrite(K.arguments[0]) },
+            right: n.right,
+          };
+        }
+      }
+    }
+    const out = {};
+    for (const k of Object.keys(n)) if (k !== "loc") out[k] = rewrite(n[k]);
+    return out;
+  };
+  program.body = program.body.map(rewrite);
+  return program;
+}
+
+export function nativeSharedScalars(program) {
+  if (!program || program.type !== "Program" || !Array.isArray(program.body)) return program;
+  // every `let <name>` anywhere (module, function body, loop head) — a
+  // candidate with an EXISTING native binding would be shadowed by it
+  // (function-local lets) or double-declared (module lets), so those
+  // symbols stay on the store; the fold ADDS a module binding for the
+  // store-only ones (like nativeArrays does for arrays).
+  const declaredLets = new Set();
+  const collectLets = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) { for (const x of n) collectLets(x); return; }
+    if (n.type === "VariableDeclaration" && (n.kind === "let" || n.kind === "var")) {
+      for (const d of n.declarations || []) if (d && d.id && d.id.type === "Identifier") declaredLets.add(d.id.name);
+    }
+    for (const k of Object.keys(n)) if (k !== "loc") collectLets(n[k]);
+  };
+  collectLets(program);
+  // the whole `sh2.vars.X ?? (sh2.env.X ?? "")` read pattern
+  const readPatternName = (n) => {
+    if (!n || (n.type !== "LogicalExpression" && n.type !== "BinaryExpression") || n.operator !== "??") return null;
+    const l = n.left;
+    if (!l || l.type !== "MemberExpression" || l.computed || !l.property || l.property.type !== "Identifier" ||
+        !l.object || l.object.type !== "MemberExpression" || l.object.computed ||
+        !l.object.object || l.object.object.type !== "Identifier" || l.object.object.name !== "sh2" ||
+        !l.object.property || l.object.property.type !== "Identifier" || l.object.property.name !== "vars") return null;
+    const nm = l.property.name;
+    const r = n.right;
+    if (!r || (r.type !== "LogicalExpression" && r.type !== "BinaryExpression") || r.operator !== "??" ||
+        !r.left || r.left.type !== "MemberExpression" || r.left.computed ||
+        !r.left.property || r.left.property.type !== "Identifier" || r.left.property.name !== nm ||
+        !r.left.object || r.left.object.type !== "MemberExpression" || r.left.object.computed ||
+        !r.left.object.object || r.left.object.object.type !== "Identifier" || r.left.object.object.name !== "sh2" ||
+        !r.left.object.property || r.left.object.property.type !== "Identifier" || r.left.object.property.name !== "env" ||
+        !r.right || r.right.type !== "Literal" || r.right.value !== "") return null;
+    return nm;
+  };
+  const recs = new Map();
+  const get = (nm) => { if (!recs.has(nm)) recs.set(nm, { writes: [], reads: [], bad: new Set() }); return recs.get(nm); };
+  const nameOf = (a) => (a && a.type === "Literal" && typeof a.value === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(a.value) ? a.value : null);
+  const memTarget = (a) => {
+    if (a && a.type === "Literal" && typeof a.value === "string") {
+      const mm = /^\u0001mem:([A-Za-z_][A-Za-z0-9_]*):/.exec(a.value);
+      if (mm && recs.has(mm[1])) get(mm[1]).bad.add("memHandle");
+    }
+  };
+  const walk = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) { for (const x of n) walk(x); return; }
+    // consume the full `sh2.vars.X ?? (sh2.env.X ?? "")` read
+    const rp = readPatternName(n);
+    if (rp !== null) { get(rp).reads.push(n); return; }
+    if (n.type === "CallExpression" && n.callee && n.callee.type === "MemberExpression" &&
+        n.callee.object && n.callee.object.type === "Identifier" && n.callee.object.name === "sh2") {
+      const fn = n.callee.property && n.callee.property.type === "Identifier" ? n.callee.property.name : "";
+      const a0 = n.arguments && n.arguments[0];
+      if (fn === "setVar") {
+        memTarget(a0);
+        const nm = nameOf(a0);
+        if (nm) get(nm).writes.push(n);
+        for (const a of (n.arguments || []).slice(1)) walk(a);
+        return;
+      }
+      if (fn === "getVar") { const nm = nameOf(a0); if (nm) get(nm).bad.add("getVar"); }
+      if (fn === "arrayLen") { const nm = nameOf(a0); if (nm) get(nm).bad.add("arrayLen"); }
+      if (fn === "param") {
+        for (const a of n.arguments) { const nm = nameOf(a); if (nm) get(nm).bad.add("param"); }
+        return;
+      }
+    }
+    // a bare sh2.vars.X read (no env fallback) — the Proxy read is
+    // foldable only when env is never consulted for X, so mark bad and
+    // leave it on the store (the 73 bare uses in the game disqualify
+    // those symbols; the ??-pattern ones above still fold)
+    if (n.type === "MemberExpression" && !n.computed && n.property && n.property.type === "Identifier" &&
+        n.object && n.object.type === "MemberExpression" && !n.object.computed &&
+        n.object.object && n.object.object.type === "Identifier" && n.object.object.name === "sh2" &&
+        n.object.property && n.object.property.type === "Identifier" && n.object.property.name === "vars") {
+      get(n.property.name).bad.add("varsBare");
+      return;
+    }
+    if (n.type === "MemberExpression" && !n.computed && n.property && n.property.type === "Identifier" &&
+        n.object && n.object.type === "MemberExpression" && !n.object.computed &&
+        n.object.object && n.object.object.type === "Identifier" && n.object.object.name === "sh2" &&
+        n.object.property && n.object.property.type === "Identifier" && n.object.property.name === "env") {
+      const nm = n.property.name;
+      if (recs.has(nm)) get(nm).bad.add("envBare");
+      return;
+    }
+    if (n.type === "Literal" && typeof n.value === "string" && /^\$[A-Za-z_][A-Za-z0-9_]*[@*]?$/.test(n.value)) {
+      const nm = n.value.slice(1).replace(/[@*]$/, "");
+      if (recs.has(nm)) get(nm).bad.add("wholeStr");
+      return;
+    }
+    for (const k of Object.keys(n)) if (k !== "loc") walk(n[k]);
+  };
+  walk(program);
+
+  // a scalar whose name is ANY function's param would be shadowed by the
+  // native binding — disqualify
+  const paramNames = new Set();
+  const collectParams = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) { for (const x of n) collectParams(x); return; }
+    if (n.type === "FunctionDeclaration" && n.params) for (const p of n.params) if (p && p.type === "Identifier") paramNames.add(p.name);
+    if (n.type === "ArrowFunctionExpression" && n.params) for (const p of n.params) if (p && p.type === "Identifier") paramNames.add(p.name);
+    for (const k of Object.keys(n)) if (k !== "loc") collectParams(n[k]);
+  };
+  collectParams(program);
+
+  const eligible = [];
+  for (const [nm, r] of recs) {
+    if (declaredLets.has(nm)) continue;
+    if (paramNames.has(nm)) continue;
+    if (!r.writes.length) continue;
+    if (r.bad.size) continue;
+    eligible.push(nm);
+  }
+  if (!eligible.length) return program;
+  const elig = new Set(eligible);
+
+  const id = (nm) => ({ type: "Identifier", name: nm });
+  const str = (x) => ({ type: "CallExpression", callee: { type: "Identifier", name: "String" }, arguments: [x], optional: false });
+  const rewrite = (n) => {
+    if (!n || typeof n !== "object") return n;
+    if (Array.isArray(n)) return n.map(rewrite);
+    // `sh2.vars.X ?? (sh2.env.X ?? "")` → X
+    const rp = readPatternName(n);
+    if (rp !== null && elig.has(rp)) return id(rp);
+    if (n.type === "CallExpression" && n.callee && n.callee.type === "MemberExpression" &&
+        n.callee.object && n.callee.object.type === "Identifier" && n.callee.object.name === "sh2" &&
+        n.callee.property && n.callee.property.type === "Identifier" && n.callee.property.name === "setVar") {
+      const a0 = n.arguments && n.arguments[0];
+      if (a0 && a0.type === "Literal" && typeof a0.value === "string" && elig.has(a0.value)) {
+        const V = rewrite(n.arguments[1]);
+        return { type: "AssignmentExpression", operator: "=", left: id(a0.value), right: str(V) };
+      }
+    }
+    const out = {};
+    for (const k of Object.keys(n)) if (k !== "loc") out[k] = rewrite(n[k]);
+    return out;
+  };
+  program.body = program.body.map(rewrite);
+  // give the folded scalars the native binding the reads/writes now use
+  // (the store's initial value for an unset var is "")
+  eligible.sort();
+  program.body.unshift({
+    type: "VariableDeclaration", kind: "let", declarations: eligible.map((nm) => ({
+      type: "VariableDeclarator", id: id(nm), init: { type: "Literal", value: "", raw: null },
+    })),
+  });
+  return program;
+}
+
 export function lowerI32Trunc(program) {
   if (!program || program.type !== "Program" || !Array.isArray(program.body)) return program;
   // interval fold: {lo, hi} integer bounds, or null when unprovable
@@ -3261,107 +3481,134 @@ export function mergeInitAssignments(program) {
   const readsVars = (e, out) => {
     walk(e, (n) => { if (n.type === "Identifier") out.add(n.name); });
   };
-  const stmtWrites = (s, out) => {
-    walk(s, (n) => {
-      if (n.type === "AssignmentExpression" && n.left && n.left.type === "Identifier") out.add(n.left.name);
-      if (n.type === "UpdateExpression" && n.argument && n.argument.type === "Identifier") out.add(n.argument.name);
-      if (n.type === "VariableDeclarator" && n.id && n.id.type === "Identifier") out.add(n.id.name);
-    });
-  };
   const mergeList = (stmts) => {
-    if (!Array.isArray(stmts)) return;
-    // name → { declIdx, declarator, declStmt }
+    if (!Array.isArray(stmts) || stmts.length < 2) return;
+    // name → { declIdx, declarator } for `let name = <literal>` decls
     const decls = new Map();
     for (let i = 0; i < stmts.length; i++) {
       const stmt = stmts[i];
       if (stmt && stmt.type === "VariableDeclaration" && stmt.kind === "let") {
         for (const d of stmt.declarations) {
           if (d.id && d.id.type === "Identifier" && d.init && d.init.type === "Literal") {
-            decls.set(d.id.name, { i, stmt, d });
+            decls.set(d.id.name, { i, d });
           }
         }
       }
     }
-    // for each declared name, scan forward to the first statement that
-    // touches it
-    const drop = new Set(); // statement indices to remove (the folded assigns)
-    for (const [name, info] of decls) {
-      let firstTouch = null; // { idx, stmt, isAssign }
-      let bad = false;
-      for (let j = info.i + 1; j < stmts.length; j++) {
+    if (decls.size) {
+      // ── one precompute pass over the list (paid once) ──
+      // touchers: name → ascending statement indices that touch it (any
+      // Identifier occurrence). writers: name → ascending indices that
+      // WRITE it (assign-left / update / declarator) — the clobber check.
+      // assigns[j] classifies a statement that is exactly `name = <rhs>`
+      // (alsoRead = the name appears anywhere beyond the top-level left,
+      // e.g. `x = x + 1` — then it is a read, not a foldable assign).
+      // The OLD code re-walked every statement between each decl and its
+      // first touch (O(decls × stmts) walks); the game's giant top-level
+      // lists made mergeInitAssignments the ~8 s hot pass. This is
+      // O(stmts) walks total + O(decls·log) lookups, same decisions.
+      const touchers = new Map();
+      const writers = new Map();
+      const assigns = new Array(stmts.length);
+      const touchAdd = (map, name, j) => {
+        let a = map.get(name);
+        if (!a) { a = []; map.set(name, a); }
+        a.push(j);
+      };
+      for (let j = 0; j < stmts.length; j++) {
         const stmt = stmts[j];
-        // does this statement touch `name`?
-        const touch = { reads: false, assigns: false };
+        if (!stmt || typeof stmt !== "object") continue;
+        if (
+          stmt.type === "ExpressionStatement" && stmt.expression &&
+          stmt.expression.type === "AssignmentExpression" &&
+          stmt.expression.operator === "=" &&
+          stmt.expression.left && stmt.expression.left.type === "Identifier"
+        ) {
+          assigns[j] = { name: stmt.expression.left.name, alsoRead: false };
+        }
         walk(stmt, (n) => {
-          if (n.type === "Identifier" && n.name === name) {
-            // an Identifier as the left of an `=` assignment is a write
-            if (
-              n === (stmt.expression && stmt.expression.left) &&
-              stmt.type === "ExpressionStatement" &&
-              stmt.expression.type === "AssignmentExpression"
-            ) {
-              touch.assigns = true;
-            } else {
-              touch.reads = true;
+          if (n.type === "Identifier") {
+            touchAdd(touchers, n.name, j);
+            if (assigns[j] && n !== stmt.expression.left && n.name === assigns[j].name) {
+              assigns[j].alsoRead = true;
             }
+          } else if (n.type === "AssignmentExpression" && n.left && n.left.type === "Identifier") {
+            touchAdd(writers, n.left.name, j);
+          } else if (n.type === "UpdateExpression" && n.argument && n.argument.type === "Identifier") {
+            touchAdd(writers, n.argument.name, j);
+          } else if (n.type === "VariableDeclarator" && n.id && n.id.type === "Identifier") {
+            touchAdd(writers, n.id.name, j);
           }
         });
-        if (touch.reads || touch.assigns) { firstTouch = { j, stmt, touch }; break; }
       }
-      if (!firstTouch || firstTouch.touch.reads) continue; // read first or never touched
-      const stmt = firstTouch.stmt;
-      const expr = stmt.expression;
-      if (
-        stmt.type !== "ExpressionStatement" ||
-        !expr ||
-        expr.type !== "AssignmentExpression" ||
-        expr.operator !== "=" ||
-        !expr.left ||
-        expr.left.type !== "Identifier" ||
-        expr.left.name !== name
-      ) {
-        continue; // first touch is not a plain `name = ...`
-      }
-      // RHS must not reference `name` (TDZ in the folded initializer)
-      // and must be side-effect-free (the fold moves its evaluation to
-      // the declaration site — see the header comment).
-      let selfRef = false;
-      walk(expr.right, (n) => {
-        if (n.type === "Identifier" && n.name === name) selfRef = true;
-      });
-      if (selfRef) continue;
-      if (!isPureExpr(expr.right)) continue;
-      // identifier reads in the RHS must not be written by any statement
-      // between the declaration and the assignment (the read would move
-      // earlier, seeing the pre-write value)
-      const reads = new Set();
-      readsVars(expr.right, reads);
-      if (reads.size) {
-        let clobbered = false;
-        for (let k = info.i + 1; k < firstTouch.j && !clobbered; k++) {
-          const w = new Set();
-          stmtWrites(stmts[k], w);
-          for (const r of reads) if (w.has(r)) { clobbered = true; break; }
+      // first element of ascending `arr` that is > i (−1 when none)
+      const firstAfter = (arr, i) => {
+        let lo = 0, hi = arr.length;
+        while (lo < hi) {
+          const mid = (lo + hi) >> 1;
+          if (arr[mid] > i) hi = mid; else lo = mid + 1;
         }
-        if (clobbered) continue;
+        return lo < arr.length ? arr[lo] : -1;
+      };
+      const drop = new Set(); // statement indices to remove (the folded assigns)
+      for (const [name, info] of decls) {
+        const ts = touchers.get(name);
+        const touchIdx = ts ? firstAfter(ts, info.i) : -1;
+        if (touchIdx < 0) continue;
+        const as = assigns[touchIdx];
+        // foldable only when the first touch is the plain `name = …`
+        // statement and `name` is not read anywhere else in it
+        if (!as || as.name !== name || as.alsoRead) continue;
+        const expr = stmts[touchIdx].expression;
+        // RHS must not reference `name` (TDZ in the folded initializer)
+        // and must be side-effect-free (the fold moves its evaluation to
+        // the declaration site — see the header comment).
+        let selfRef = false;
+        walk(expr.right, (n) => {
+          if (n.type === "Identifier" && n.name === name) selfRef = true;
+        });
+        if (selfRef) continue;
+        if (!isPureExpr(expr.right)) continue;
+        // identifier reads in the RHS must not be written by any statement
+        // between the declaration and the assignment (the read would move
+        // earlier, seeing the pre-write value)
+        const reads = new Set();
+        readsVars(expr.right, reads);
+        if (reads.size) {
+          let clobbered = false;
+          for (const r of reads) {
+            const ws = writers.get(r);
+            if (!ws) continue;
+            const wIdx = firstAfter(ws, info.i);
+            if (wIdx >= 0 && wIdx < touchIdx) { clobbered = true; break; }
+          }
+          if (clobbered) continue;
+        }
+        info.d.init = expr.right;
+        drop.add(touchIdx);
       }
-      info.d.init = expr.right;
-      drop.add(firstTouch.j);
-    }
-    if (drop.size) {
-      for (let i = stmts.length - 1; i >= 0; i--) {
-        if (drop.has(i)) stmts.splice(i, 1);
+      if (drop.size) {
+        const kept = [];
+        for (let i = 0; i < stmts.length; i++) if (!drop.has(i)) kept.push(stmts[i]);
+        stmts.length = 0;
+        stmts.push(...kept);
       }
     }
     // merge adjacent `let` declarations into one (`let a = 1, b = 2;`)
-    for (let i = stmts.length - 1; i > 0; i--) {
-      const a = stmts[i - 1], b = stmts[i];
-      if (
-        a && b && a.type === "VariableDeclaration" && b.type === "VariableDeclaration" &&
-        a.kind === "let" && b.kind === "let"
-      ) {
-        a.declarations.push(...b.declarations);
-        stmts.splice(i, 1);
+    if (stmts.length > 1) {
+      const merged = [];
+      let cur = null;
+      for (const s of stmts) {
+        if (s && s.type === "VariableDeclaration" && s.kind === "let" && cur && cur.type === "VariableDeclaration" && cur.kind === "let") {
+          cur.declarations.push(...s.declarations);
+        } else {
+          merged.push(s);
+          cur = s;
+        }
+      }
+      if (merged.length !== stmts.length) {
+        stmts.length = 0;
+        stmts.push(...merged);
       }
     }
   };
