@@ -265,6 +265,8 @@ if [ "$1" = "--demo" ]; then demo=1; fi
 anim=0              # 1 while an action glides the camera
 precache_done=0     # the background sound pre-cache spawns once per session
 anim_t0=0           # wall-clock ms when the current glide started
+anim_frames=0       # frames rendered during the current glide (for FPS)
+anim_sleep_us=0     # sleep µs accumulated during the current glide
 ANIM_MS=200         # each action completes in 0.2s of wall time
 game_speed=100       # player speed as % of normal (100=normal, 10=10%, 5=5% — the settings menu's GAME SPEED item)
 vsync=1              # vsync: ON = one frame per display refresh (60Hz, 16.7ms budget — the compositor clamps
@@ -772,6 +774,8 @@ start_anim() { an[0]=$1; an[1]=$2; an[2]=$3; an[3]=$4; an[4]=$5; an[5]=$6
   esac
   anim_t0=$g_now
   anim=1
+  anim_frames=0
+  anim_sleep_us=0
 }
 
 try_anim_move() { ta_dx=$1; ta_dz=$2
@@ -4049,6 +4053,24 @@ main() {
         pz=${an[4]}
         yaw=${an[5]}
         anim=0
+        # the glide just completed — refresh the FPS readouts from THIS
+        # animation: W = frames / glide duration, A = frames / (glide
+        # duration − sleeps). The old fixed 60-frame window sampled wall
+        # time including idle pacing, so the numbers drifted with how
+        # much the game slept.
+        if [ "$anim_frames" -gt 0 ]; then
+          anim_dur=$((g_now - anim_t0))
+          if [ "$anim_dur" -gt 0 ]; then
+            fps_nv=$((anim_frames * 1000000 / anim_dur))
+            if [ "$fps_nv" -gt 0 ]; then fps=$fps_nv; fi
+            anim_active=$((anim_dur - anim_sleep_us))
+            if [ "$anim_active" -gt 0 ]; then
+              afps_nv=$((anim_frames * 1000000 / anim_active))
+              if [ "$afps_nv" -gt 0 ]; then afps=$afps_nv; fi
+            fi
+            digits_dirty=1
+          fi
+        fi
         # arrived: if the destination cell holds a hidden treasure, the
         # walk-in claims it (shooting one never does)
         get_cell $px 1 $pz
@@ -4130,6 +4152,7 @@ main() {
       echo "swap" > /dev/webgl/call
       gspan "swap"
       fps_rendered=$((fps_rendered + 1))
+      if [ "$anim" -eq 1 ]; then anim_frames=$((anim_frames + 1)); fi
     else
       # keyboard heartbeat: the device releases keys 2s after the last
       # swap — a bare swap (the back buffer is unchanged) every ~1s
@@ -4199,6 +4222,7 @@ main() {
     fi
     fmt3 $fp_wait
     sleep 0.$fv
+    if [ "$anim" -eq 1 ]; then anim_sleep_us=$((anim_sleep_us + fp_wait * 1000)); fi
     fp_t0=$g_now
     # the sleep itself + the fps-sampling tail of the frame. The pacing
     # yield is split by intent: during an ACTION GLIDE (anim=1) the
