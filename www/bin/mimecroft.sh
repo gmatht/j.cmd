@@ -2205,19 +2205,19 @@ render_frame() {
       gs_z=$((gs_i / MAP_W))
       gs_draw=1
       # crouched: the eye drops to 0.75, only 0.225 above the grass
-      # top (0.525) — a thin box under the camera is viewed edge-on at
-      # a grazing angle and its green face foreshortens to span the
-      # whole screen (the "green flash when crouching" bug). Cull the
-      # patch within 1 cell of the eye (the camera cell + neighbours,
-      # covering the glide interpolation) so it can't blow up.
+      # top (0.525) — a grass box 1-3 cells ahead is viewed at a
+      # grazing angle (atan(0.225/d): 12.7° at d=1, 6.4° at d=2, 4.3°
+      # at d=3), so the horizontal top face is nearly edge-on and
+      # projects huge across the lower screen — a green flash.
+      # Cull within 3 cells of the CAMERA cell dpx/dpz (the rounded
+      # view cell render_frame already reads for all world culling;
+      # px/pz lag during a glide — they snap only at arrival).
       if [ "$crouched" -eq 1 ]; then
-        gs_eye_x=$((dpcx_ms / 1000))
-        gs_eye_z=$((dpcz_ms / 1000))
-        gs_dx=$((gs_x - gs_eye_x))
+        gs_dx=$((gs_x - dpx))
         if [ "$gs_dx" -lt 0 ]; then gs_dx=$((0 - gs_dx)); fi
-        gs_dz=$((gs_z - gs_eye_z))
+        gs_dz=$((gs_z - dpz))
         if [ "$gs_dz" -lt 0 ]; then gs_dz=$((0 - gs_dz)); fi
-        if [ "$gs_dx" -le 1 ] && [ "$gs_dz" -le 1 ]; then
+        if [ "$gs_dx" -le 3 ] && [ "$gs_dz" -le 3 ]; then
           gs_draw=0
         fi
       fi
