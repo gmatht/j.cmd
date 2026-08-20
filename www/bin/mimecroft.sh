@@ -2613,11 +2613,11 @@ hud_build_static() {
   draw_text "ART" 3 680 1840 8 11 0.60 0.75 0.95
   draw_char 37 872 1840 8 11 0.60 0.75 0.95
   # fps labels (right of the ART digits, same line)
-  # fps labels — all positions computed from d_W grid
+  # fps labels — Wnnn/Cnnn (wall-clock first, then CPU)
   draw_text "FPS:" 4 980 1840 8 11 0.70 0.70 0.70
-  draw_text "C" 1 1028 1840 8 11 0.45 0.85 0.85
+  draw_text "W" 1 1028 1840 8 11 0.55 0.95 0.95
   draw_text "/" 1 1156 1840 8 11 0.70 0.70 0.70
-  draw_text "W" 1 1176 1840 8 11 0.55 0.95 0.95
+  draw_text "C" 1 1176 1840 8 11 0.45 0.85 0.85
   # licence label (right of fps digits — strikes remaining)
   draw_text "LIC" 3 1308 1840 8 11 0.95 0.60 0.30
   # instructions (bottom centre)
@@ -2673,9 +2673,8 @@ draw_digits() {
   # digit grid: 32px per digit (8px×4), y=1840
   d_W=32
   d_Y=1840
-  # score digits (3 digits, no slash) — erase before draw
+  # score digits (3 digits, no slash)
   dh_x=252
-  erase_rect $((dh_x-4)) 1818 $((d_W*3+8)) 62
   dh_a=$((score/100%10+26))
   dh_b=$((score/10%10+26))
   dh_c=$((score%10+26))
@@ -2684,9 +2683,8 @@ draw_digits() {
   draw_char $dh_b $dh_b_x $d_Y 8 11 0.95 0.85 0.30
   dh_c_x=$((dh_b_x+d_W))
   draw_char $dh_c $dh_c_x $d_Y 8 11 0.95 0.85 0.30
-  # HP digits (current / max, slash between) — erase before draw
+  # HP digits (current / max, slash between)
   dh_x=496
-  erase_rect $((dh_x-4)) 1818 $((d_W*4+8+8)) 62
   dh_a=$((hp/10+26))
   dh_b=$((hp%10+26))
   draw_char $dh_a $dh_x $d_Y 8 11 0.35 0.90 0.40
@@ -2700,9 +2698,8 @@ draw_digits() {
   draw_char $dh_a $dh_b_x $d_Y 8 11 0.35 0.90 0.40
   dh_c_x=$((dh_b_x+d_W))
   draw_char $dh_b $dh_c_x $d_Y 8 11 0.35 0.90 0.40
-  # ART digits (found / total, slash between) — erase before draw
+  # ART digits (found / total, slash between)
   dh_x=808
-  erase_rect $((dh_x-4)) 1818 $((d_W*4+8+8)) 62
   dh_a=$((found_count/10+26))
   dh_b=$((found_count%10+26))
   draw_char $dh_a $dh_x $d_Y 8 11 0.60 0.75 0.95
@@ -2716,21 +2713,20 @@ draw_digits() {
   draw_char $dh_a $dh_b_x $d_Y 8 11 0.60 0.75 0.95
   dh_c_x=$((dh_b_x+d_W))
   draw_char $dh_b $dh_c_x $d_Y 8 11 0.60 0.75 0.95
-  # fps digits: Cnnn/Wnnn — digits in bright white, erase before draw
+  # fps digits: Wnnn/Cnnn — wall-clock first, then CPU, bright white
   dh_x=1048
-  erase_rect $((dh_x-4)) 1818 $((d_W*6+8+8+8)) 62
-  dh_a=$((cfps/100+26))
-  dh_b=$((cfps/10%10+26))
-  dh_c=$((cfps%10+26))
+  dh_a=$((fps/100+26))
+  dh_b=$((fps/10%10+26))
+  dh_c=$((fps%10+26))
   draw_char $dh_a $dh_x $d_Y 8 11 0.95 0.95 0.95
   dh_b_x=$((dh_x+d_W))
   draw_char $dh_b $dh_b_x $d_Y 8 11 0.95 0.95 0.95
   dh_c_x=$((dh_b_x+d_W))
   draw_char $dh_c $dh_c_x $d_Y 8 11 0.95 0.95 0.95
   dh_a_x=$((dh_c_x+d_W+d_W))
-  dh_a=$((fps/100+26))
-  dh_b=$((fps/10%10+26))
-  dh_c=$((fps%10+26))
+  dh_a=$((cfps/100+26))
+  dh_b=$((cfps/10%10+26))
+  dh_c=$((cfps%10+26))
   draw_char $dh_a $dh_a_x $d_Y 8 11 0.95 0.95 0.95
   dh_b_x=$((dh_a_x+d_W))
   draw_char $dh_b $dh_b_x $d_Y 8 11 0.95 0.95 0.95
@@ -2738,7 +2734,6 @@ draw_digits() {
   draw_char $dh_c $dh_c_x $d_Y 8 11 0.95 0.95 0.95
   # licence digit (right of LIC label — strikes remaining)
   dh_x=1340
-  erase_rect $((dh_x-4)) 1818 $((d_W+8)) 62
   dh_a=$((license+26))
   draw_char $dh_a $dh_x $d_Y 8 11 0.95 0.60 0.30
 }
