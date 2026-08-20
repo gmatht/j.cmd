@@ -2615,11 +2615,11 @@ hud_build_static() {
   # fps labels (right of the ART digits, same line)
   # fps labels — Wnnn/Cnnn (wall-clock first, then CPU)
   draw_text "FPS:" 4 980 1840 8 11 0.70 0.70 0.70
-  draw_text "W" 1 1028 1840 8 11 0.55 0.95 0.95
-  draw_text "/" 1 1156 1840 8 11 0.70 0.70 0.70
-  draw_text "C" 1 1176 1840 8 11 0.45 0.85 0.85
+  draw_text "W" 1 1044 1840 8 11 0.55 0.95 0.95
+  draw_text "/" 1 1172 1840 8 11 0.70 0.70 0.70
+  draw_text "C" 1 1204 1840 8 11 0.45 0.85 0.85
   # licence label (right of fps digits — strikes remaining)
-  draw_text "LIC" 3 1308 1840 8 11 0.95 0.60 0.30
+  draw_text "LIC" 3 1340 1840 8 11 0.95 0.60 0.30
   # instructions (bottom centre)
   draw_text "WASD MOVE ARROWS TURN SPACE SHOOT" 33 538 100 7 10 0.85 0.85 0.85
   # radar base: walls + treasure cells (air stays dark; the player and
@@ -2714,7 +2714,7 @@ draw_digits() {
   dh_c_x=$((dh_b_x+d_W))
   draw_char $dh_b $dh_c_x $d_Y 8 11 0.60 0.75 0.95
   # fps digits: Wnnn/Cnnn — wall-clock first, then CPU, bright white
-  dh_x=1048
+  dh_x=1060
   dh_a=$((fps/100+26))
   dh_b=$((fps/10%10+26))
   dh_c=$((fps%10+26))
@@ -2733,7 +2733,7 @@ draw_digits() {
   dh_c_x=$((dh_b_x+d_W))
   draw_char $dh_c $dh_c_x $d_Y 8 11 0.95 0.95 0.95
   # licence digit (right of LIC label — strikes remaining)
-  dh_x=1340
+  dh_x=1372
   dh_a=$((license+26))
   draw_char $dh_a $dh_x $d_Y 8 11 0.95 0.60 0.30
 }
