@@ -1254,7 +1254,7 @@ emit_vertex_shader() {
     # at the cell boundary, the corridor faces (w ≥ 0.5) are untouched.
     # (The generator's float grammar can't express the clamp, so it is
     # injected here.)
-    glsl=${glsl/g_w = ((((0.0) - g_relz)) + (0.0));/g_w = ((((0.0) - g_relz)) + (0.0)); if (g_w < 0.0) g_w = 0.05;}
+    glsl=${glsl/g_w = ((((0.0) - g_relz)) + (0.0));/g_w = ((((0.0) - g_relz)) + (0.0)); if (g_w < 0.0001) g_w = 0.0001;}
     echo "$glsl" > /dev/webgl/shader/vertex
   fi
 }
