@@ -2694,7 +2694,7 @@ draw_digits() {
   # score digits (3 digits, no slash)
   dh_val=$((score))
   if [ "$dh_val" != "$prev_score" ]; then
-    erase_rect $d_score_dx $((d_Y-24)) $((d_W*3)) 62
+    erase_rect $d_score_dx $((d_Y-24)) $((d_score_dx+3*d_W-d_score_dx)) 62
     dh_a=$((dh_val/100%10+26))
     dh_b=$((dh_val/10%10+26))
     dh_c=$((dh_val%10+26))
@@ -2706,7 +2706,7 @@ draw_digits() {
   # HP digits (current / max, slash between)
   dh_val=$((hp*1000+maxhp))
   if [ "$dh_val" != "$prev_hp" ]; then
-    erase_rect $d_hp_dx $((d_Y-24)) $((d_W*5)) 62
+    erase_rect $d_hp_dx $((d_Y-24)) $((d_hp_sx+3*d_W-d_hp_dx)) 62
     dh_a=$((hp/10+26))
     dh_b=$((hp%10+26))
     draw_char $dh_a $d_hp_dx $d_Y 8 11 0.35 0.90 0.40
@@ -2721,7 +2721,7 @@ draw_digits() {
   # ART digits (found / total, slash between)
   dh_val=$((found_count*1000+TREASURE_TOTAL))
   if [ "$dh_val" != "$prev_art" ]; then
-    erase_rect $d_art_dx $((d_Y-24)) $((d_W*5)) 62
+    erase_rect $d_art_dx $((d_Y-24)) $((d_art_sx+3*d_W-d_art_dx)) 62
     dh_a=$((found_count/10+26))
     dh_b=$((found_count%10+26))
     draw_char $dh_a $d_art_dx $d_Y 8 11 0.60 0.75 0.95
@@ -2736,7 +2736,7 @@ draw_digits() {
   # fps digits: Wnnn/Cnnn — wall-clock first, then CPU, bright white
   dh_val=$((fps*10000+cfps))
   if [ "$dh_val" != "$prev_fps" ]; then
-    erase_rect $d_w_dx $((d_Y-24)) $((d_W*7)) 62
+    erase_rect $d_w_dx $((d_Y-24)) $((d_c_dx+3*d_W-d_w_dx)) 62
     dh_a=$((fps/100+26))
     dh_b=$((fps/10%10+26))
     dh_c=$((fps%10+26))
