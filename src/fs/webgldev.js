@@ -512,7 +512,7 @@ export class WebGLDevice {
   // colour, texture index and damage level). The game's per-block echo
   // round-trips were the bottleneck (~6 async dispatches per cube); this
   // lowers the whole scene to ONE async write + synchronous GL calls.
-  _drawBlocks(text) {
+  async _drawBlocks(text) {
     const gl = this._ensureGL();
     let drawn = 0, bad = 0;
     for (const line of String(text).split("\n")) {
@@ -526,13 +526,13 @@ export class WebGLDevice {
       this._uniforms.set("uBlockColor", { type: "3f", value: [r, g, b] });
       this._uniforms.set("uTex", { type: "1i", value: [tx] });
       this._uniforms.set("uDamage", { type: "1i", value: [dam] });
-      this._doCall("draw elements triangles 36 0 cube");
+      await this._doCall("draw elements triangles 36 0 cube");
       drawn++;
     }
     if (drawn || bad) this._log += `[blocks] ${drawn} cubes${bad ? ` (${bad} bad lines)` : ""}\n`;
   }
 
-  _doCall(raw) {
+  async _doCall(raw) {
     const gl = this._ensureGL();
     const parts = raw.trim().split(/[\s,]+/).filter(Boolean);
     if (!parts.length) throw new Error("empty call");
@@ -561,6 +561,17 @@ export class WebGLDevice {
         this._glHudCompCalls++;
       }
       this._backDirty = false;
+      // Sync the present to the browser's repaint cycle: requestAnimationFrame
+      // fires right before the next paint, so the frame hits the screen with
+      // no tearing and the pacing matches the display refresh (60/120Hz).
+      // The game's own sleep-based frame budget then lands within the repaint
+      // window instead of drifting against it. Node (CLI/NullGL) has no rAF —
+      // fall back to a zero-delay setTimeout so the tests still pace.
+      if (typeof requestAnimationFrame === "function") {
+        await new Promise((r) => requestAnimationFrame(() => r()));
+      } else {
+        await new Promise((r) => setTimeout(r, 0));
+      }
       // Present to screen — the canvas stays hidden until the first swap
       gl.flush();
       if (this._canvas) this._canvas.style.display = "block";
@@ -1245,11 +1256,11 @@ export class WebGLDevice {
       return;
     }
     if (parts[0] === "call") {
-      this._doCall(String(content));
+      await this._doCall(String(content));
       return;
     }
     if (parts[0] === "blocks") {
-      this._drawBlocks(String(content));
+      await this._drawBlocks(String(content));
       return;
     }
     if (parts[0] === "hud") {
