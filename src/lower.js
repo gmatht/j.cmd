@@ -1440,6 +1440,13 @@ export function nativeArrays(program) {
             else get(nm).bad.add("plainSetVar"); // a scalar write of the array name
           }
         }
+        // a setVar VALUE can embed a nested arrayIndex (e.g.
+        // `setVar("rd_cs", arrayIndex("SCOS", "$rd_deg"))` — the wasm's
+        // store-backed read). Descend so its "$x" string key marks the
+        // array bad (the eligibility walk must see every array key the
+        // rewrite walk folds, or a "$x" literal survives as Number("$x")
+        // = NaN and the array's reads collapse to empty).
+        for (const a of (n.arguments || []).slice(1)) walk(a);
         return;
       }
       if (fn === "getVar" && a0 && a0.type === "Literal" && typeof a0.value === "string" && arrays.has(a0.value)) { get(a0.value).bad.add("getVar"); return; }

@@ -4165,13 +4165,8 @@ main() {
     swr=(0 0)
     swk=0
     if [ "$crouched" -eq 1 ] && [ "$anim" -eq 1 ]; then
-      sw_ph=$(( g_now % 1200000 ))
-      # triangle wave (no SCOS — reading SCOS[$sw_ph] here reclassifies
-      # the shared table as store-backed and the transpiler emits the
-      # literal "$rd_deg" string for the culling reads → NaN → rd_cs=""
-      # → every block culled → invisible blocks)
-      if [ "$sw_ph" -lt 600000 ]; then sw_v=$(( sw_ph * 250 / 600000 ))
-      else sw_v=$(( (1200000 - sw_ph) * 250 / 600000 )); fi
+      sw_ph=$(( (g_now % 1200000) * 360 / 1200000 ))
+      sw_v=$(( SCOS[$sw_ph] * 250 / 1000 ))
       swr[0]=$(( sw_v * (0 - DIR_Z[$dyaw]) ))
       swr[1]=$(( sw_v * DIR_X[$dyaw] ))
       swk=$((g_now / 50000))
