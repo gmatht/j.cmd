@@ -2604,22 +2604,35 @@ rmz=(-1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1)
 # block is mined or a treasure claimed.
 hud_build_static() {
   ov_text=""
-  # score line (top-left)
-  draw_text "SCORE" 5 60 1840 8 11 0.95 0.85 0.30
-  # HP line
-  draw_text "HP" 2 400 1840 8 11 0.35 0.90 0.40
-  draw_char 37 560 1840 8 11 0.35 0.90 0.40
-  # ART line
-  draw_text "ART" 3 680 1840 8 11 0.60 0.75 0.95
-  draw_char 37 872 1840 8 11 0.60 0.75 0.95
-  # fps labels (right of the ART digits, same line)
-  # fps labels — Wnnn/Cnnn (wall-clock first, then CPU)
-  draw_text "FPS:" 4 980 1840 8 11 0.70 0.70 0.70
-  draw_text "W" 1 1108 1840 8 11 0.55 0.95 0.95
-  draw_text "/" 1 1268 1840 8 11 0.70 0.70 0.70
-  draw_text "C" 1 1300 1840 8 11 0.45 0.85 0.85
-  # licence label (right of fps digits — strikes remaining)
-  draw_text "LIC" 3 1436 1840 8 11 0.95 0.60 0.30
+  # digit grid: 32px per digit (8px×4), y=1840 — all positions computed once
+  d_W=32
+  d_Y=1840
+  # score
+  d_score_x=60;  d_score_dx=252
+  # HP
+  d_hp_x=400;  d_hp_dx=496;  d_hp_sx=$((d_hp_dx+2*d_W))
+  # ART
+  d_art_x=680;  d_art_dx=808;  d_art_sx=$((d_art_dx+2*d_W))
+  # FPS labels and digit start positions
+  d_fps_x=$((d_art_dx+4*d_W+2*d_W))
+  d_w_x=$((d_fps_x+4*d_W))
+  d_w_dx=$((d_w_x+d_W/2))
+  d_slash_x=$((d_w_dx+3*d_W+d_W))
+  d_c_x=$((d_slash_x+d_W))
+  d_c_dx=$((d_c_x+d_W/2))
+  d_lic_x=$((d_c_dx+3*d_W+2*d_W))
+  d_lic_dx=$((d_lic_x+3*d_W))
+  # draw static labels
+  draw_text "SCORE" 5 $d_score_x $d_Y 8 11 0.95 0.85 0.30
+  draw_text "HP" 2 $d_hp_x $d_Y 8 11 0.35 0.90 0.40
+  draw_char 37 $d_hp_sx $d_Y 8 11 0.35 0.90 0.40
+  draw_text "ART" 3 $d_art_x $d_Y 8 11 0.60 0.75 0.95
+  draw_char 37 $d_art_sx $d_Y 8 11 0.60 0.75 0.95
+  draw_text "FPS:" 4 $d_fps_x $d_Y 8 11 0.70 0.70 0.70
+  draw_text "W" 1 $d_w_x $d_Y 8 11 0.55 0.95 0.95
+  draw_text "/" 1 $d_slash_x $d_Y 8 11 0.70 0.70 0.70
+  draw_text "C" 1 $d_c_x $d_Y 8 11 0.45 0.85 0.85
+  draw_text "LIC" 3 $d_lic_x $d_Y 8 11 0.95 0.60 0.30
   # instructions (bottom centre)
   draw_text "WASD MOVE ARROWS TURN SPACE SHOOT" 33 538 100 7 10 0.85 0.85 0.85
   # radar base: walls + treasure cells (air stays dark; the player and
@@ -2670,72 +2683,62 @@ hud_build_static() {
 # changed (digits_dirty); the digits are small, so the per-frame cost is
 # zero most frames
 draw_digits() {
-  # digit grid: 32px per digit (8px×4), y=1840
-  d_W=32
-  d_Y=1840
+  # reuse d_W, d_Y and d_*_dx positions computed in hud_build_static
   # score digits (3 digits, no slash)
-  dh_x=252
   dh_a=$((score/100%10+26))
   dh_b=$((score/10%10+26))
   dh_c=$((score%10+26))
-  draw_char $dh_a $dh_x $d_Y 8 11 0.95 0.85 0.30
-  dh_b_x=$((dh_x+d_W))
+  draw_char $dh_a $d_score_dx $d_Y 8 11 0.95 0.85 0.30
+  dh_b_x=$((d_score_dx+d_W))
   draw_char $dh_b $dh_b_x $d_Y 8 11 0.95 0.85 0.30
   dh_c_x=$((dh_b_x+d_W))
   draw_char $dh_c $dh_c_x $d_Y 8 11 0.95 0.85 0.30
   # HP digits (current / max, slash between)
-  dh_x=496
   dh_a=$((hp/10+26))
   dh_b=$((hp%10+26))
-  draw_char $dh_a $dh_x $d_Y 8 11 0.35 0.90 0.40
-  dh_b_x=$((dh_x+d_W))
+  draw_char $dh_a $d_hp_dx $d_Y 8 11 0.35 0.90 0.40
+  dh_b_x=$((d_hp_dx+d_W))
   draw_char $dh_b $dh_b_x $d_Y 8 11 0.35 0.90 0.40
-  dh_a_x=$((dh_b_x+d_W))
-  draw_char 37 $dh_a_x $d_Y 8 11 0.35 0.90 0.40
-  dh_b_x=$((dh_a_x+d_W))
+  draw_char 37 $d_hp_sx $d_Y 8 11 0.35 0.90 0.40
+  dh_a_x=$((d_hp_sx+d_W))
   dh_a=$((maxhp/10+26))
   dh_b=$((maxhp%10+26))
-  draw_char $dh_a $dh_b_x $d_Y 8 11 0.35 0.90 0.40
-  dh_c_x=$((dh_b_x+d_W))
-  draw_char $dh_b $dh_c_x $d_Y 8 11 0.35 0.90 0.40
+  draw_char $dh_a $dh_a_x $d_Y 8 11 0.35 0.90 0.40
+  dh_b_x=$((dh_a_x+d_W))
+  draw_char $dh_b $dh_b_x $d_Y 8 11 0.35 0.90 0.40
   # ART digits (found / total, slash between)
-  dh_x=808
   dh_a=$((found_count/10+26))
   dh_b=$((found_count%10+26))
-  draw_char $dh_a $dh_x $d_Y 8 11 0.60 0.75 0.95
-  dh_b_x=$((dh_x+d_W))
+  draw_char $dh_a $d_art_dx $d_Y 8 11 0.60 0.75 0.95
+  dh_b_x=$((d_art_dx+d_W))
   draw_char $dh_b $dh_b_x $d_Y 8 11 0.60 0.75 0.95
-  dh_a_x=$((dh_b_x+d_W))
-  draw_char 37 $dh_a_x $d_Y 8 11 0.60 0.75 0.95
-  dh_b_x=$((dh_a_x+d_W))
+  draw_char 37 $d_art_sx $d_Y 8 11 0.60 0.75 0.95
+  dh_a_x=$((d_art_sx+d_W))
   dh_a=$((TREASURE_TOTAL/10+26))
   dh_b=$((TREASURE_TOTAL%10+26))
-  draw_char $dh_a $dh_b_x $d_Y 8 11 0.60 0.75 0.95
-  dh_c_x=$((dh_b_x+d_W))
-  draw_char $dh_b $dh_c_x $d_Y 8 11 0.60 0.75 0.95
+  draw_char $dh_a $dh_a_x $d_Y 8 11 0.60 0.75 0.95
+  dh_b_x=$((dh_a_x+d_W))
+  draw_char $dh_b $dh_b_x $d_Y 8 11 0.60 0.75 0.95
   # fps digits: Wnnn/Cnnn — wall-clock first, then CPU, bright white
-  dh_x=1124
   dh_a=$((fps/100+26))
   dh_b=$((fps/10%10+26))
   dh_c=$((fps%10+26))
-  draw_char $dh_a $dh_x $d_Y 8 11 0.95 0.95 0.95
-  dh_b_x=$((dh_x+d_W))
+  draw_char $dh_a $d_w_dx $d_Y 8 11 0.95 0.95 0.95
+  dh_b_x=$((d_w_dx+d_W))
   draw_char $dh_b $dh_b_x $d_Y 8 11 0.95 0.95 0.95
   dh_c_x=$((dh_b_x+d_W))
   draw_char $dh_c $dh_c_x $d_Y 8 11 0.95 0.95 0.95
-  dh_a_x=$((dh_c_x+d_W+d_W))
   dh_a=$((cfps/100+26))
   dh_b=$((cfps/10%10+26))
   dh_c=$((cfps%10+26))
-  draw_char $dh_a $dh_a_x $d_Y 8 11 0.95 0.95 0.95
-  dh_b_x=$((dh_a_x+d_W))
+  draw_char $dh_a $d_c_dx $d_Y 8 11 0.95 0.95 0.95
+  dh_b_x=$((d_c_dx+d_W))
   draw_char $dh_b $dh_b_x $d_Y 8 11 0.95 0.95 0.95
   dh_c_x=$((dh_b_x+d_W))
   draw_char $dh_c $dh_c_x $d_Y 8 11 0.95 0.95 0.95
   # licence digit (right of LIC label — strikes remaining)
-  dh_x=1532
   dh_a=$((license+26))
-  draw_char $dh_a $dh_x $d_Y 8 11 0.95 0.60 0.30
+  draw_char $dh_a $d_lic_dx $d_Y 8 11 0.95 0.60 0.30
 }
 
 # ─── treasure name labels ───────────────────────────────────────────
