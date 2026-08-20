@@ -4142,14 +4142,11 @@ main() {
         echo "swap" > /dev/webgl/call
       fi
     fi
-    # fps: rendered frames per wall-second, sampled once per second
-    # (100 frames at the 10ms cap), and the digits only REDRAW when the
-    # value actually changed. The old 10-frame sample set digits_dirty
-    # every ~100ms, and a digit redraw forces a FULL world re-render —
-    # the retained back buffer bakes the old HUD in and the HUD erases
-    # can't reach it — so the FPS readout alone re-rendered the whole
-    # maze ~10x/sec while idle.
-    fps_w=$((frame % 100))
+    # fps: rendered frames per wall-second, sampled every 60 frames
+    # (~1s at 60fps), and the digits refresh every sample — the old
+    # 100-frame window + value-changed-only redraw left the readout
+    # stale (it only moved when damage dirtied the digits).
+    fps_w=$((frame % 60))
     if [ "$fps_w" -eq 0 ]; then
       gtick
       fps_t=$g_now
@@ -4159,10 +4156,10 @@ main() {
           fps_nv=$((fps_rendered * 1000000 / fps_dt))
           if [ "$fps_nv" -ne "$fps" ]; then
             fps=$fps_nv
-            digits_dirty=1
           fi
         fi
         fps_rendered=0
+        digits_dirty=1
       fi
       fps_t0=$fps_t
     fi
