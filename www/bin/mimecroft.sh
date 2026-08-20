@@ -2679,7 +2679,7 @@ draw_digits() {
   erase_rect 572 1818 160 62
   erase_rect 800 1818 176 62
   erase_rect 980 1818 300 62
-  erase_rect 1380 1818 48 62
+  erase_rect 1320 1818 48 62
   # digit grid: 32px per digit (8px×4), y=1840
   d_W=32
   d_Y=1840
@@ -2701,13 +2701,13 @@ draw_digits() {
   dh_b_x=$((dh_x+d_W))
   draw_char $dh_b $dh_b_x $d_Y 8 11 0.35 0.90 0.40
   dh_a_x=$((dh_b_x+d_W))
+  draw_char 37 $dh_a_x $d_Y 8 11 0.35 0.90 0.40
+  dh_b_x=$((dh_a_x+d_W))
   dh_a=$((maxhp/10+26))
   dh_b=$((maxhp%10+26))
-  draw_char $dh_a $dh_a_x $d_Y 8 11 0.35 0.90 0.40
-  dh_b_x=$((dh_a_x+d_W))
-  draw_char $dh_b $dh_b_x $d_Y 8 11 0.35 0.90 0.40
-  dh_slash_x=$((dh_x+d_W))
-  draw_char 37 $dh_slash_x $d_Y 8 11 0.35 0.90 0.40
+  draw_char $dh_a $dh_b_x $d_Y 8 11 0.35 0.90 0.40
+  dh_c_x=$((dh_b_x+d_W))
+  draw_char $dh_b $dh_c_x $d_Y 8 11 0.35 0.90 0.40
   # ART digits (found / total, slash between)
   dh_x=808
   dh_a=$((found_count/10+26))
@@ -2716,13 +2716,13 @@ draw_digits() {
   dh_b_x=$((dh_x+d_W))
   draw_char $dh_b $dh_b_x $d_Y 8 11 0.60 0.75 0.95
   dh_a_x=$((dh_b_x+d_W))
+  draw_char 37 $dh_a_x $d_Y 8 11 0.60 0.75 0.95
+  dh_b_x=$((dh_a_x+d_W))
   dh_a=$((TREASURE_TOTAL/10+26))
   dh_b=$((TREASURE_TOTAL%10+26))
-  draw_char $dh_a $dh_a_x $d_Y 8 11 0.60 0.75 0.95
-  dh_b_x=$((dh_a_x+d_W))
-  draw_char $dh_b $dh_b_x $d_Y 8 11 0.60 0.75 0.95
-  dh_slash_x=$((dh_x+d_W))
-  draw_char 37 $dh_slash_x $d_Y 8 11 0.60 0.75 0.95
+  draw_char $dh_a $dh_b_x $d_Y 8 11 0.60 0.75 0.95
+  dh_c_x=$((dh_b_x+d_W))
+  draw_char $dh_b $dh_c_x $d_Y 8 11 0.60 0.75 0.95
   # fps digits: Cnnn/Wnnn — digits in bright white
   dh_x=1048
   dh_a=$((cfps/100+26))
@@ -2742,10 +2742,9 @@ draw_digits() {
   draw_char $dh_b $dh_b_x $d_Y 8 11 0.95 0.95 0.95
   dh_c_x=$((dh_b_x+d_W))
   draw_char $dh_c $dh_c_x $d_Y 8 11 0.95 0.95 0.95
-  # licence digits (right of FPS — strikes remaining)
-  dh_x=$((dh_c_x+d_W+d_W))
+  # licence digit (right of LIC label — strikes remaining)
   dh_a=$((license+26))
-  draw_char $dh_a $dh_x $d_Y 8 11 0.95 0.60 0.30
+  draw_char $dh_a 1332 $d_Y 8 11 0.95 0.60 0.30
 }
 
 # ─── treasure name labels ───────────────────────────────────────────
