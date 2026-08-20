@@ -2680,52 +2680,72 @@ draw_digits() {
   erase_rect 800 1818 176 62
   erase_rect 980 1818 300 62
   erase_rect 1380 1818 48 62
-  # score digits
+  # digit grid: 32px per digit (8px×4), y=1840
+  d_W=32
+  d_Y=1840
+  # score digits (3 digits, no slash)
+  dh_x=252
   dh_a=$((score/100%10+26))
   dh_b=$((score/10%10+26))
   dh_c=$((score%10+26))
-  draw_char $dh_a 252 1840 8 11 0.95 0.85 0.30
-  draw_char $dh_b 284 1840 8 11 0.95 0.85 0.30
-  draw_char $dh_c 316 1840 8 11 0.95 0.85 0.30
-  # HP digits (current / max)
+  draw_char $dh_a $dh_x $d_Y 8 11 0.95 0.85 0.30
+  dh_b_x=$((dh_x+d_W))
+  draw_char $dh_b $dh_b_x $d_Y 8 11 0.95 0.85 0.30
+  dh_c_x=$((dh_b_x+d_W))
+  draw_char $dh_c $dh_c_x $d_Y 8 11 0.95 0.85 0.30
+  # HP digits (current / max, slash between)
+  dh_x=496
   dh_a=$((hp/10+26))
   dh_b=$((hp%10+26))
-  draw_char $dh_a 496 1840 8 11 0.35 0.90 0.40
-  draw_char $dh_b 528 1840 8 11 0.35 0.90 0.40
+  draw_char $dh_a $dh_x $d_Y 8 11 0.35 0.90 0.40
+  dh_b_x=$((dh_x+d_W))
+  draw_char $dh_b $dh_b_x $d_Y 8 11 0.35 0.90 0.40
+  dh_a_x=$((dh_b_x+d_W))
   dh_a=$((maxhp/10+26))
   dh_b=$((maxhp%10+26))
-  draw_char $dh_a 592 1840 8 11 0.35 0.90 0.40
-  draw_char $dh_b 624 1840 8 11 0.35 0.90 0.40
-  # the slash between current and max — the group's erase rect spans
-  # 492..652, which CLEARS the static slash (x=560), so redraw it with
-  # the digits (the ART group's erase does the same to x=952)
-  draw_char 37 560 1840 8 11 0.35 0.90 0.40
-  # ART digits (found / total) — shifted 80px left
+  draw_char $dh_a $dh_a_x $d_Y 8 11 0.35 0.90 0.40
+  dh_b_x=$((dh_a_x+d_W))
+  draw_char $dh_b $dh_b_x $d_Y 8 11 0.35 0.90 0.40
+  dh_slash_x=$((dh_x+d_W))
+  draw_char 37 $dh_slash_x $d_Y 8 11 0.35 0.90 0.40
+  # ART digits (found / total, slash between)
+  dh_x=808
   dh_a=$((found_count/10+26))
   dh_b=$((found_count%10+26))
-  draw_char $dh_a 808 1840 8 11 0.60 0.75 0.95
-  draw_char $dh_b 840 1840 8 11 0.60 0.75 0.95
+  draw_char $dh_a $dh_x $d_Y 8 11 0.60 0.75 0.95
+  dh_b_x=$((dh_x+d_W))
+  draw_char $dh_b $dh_b_x $d_Y 8 11 0.60 0.75 0.95
+  dh_a_x=$((dh_b_x+d_W))
   dh_a=$((TREASURE_TOTAL/10+26))
   dh_b=$((TREASURE_TOTAL%10+26))
-  draw_char $dh_a 904 1840 8 11 0.60 0.75 0.95
-  draw_char $dh_b 936 1840 8 11 0.60 0.75 0.95
-  draw_char 37 872 1840 8 11 0.60 0.75 0.95
-  # fps digits: Cnnn/Wnnn — digits in bright white, labels already drawn in static
+  draw_char $dh_a $dh_a_x $d_Y 8 11 0.60 0.75 0.95
+  dh_b_x=$((dh_a_x+d_W))
+  draw_char $dh_b $dh_b_x $d_Y 8 11 0.60 0.75 0.95
+  dh_slash_x=$((dh_x+d_W))
+  draw_char 37 $dh_slash_x $d_Y 8 11 0.60 0.75 0.95
+  # fps digits: Cnnn/Wnnn — digits in bright white
+  dh_x=1048
   dh_a=$((cfps/100+26))
   dh_b=$((cfps/10%10+26))
   dh_c=$((cfps%10+26))
-  draw_char $dh_a 1048 1840 8 11 0.95 0.95 0.95
-  draw_char $dh_b 1080 1840 8 11 0.95 0.95 0.95
-  draw_char $dh_c 1112 1840 8 11 0.95 0.95 0.95
+  draw_char $dh_a $dh_x $d_Y 8 11 0.95 0.95 0.95
+  dh_b_x=$((dh_x+d_W))
+  draw_char $dh_b $dh_b_x $d_Y 8 11 0.95 0.95 0.95
+  dh_c_x=$((dh_b_x+d_W))
+  draw_char $dh_c $dh_c_x $d_Y 8 11 0.95 0.95 0.95
+  dh_a_x=$((dh_c_x+d_W+d_W))
   dh_a=$((fps/100+26))
   dh_b=$((fps/10%10+26))
   dh_c=$((fps%10+26))
-  draw_char $dh_a 1184 1840 8 11 0.95 0.95 0.95
-  draw_char $dh_b 1216 1840 8 11 0.95 0.95 0.95
-  draw_char $dh_c 1248 1840 8 11 0.95 0.95 0.95
+  draw_char $dh_a $dh_a_x $d_Y 8 11 0.95 0.95 0.95
+  dh_b_x=$((dh_a_x+d_W))
+  draw_char $dh_b $dh_b_x $d_Y 8 11 0.95 0.95 0.95
+  dh_c_x=$((dh_b_x+d_W))
+  draw_char $dh_c $dh_c_x $d_Y 8 11 0.95 0.95 0.95
   # licence digits (right of FPS — strikes remaining)
+  dh_x=$((dh_c_x+d_W+d_W))
   dh_a=$((license+26))
-  draw_char $dh_a 1380 1840 8 11 0.95 0.60 0.30
+  draw_char $dh_a $dh_x $d_Y 8 11 0.95 0.60 0.30
 }
 
 # ─── treasure name labels ───────────────────────────────────────────
