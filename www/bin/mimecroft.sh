@@ -266,6 +266,7 @@ anim=0              # 1 while an action glides the camera
 precache_done=0     # the background sound pre-cache spawns once per session
 anim_t0=0           # wall-clock ms when the current glide started
 afr=(0 0)           # anim frame counters: [0]=frames rendered, [1]=sleep µs
+swr=(0 0)           # crawl sway offset: [0]=x milli, [1]=z milli (0 0 = no sway)
                     # (array — the transpiler desyncs scalar anim vars)
 ANIM_MS=200         # each action completes in 0.2s of wall time
 game_speed=100       # player speed as % of normal (100=normal, 10=10%, 5=5% — the settings menu's GAME SPEED item)
@@ -2074,6 +2075,17 @@ render_frame() {
   cxs=$fv
   fmt_pos $dpcz_ms
   czs=$fv
+  # crawl sway: the main loop computes the offset into swr[] (array —
+  # store-consistent; a scalar read here of crouched/anim/dyaw written
+  # in compute_display/start_anim desyncs in the transpiled shell).
+  # Only the RENDERED camera moves: the culling cell (dpx/dpz) and the
+  # collision position stay true.
+  if [ "${swr[0]}" -ne 0 ] || [ "${swr[1]}" -ne 0 ]; then
+    fmt_pos $((dpcx_ms + swr[0]))
+    cxs=$fv
+    fmt_pos $((dpcz_ms + swr[1]))
+    czs=$fv
+  fi
   fmt_pos $dpyw_ms
   yws=$fv
   # the eye height: standing 1.6 (the shader adds 0.5 to uCamPos.y, so
@@ -2194,13 +2206,18 @@ render_frame() {
   # grass patches on the marked walkable cells: thin quads at the
   # floor (top face at 0.525, just above the dirt plane's 0.5). The
   # depth test sorts them under the walls (written earlier) and over
-  # the floor plane (which draws with depth writes OFF).
+  # the floor plane (which draws with depth writes OFF). While CRAWLING
+  # (crouched) the eye is only 0.225 above the grass plane — a thin
+  # quad viewed at a grazing angle smears green across the screen, so
+  # skip the patches entirely while crouched (the dirt floor shows).
   gs_i=0
+  gs_skip=0
+  if [ "$crouched" -eq 1 ]; then gs_skip=1; fi
   while [ "$gs_i" -lt "$CELLS" ]; do
     # array reads go to a scalar FIRST (the game's discipline — an
     # arr[$i] read inside a test bracket doesn't transpile)
     gs_v=${grass[$gs_i]}
-    if [ "$gs_v" -eq 1 ]; then
+    if [ "$gs_v" -eq 1 ] && [ "$gs_skip" -eq 0 ]; then
       gs_x=$((gs_i % MAP_W))
       gs_z=$((gs_i / MAP_W))
       gs_draw=1
@@ -4139,7 +4156,22 @@ main() {
     # Idle frames keep a constant key (px·1000 / yaw·90000), so the
     # static view still caches. map_ver bumps on every cell write,
     # mimes_ver on every mime move/die.
-    view_key="$dpcx_ms $dpcz_ms $dpyw_ms $crouched $map_ver $mimes_ver"
+    # the crawl sway: crouched AND mid-glide (a crawl), the camera
+    # sways ~1/4 block (250 milli) left-right, perpendicular to the
+    # facing — a lazy sine sweep (period 1.2s, from the SCOS table) so
+    # the crawl reads as a body sway instead of a static duck. swr[]
+    # (array = store-consistent) carries the offset into render_frame;
+    # the sway phase also keys the view cache (crouched+glide only).
+    swr=(0 0)
+    swk=0
+    if [ "$crouched" -eq 1 ] && [ "$anim" -eq 1 ]; then
+      sw_ph=$(( (g_now % 1200000) * 360 / 1200000 ))
+      sw_v=$(( SCOS[$sw_ph] * 250 / 1000 ))
+      swr[0]=$(( sw_v * (0 - DIR_Z[$dyaw]) ))
+      swr[1]=$(( sw_v * DIR_X[$dyaw] ))
+      swk=$((g_now / 50000))
+    fi
+    view_key="$dpcx_ms $dpcz_ms $dpyw_ms $crouched $map_ver $mimes_ver $swk"
     hud_swap=0
     if [ "$view_key" != "$prev_view_key" ]; then
       render_frame
