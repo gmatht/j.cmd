@@ -3150,7 +3150,7 @@ draw_hud_canvas() {
     # borders the white core. The white core is a DIAMOND (the square
     # rotated 45° more than the ring: 30 + 45 = 75°) centred on the
     # barrel tip (0.475, -0.11) — the 30°-tilted barrel's top centre.
-    echo "R 0.605 -0.11 0.44 0.44 30 1.0 0.82 0.2 0.45
+    echo "R 0.580 -0.11 0.44 0.44 30 1.0 0.82 0.2 0.45
 R 0.575 -0.11 0.10 0.10 75 1.0 1.0 0.9 1.0" > /dev/webgl/hud/flash
   fi
   if [ "$digits_dirty" -eq 1 ]; then
