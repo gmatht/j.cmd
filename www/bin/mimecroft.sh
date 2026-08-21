@@ -4222,7 +4222,8 @@ game_over_popup() {
   else
     draw_text "LICENCE REVOKED" 15 660 1210 7 10 0.95 0.60 0.40
   fi
-  draw_text "PRESS R TO RESTART  SPACE TO QUIT" 33 560 980 6 8 0.85 0.85 0.85
+  #TODO: draw_text "PRESS R TO RESTART  SPACE TO QUIT" 33 560 980 6 8 0.85 0.85 0.85
+  draw_text "PRESS SPACE TO QUIT" 33 560 980 6 8 0.85 0.85 0.85
   echo "$ov_text" > /dev/webgl/hud
   echo "swap" > /dev/webgl/call
   # drop any keys queued during the losing frame (the shot/move that
