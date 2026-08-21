@@ -272,13 +272,26 @@ and run it as a command.
   },
 
   async cat(ctx, args) {
+    // GNU-style flags: -n number all lines, -b number non-blank lines,
+    // -s squeeze blank lines, -e/-E/-T/-A/-v accepted (no-op here — the
+    // other cat display tweaks aren't implemented). Flags are parsed so
+    // `cat -b file` numbers lines instead of trying to read "-b" as a file.
+    let numAll = false, numNonBlank = false, squeeze = false;
+    const files = [];
+    for (const a of args) {
+      if (a === "-n" || a === "--number") numAll = true;
+      else if (a === "-b" || a === "--number-nonblank") numNonBlank = true;
+      else if (a === "-s" || a === "--squeeze-blank") squeeze = true;
+      else if (a === "-e" || a === "-E" || a === "-t" || a === "-T" || a === "-v" || a === "-A" || a === "-u") { /* accepted, no-op */ }
+      else files.push(a);
+    }
     // in a pointer directory, `cat member` reads the scalar member's
     // value (nodeData); `cat dir` refuses like real cat; absolute paths
     // and unknown members fall through to the real fs.
-    if (ctx.ptrCwd && args.length) {
+    if (ctx.ptrCwd && files.length) {
       let hadPtrError = false;
       const rest = [];
-      for (const file of args) {
+      for (const file of files) {
         if (String(file).startsWith("/")) { rest.push(file); continue; }
         const res = builtins.ptrResolve(ctx, file);
         if (!res) { rest.push(file); continue; }
@@ -286,10 +299,37 @@ and run it as a command.
         ctx.stdout.write(String(res.value) + "\n");
       }
       if (rest.length === 0) return hadPtrError ? 1 : 0;
-      args = rest;
+      files.length = 0; files.push(...rest);
       if (hadPtrError) { /* still read the fs args below */ }
     }
-    if (args.length === 0) {
+    // Number/squeeze one text blob, returning the rewritten text and the
+    // next line number (the counter continues across files, like real cat -n).
+    const transformText = (text, startLine) => {
+      if (!numAll && !numNonBlank && !squeeze) return { text, nextLine: startLine };
+      const lines = text.split("\n");
+      let out = "";
+      let ln = startLine;
+      let prevBlank = false;
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const isLast = i === lines.length - 1;
+        const blank = line === "";
+        // -s: collapse runs of blank lines to one
+        if (squeeze && blank && prevBlank && !isLast) continue;
+        if (!isLast && (numAll || (numNonBlank && !blank))) {
+          out += String(ln).padStart(6) + "\t";
+          ln++;
+        } else if (numAll && isLast && line !== "") {
+          // the final line (no trailing \n) still gets numbered
+          out += String(ln).padStart(6) + "\t";
+        }
+        out += line;
+        if (!isLast) out += "\n";
+        prevBlank = blank;
+      }
+      return { text: out, nextLine: ln };
+    };
+    if (files.length === 0) {
       // No files — read from stdin (pipe input). Write the raw pipe
       // data so binary streams (gzip/zstd output) pass through bytes.
       const data = rawStdin;
@@ -297,12 +337,19 @@ and run it as a command.
       const endsNL = typeof data === "string"
         ? data.endsWith("\n")
         : data[data.length - 1] === 10;
-      ctx.stdout.write(data);
-      if (!endsNL) ctx.stdout.write("\n");
+      if (typeof data === "string") {
+        const r = transformText(data, 1);
+        ctx.stdout.write(r.text);
+        if (!endsNL && !r.text.endsWith("\n")) ctx.stdout.write("\n");
+      } else {
+        ctx.stdout.write(data);
+        if (!endsNL) ctx.stdout.write("\n");
+      }
       return 0;
     }
     let hadError = false;
-    for (const file of args) {
+    let nextLine = 1;
+    for (const file of files) {
       try {
         // Binary safe: read the raw bytes. Valid UTF-8 is written as
         // text (terminal rendering, grep pipelines); anything else
@@ -312,8 +359,11 @@ and run it as a command.
         let text = null;
         try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch {}
         if (text !== null) {
-          ctx.stdout.write(text);
-          if (!text.endsWith("\n")) ctx.stdout.write("\n");
+          const endsNL = text.endsWith("\n");
+          const r = transformText(text, nextLine);
+          nextLine = r.nextLine;
+          ctx.stdout.write(r.text);
+          if (!endsNL && !r.text.endsWith("\n")) ctx.stdout.write("\n");
         } else {
           ctx.stdout.write(bytes);
         }

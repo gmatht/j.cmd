@@ -69,15 +69,21 @@ tex_ver=10         # stone noise cells are now fixed 4px/2px (jagged at every re
 sm_sel=0              # settings-menu cursor (0=shift 1=size 2=seed 3=crt 4=corrupt 5=mime speed 6=mime names 7=sound mode 8=minimap 9=game speed 10=vsync 11=display size)
 sm_done=0
 sm_changed=0
+menu_active=0         # 1 while the settings menu is up — game sounds are muted
 headless=1            # set from /dev/webgl/state in main()
 # display size (the settings menu's DISPLAY row): 0=320p 1=480p 2=600p
-# (800x600, the default) 3=720p 4=1080p 5=1440p 6=FULL WINDOW. The 3D
+# 3=720p 4=1080p 5=1440p 6=FULL WINDOW 7=AUTO (3/4 of the window, the
+# default). The 3D
 # view + HUD are NDC-based (resolution-independent); only the fragment
 # shader's pixel effects (fx-400 CRT/vignette) need the view width, so
 # emit_fragment_shader re-compiles with --view <width> on a change.
-disp_size=2
+disp_size=7              # 7=AUTO (3/4 of the window) is the DEFAULT canvas size
 disp_w=800
 disp_h=600
+# difficulty — the MIMEs spawned when a treasure is claimed (the menu's
+# DIFFICULTY row): 0 "My uptime's too low to pkill" 1 "hey -c '!2 rough'"
+# 2 "while true; do Hz me; done" 3 "sk_hard" 5 "rm -rf /" (4 has no name)
+difficulty=2
 RANGE=12                          # shoot range
 TREASURE_TOTAL=10
 MIME_CAP=12
@@ -500,6 +506,9 @@ precache_sounds() {
 }
 
 play() { pl_note=$1; pl_mat=$2
+  # the settings menu is silent — the AI preview runs the game behind it,
+  # and its sounds (or a stray claim) must not leak into the menu
+  if [ "$menu_active" -eq 1 ]; then return; fi
   if [ "$sound" -eq 1 ]; then
     if [ "$SOUND_MODE" = "bash" ]; then
       snd_of_note "$pl_note"
@@ -1031,18 +1040,35 @@ claim_treasure() { ct_a=$1; ct_b=$2; ct_t=0
         # label/radar stop showing it
         set_cell $ct_a 1 $ct_b $AIR
         hud_static_dirty=1
-        echo ""
-        echo "=============================================="
-        echo "  TREASURE FOUND: ${TREASURES[$ct_t]}"
-        echo "  +100 score   +1 max HP"
-        echo "  artifacts recovered: $found_count / $TREASURE_TOTAL"
-        echo "  (the MIMEs can smell it — two more spawn)"
-        echo "=============================================="
-        play "C5 0.10"
-        play "E5 0.10"
-        play "G5 0.15"
-        spawn_mime
-        spawn_mime
+        if [ "$sm_ai_active" -eq 1 ]; then
+          # the PREVIEW AI collecting: no terminal banner and no notes
+          # (the sleeps would stall the wanderer; the notes are muted
+          # anyway) — the block vanishes and the MIMEs spawn below
+          :
+        else
+          echo ""
+          echo "=============================================="
+          echo "  TREASURE FOUND: ${TREASURES[$ct_t]}"
+          echo "  +100 score   +1 max HP"
+          echo "  artifacts recovered: $found_count / $TREASURE_TOTAL"
+          echo "  (the MIMEs can smell it — $difficulty more spawn)"
+          echo "=============================================="
+          play "C5 0.32"
+          sleep 0.05
+          play "C5 0.32"
+          sleep 0.05
+          play "D5 0.32"
+          sleep 0.05
+          play "C5 0.32"
+          sleep 0.05
+          play "E5 0.48"
+        fi
+        # spawn `difficulty` MIMEs (the DIFFICULTY row: 0/1/2/3/5)
+        spawn_i=0
+        while [ "$spawn_i" -lt "$difficulty" ]; do
+          spawn_mime
+          spawn_i=$((spawn_i + 1))
+        done
       fi
       return 0
     fi
@@ -1745,9 +1771,9 @@ load_textures() {
 # textures. The game draws these as 2D labels on the HUD layer at each
 # visible treasure's projected position (draw_treasure_labels).
 build_glyph_masks() {
-  GMASK=(0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
+  GMASK=(0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
   bg_g=0
-  while [ "$bg_g" -lt 66 ]; do
+  while [ "$bg_g" -lt 71 ]; do
     bg_m=0
     bg_k=0
     while [ "$bg_k" -lt 15 ]; do
@@ -1763,7 +1789,7 @@ build_glyph_masks() {
 
 # the pixel font index of each character of every label/banner name
 # (glyph_index's A-Z=0..25, 0-9=26..35, space=36, '/'=37, '-'=38,
-# a-z=40..65). The transpiler slices the STORE copy of a shared string
+# a-z=40..65, ': 66, ' 67, ! 68). The transpiler slices the STORE copy of a shared string
 # (the lowered ${name:$i:1} read sees "") and every per-char glyph came
 # back as the blank-space mask — the label loop is replaced by this
 # literal table, keyed by the whole name.
@@ -2370,7 +2396,7 @@ erase_rect() { er_cx=$1; er_cy=$2; er_w=$3; er_h=$4
 }
 
 # the viewmodel gun — a 3D-looking rectangular shape, bottom-right at 3/4
-# across, drawn back so it pokes off the bottom-right edge, tilted 20°
+# across, drawn back so it pokes off the bottom-right edge, tilted 30°
 # counter-clockwise. R-lines are rotated quads (R cx cy w h deg r g b)
 # rendered by the device; the muzzle flash appears at the barrel tip
 # after a shot.
@@ -2378,16 +2404,16 @@ draw_gun() {
   # receiver body (partially off the bottom/right edge) + top highlight
   # + barrel — STATIC, drawn once into the static layer (the muzzle
   # flash is per-frame and erased when it fades)
-  ov_text="${ov_text}R 0.85 -0.95 0.40 0.30 20 0.24 0.26 0.30
+  ov_text="${ov_text}R 0.85 -0.95 0.40 0.30 30 0.24 0.26 0.30
 "
-  ov_text="${ov_text}R 0.85 -0.82 0.40 0.05 20 0.32 0.34 0.38
+  ov_text="${ov_text}R 0.85 -0.82 0.40 0.05 30 0.32 0.34 0.38
 "
-  # barrel: front face + left highlight + right shade (tilted +20°)
-  ov_text="${ov_text}R 0.70 -0.50 0.16 0.90 20 0.30 0.33 0.38
+  # barrel: front face + left highlight + right shade (tilted +30°)
+  ov_text="${ov_text}R 0.70 -0.50 0.16 0.90 30 0.30 0.33 0.38
 "
-  ov_text="${ov_text}R 0.665 -0.50 0.03 0.90 20 0.44 0.47 0.52
+  ov_text="${ov_text}R 0.665 -0.50 0.03 0.90 30 0.44 0.47 0.52
 "
-  ov_text="${ov_text}R 0.735 -0.50 0.03 0.90 20 0.15 0.16 0.18
+  ov_text="${ov_text}R 0.735 -0.50 0.03 0.90 30 0.15 0.16 0.18
 "
 }
 
@@ -2395,9 +2421,14 @@ draw_gun() {
 # Index: A-Z=0..25, 0-9=26..35, space=36, '/'=37
 # 3×5 pixel font — flat table of 66 glyphs × 15 pixels (row-major).
 # Index: A-Z=0..25, 0-9=26..35, space=36, '/'=37, '-'=38, '.'=39, a-z=40..65
-GFONT=(1 1 1 1 0 1 1 1 1 1 0 1 1 0 1 1 1 0 1 0 1 1 1 0 1 0 1 1 1 0 1 1 1 1 0 0 1 0 0 1 0 0 1 1 1 1 1 0 1 0 1 1 0 1 1 0 1 1 1 0 1 1 1 1 0 0 1 1 0 1 0 0 1 1 1 1 1 1 1 0 0 1 1 0 1 0 0 1 0 0 1 1 1 1 0 0 1 1 1 1 0 1 1 1 1 1 0 1 1 0 1 1 1 1 1 0 1 1 0 1 1 1 1 0 1 0 0 1 0 0 1 0 1 1 1 0 0 1 0 0 1 0 0 1 1 0 1 1 1 1 1 0 1 1 1 0 1 0 0 1 1 0 1 0 1 1 0 0 1 0 0 1 0 0 1 0 0 1 1 1 1 0 1 1 1 1 1 1 1 1 0 1 1 0 1 1 0 1 1 1 1 1 0 1 1 0 1 1 0 1 1 1 1 1 0 1 1 0 1 1 0 1 1 1 1 1 1 0 1 0 1 1 1 0 1 0 0 1 0 0 1 1 1 1 0 1 1 0 1 1 1 0 1 1 1 1 1 0 1 0 1 1 1 0 1 0 1 1 0 1 1 1 1 1 0 0 1 1 1 0 0 1 1 1 1 1 1 1 0 1 0 0 1 0 0 1 0 0 1 0 1 0 1 1 0 1 1 0 1 1 0 1 1 1 1 1 0 1 1 0 1 1 0 1 1 0 1 0 1 0 1 0 1 1 0 1 1 1 1 1 1 1 1 0 1 1 0 1 1 0 1 0 1 0 1 0 1 1 0 1 1 0 1 1 0 1 0 1 0 0 1 0 0 1 0 1 1 1 0 0 1 0 1 0 1 0 0 1 1 1 1 1 1 1 0 1 1 0 1 1 0 1 1 1 1 0 1 0 1 1 0 0 1 0 0 1 0 1 1 1 1 1 1 0 0 1 1 1 1 1 0 0 1 1 1 1 1 1 0 0 1 1 1 1 0 0 1 1 1 1 1 0 1 1 0 1 1 1 1 0 0 1 0 0 1 1 1 1 1 0 0 1 1 1 0 0 1 1 1 1 1 1 1 1 0 0 1 1 1 1 0 1 1 1 1 1 1 1 0 0 1 0 1 0 0 1 0 0 1 0 1 1 1 1 0 1 1 1 1 1 0 1 1 1 1 1 1 1 1 0 1 1 1 1 0 0 1 1 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 1 0 1 0 1 0 0 1 0 0 0 0 0 0 0 0 1 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 0 0 0 1 1 1 0 1 1 0 1 1 1 1 1 0 0 1 0 0 1 1 0 1 0 1 1 1 0 0 0 0 1 1 1 1 0 0 1 0 0 1 1 1 0 0 1 0 0 1 1 0 1 1 0 1 1 1 1 0 0 0 1 1 1 1 0 1 1 1 0 1 1 1 0 0 1 0 1 1 0 1 0 0 1 0 0 1 0 0 0 0 1 1 1 1 0 1 1 1 1 0 0 1 1 0 0 1 0 0 1 1 0 1 0 1 1 0 1 0 1 0 0 0 0 0 1 0 0 1 0 0 1 0 0 0 1 0 0 0 0 0 1 0 0 1 1 1 1 1 0 0 1 0 1 1 1 0 1 0 1 1 0 1 1 0 0 1 0 0 1 0 0 1 0 0 0 1 1 0 0 0 1 0 1 1 1 1 1 1 1 1 0 1 0 0 0 1 1 0 1 0 1 1 0 1 1 0 1 0 0 0 1 1 1 1 0 1 1 0 1 1 1 1 0 0 0 1 1 0 1 0 1 1 1 0 1 0 0 0 0 0 1 0 1 1 0 1 1 1 1 0 0 1 0 0 0 0 0 0 1 1 0 1 0 1 1 0 0 0 0 0 1 1 1 1 0 0 0 0 1 1 1 1 0 1 0 0 1 0 1 1 1 0 1 0 0 0 1 0 0 0 0 0 0 1 0 1 1 0 1 1 1 1 0 0 0 0 0 0 1 0 1 1 0 1 0 1 0 0 0 0 0 0 0 1 0 1 1 1 1 1 1 1 0 0 0 0 0 0 1 0 1 0 1 0 1 0 1 0 0 0 1 0 1 1 0 1 1 1 1 0 0 1 0 0 0 0 0 0 1 1 1 0 1 0 1 1 1 0 0 0 0 1 0 0 0 0 0 1 0 0 0 0)
+GFONT=(1 1 1 1 0 1 1 1 1 1 0 1 1 0 1 1 1 0 1 0 1 1 1 0 1 0 1 1 1 0 1 1 1 1 0 0 1 0 0 1 0 0 1 1 1 1 1 0 1 0 1 1 0 1 1 0 1 1 1 0 1 1 1 1 0 0 1 1 0 1 0 0 1 1 1 1 1 1 1 0 0 1 1 0 1 0 0 1 0 0 1 1 1 1 0 0 1 1 1 1 0 1 1 1 1 1 0 1 1 0 1 1 1 1 1 0 1 1 0 1 1 1 1 0 1 0 0 1 0 0 1 0 1 1 1 0 0 1 0 0 1 0 0 1 1 0 1 1 1 1 1 0 1 1 1 0 1 0 0 1 1 0 1 0 1 1 0 0 1 0 0 1 0 0 1 0 0 1 1 1 1 0 1 1 1 1 1 1 1 1 0 1 1 0 1 1 0 1 1 1 1 1 0 1 1 0 1 1 0 1 1 1 1 1 0 1 1 0 1 1 0 1 1 1 1 1 1 0 1 0 1 1 1 0 1 0 0 1 0 0 1 1 1 1 0 1 1 0 1 1 1 0 1 1 1 1 1 0 1 0 1 1 1 0 1 0 1 1 0 1 1 1 1 1 0 0 1 1 1 0 0 1 1 1 1 1 1 1 0 1 0 0 1 0 0 1 0 0 1 0 1 0 1 1 0 1 1 0 1 1 0 1 1 1 1 1 0 1 1 0 1 1 0 1 1 0 1 0 1 0 1 0 1 1 0 1 1 1 1 1 1 1 1 0 1 1 0 1 1 0 1 0 1 0 1 0 1 1 0 1 1 0 1 1 0 1 0 1 0 0 1 0 0 1 0 1 1 1 0 0 1 0 1 0 1 0 0 1 1 1 1 1 1 1 0 1 1 0 1 1 0 1 1 1 1 0 1 0 1 1 0 0 1 0 0 1 0 1 1 1 1 1 1 0 0 1 1 1 1 1 0 0 1 1 1 1 1 1 0 0 1 1 1 1 0 0 1 1 1 1 1 0 1 1 0 1 1 1 1 0 0 1 0 0 1 1 1 1 1 0 0 1 1 1 0 0 1 1 1 1 1 1 1 1 0 0 1 1 1 1 0 1 1 1 1 1 1 1 0 0 1 0 1 0 0 1 0 0 1 0 1 1 1 1 0 1 1 1 1 1 0 1 1 1 1 1 1 1 1 0 1 1 1 1 0 0 1 1 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 1 0 1 0 1 0 0 1 0 0 0 0 0 0 0 0 1 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 0 0 0 1 1 1 0 1 1 0 1 1 1 1 1 0 0 1 0 0 1 1 0 1 0 1 1 1 0 0 0 0 1 1 1 1 0 0 1 0 0 1 1 1 0 0 1 0 0 1 1 1 1 1 0 1 1 1 1 0 0 0 1 1 1 1 0 1 1 1 0 1 1 1 0 0 1 0 1 0 1 1 1 0 1 0 0 1 0 0 0 0 1 1 1 1 0 1 1 1 1 0 0 1 1 0 0 1 0 0 1 1 0 1 0 1 1 0 1 0 1 0 0 0 0 0 1 0 0 1 0 0 1 0 0 0 1 0 0 0 0 0 1 0 0 1 1 1 1 1 0 0 1 0 1 1 1 0 1 0 1 1 0 1 1 0 0 1 0 0 1 0 0 1 0 0 0 1 1 0 0 0 1 0 1 1 1 1 1 0 1 1 0 1 0 0 0 1 1 0 1 0 1 1 0 1 1 0 1 0 0 0 1 1 1 1 0 1 1 0 1 1 1 1 0 0 0 1 1 0 1 0 1 1 1 0 1 0 0 0 0 0 1 0 1 1 0 1 1 1 1 0 0 1 0 0 0 0 0 0 1 1 0 1 0 1 1 0 0 0 0 0 1 1 1 1 0 0 0 0 1 1 1 1 0 1 0 0 1 0 1 1 1 0 1 0 0 0 1 0 0 0 0 0 0 1 0 1 1 0 1 1 1 1 0 0 0 0 0 0 1 0 1 1 0 1 0 1 0 0 0 0 0 0 0 1 0 1 1 1 1 1 1 1 0 0 0 0 0 0 1 0 1 0 1 0 1 0 1 0 0 0 1 0 1 1 0 1 1 1 1 0 0 1 0 0 0 0 0 0 1 1 1 0 1 0 1 1 1 0 0 0 0 1 0 0 0 0 0 1 0 0 0 0 0 1 0 0 1 0 0 0 0 0 0 0 0 0 0 0 1 0 0 1 0 0 1 0 0 0 0 0 1 0 0 0 0 0 1 0 0 0 0 0 1 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 1 1)
 
 glyph_index() { gi_ch=$1
+  # ' and ! aren't case-safe (the transpiler mangles a literal quote in a
+  # case pattern) — check them before the case
+  if [ "$gi_ch" = "'" ]; then gi=67
+  elif [ "$gi_ch" = "!" ]; then gi=68
+  else
   case $gi_ch in
     A) gi=0 ;;
     B) gi=1 ;;
@@ -2465,8 +2496,11 @@ glyph_index() { gi_ch=$1
     x) gi=63 ;;
     y) gi=64 ;;
     z) gi=65 ;;
+    ;) gi=69 ;;
+    _) gi=70 ;;
     *) gi=36 ;;
   esac
+  fi
 }
 # draw one glyph at (basex, basey) milli with pixel size px×py
 draw_char() { dg=$1; dbx=$2; dby=$3; dpx=$4; dpy=$5
@@ -3109,8 +3143,15 @@ draw_hud_canvas() {
   # (The old flash_clear erase+redraw cycle is gone: the gun in the
   # static layer is never overlapped by a persistent flash.)
   if [ "$muzzle" -gt 0 ]; then
-    echo "R 0.55 -0.08 0.22 0.22 20 1.0 0.82 0.2
-R 0.55 -0.08 0.10 0.10 20 1.0 1.0 0.9" > /dev/webgl/hud/flash
+    # the yellow ring is 2x the core and shifted right by 10% of the
+    # remaining distance from its (scaled) right edge to the canvas edge
+    # (0.475 + 0.22 = 0.695 → 0.305 remaining → +0.030 → centre 0.505); it
+    # fades to transparent at its outer edge but stays opaque where it
+    # borders the white core. The white core is a DIAMOND (the square
+    # rotated 45° more than the ring: 30 + 45 = 75°) centred on the
+    # barrel tip (0.475, -0.11) — the 30°-tilted barrel's top centre.
+    echo "R 0.605 -0.11 0.44 0.44 30 1.0 0.82 0.2 0.45
+R 0.575 -0.11 0.10 0.10 75 1.0 1.0 0.9 1.0" > /dev/webgl/hud/flash
   fi
   if [ "$digits_dirty" -eq 1 ]; then
     draw_digits
@@ -3237,6 +3278,20 @@ set_display_size() {
     3) disp_w=1280; disp_h=720 ;;
     4) disp_w=1920; disp_h=1080 ;;
     5) disp_w=2560; disp_h=1440 ;;
+    7)
+      # AUTO — 3/4 of the window: the device resolves the size; read it
+      # back so disp_w/disp_h hold the ACTUAL canvas dimensions (the
+      # fragment shader's fx-centring uses them)
+      echo "auto" > /dev/webgl/size
+      disp_sz=$(cat /dev/webgl/size)
+      case $disp_sz in
+        *x*)
+          disp_w=${disp_sz%x*}
+          disp_h=${disp_sz#*x}
+          ;;
+      esac
+      return
+      ;;
     *)
       # FULL WINDOW — the device resolves the size; read it back so
       # disp_w/disp_h hold the ACTUAL canvas dimensions (the fragment
@@ -3343,7 +3398,16 @@ settings_inc() {
   fi
   if [ "$sm_sel" -eq 11 ]; then
     # display size ladder (the right arrow increases the resolution)
-    if [ "$disp_size" -lt 6 ]; then disp_size=$((disp_size + 1)); else disp_size=0; fi
+    if [ "$disp_size" -lt 7 ]; then disp_size=$((disp_size + 1)); else disp_size=0; fi
+  fi
+  if [ "$sm_sel" -eq 12 ]; then
+    # difficulty ladder: 0 -> 1 -> 2 -> 3 -> 5 -> 0 (no 4 option)
+    if [ "$difficulty" -eq 0 ]; then difficulty=1
+    elif [ "$difficulty" -eq 1 ]; then difficulty=2
+    elif [ "$difficulty" -eq 2 ]; then difficulty=3
+    elif [ "$difficulty" -eq 3 ]; then difficulty=5
+    else difficulty=0
+    fi
   fi
 }
 
@@ -3421,7 +3485,16 @@ settings_dec() {
   fi
   if [ "$sm_sel" -eq 11 ]; then
     # display size (the left arrow decreases the resolution)
-    if [ "$disp_size" -gt 0 ]; then disp_size=$((disp_size - 1)); else disp_size=6; fi
+    if [ "$disp_size" -gt 0 ]; then disp_size=$((disp_size - 1)); else disp_size=7; fi
+  fi
+  if [ "$sm_sel" -eq 12 ]; then
+    # difficulty (the left arrow decreases — 5 -> 3 -> 2 -> 1 -> 0 -> 5)
+    if [ "$difficulty" -eq 0 ]; then difficulty=5
+    elif [ "$difficulty" -eq 1 ]; then difficulty=0
+    elif [ "$difficulty" -eq 2 ]; then difficulty=1
+    elif [ "$difficulty" -eq 3 ]; then difficulty=2
+    else difficulty=3
+    fi
   fi
 }
 
@@ -3507,7 +3580,7 @@ draw_settings_menu() {
   if [ "$sm_sel" -eq 10 ]; then sm_mark=">"; else sm_mark=" "; fi
   if [ "$vsync" -eq 1 ]; then sm_vs="ON"; else sm_vs="OFF"; fi
   echo "  $sm_mark  vsync       : $sm_vs"
-  # display size (0=320p 1=480p 2=600p 3=720p 4=1080p 5=1440p 6=FULL)
+  # display size (0=320p 1=480p 2=600p 3=720p 4=1080p 5=1440p 6=FULL 7=AUTO)
   case $disp_size in
     0) sm_disp_s="320p"; sm_displen=4 ;;
     1) sm_disp_s="480p"; sm_displen=4 ;;
@@ -3515,10 +3588,21 @@ draw_settings_menu() {
     3) sm_disp_s="720p"; sm_displen=4 ;;
     4) sm_disp_s="1080p"; sm_displen=5 ;;
     5) sm_disp_s="1440p"; sm_displen=5 ;;
-    *) sm_disp_s="FULL"; sm_displen=4 ;;
+    6) sm_disp_s="FULL"; sm_displen=4 ;;
+    *) sm_disp_s="AUTO"; sm_displen=4 ;;
   esac
   if [ "$sm_sel" -eq 11 ]; then sm_mark=">"; else sm_mark=" "; fi
   echo "  $sm_mark  canvas size : $sm_disp_s"
+  # difficulty — the MIMEs spawned per treasure claim (no 4 option)
+  case $difficulty in
+    0) sm_diff_s="My uptime's too low to pkill"; sm_difflen=28 ;;
+    1) sm_diff_s="hey -c '!2 rough'"; sm_difflen=17 ;;
+    2) sm_diff_s="while true;do HZ me;done"; sm_difflen=24 ;;
+    3) sm_diff_s="sk_hard"; sm_difflen=7 ;;
+    *) sm_diff_s="rm -rf /"; sm_difflen=8 ;;
+  esac
+  if [ "$sm_sel" -eq 12 ]; then sm_mark=">"; else sm_mark=" "; fi
+  echo "  $sm_mark  difficulty  : $sm_diff_s"
   # canvas card
   # canvas card — the leading C must be on its OWN line (a real
   # newline) or the device never clears the layer and old rects stay
@@ -3568,6 +3652,7 @@ draw_settings_menu() {
   draw_text "GAME SPEED" 10 560 700 8 11 0.60 0.75 0.95
   draw_text "VSYNC" 5 560 600 8 11 0.60 0.75 0.95
   draw_text "CANVAS SIZE" 11 560 500 8 11 0.60 0.75 0.95
+  draw_text "DIFFICULTY" 10 560 400 8 11 0.60 0.75 0.95
   draw_text $sm_shift_s 5 1000 1600 8 11 0.95 0.95 0.95
   draw_text $sm_size_s 2 1000 1500 8 11 0.95 0.95 0.95
   draw_text $sm_seed_s $sm_slen 1000 1400 8 11 0.95 0.95 0.95
@@ -3580,6 +3665,7 @@ draw_settings_menu() {
   draw_text $sm_gs_s $sm_gslen 1000 700 8 11 0.95 0.95 0.95
   draw_text $sm_vsync_s $sm_vsync_len 1000 600 8 11 0.95 0.95 0.95
   draw_text $sm_disp_s $sm_displen 1000 500 8 11 0.95 0.95 0.95
+  draw_text $sm_diff_s $sm_difflen 1000 400 8 11 0.95 0.95 0.95
   if [ "$sm_sel" -eq 0 ]; then draw_rect "-0.520" "0.583" "0.016" "0.030" 1.0 0.85 0.30
   elif [ "$sm_sel" -eq 1 ]; then draw_rect "-0.520" "0.483" "0.016" "0.030" 1.0 0.85 0.30
   elif [ "$sm_sel" -eq 2 ]; then draw_rect "-0.520" "0.383" "0.016" "0.030" 1.0 0.85 0.30
@@ -3592,6 +3678,7 @@ draw_settings_menu() {
   elif [ "$sm_sel" -eq 9 ]; then draw_rect "-0.520" "-0.317" "0.016" "0.030" 1.0 0.85 0.30
   elif [ "$sm_sel" -eq 10 ]; then draw_rect "-0.520" "-0.417" "0.016" "0.030" 1.0 0.85 0.30
   elif [ "$sm_sel" -eq 11 ]; then draw_rect "-0.520" "-0.517" "0.016" "0.030" 1.0 0.85 0.30
+  elif [ "$sm_sel" -eq 12 ]; then draw_rect "-0.520" "-0.617" "0.016" "0.030" 1.0 0.85 0.30
   else draw_rect "-0.520" "-0.417" "0.016" "0.030" 1.0 0.85 0.30; fi
   draw_text "UP/DOWN SELECT - LEFT/RIGHT CHANGE" 34 340 250 7 10 0.85 0.85 0.85
   draw_text "SPACE/ESC START - Q QUIT" 24 500 180 7 10 0.85 0.85 0.85
@@ -3607,8 +3694,158 @@ draw_settings_menu() {
   echo "$ov_text" > /dev/webgl/hud
 }
 
+# ─── menu AI preview ──────────────────────────────────────────────
+# When the pre-game settings menu loads, a simple AI wanders the maze in
+# the background: the 3D renders behind the menu card at 50% brightness
+# (a CSS filter on the canvas) for up to 60s, then goes idle. The game
+# HUD is suppressed (the menu card is the only HUD — the score/radar
+# would interfere); the AI moves itself, so the player's menu keys are
+# unaffected. When the player leaves the menu the preview state is
+# discarded — main() re-runs start_level and the real game starts fresh.
+sm_ai_active=0   # 1 = the AI preview is running
+sm_ai_t0=0       # wall-clock µs when the preview started
+sm_ai_idle=0     # 1 once the 60s AI play finished (the view idles)
+sm_ai_frame=0    # the AI's own frame counter
+sm_ai_keys=""   # the AI's current keys
+
+# the AI's preview wanderer: walk forward; shoot the FIRST MIME in the
+# facing row (the scan stops at a wall — the shot can't pass blocks);
+# turning is left to preview_frame: at a wall (random side, so it never
+# just bounces back and forth) or randomly at a branch (a side passage
+# is open). The anim glide (ANIM_MS=0.2s) paces the steps.
+ai_key() {
+  fx=${DIR_X[$yaw]}
+  fz=${DIR_Z[$yaw]}
+  ai_shot=0
+  ai_go=0
+  ai_i=1
+  while [ "$ai_i" -le "$RANGE" ]; do
+    ai_tx=$((px + fx * ai_i))
+    ai_tz=$((pz + fz * ai_i))
+    if [ "$ai_tx" -lt 0 ] || [ "$ai_tx" -ge "$MAP_W" ]; then break; fi
+    if [ "$ai_tz" -lt 0 ] || [ "$ai_tz" -ge "$MAP_D" ]; then break; fi
+    mime_at $ai_tx $ai_tz
+    if [ "$mf" -eq 1 ]; then ai_shot=1; break; fi
+    get_cell $ai_tx 1 $ai_tz
+    if [ "$gv" -eq "$TREASURE" ]; then ai_go=1; break; fi
+    if [ "$gv" -ne "$AIR" ]; then break; fi
+    ai_i=$((ai_i + 1))
+  done
+  if [ "$ai_shot" -eq 1 ]; then
+    sm_ai_keys="space"
+  else
+    sm_ai_keys="w"
+  fi
+}
+
+# start the background AI play: dim the canvas to 50%, generate the maze
+# (start_level — the real game re-runs it after the menu), reset the AI
+# clock.
+preview_start() {
+  echo "50" > /dev/webgl/dim
+  sm_ai_active=1
+  sm_ai_idle=0
+  sm_ai_frame=0
+  start_level
+  gtick
+  sm_ai_t0=$g_now
+}
+
+# one AI frame: advance the glide, apply the patrol, render the 3D
+# (render_frame — no game HUD) and present. The menu card stays on the
+# persistent HUD layer, composited over the 3D at swap.
+preview_frame() {
+  sm_ai_frame=$((sm_ai_frame + 1))
+  gtick
+  g_last=$g_now
+  # advance an in-flight glide
+  if [ "$anim" -eq 1 ]; then
+    anim_el=$((g_now - anim_t0))
+    anim_ms_us=$((anim_ms * 1000))
+    if [ "$anim_el" -ge "$anim_ms_us" ]; then
+      px=${an[3]}
+      pz=${an[4]}
+      yaw=${an[5]}
+      anim=0
+      # the AI bumped into a hidden treasure — PICK IT UP (the real
+      # game's arrival check claims; the preview re-creates it here so
+      # the wanderer actually collects what it walks into)
+      get_cell $px 1 $pz
+      if [ "$gv" -eq "$TREASURE" ]; then
+        claim_treasure $px $pz
+      fi
+    fi
+  fi
+  # the AI moves itself for up to 60s, then idles
+  if [ "$sm_ai_idle" -eq 0 ]; then
+    sm_ai_el=$((g_now - sm_ai_t0))
+    if [ "$sm_ai_el" -ge 60000000 ]; then sm_ai_idle=1; fi
+  fi
+  if [ "$anim" -eq 0 ] && [ "$sm_ai_idle" -eq 0 ]; then
+    ai_key
+    fx=${DIR_X[$yaw]}
+    fz=${DIR_Z[$yaw]}
+    bx=$((0 - fx))
+    bz=$((0 - fz))
+    case $sm_ai_keys in
+      *space*)
+        # a MIME is in the facing row — shoot it
+        shoot
+        ;;
+      *ArrowLeft*) start_turn 3 ;;
+      *ArrowRight*) start_turn 1 ;;
+      *ArrowUp*|*w*)
+        # walk forward if the cell is clear; at a wall pick a side
+        # randomly (never bounce back and forth), and at a BRANCH (the
+        # forward cell AND a side cell are open) randomly take the side
+        # passage. A TREASURE directly ahead overrides all of that:
+        # ai_go skips the branch turn so the AI always goes straight
+        # toward the hidden artifact.
+        can_step $((px + fx)) $((pz + fz))
+        if [ "$cs" -eq 1 ]; then
+          if [ "$ai_go" -ne 1 ]; then
+            rand 3
+            if [ "$rv" -eq 0 ]; then
+              ai_ry=$(( (yaw + 1) % 4 ))
+              can_step $((px + ${DIR_X[$ai_ry]})) $((pz + ${DIR_Z[$ai_ry]}))
+              if [ "$cs" -eq 1 ]; then
+                start_turn 1
+              else
+                ai_ly=$(( (yaw + 3) % 4 ))
+                can_step $((px + ${DIR_X[$ai_ly]})) $((pz + ${DIR_Z[$ai_ly]}))
+                if [ "$cs" -eq 1 ]; then start_turn 3; fi
+              fi
+            fi
+          fi
+          if [ "$anim" -eq 0 ]; then
+            try_anim_move $fx $fz
+          fi
+        else
+          # the cell ahead isn't AIR — a TREASURE is walkable floor
+          # (can_step is AIR-only, but try_anim_move steps the AI onto
+          # it and the glide-end claim picks it up); anything else is a
+          # wall → turn
+          get_cell $((px + fx)) 1 $((pz + fz))
+          if [ "$gv" -eq "$TREASURE" ]; then
+            try_anim_move $fx $fz
+          else
+            rand 2
+            if [ "$rv" -eq 0 ]; then start_turn 1; else start_turn 3; fi
+          fi
+        fi
+        ;;
+      *ArrowDown*|*s*) try_anim_move $bx $bz ;;
+    esac
+  fi
+  compute_display
+  # the 3D view + the mimes (static during the preview)
+  render_frame
+  echo "swap" > /dev/webgl/call
+}
+
 settings_menu() {
   if [ "$headless" -eq 1 ]; then return; fi
+  menu_active=1
   sm_mode=$1
   sm_disp_old=$disp_size
   tex_bg_n=0
@@ -3620,6 +3857,11 @@ settings_menu() {
   echo "clear" > /dev/webgl/call
   echo "swap" > /dev/webgl/call
   draw_settings_menu
+  # the PRE-GAME menu runs the 3D AI preview in the background (the
+  # mid-game "live" menu is over the real game, so no preview there)
+  if [ "$sm_mode" != "live" ]; then
+    preview_start
+  fi
   sm_done=0
   while [ "$sm_done" -eq 0 ]; do
     sm_keys=$(cat /dev/webgl/key)
@@ -3648,22 +3890,22 @@ settings_menu() {
           ;;
         *ArrowUp*)
           sm_sel=$((sm_sel - 1))
-          if [ "$sm_sel" -lt 0 ]; then sm_sel=11; fi
+          if [ "$sm_sel" -lt 0 ]; then sm_sel=12; fi
           sm_changed=1
           ;;
         *ArrowDown*)
           sm_sel=$((sm_sel + 1))
-          if [ "$sm_sel" -gt 11 ]; then sm_sel=0; fi
+          if [ "$sm_sel" -gt 12 ]; then sm_sel=0; fi
           sm_changed=1
           ;;
         *w*)
           sm_sel=$((sm_sel - 1))
-          if [ "$sm_sel" -lt 0 ]; then sm_sel=11; fi
+          if [ "$sm_sel" -lt 0 ]; then sm_sel=12; fi
           sm_changed=1
           ;;
         *s*)
           sm_sel=$((sm_sel + 1))
-          if [ "$sm_sel" -gt 11 ]; then sm_sel=0; fi
+          if [ "$sm_sel" -gt 12 ]; then sm_sel=0; fi
           sm_changed=1
           ;;
         *d*)
@@ -3711,11 +3953,25 @@ settings_menu() {
         sm_tex_n=$((sm_tex_n + 1))
       fi
     fi
-    # wipe the back buffer before presenting (see above)
-    echo "clear" > /dev/webgl/call
-    echo "swap" > /dev/webgl/call
+    # wipe the back buffer before presenting (see above) — or, in the
+    # pre-game AI preview, render the 3D behind the menu card instead
+    # (render_frame does its own clear; the swap composites the card)
+    if [ "$sm_ai_active" -eq 1 ]; then
+      preview_frame
+    else
+      echo "clear" > /dev/webgl/call
+      echo "swap" > /dev/webgl/call
+    fi
     sleep 0.05
   done
+  # the preview is done — restore the full brightness; the real game
+  # re-runs start_level so the AI's wanderings are discarded
+  if [ "$sm_ai_active" -eq 1 ]; then
+    echo "100" > /dev/webgl/dim
+    sm_ai_active=0
+  fi
+  # the menu is over — game sounds are unmuted
+  menu_active=0
   # the menu's background load is done — main's load_textures replays
   # the /tmp cache with the plain loading-screen geometry
   lt_menu=0
@@ -3933,6 +4189,66 @@ mined_out_popup() {
     sleep 0.05
   done
   # wipe the popup (the static rebuild after start_level redraws the HUD)
+  echo "C" > /dev/webgl/hud
+}
+
+# GAME OVER — the player LOST (hp 0 or the licence revoked). Same popup
+# + pause as MINED OUT / LEVEL CLEARED: the game freezes on the final
+# frame and waits for the player to dismiss it (SPACE / Enter / a move
+# key; q quits) instead of cutting straight back to the shell. The
+# terminal banner mirrors the canvas popup; the final stats still print
+# after the dismissal.
+game_over_popup() {
+  echo ""
+  echo "═══════════════════════════════════════════════"
+  if [ "$hp" -le 0 ]; then
+    echo "   GAME OVER — the MIMEs got you on level $level!"
+  else
+    echo "   GAME OVER — LICENCE REVOKED!"
+  fi
+  echo "   score $score · hp $hp/$maxhp · licence $license / 3"
+  echo "   press R to restart · SPACE to quit"
+  echo "═══════════════════════════════════════════════"
+  # canvas popup: the same dark panel + text as MINED OUT, in red
+  ov_text="C
+"
+  draw_rect "-0.05" "0.15" "0.90" "0.34" 0.04 0.05 0.09
+  draw_text "GAME OVER" 9 760 1360 12 16 0.95 0.30 0.30
+  if [ "$hp" -le 0 ]; then
+    draw_text "THE MIMES GOT YOU" 17 660 1210 7 10 0.95 0.60 0.40
+  else
+    draw_text "LICENCE REVOKED" 15 660 1210 7 10 0.95 0.60 0.40
+  fi
+  draw_text "PRESS R TO RESTART  SPACE TO QUIT" 33 560 980 6 8 0.85 0.85 0.85
+  echo "$ov_text" > /dev/webgl/hud
+  echo "swap" > /dev/webgl/call
+  # drop any keys queued during the losing frame (the shot/move that
+  # killed the player) so the popup PAUSES for a fresh keypress instead
+  # of being dismissed instantly by the leftover input
+  echo "clear" > /dev/webgl/key
+  # pause until the player dismisses the popup
+  gp_done=0
+  while [ "$gp_done" -eq 0 ] && [ "$quit" -eq 0 ]; do
+    gp_keys=$(cat /dev/webgl/key)
+    case $gp_keys in
+      *q*)
+        quit=1
+        gp_done=1
+        ;;
+      *space*|*Enter*|*Escape*|*w*|*a*|*s*|*d*|*ArrowUp*|*ArrowDown*|*ArrowLeft*|*ArrowRight*)
+        gp_done=1
+        ;;
+      *r*)
+        # R = a fresh game (the restart loop below re-runs the maze)
+        restart=1
+        gp_done=1
+        ;;
+    esac
+    # heartbeat swap keeps the canvas + the keyboard grab alive
+    echo "swap" > /dev/webgl/call
+    sleep 0.05
+  done
+  # wipe the popup (the canvas hides right after)
   echo "C" > /dev/webgl/hud
 }
 
@@ -4164,6 +4480,10 @@ main() {
   # zero the device's GL-side HUD timers so the #stats read below
   # covers exactly this loop window (not the menu / loading)
   echo "reset" > /dev/webgl/stats
+  # R on the game-over screen re-runs the whole game loop with a fresh
+  # run state (the outer restart loop; the inner loops are the game)
+  restart=0
+  while [ "$restart" -eq 0 ]; do
   while [ "$quit" -eq 0 ] && [ "$hp" -gt 0 ] && [ "$license" -gt 0 ]; do
   while [ "$quit" -eq 0 ] && [ "$hp" -gt 0 ] && [ "$license" -gt 0 ] && [ "$treasures_left" -gt 0 ]; do
     frame=$((frame + 1))
@@ -4401,6 +4721,7 @@ main() {
     # the frame is fully static (no swap; the keyboard heartbeat below
     # keeps the grab alive)
     if [ "$hud_swap" -eq 1 ] || [ "$digits_dirty" -eq 1 ] || [ "$muzzle" -gt 0 ] || [ "$hud_static_dirty" -eq 1 ]; then
+      fp_swapped=1
       draw_hud_canvas
       gspan "hud"
       echo "swap" > /dev/webgl/call
@@ -4408,6 +4729,7 @@ main() {
       fps_rendered=$((fps_rendered + 1))
       if [ "$anim" -eq 1 ]; then afr[0]=$((afr[0] + 1)); fi
     else
+      fp_swapped=0
       # keyboard heartbeat: the device releases keys 2s after the last
       # swap — a bare swap (the back buffer is unchanged) every ~1s
       # keeps the game's keyboard grab alive while idling. (frame % 100
@@ -4454,20 +4776,24 @@ main() {
     # never bites and every frame paints exactly once.
     gtick
     fp_el=$((g_now - fp_t0))
-    # frame budget: the swap's requestAnimationFrame (webgldev) is the REAL
-    # vsync — it presents every rendered frame exactly at the display
-    # refresh, so a CPU budget near the 16.7ms period would double-pace
-    # and overshoot the slot (the 55fps misses). Keep a single modest
-    # budget (10ms — the legacy 100fps cap) for BOTH vsync settings: the
-    # rAF absorbs the remainder and every presented frame lands on a
-    # refresh. "vsync OFF" therefore still runs at the display's 60Hz —
-    # only the CPU yield is shorter.
-    fp_budget=10000
-    if [ "$fp_el" -lt "$fp_budget" ]; then
-      fp_wait=$(((fp_budget - fp_el + 999) / 1000))
-      if [ "$fp_wait" -le 3 ]; then fp_wait=0; fi
-    else
+    # frame pacing: the swap's requestAnimationFrame (webgldev) is the REAL
+    # vsync — it presents every RENDERED frame exactly at the display
+    # refresh, so a presented frame needs no CPU sleep (sleeping would
+    # overshoot the slot — the 55fps misses). An IDLE frame (nothing
+    # presented, fp_swapped=0) has no rAF to pace it — sleep it to the
+    # refresh period instead of the old 10ms/100fps cap, so the refresh
+    # rate is the ONLY fps limiter (the loop never spins faster than the
+    # display). Same for both vsync settings.
+    if [ "$fp_swapped" -eq 1 ]; then
       fp_wait=0
+    else
+      fp_budget=16000
+      if [ "$fp_el" -lt "$fp_budget" ]; then
+        fp_wait=$(((fp_budget - fp_el + 999) / 1000))
+        if [ "$fp_wait" -le 3 ]; then fp_wait=0; fi
+      else
+        fp_wait=0
+      fi
     fi
     fmt3 $fp_wait
     sleep 0.$fv
@@ -4532,6 +4858,52 @@ main() {
       echo ""
       echo "  ── MINED OUT — an artifact was lost; LEVEL $level begins (licence $license / 3) ──"
     fi
+  done
+  # the player LOST (hp 0 or licence revoked): freeze on a GAME OVER
+  # popup (like MINED OUT) instead of cutting straight to the shell —
+  # the player dismisses it (SPACE / Enter / a move key; q quits). The
+  # auto-play demo skips the pause (it must quit + print its stats).
+  if [ "$hp" -le 0 ] || [ "$license" -le 0 ]; then
+    if [ "$demo" -eq 0 ]; then
+      game_over_popup
+    fi
+  fi
+  if [ "$restart" -eq 1 ]; then
+    # R on the game-over screen: a fresh game — reset the run state,
+    # regenerate the maze + the HUD, and re-run the loop (the block
+    # textures / labels are cached in /tmp, so this is fast)
+    level=1
+    score=0
+    maxhp=10
+    hp=10
+    license=3
+    frame=0
+    quit=0
+    dirty=1
+    vsync_miss=0; vsync_extra=0; vsync_sum=0; vsync_max=0; vsync_n=0
+    fp_prev_top=0
+    vm_in=0; vm_anim=0; vm_disp=0; vm_mime=0; vm_render=0; vm_hudb=0
+    vm_hud=0; vm_swap=0; vm_sleepa=0; vm_sleepi=0; vm_scene=0; vm_rf=0; vm_other=0
+    fd_in=0; fd_anim=0; fd_disp=0; fd_mime=0; fd_render=0; fd_hudb=0
+    fd_hud=0; fd_swap=0; fd_sleepa=0; fd_sleepi=0; fd_scene=0; fd_rf=0
+    pl_in=0; pl_anim=0; pl_disp=0; pl_mime=0; pl_render=0; pl_hudb=0
+    pl_hud=0; pl_swap=0; pl_sleepa=0; pl_sleepi=0; pl_scene=0; pl_rf=0
+    g_in=0; g_anim=0; g_disp=0; g_mime=0; g_render=0; g_hudb=0
+    g_hud=0; g_swap=0; g_sleepa=0; g_sleepi=0; g_scene=0; g_rf=0; g_setup=0
+    start_level
+    print_map_once
+    hud_build_static
+    hud_static_dirty=0
+    load_labels
+    load_mime_labels
+    echo "  ready."
+    sleep 0.8
+    gtick
+    g_t0=$g_now
+    echo "reset" > /dev/webgl/stats
+    continue
+  fi
+  break
   done
   echo "hide" > /dev/webgl/call
   echo ""

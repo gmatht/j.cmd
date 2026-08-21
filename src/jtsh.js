@@ -9,6 +9,8 @@
 // Usage:
 //   node src/jtsh.js           # interactive REPL
 //   node src/jtsh.js < file    # batch mode from stdin
+//   node src/jtsh.js -c '…'    # run a bash line via bash2js
+//   node src/jtsh.js echo -n hi  # any -.* arg jtsh doesn't own → bash2js
 // -----------------------------------------------------------------
 
 import { createInterface } from "readline";
@@ -1284,6 +1286,67 @@ function exitRepl() {
 
 async function runReplLine(line) {
   return sharedRunReplLine(line, shellCtx);
+}
+
+// ─── CLI invocation: node src/jtsh.js [args...] ────────────────
+// jtsh understands a few of its own flags; any OTHER -.* argument it
+// does not understand is handed off to bash2js — the whole command
+// line is transpiled as bash source and executed (the same bash →
+// ESTree → JS → run pipeline as the shell's `bash` builtin):
+//
+//   jtsh -c 'echo hi'       → prints hi            (bash -c style)
+//   jtsh -e 'x=1; echo $x'  → prints 1             (bash -e style)
+//   jtsh -f script.sh       → runs the script file (bash -f style)
+//   jtsh echo -n hi         → inline bash program, flags and all
+//   jtsh -x foo             → handed to bash2js: `-x foo: command not found`
+const jtshUsage = `jtsh — a minimal shell that runs .js files as commands
+(bash scripts run through the bash2js transpiler)
+
+Usage:
+  jtsh                     interactive REPL
+  jtsh < file               batch mode from stdin
+  jtsh -h, --help           this help
+  jtsh -c 'bash line'       run a bash command line (handed to bash2js)
+  jtsh -e 'bash line'       same as -c
+  jtsh -f script.sh         run a bash script file (handed to bash2js)
+  jtsh 'bash line'          run an inline bash program (handed to bash2js)
+
+Any -.* argument jtsh does not understand is handed off to bash2js:
+the command line is transpiled as bash and executed.
+`;
+
+const argv = process.argv.slice(2);
+if (argv.length > 0) {
+  if (argv[0] === "-h" || argv[0] === "--help") {
+    process.stdout.write(jtshUsage);
+    process.exit(0);
+  }
+  // The commandline carries a flag jtsh does not own (lone `-` means
+  // "read stdin" and keeps the batch path; `--` is an understood
+  // end-of-options marker). Hand it off to bash2js.
+  const handedOff = argv.some((a) => a.startsWith("-") && a !== "-" && a !== "--");
+  if (handedOff) {
+    let code;
+    if (argv[0] === "-c" || argv[0] === "-e" || argv[0] === "-f" || argv[0] === "--file") {
+      // bash-style source flags — the `bash` builtin's exact semantics
+      // (-c/-e: the next argument is the program; -f/--file: a script
+      // file from the VFS).
+      code = await builtins.bash(argv);
+    } else {
+      // Inline bash: the WHOLE command line is the program (so a flag
+      // deep in the args — `jtsh 'echo -n hi'` — is bash, not an
+      // option).
+      code = await runBash(fs, argv.join(" "), {
+        stdout: process.stdout,
+        stderr: process.stderr,
+        runCmd: shellCtx.runNestedCommand,
+        args: [],
+        argv0: "jtsh",
+        stdin: "",
+      });
+    }
+    process.exit(typeof code === "number" ? code : 0);
+  }
 }
 
 const rl = createInterface({

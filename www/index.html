@@ -3935,6 +3935,9 @@ const shellCtx = {
   fs,
   shellExec: runNestedCommand,
   runNestedCommand,
+  // the shared builtins (which, command, …) resolve through ctx.findCommand
+  // — same resolver as the dispatcher's resolveCommand
+  findCommand: (name) => shellResolve(shellCtx, name),
   resolveCommand: (name) => shellResolve(shellCtx, name),
   get builtins() { return builtins; },
   syncOtVarsFromStore: () => syncOtVarsFromStore(otRt, otVars),

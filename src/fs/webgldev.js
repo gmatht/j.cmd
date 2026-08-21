@@ -187,6 +187,7 @@ export class WebGLDevice {
                                     // churn
     this._hudFlashProg = null;      // tiny color-quad shader for the overlay
     this._hudFlashVerts = null;     // per-quad vertex buffer
+    this._hudDimVerts = null;       // fullscreen dim-quad vertex buffer
     this._hudProg = null;           // built-in composite program (internal)
     this._hudVerts = null;          // fullscreen textured-quad buffer
     this._hudPosLoc = null;         // cached attrib/uniform locations (set once)
@@ -215,6 +216,8 @@ export class WebGLDevice {
     this._keyListener = null;
     this._fullWindow = false;       // canvas sized to the window ("full" — the
                                     // only mode that hides the terminal scrollbar)
+    this._dim = 1;                  // 3D brightness (1 = full; the menu AI preview
+                                    // dims the back buffer to 0.5, HUD untouched)
     this._null = false;              // headless null-device mode (no DOM)
   }
 
@@ -239,8 +242,8 @@ export class WebGLDevice {
     }
     try {
       const canvas = document.createElement("canvas");
-      canvas.width = 800;
-      canvas.height = 600;
+      canvas.width = this._viewW || Math.round((typeof window !== "undefined" && window.innerWidth) ? window.innerWidth * 0.75 : 800);
+      canvas.height = this._viewH || Math.round((typeof window !== "undefined" && window.innerHeight) ? window.innerHeight * 0.75 : 600);
       canvas.id = "sh2runtime-webgl";
       canvas.style.cssText = [
         "position:fixed", "right:12px", "bottom:12px", "z-index:9999",
@@ -638,6 +641,10 @@ export class WebGLDevice {
       const hadFrame = this._backDirty || this._hudDirty;
       if (hadFrame) {
         const t0 = this._tickUs();
+        // the 3D brightness: dim the BACK BUFFER first (a translucent
+        // black quad) so the HUD composite below draws the menu card at
+        // FULL brightness over the dimmed maze
+        if (this._dim < 1 && this._gl) this._drawDim(this._gl);
         this._compositeHud();
         this._glHudCompositeUs += this._tickUs() - t0;
         this._glHudCompCalls++;
@@ -1165,8 +1172,11 @@ export class WebGLDevice {
 
   _linkFlashProgram() {
     const gl = this._gl;
-    const vsSrc = "attribute vec2 aPosition; uniform vec4 uColor; varying vec4 vColor; void main() { vColor = uColor; gl_Position = vec4(aPosition, 0.0, 1.0); }";
-    const fsSrc = "precision mediump float; varying vec4 vColor; void main() { gl_FragColor = vColor; }";
+    // radial muzzle-flash falloff: the fragment alpha stays 1 inside the
+    // rect's inner-OPAQUE radius (uFade × the half-extent, so the yellow
+    // ring borders the white core opaque) and fades to 0 at the edge.
+    const vsSrc = "attribute vec2 aPosition; uniform vec2 uCenter; uniform vec2 uHalf; uniform vec4 uColor; uniform float uFade; varying vec4 vColor; varying vec2 vPos; varying vec2 vCenter; varying vec2 vHalf; varying float vFade; void main() { vColor = uColor; vPos = aPosition; vCenter = uCenter; vHalf = uHalf; vFade = uFade; gl_Position = vec4(aPosition, 0.0, 1.0); }";
+    const fsSrc = "precision mediump float; varying vec4 vColor; varying vec2 vPos; varying vec2 vCenter; varying vec2 vHalf; varying float vFade; void main() { float n = length((vPos - vCenter) / max(vHalf, vec2(0.0001))); float a = vFade >= 0.999 ? 1.0 : 1.0 - smoothstep(vFade, 1.0, n); gl_FragColor = vec4(vColor.rgb, vColor.a * a); }";
     const mk = (type, src) => {
       const s = gl.createShader(type);
       gl.shaderSource(s, src);
@@ -1183,7 +1193,37 @@ export class WebGLDevice {
     return prog;
   }
 
-  // draw the transient flash quads (NDC rects, optionally rotated) with
+  // Darken the 3D back buffer (a translucent fullscreen black quad at
+  // (1 − _dim) alpha) BEFORE the HUD composite — so the menu card blends
+  // on top at FULL brightness while the maze behind is dimmed. Reuses the
+  // flash program (solid fade, color alpha = 1 − _dim).
+  _drawDim(gl) {
+    const dim = this._dim;
+    if (!dim || dim >= 1) return;
+    if (!this._hudFlashProg) this._hudFlashProg = this._linkFlashProgram();
+    if (!this._hudFlashProg) return;
+    gl.useProgram(this._hudFlashProg);
+    if (!this._hudDimVerts) this._hudDimVerts = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this._hudDimVerts);
+    const aPos = gl.getAttribLocation(this._hudFlashProg, "aPosition");
+    gl.enableVertexAttribArray(aPos);
+    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 8, 0);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, 1, 1, 1, 1, -1, 1, -1, -1]), gl.STATIC_DRAW);
+    gl.uniform2f(gl.getUniformLocation(this._hudFlashProg, "uCenter"), 0, 0);
+    gl.uniform2f(gl.getUniformLocation(this._hudFlashProg, "uHalf"), 2, 2);
+    gl.uniform1f(gl.getUniformLocation(this._hudFlashProg, "uFade"), 1.0);   // solid
+    gl.uniform4f(gl.getUniformLocation(this._hudFlashProg, "uColor"), 0, 0, 0, 1 - dim);
+    // blend MUST be on: with it off the quad overwrites the 3D with an
+    // OPAQUE black (alpha ignored) instead of darkening it — the maze
+    // behind the menu vanished entirely (the "static preview" bug).
+    const blendOn = gl.isEnabled(gl.BLEND);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    if (!blendOn) gl.disable(gl.BLEND);
+  }
+
+  // Draw the transient flash quads (NDC rects, optionally rotated) with
   // the same corner math as the persistent layer's R-rects, then drop the
   // list — the overlay is strictly per-frame.
   _drawHudFlash(gl) {
@@ -1196,9 +1236,18 @@ export class WebGLDevice {
     gl.bindBuffer(gl.ARRAY_BUFFER, this._hudFlashVerts);
     const aPos = gl.getAttribLocation(this._hudFlashProg, "aPosition");
     const uColor = gl.getUniformLocation(this._hudFlashProg, "uColor");
+    const uCenter = gl.getUniformLocation(this._hudFlashProg, "uCenter");
+    const uHalf = gl.getUniformLocation(this._hudFlashProg, "uHalf");
+    const uFade = gl.getUniformLocation(this._hudFlashProg, "uFade");
     gl.enableVertexAttribArray(aPos);
     gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 8, 0);
-    for (const [cx, cy, w, h, deg, r, g, b] of flash) {
+    // blend on for the flash quads too — the no-HUD-layer branch calls
+    // this with blend off, which would overwrite the 3D instead of
+    // overlaying the flash
+    const blendOn = gl.isEnabled(gl.BLEND);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    for (const [cx, cy, w, h, deg, r, g, b, fade] of flash) {
       // the rasterizer's R-rect corner math lifted into NDC: the layer
       // rotates by −deg in canvas (y-down) space, which maps to the same
       // visual rotation here
@@ -1221,8 +1270,12 @@ export class WebGLDevice {
       }
       gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW);
       gl.uniform4f(uColor, Number(r), Number(g), Number(b), 1.0);
+      gl.uniform2f(uCenter, Number(cx), Number(cy));
+      gl.uniform2f(uHalf, hw, hh);
+      gl.uniform1f(uFade, Number(fade) >= 0 ? Number(fade) : 1.0);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
+    if (!blendOn) gl.disable(gl.BLEND);
     this._hudFlash = null;
   }
 
@@ -1295,13 +1348,19 @@ export class WebGLDevice {
       for (const line of String(content).split("\n")) {
         let t = line.trim();
         if (!t) continue;
-        // "R cx cy w h deg r g b" — a rotated rect (the muzzle flash)
+        // "R cx cy w h deg r g b [fade]" — a rotated rect (the muzzle
+        // flash). The optional fade is the inner-OPAQUE fraction of the
+        // half-extent (0..1; 1 = solid): the rect's alpha stays 1 inside
+        // that radius and fades to 0 at the edge (a radial muzzle-flash
+        // falloff).
         if (t.startsWith("R ") || t.startsWith("r ")) t = t.slice(2).trim();
         const nums = t.split(/[\s,]+/).filter(Boolean).map(Number);
-        if (nums.length >= 8 && nums.every((n) => Number.isFinite(n))) {
-          this._hudFlash.push(nums.slice(0, 8));
+        if (nums.length >= 9 && nums.every((n) => Number.isFinite(n))) {
+          this._hudFlash.push([nums[0], nums[1], nums[2], nums[3], nums[4], nums[5], nums[6], nums[7], nums[8]]);
+        } else if (nums.length >= 8 && nums.every((n) => Number.isFinite(n))) {
+          this._hudFlash.push([nums[0], nums[1], nums[2], nums[3], nums[4], nums[5], nums[6], nums[7], 1.0]);
         } else if (nums.length >= 7 && nums.every((n) => Number.isFinite(n))) {
-          this._hudFlash.push([nums[0], nums[1], nums[2], nums[3], 0, nums[4], nums[5], nums[6]]);
+          this._hudFlash.push([nums[0], nums[1], nums[2], nums[3], 0, nums[4], nums[5], nums[6], 1.0]);
         }
       }
       return;
@@ -1361,6 +1420,15 @@ export class WebGLDevice {
       await this._doCall(String(content));
       return;
     }
+    if (parts[0] === "dim") {
+      // 3D brightness: "50" dims the BACK BUFFER (a translucent black
+      // quad drawn before the HUD composite) so the menu card stays at
+      // full brightness over the dimmed maze; "100" clears it. (A CSS
+      // filter would dim the menu card too.)
+      const v = Number(String(content).trim()) || 100;
+      this._dim = Math.max(0, Math.min(1, v / 100));
+      return;
+    }
     if (parts[0] === "size") {
       // display size: "WxH" resizes the drawing buffer + HUD layer (the
       // game's NDC/milli-NDC rendering is resolution-independent; the
@@ -1374,6 +1442,15 @@ export class WebGLDevice {
         const w = (typeof window !== "undefined" && window.innerWidth) || 800;
         const h = (typeof window !== "undefined" && window.innerHeight) || 600;
         this._resizeCanvas(w, h);
+        return;
+      }
+      // "auto" = the default display size: 3/4 of the window (the
+      // floating corner-overlay look, not the full-window cover)
+      if (t === "auto") {
+        this._fullWindow = false;
+        const w = (typeof window !== "undefined" && window.innerWidth) || 800;
+        const h = (typeof window !== "undefined" && window.innerHeight) || 600;
+        this._resizeCanvas(Math.round(w * 0.75), Math.round(h * 0.75));
         return;
       }
       this._fullWindow = false;
