@@ -2307,6 +2307,12 @@ function ensureCodeMirror() {
     ]);
     await loadScriptTag(CM_BASE + "/codemirror.min.js");
     await loadScriptTag(CM_BASE + "/addon/dialog/dialog.min.js");
+    // the vim keymap's `/` search needs the search addons (commands.find
+    // lives in addon/search/search.js; searchcursor is its dependency;
+    // match-highlighter paints the matches)
+    await loadScriptTag(CM_BASE + "/addon/search/searchcursor.min.js");
+    await loadScriptTag(CM_BASE + "/addon/search/search.min.js");
+    await loadScriptTag(CM_BASE + "/addon/search/match-highlighter.min.js");
     await loadScriptTag(CM_BASE + "/keymap/vim.min.js");
     registerViExCommands();  // :w :q :wq … need the vim keymap loaded
   })();
@@ -6348,7 +6354,7 @@ document.addEventListener("click", (e) => {
     line.append(game);
     line.append("  ·  ");
     const demo = document.createElement("a");
-    demo.href = "./index.html?demo=MIMEcroft.sh";
+    demo.href = "./index.html?demo=MIMEcroft.sh%20--demo";
     demo.className = "banner-link";
     demo.textContent = "play";
     line.append(demo, "\n");
@@ -6460,7 +6466,7 @@ document.addEventListener("click", (e) => {
   // because the allow-list bounds it to the page's own bundled,
   // self-contained games.  Read it HERE, before syncCwdUrl() below
   // replaces the URL with ?cwd=… (which would drop the parameter).
-  const DEMO_ALLOWLIST = ["MIMEcroft.sh", "mimecroft.sh"];
+  const DEMO_ALLOWLIST = ["MIMEcroft.sh", "MIMEcroft.sh --demo", "mimecroft.sh", "mimecroft.sh --demo"];
   const demoParam = new URLSearchParams(location.search).get("demo");
 
   // Restore the working directory from ?cwd= (set by cd) so a refresh
@@ -6573,7 +6579,12 @@ document.addEventListener("click", (e) => {
   // map turns a trusted name into the bundled command line that runs
   // it; anything outside the allow-list never reaches this point.
   if (demoParam !== null && DEMO_ALLOWLIST.includes(demoParam)) {
-    const DEMO_CMD = { "MIMEcroft.sh": "MIMEcroft --demo", "mimecroft.sh": "mimecroft --demo" };
+    const DEMO_CMD = {
+      "MIMEcroft.sh": "MIMEcroft.sh",
+      "MIMEcroft.sh --demo": "MIMEcroft.sh --demo",
+      "mimecroft.sh": "mimecroft.sh",
+      "mimecroft.sh --demo": "mimecroft.sh --demo",
+    };
     const demoCmd = DEMO_CMD[demoParam];
     if (demoCmd) {
       try {
