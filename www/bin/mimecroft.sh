@@ -2153,7 +2153,7 @@ render_frame() {
   # ducks under the 1.5 ceiling of a mined 1-tall opening. The two
   # heights are constants (250/1100 milli) — fmt_pos is hoisted to the
   # literal strings
-  if [ "$crouched" -eq 1 ]; then cys=0.250; else cys=1.100; fi
+  if [ "$crouched" -eq 1 ]; then cys=0.350; else cys=0.900; fi
   echo "$cxs $cys $czs" > /dev/webgl/uniform/3f/uCamPos
   echo "$yws" > /dev/webgl/uniform/1f/uCamYaw
   # floor + ceiling planes — the background. They span the whole maze
@@ -2270,7 +2270,10 @@ render_frame() {
   # skip the patches entirely while crouched (the dirt floor shows).
   gs_i=0
   gs_skip=0
-  if [ "$crouched" -eq 1 ]; then gs_skip=1; fi
+  #ACTUALLY the problem seems to be the camera bouncing between
+  ##crounched and uncrouched for some reason. Hiding grash
+  ##doesn't seem to help. Instead lowered non-crouch height below 1.
+  #if [ "$crouched" -eq 1 ]; then gs_skip=1; fi
   while [ "$gs_i" -lt "$CELLS" ]; do
     # array reads go to a scalar FIRST (the game's discipline — an
     # arr[$i] read inside a test bracket doesn't transpile)
