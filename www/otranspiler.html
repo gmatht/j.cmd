@@ -697,6 +697,8 @@ function initPanels() {
   });
 }
 function setTag(id, text) { $("tag-" + id).textContent = text || ""; }
+// stage timings — reported as whole ms above 100, one decimal below
+function fmtMs(ms) { return (ms >= 100 ? Math.round(ms) : ms.toFixed(1)) + " ms"; }
 
 // ─── transpile: source → A1 (busybox for non-sh) → target ───────
 // Build a source↔generated line map for TEXT targets.
@@ -1286,12 +1288,14 @@ async function execute() {
 
     // 1) generate the target code
     let code, lineMap = null;
+    const stageMs = {};          // per-stage wall-clock (reported in the tags + status)
+    let tStage = performance.now();
     try {
       const tr = await transpile(source, srcLang, tgtLang);
       code = tr.text;
       lineMap = tr.map || null;
       renderCodeLines(code);
-      setTag("code", srcLang + " → " + tgtLang + " · " + code.split("\n").length + " lines");
+      setTag("code", srcLang + " → " + tgtLang + " · " + code.split("\n").length + " lines · " + fmtMs(performance.now() - tStage));
       renderLineMap(source, lineMap);
       // intermediate-stage views: the A1 shIR (already computed for the
       // line map — downstream of the bash AST) and the token stream
@@ -1313,6 +1317,7 @@ async function execute() {
         setOut("lex", "no token dump — the " + srcLang + " frontend feeds the parser directly (sh-only in-process core)");
         setTag("lex", "");
       }
+      stageMs.transpile = performance.now() - tStage;   // end of stage 1
     } catch (e) {
       renderCodeLines("transpile error: " + e.message);
       setTag("code", srcLang + " → " + tgtLang);
@@ -1323,32 +1328,37 @@ async function execute() {
 
     // 2) run the original (if the input language has a runtime)
     let orig = null;
+    tStage = performance.now();
     if (RUNNABLE[srcLang]) {
       orig = await runLanguage(srcLang, source);
       setOut("orig", (orig.out || "") + (orig.err ? "\n[stderr] " + orig.err : ""));
-      setTag("orig", srcLang + " · " + RUNTIME_LABEL[srcLang] + " · exit " + orig.code);
+      setTag("orig", srcLang + " · " + RUNTIME_LABEL[srcLang] + " · exit " + orig.code + " · " + fmtMs(performance.now() - tStage));
       if (orig.note) setOut("orig", (orig.out || "") + "\n[note] " + orig.note);
     } else {
       setOut("orig", "no browser runtime for " + srcLang + " source");
       setTag("orig", srcLang);
     }
+    stageMs.orig = performance.now() - tStage;          // end of stage 2
 
     // 3) run the generated target (if the target has a runtime)
     let tgt = null;
+    tStage = performance.now();
     if (RUNNABLE[tgtLang]) {
       tgt = await runLanguage(tgtLang, code);
       setOut("tgt", (tgt.out || "") + (tgt.err ? "\n[stderr] " + tgt.err : ""));
-      setTag("tgt", tgtLang + " · " + RUNTIME_LABEL[tgtLang] + " · exit " + tgt.code);
+      setTag("tgt", tgtLang + " · " + RUNTIME_LABEL[tgtLang] + " · exit " + tgt.code + " · " + fmtMs(performance.now() - tStage));
       if (tgt.note) setOut("tgt", (tgt.out || "") + "\n[note] " + tgt.note);
     } else {
       setOut("tgt", "no browser runtime for " + tgtLang + " target (compile-only)");
       setTag("tgt", tgtLang + " · no runtime");
     }
+    stageMs.tgt = performance.now() - tStage;           // end of stage 3
     if (CAVEAT[tgtLang] && RUNNABLE[tgtLang]) {
       $("out-tgt").value += "\n\n⚠ " + CAVEAT[tgtLang];
     }
 
     // 4) the diff
+    tStage = performance.now();
     if (orig && tgt) {
       const ops = lineDiff(orig.out, tgt.out);
       const adds = ops.filter((o) => o.t === "add").length;
@@ -1364,13 +1374,19 @@ async function execute() {
         const esc = String(o.s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
         return '<div class="diff-line ' + o.t + '"><span class="mark">' + mark + "</span>" + esc + "</div>";
       }).join("");
-      setTag("diff", srcLang + " vs " + tgtLang + " stdout");
+      setTag("diff", srcLang + " vs " + tgtLang + " stdout · " + fmtMs(performance.now() - tStage));
     } else {
       setTag("diff", "");
       $("diff-summary").textContent = "both sides need runtimes to diff";
     }
+    stageMs.diff = performance.now() - tStage;          // end of stage 4
 
-    showStatus("done — " + srcLang + " → " + tgtLang + " (orig exit " + (orig ? orig.code : "n/a") + ", target exit " + (tgt ? tgt.code : "n/a") + ")", "success");
+    showStatus("done — " + srcLang + " → " + tgtLang +
+      " (orig exit " + (orig ? orig.code : "n/a") + ", target exit " + (tgt ? tgt.code : "n/a") + ")" +
+      " · transpile " + fmtMs(stageMs.transpile || 0) +
+      " · run " + srcLang + " " + fmtMs(stageMs.orig || 0) +
+      " · run " + tgtLang + " " + fmtMs(stageMs.tgt || 0) +
+      " · diff " + fmtMs(stageMs.diff || 0), "success");
   } catch (e) {
     showStatus("error: " + e.message, "error");
   } finally {
