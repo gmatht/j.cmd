@@ -319,8 +319,10 @@
       <div class="panel collapsed" id="sec-shir" data-persist="otp:sec-shir">
         <div class="panel-head"><span class="arrow">▾</span><span class="panel-title">A1 shIR</span><span class="panel-tag" id="tag-shir"></span></div>
         <div class="panel-body">
-          <div class="map-hint">the neutral contract the backends render from — produced from the bash AST (pipeline: lex → parse → AST → shIR → target). Source-side, target-independent.</div>
-          <div class="ta-wrap"><textarea id="out-shir" class="out-ta" readonly spellcheck="false" aria-label="A1 shIR">—</textarea><button type="button" class="copy-btn ta-copy" data-copy="shir">Copy</button></div>
+          <div class="map-hint"><b>raw</b> — the neutral contract the frontend emitted (bash AST → shIR, or the Go/rust frontend's A1). Source-side, target-independent.</div>
+          <div class="ta-wrap"><textarea id="out-shir" class="out-ta" readonly spellcheck="false" aria-label="A1 shIR (raw)">—</textarea><button type="button" class="copy-btn ta-copy" data-copy="shir">Copy</button></div>
+          <div class="map-hint" style="margin-top:.7em"><b>optimized</b> — what the selected backend actually receives after the A1 ingress passes (text-ops reductions, Label/Goto restructure, C-style-for strip; estree skips the latter two).</div>
+          <div class="ta-wrap"><textarea id="out-shir-opt" class="out-ta" readonly spellcheck="false" aria-label="A1 shIR (optimized)">—</textarea><button type="button" class="copy-btn ta-copy" data-copy="shir-opt">Copy</button></div>
         </div>
       </div>
       <div class="panel collapsed" id="sec-lex" data-persist="otp:sec-lex">
@@ -838,6 +840,16 @@ async function transpile(source, srcLang, tgt) {
     a1 = await busyboxA1(String(source), srcLang, { fs, wasmPath, goRunner });
     text = lib.render(JSON.stringify(a1), tgt);
   }
+  // the OPTIMIZED A1 — exactly the contract lib.render just consumed
+  // (the wasm's otranspilerl_shir_opt runs render()'s own ingress, so
+  // this cannot drift from what the backend received)
+  let optShir = null;
+  if (a1) {
+    try {
+      const libO = await libPromise;
+      optShir = libO.shirOpt(JSON.stringify(a1), tgt);
+    } catch (e) { optShir = "shir_opt failed: " + e.message; }
+  }
   if (tgt === "js") {
     // the js backend emits an ESTree AST — render it through astring,
     // and build the source↔generated line map from the A1's stmt_lines.
@@ -857,13 +869,13 @@ async function transpile(source, srcLang, tgt) {
     // store-routed form).
     keepVariables(estree, [], { repl: false });
     const r = await estreeToJsMapped(estree, (a1 && a1.stmt_lines) || [], (a1 && a1.stmts) || [], { repl: false });
-    return { text: r.js, map: r.map, a1 };
+    return { text: r.js, map: r.map, a1, optShir };
   }
   if (a1 && a1.stmt_lines && a1.stmt_lines.length && TARGETS_TEXT.indexOf(tgt) >= 0) {
     // text targets: build the line map from the A1 statements
     map = buildTextMap(text, tgt, a1.stmts, a1.stmt_lines);
   }
-  return { text, map, a1 };
+  return { text, map, a1, optShir };
 }
 
 // ─── runtimes (stdout capture) ──────────────────────────────────
@@ -1303,6 +1315,20 @@ async function execute() {
       const a1 = tr.a1 || null;
       setOut("shir", a1 ? JSON.stringify(a1, null, 2) : "no A1 for this path (sh→shader targets skip the shIR parse)");
       setTag("shir", a1 ? "A1 contract v" + (a1.contract_version || 1) + " · " + (a1.stmts || []).length + " statements" : "");
+      const trOpt = tr.optShir;
+      if (trOpt && !/^shir_opt failed/.test(trOpt)) {
+        try {
+          const o = JSON.parse(trOpt);
+          setOut("shir-opt", JSON.stringify(o, null, 2));
+          setTag("shir-opt", "post-ingress · " + (o.stmts || []).length + " stmts (raw " + (a1.stmts || []).length + ")");
+        } catch {
+          setOut("shir-opt", trOpt);
+          setTag("shir-opt", "raw");
+        }
+      } else {
+        setOut("shir-opt", a1 ? (trOpt || "—") : "—");
+        setTag("shir-opt", a1 && trOpt ? "error" : "");
+      }
       if (srcLang === "sh") {
         try {
           const lexText = (await libPromise).lex(source);
