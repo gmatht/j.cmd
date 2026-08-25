@@ -8,7 +8,8 @@
 //   /tmp/         → RamFS         (ephemeral, in-memory)
 //   /home/        → LocalStorageFS(persistent across reloads, ~5MB limit)
 //   /big/         → IndexedDBFS   (persistent, no practical size limit)
-//   /bin/         → LocalStorageFS(.js commands — the shell's binaries)
+//   /bin/         → OverlayFS(BinFS) (.js/.sh command templates from
+//                   www/bin/, always listed — writes land in the overlay)
 //   /commands/    → (alias of /bin — legacy name)
 //   /usr/bin/     → RamFS         (WASM binaries: wasmer install, auto-load)
 //   /http/        → HttpFS        (CORS fetch access; ls shows featured samples)
@@ -23,6 +24,7 @@
 import { env } from "../env.js";
 import { DocsFS } from "./docsfs.js";
 import { ExamplesFS } from "./examplesfs.js";
+import { BinFS } from "./binfs.js";
 import { RamFS } from "./ramfs.js";
 import { LocalStorageFS } from "./localstoragefs.js";
 import { IndexedDBFS } from "./indexeddbfs.js";
@@ -165,7 +167,7 @@ class CacheControlFS {
   LAYERS = ["examples", "bin", "overlay"];
   DESCR = {
     examples: "fetched /examples content + overlay changes — rm -r /cache/examples to clear",
-    bin: "materialized command decisions (/bin) — rm -r /cache/bin to re-fetch templates",
+    bin: "fetched /bin template content + local overrides — rm -r /cache/bin to re-fetch",
     overlay: "local overlay writes/tombstones — rm -r /cache/overlay to restore served content",
   };
   _layer(path) {
@@ -528,14 +530,18 @@ class VirtualFS {
     this.mount(hasLocalStorage ? "localStorage" : "ram", "/home",
       hasLocalStorage ? new LocalStorageFS("home") : new RamFS());
     // /bin — the shell's binaries. JavaScript is the binary format, so
-    // .js/.sh commands live here. RAMFS: materialized command templates
-    // refresh from www/bin on every page load — a persistent /bin once
-    // held stale copies in localStorage that shadowed redeployed
-    // templates (the mimecroft saga). User-installed tools live in
-    // /home (persistent); /commands stays an alias for old paths.
-    const commands = new RamFS();
-    this.mount("ram", "/bin", commands);
-    this.mount("ram", "/commands", commands);
+    // .js/.sh commands live here. A TRADITIONAL directory: every www/bin
+    // template is listed and readable from boot (OverlayFS over BinFS,
+    // the same pattern as /examples) with the fetched bytes cached in
+    // memory — `rm -r /cache/bin` drops that cache and any local
+    // override, so newly deployed templates show through. Writes go to
+    // the overlay (persistent); user-installed tools belong in /home.
+    // /commands stays an alias for old paths (same backend instance,
+    // like the /github ↔ /mount/github alias).
+    const binBackend = new BinFS();
+    const binOv = new OverlayFS(binBackend, "bin", "fs:ovl:bin:");
+    this.mount("bin", "/bin", binOv);
+    this.mount("bin", "/commands", binOv);
     // /usr/bin — real WASM binaries (wasmer install, auto-load). RamFS:
     // python.wasm etc. would blow the ~5MB localStorage quota, and they
     // re-download from the local server on boot anyway.
@@ -570,7 +576,14 @@ class VirtualFS {
         examplesOv.backend.clearCache();
         examplesOv.clearOverlay();
       },
-      bin: () => import("../binsync.js").then((m) => m.clearBinCache()),
+      bin: () => {
+        // drop the fetched-template caches AND local overrides so the
+        // served templates show through again (the examples layer does
+        // the same for /examples)
+        binOv.clearOverlay();
+        binBackend.clearCache();
+        import("../binsync.js").then((m) => m.clearBinCache());
+      },
       overlay: () => {
         for (const m of this.mounts) {
           if (m.backend instanceof OverlayFS) m.backend.clearOverlay();

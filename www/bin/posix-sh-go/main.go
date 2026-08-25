@@ -37,7 +37,7 @@ type Word struct {
 	CSCmd *Command // pre-parsed single command (backtick substitutions)
 	// array
 	ArrayName  string
-	ArrayElems []string
+	ArrayElems []*Word
 	// map access
 	MapName string
 	MapKey  string
@@ -852,7 +852,7 @@ func parseBracedContent(content string) *Word {
 	}
 	if strings.Contains(content, "/") && !strings.Contains(content, "//") {
 		if parts := strings.Split(content, "/"); len(parts) == 3 {
-			return peWord(parts[0], "//", parts[1], parts[2])
+			return peWord(parts[0], "/", parts[1], parts[2])
 		}
 		return &Word{Kind: "var", VarName: content}
 	}
@@ -917,7 +917,7 @@ func parsePEContent(content string) *Word {
 	if strings.Contains(content, "/") {
 		parts := strings.SplitN(content, "/", 3)
 		if len(parts) == 3 {
-			return peWord(parts[0], "//", parts[1], parts[2])
+			return peWord(parts[0], "/", parts[1], parts[2])
 		}
 	}
 	// array/map access (must come AFTER // and /)
@@ -3358,12 +3358,18 @@ func mergeEnvVars(a, b []EnvVar) []EnvVar {
 	return out
 }
 
-// parseArrayElems — `(a b c)` array literal elements.
-func (p *Parser) parseArrayElems() ([]string, error) {
+// parseArrayElems — `(a b c)` array literal elements (mirror the core's
+// parse_array_elements): each element is a REAL Word so the
+// quoted/unquoted distinction survives into the A1 contract (unquoted
+// `$x` → split(getVar("x")) — bash field-splits it; quoted `"$x"` stays
+// a single element). Space/Tab/Newline separate elements — Newline is
+// WHITESPACE inside an array literal (unlike word lists, where it
+// terminates); comments are skipped like the core does.
+func (p *Parser) parseArrayElems() ([]*Word, error) {
 	p.pos++ // (
-	var elems []string
+	var elems []*Word
 	for {
-		p.skipInlineWSAndComments()
+		p.skipWSAndComments()
 		if p.eof() {
 			return nil, fmt.Errorf("array: missing )")
 		}
@@ -3371,19 +3377,11 @@ func (p *Parser) parseArrayElems() ([]string, error) {
 			p.pos++
 			return elems, nil
 		}
-		// RAW source text per element (mirror parse_array_elements' raw
-		// Vec<String>): parseWord loses the source for `$x`-style words
-		// (Text is empty), so slice the source and strip the quotes —
-		// quoted elements keep their inner text (`"a b"` → `a b`).
-		start := p.pos
-		if _, err := p.parseWord(); err != nil {
+		w, err := p.parseWord()
+		if err != nil {
 			return nil, err
 		}
-		raw := strings.TrimSpace(p.src[start:p.pos])
-		if len(raw) >= 2 && ((raw[0] == '"' && raw[len(raw)-1] == '"') || (raw[0] == '\'' && raw[len(raw)-1] == '\'')) {
-			raw = raw[1 : len(raw)-1]
-		}
-		elems = append(elems, raw)
+		elems = append(elems, w)
 	}
 }
 

@@ -18,9 +18,13 @@
 //	form (real cmd requires the else on the closing-paren line),
 //	for %%v in (word list) do cmd|(cmd), `&` statement separators.
 //
+// v1.2: `&&` / `||` conjunctions (the A1 BinOp And/Or shape), `|`
+// pipelines (the A1 pipeline Call), `shift`, and the `ren *.EXT *.NEW`
+// extension-change pattern form (For + SH2GLOB + basename capture).
+//
 // Deliberately NOT in v1 (refuse loud): delayed expansion !var!, call,
-// setlocal/endlocal, shift, pause, start, set /p, if defined/exist/
-// errorlevel, for /l /f /d /r, ^ line continuation, pipes |.
+// setlocal/endlocal, pause, start, set /p, for /d /r, for /f with
+// skip=/eol=/usebackq, ^ inline escapes.
 package batshgo
 
 import (
@@ -112,8 +116,12 @@ func splitSections(lines []string) (main []string, subs [][2]string, gotoTargets
 				break
 			}
 			if g >= 0 && (k < 0 || g < k) {
-				// goto <name> (not :eof)
+				// goto <name> (not :eof); `goto :name` — the colon is optional
+				// in batch and stripped for the target key
 				j := g + len("goto ")
+				if j < len(low) && low[j] == ':' {
+					j++
+				}
 				e := j
 				for e < len(low) && isNameChar(low[e]) {
 					e++
@@ -140,22 +148,51 @@ func splitSections(lines []string) (main []string, subs [][2]string, gotoTargets
 		depth += strings.Count(ln, "(") - strings.Count(ln, ")")
 	}
 	// walk the sections: pre-first-label lines + non-called sections
-	// inline; called sections extracted
+	// inline; called sections extracted. A called section CONSUMES the
+	// immediately following goto-target sections into its function body:
+	// batch falls through labels, so `call :power` enters the setup lines
+	// and then `goto :power_loop` loops INSIDE the function — the classic
+	// function-with-inner-loop shape (`call :power 2 4` / `:power` /
+	// `setlocal` / ... / `:power_loop` / `if ... goto :power_loop`).
+	// Leaving the loop section inline in main would make it dead code
+	// after the main flow's own `goto :eof` (t51 shift test).
 	start := 0
 	for bi, b := range bounds {
+		if start >= len(joined) {
+			break // a called section swallowed through EOF — nothing left
+		}
 		main = append(main, joined[start:b]...)
 		name := names[bi]
 		sectionEnd := len(joined)
 		if bi+1 < len(bounds) {
 			sectionEnd = bounds[bi+1]
 		}
-		bodyLines := joined[b+1 : sectionEnd]
 		if called[name] {
+			// swallow following goto-target sections (their label lines
+			// become Label stmts inside the function via parseLine)
+			end := bi + 1
+			for end < len(bounds) && gotoTargets[names[end]] {
+				end++
+			}
+			// end == len(bounds) means the function swallows to EOF —
+			// RESET the earlier bounds[bi+1] default (the bug that left
+			// :loopargs' body empty when its loop label is the LAST section)
+			sectionEnd = len(joined)
+			if end < len(bounds) {
+				sectionEnd = bounds[end]
+			}
+			bodyLines := joined[b+1 : sectionEnd]
 			subs = append(subs, [2]string{name, strings.Join(bodyLines, "\n")})
-		} else {
-			main = append(main, joined[b])
-			main = append(main, bodyLines...)
+			start = sectionEnd
+			// NOTE: the consumed sections' labels now live inside the
+			// function only — a `goto` from main to one of them would be
+			// a cross-scope jump the restructure pass cannot honor (not
+			// observed in the corpus; refuse > guess if it appears).
+			continue
 		}
+		bodyLines := joined[b+1 : sectionEnd]
+		main = append(main, joined[b])
+		main = append(main, bodyLines...)
 		start = sectionEnd
 	}
 	if len(bounds) == 0 {
@@ -244,23 +281,166 @@ func (p *parser) parseLine(line string) ([]map[string]any, error) {
 	}
 	var out []map[string]any
 	rest := line
+	prevOp := "" // the operator that connected the last segment to the next
+	first := true
 	for {
-		st, r, err := p.parseCommand(rest)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, st...)
-		rest = strings.TrimSpace(r)
+		rest = strings.TrimSpace(rest)
 		if rest == "" {
 			break
 		}
-		if strings.HasPrefix(rest, "&") {
-			rest = strings.TrimSpace(rest[1:])
-			continue
+		var st []map[string]any
+		var op, after string
+		low := strings.ToLower(rest)
+		if strings.HasPrefix(rest, "(") || strings.HasPrefix(low, "for ") {
+			// atomic forms: a leading ( compound group, or a `for` line
+			// whose /f 'command' may contain &/| at "top level" (`for /f
+			// %%i in ('a ^& b')`). parseAtomic splits at TOP-LEVEL pipes
+			// only (" and ' aware), so the quoted /f command survives; the
+			// operator AFTER the group/for comes back on the remainder.
+			var err error
+			st, op, after, err = p.parseAtomic(rest)
+			if err != nil {
+				return nil, err
+			}
+			rest = strings.TrimSpace(after)
+		} else {
+			seg, op0, after0 := cutCompound(rest)
+			op, after = op0, after0
+			var err error
+			st, err = p.parseSegment(seg)
+			if err != nil {
+				return nil, err
+			}
+			rest = strings.TrimSpace(after)
 		}
-		return nil, fmt.Errorf("unexpected trailing text: %q", rest)
+		if first {
+			out = append(out, st...)
+			first = false
+		} else if prevOp == "&" {
+			out = append(out, st...)
+		} else if prevOp == "&&" || prevOp == "||" {
+			// the A1 conjunction shape (BinOp And/Or between exec Calls —
+			// byte-identical to the core's `a && b` / `a || b` emission);
+			// both sides must be plain commands (refuse > guess).
+			if len(st) != 1 {
+				return nil, fmt.Errorf("unsupported: %s right operand must be a single command", prevOp)
+			}
+			if len(out) == 0 {
+				return nil, fmt.Errorf("unsupported: %s with no left operand", prevOp)
+			}
+			combined, ok := andOrStmt(prevOp, out[len(out)-1], st[0])
+			if !ok {
+				return nil, fmt.Errorf("unsupported: %s operands must be plain commands (no blocks/redirects/pipelines)", prevOp)
+			}
+			out[len(out)-1] = combined
+		} else {
+			return nil, fmt.Errorf("unexpected operator %q", prevOp)
+		}
+		prevOp = op
+	}
+	if prevOp != "" && !first {
+		return nil, fmt.Errorf("trailing operator %q", prevOp)
 	}
 	return out, nil
+}
+
+// parseSegment — parse one operator-free segment (which may contain `|`
+// pipelines). A single stage is a plain command; multiple stages become
+// the A1 pipeline Call (the core's `a | b` shape). Each stage must be
+// exactly one plain command (a redirect or paren stage would need the
+// redirect/pipeline composition the A1 cannot express — refuse > guess).
+func (p *parser) parseSegment(seg string) ([]map[string]any, error) {
+	seg = strings.TrimSpace(seg)
+	if seg == "" {
+		return nil, fmt.Errorf("empty command")
+	}
+	stages := splitPipes(seg)
+	if len(stages) == 1 {
+		st, rem, err := p.parseCommand(stages[0])
+		if err != nil {
+			return nil, err
+		}
+		if rem != "" {
+			return nil, fmt.Errorf("trailing text after command: %q", rem)
+		}
+		return st, nil
+	}
+	var perStage [][]map[string]any
+	for _, s := range stages {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return nil, fmt.Errorf("empty pipeline stage")
+		}
+		st, rem, err := p.parseCommand(s)
+		if err != nil {
+			return nil, err
+		}
+		if rem != "" {
+			return nil, fmt.Errorf("pipeline stage must be one command: %q", s)
+		}
+		perStage = append(perStage, st)
+	}
+	pl, err := pipelineStmt(perStage)
+	if err != nil {
+		return nil, err
+	}
+	return []map[string]any{pl}, nil
+}
+
+// parseAtomic — parse a leading-( group or a `for` line: split at
+// top-level pipes (quote-aware for " and '), parse each stage as one
+// command. The LAST stage's parseCommand remainder carries the operator
+// after the atomic (cutOp), which the caller folds. Returns the
+// statements, the operator and the rest after it.
+func (p *parser) parseAtomic(rest string) ([]map[string]any, string, string, error) {
+	stages := splitPipes(rest)
+	var perStage [][]map[string]any
+	op, after := "", ""
+	for i, s := range stages {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return nil, "", "", fmt.Errorf("empty pipeline stage")
+		}
+		st, rem, err := p.parseCommand(s)
+		if err != nil {
+			return nil, "", "", err
+		}
+		if i == len(stages)-1 {
+			op, after = cutOp(rem)
+		} else if rem != "" {
+			return nil, "", "", fmt.Errorf("pipeline stage must be one command: %q", s)
+		}
+		perStage = append(perStage, st)
+	}
+	if len(perStage) == 1 {
+		return perStage[0], op, after, nil
+	}
+	pl, err := pipelineStmt(perStage)
+	if err != nil {
+		return nil, "", "", err
+	}
+	return []map[string]any{pl}, op, after, nil
+}
+
+// pipelineStmt — the A1 pipeline Call over per-stage statement lists;
+// each stage must be exactly one plain Expr(exec) statement (the core's
+// `a | b` shape — probed with `debashc --shir`).
+func pipelineStmt(perStage [][]map[string]any) (map[string]any, error) {
+	var arrows []map[string]any
+	for _, st := range perStage {
+		if len(st) != 1 || st[0]["type"] != "Expr" {
+			return nil, fmt.Errorf("pipeline stage must be a plain command (no blocks/redirects)")
+		}
+		arrows = append(arrows, map[string]any{"type": "Arrow", "body": st})
+	}
+	return map[string]any{
+		"type": "Expr",
+		"expr": map[string]any{
+			"type": "Call", "func": "pipeline",
+			"args":   []any{map[string]any{"type": "Array", "elements": arrows}},
+			"purity": "Spawn",
+		},
+	}, nil
 }
 
 // parseCommand parses one command; returns its statements and the
@@ -327,7 +507,14 @@ func (p *parser) parseCommand(s string) ([]map[string]any, string, error) {
 			return []map[string]any{execStmt(words, "Emulable")}, "", nil
 		}
 		return nil, "", fmt.Errorf("unsupported: call <file> (v1.1 supports call :label only)")
-	case "setlocal", "endlocal", "shift", "pause", "start", "pushd", "popd":
+	case "shift":
+	// shift — move the positional args along (%1 becomes %2, ...; %* is
+	// unaffected). The core's own bash `shift` lowers to exactly this
+	// exec Call (probed: `debashc --shir` emits exec "shift"), and the
+	// estree runner's shift builtin shifts the CALL-scoped positional
+	// array (a call :label pushes a fresh scope), matching cmd.
+	return []map[string]any{execStmt([]map[string]any{str("shift")}, "Emulable")}, "", nil
+case "setlocal", "endlocal", "pause", "start", "pushd", "popd":
 		return nil, "", fmt.Errorf("unsupported batch command %q (v1 subset)", strings.ToLower(word))
 	default:
 		// external command: batch builtin -> POSIX name mapping (names +
@@ -336,11 +523,11 @@ func (p *parser) parseCommand(s string) ([]map[string]any, string, error) {
 		if wl == "cls" || wl == "title" {
 			return nil, "", nil // no-op outside Windows
 		}
-		// `copy a b & echo x` — the statement separator splits the args
-		before, after := cutAmp(rest)
+		// `copy a b & echo x` — the statement operator splits the args
+		before, op, after := cutCompound(rest)
 		rem := ""
 		if strings.TrimSpace(after) != "" {
-			rem = "& " + strings.TrimSpace(after)
+			rem = op + " " + strings.TrimSpace(after)
 		}
 		rest = before
 		if mapped, ok := batchToPosix[wl]; ok {
@@ -349,6 +536,16 @@ func (p *parser) parseCommand(s string) ([]map[string]any, string, error) {
 			// normalize to `/` for the POSIX targets, scoped to mapped
 			// builtins only (echo text etc. keeps backslashes verbatim).
 			rest = normalizeBatchPaths(rest)
+			if wl == "ren" || wl == "rename" {
+				// the wildcard pattern form `ren *.cxx *.cpp` — a For loop
+				// with a basename-derived destination (v1.2, the user-asked
+				// subset; everything else refuses below)
+				if loop, isPattern, err := p.renPatternLoop(rest); err != nil {
+					return nil, rem, err
+				} else if isPattern {
+					return loop, rem, nil
+				}
+			}
 			word, rest = translateBatchCmd(wl, mapped, rest)
 			// batch `ren OLD newname` — the bare destination resolves
 			// relative to OLD's directory (mv would drop it in the cwd)
@@ -361,8 +558,18 @@ func (p *parser) parseCommand(s string) ([]map[string]any, string, error) {
 			}
 			w = mapped
 		} else if wl == "find" && rest != "" {
-			// batch `find "text" files...` (literal-string search) -> grep -F
-			word, rest = "grep", "-F "+rest
+			// batch `find "text" files...` (literal-string search) -> grep -F.
+			// cmd strips the enclosing quotes from the search term when it
+			// builds the argv (`find "beta"` searches beta) — strip a
+			// leading quoted segment here too, or grep would match the
+			// literal quote characters and find nothing (t52 pipeline).
+			t := strings.TrimSpace(rest)
+			if strings.HasPrefix(t, "\"") {
+				if qe := strings.Index(t[1:], "\""); qe >= 0 {
+					t = t[1:1+qe] + t[1+qe+1:]
+				}
+			}
+			word, rest = "grep", "-F "+t
 		} else if wl == "robocopy" {
 			// robocopy SRC DST [file...] [options] — an approximation (like
 			// xcopy): /S /E -> cp -r; /MIR /PURGE -> rsync -a --delete
@@ -382,6 +589,92 @@ func (p *parser) parseCommand(s string) ([]map[string]any, string, error) {
 		}
 		return []map[string]any{execStmt(words, "Spawn")}, rem, nil
 	}
+}
+
+// renPatternLoop — the `ren *.cxx *.cpp` extension-change pattern form
+// (v1.2). Both arguments must be wildcard patterns of the exact shape
+// `*.EXT` (a single leading `*`, then `.EXT` with no further wildcards,
+// no path separators, no quotes). Lowering — the A1 loop
+//
+//	for f in *.cxx; do mv "$f" "$(basename "$f" .cxx).cpp"; done
+//
+// (a SH2GLOB-wrapped For iter so BOTH backends glob, and a basename
+// capture for the destination: basename strips the LAST suffix, the
+// exact cmd rule — `a.cxx.cxx` renames to `a.cxx.cpp`, not `a.cpp.cxx`
+// — where a first-occurrence replace would diverge). Returns
+// (stmts, isPattern, err): isPattern=false means the bare-file form (the
+// caller's existing path); isPattern=true with err!=nil means a wildcard
+// form OUTSIDE the pinned subset — refuse loudly (refuse > guess; cmd's
+// positional-* / `?` mapping for `ren *old* *new*` / `ren file?.txt
+// file?.md` is not reproduced).
+func (p *parser) renPatternLoop(rest string) ([]map[string]any, bool, error) {
+	src, rest2 := splitWord(rest)
+	dst, rest3 := splitWord(rest2)
+	if strings.TrimSpace(rest3) != "" {
+		// more than two arguments — refuse (a quoted pattern would also
+		// land here with the quote as a leading char of dst/rest3)
+		if strings.ContainsAny(src, "*?") || strings.ContainsAny(dst, "*?") {
+			return nil, true, fmt.Errorf("unsupported ren pattern form (v1.2 pins `ren *.EXT *.NEW` with exactly two patterns)")
+		}
+		return nil, false, nil
+	}
+	if !strings.ContainsAny(src, "*?") || !strings.ContainsAny(dst, "*?") {
+		return nil, false, nil // bare-file form — existing path
+	}
+	sExt, ok := extPattern(src)
+	if !ok {
+		return nil, true, fmt.Errorf("unsupported ren source pattern %q (v1.2 pins `ren *.EXT *.NEW`)", src)
+	}
+	dExt, ok := extPattern(dst)
+	if !ok {
+		return nil, true, fmt.Errorf("unsupported ren destination pattern %q (v1.2 pins `ren *.EXT *.NEW`)", dst)
+	}
+	lv := "f"
+	destExpr := map[string]any{
+		"type": "Interpolate",
+		"parts": []any{
+			map[string]any{"kind": "expr", "expr": map[string]any{
+				"type": "Call", "func": "capture",
+				"args": []any{map[string]any{"type": "Arrow", "body": []any{
+					execStmt([]map[string]any{str("basename"), getVar(lv), str("." + sExt)}, "Emulable"),
+				}}},
+				"purity": "Spawn",
+			}},
+			map[string]any{"kind": "lit", "text": "." + dExt},
+		},
+	}
+	body := []map[string]any{execStmt([]map[string]any{str("mv"), getVar(lv), destExpr}, "Spawn")}
+	loop := map[string]any{
+		"type": "For",
+		"var":  lv,
+		"iter": map[string]any{"type": "Array", "elements": []any{str("\x01SH2GLOB\x01" + src)}},
+		"body": body,
+	}
+	return []map[string]any{loop}, true, nil
+}
+
+// extPattern — match the `*.EXT` shape: a single leading `*`, a `.`, then
+// extension letters with no further wildcards, separators or quotes.
+// Returns the extension text (without the dot).
+func extPattern(s string) (string, bool) {
+	s = strings.TrimSpace(s)
+	if len(s) < 3 || s[0] != '*' {
+		return "", false
+	}
+	if s[1] != '.' {
+		return "", false
+	}
+	ext := s[2:]
+	if ext == "" {
+		return "", false
+	}
+	for i := 0; i < len(ext); i++ {
+		c := ext[i]
+		if c == '*' || c == '?' || c == '/' || c == '\\' || c == '"' || c == ' ' || c == '\t' {
+			return "", false
+		}
+	}
+	return ext, true
 }
 
 // batchToPosix — batch builtin commands -> their POSIX equivalents (the
@@ -752,11 +1045,11 @@ func splitWord(s string) (string, string) {
 // ── echo ────────────────────────────────────────────────────────────
 
 func (p *parser) parseEcho(rest string) ([]map[string]any, string, error) {
-	// `echo a & echo b` — cut the statement separator off the text
-	before, after := cutAmp(rest)
+	// `echo a & echo b` — cut the statement operator off the text
+	before, op, after := cutCompound(rest)
 	rem := ""
 	if strings.TrimSpace(after) != "" {
-		rem = "& " + strings.TrimSpace(after)
+		rem = op + " " + strings.TrimSpace(after)
 	}
 	rest = strings.TrimSpace(before)
 	if rest == "" {
@@ -788,7 +1081,15 @@ func (p *parser) parseEcho(rest string) ([]map[string]any, string, error) {
 // separator; `cmd1 & cmd2` runs both). An `&` inside double quotes is
 // literal text (`echo "a & b"` prints it). Returns the text and the
 // rest after the `&` (empty when there is none).
-func cutAmp(s string) (string, string) {
+//
+// cutCompound — split at the first top-level statement operator: `&`,
+// `&&` or `||` (cmd's unconditional / positive / negative conjunctions).
+// An operator inside double quotes is literal text (`echo "a & b"`
+// prints it). Returns the text before the operator, the operator itself
+// ("", "&", "&&" or "||") and the rest after it. Parens do NOT
+// protect operators in the middle of a line (cmd splits `echo (a & b)`
+// at the &) — a leading ( is handled by parseLine's paren branch.
+func cutCompound(s string) (string, string, string) {
 	inQ := false
 	for i := 0; i < len(s); i++ {
 		switch s[i] {
@@ -796,19 +1097,107 @@ func cutAmp(s string) (string, string) {
 			inQ = !inQ
 		case '&':
 			if !inQ {
-				return s[:i], s[i+1:]
+				if i+1 < len(s) && s[i+1] == '&' {
+					return s[:i], "&&", s[i+2:]
+			}
+			return s[:i], "&", s[i+1:]
+		}
+		case '|':
+			if !inQ && i+1 < len(s) && s[i+1] == '|' {
+				return s[:i], "||", s[i+2:]
 			}
 		}
 	}
-	return s, ""
+	return s, "", ""
+}
+
+// cutOp — if s starts with a statement operator, return it and the rest
+// (the paren-branch twin of cutCompound: `(a & b) && c` — parseCommand
+// consumes the block, the remainder starts with the operator).
+func cutOp(s string) (string, string) {
+	s = strings.TrimSpace(s)
+	switch {
+	case strings.HasPrefix(s, "&&"):
+		return "&&", s[2:]
+	case strings.HasPrefix(s, "||"):
+		return "||", s[2:]
+	case strings.HasPrefix(s, "&"):
+		return "&", s[1:]
+	}
+	return "", s
+}
+
+// splitPipes — split a segment at top-level `|` pipe operators, quote
+// aware for BOTH " and ' (`for /f %i in ('a | b')` keeps the pipe inside
+// the single quotes — it is the /f command delimiter, not a pipe). `||`
+// never reaches here (cutCompound consumes it). Returns the stages.
+func splitPipes(s string) []string {
+	var stages []string
+	inQ := byte(0)
+	start := 0
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inQ != 0 {
+			if c == inQ {
+				inQ = 0
+			}
+			continue
+		}
+		switch c {
+		case '"', '\'':
+			inQ = c
+		case '|':
+			if i+1 < len(s) && s[i+1] == '|' {
+				i++
+				continue
+			}
+			stages = append(stages, s[start:i])
+			start = i + 1
+		}
+	}
+	stages = append(stages, s[start:])
+	return stages
+}
+
+// andOrStmt — build the A1 conjunction (the core's `a && b` / `a || b`
+// shape: Expr(BinOp And/Or(exec, exec))). Both operands must be plain
+// exec Exprs (probed with `debashc --shir` — the estree renderer lowers
+// the And/Or to a lastExit check, the sh renderer to `&&`/`||`).
+func andOrStmt(op string, lhs, rhs map[string]any) (map[string]any, bool) {
+	l, ok1 := plainExec(lhs)
+	r, ok2 := plainExec(rhs)
+	if !ok1 || !ok2 {
+		return nil, false
+	}
+	binop := "And"
+	if op == "||" {
+		binop = "Or"
+	}
+	return map[string]any{
+		"type": "Expr",
+		"expr": map[string]any{"type": "BinOp", "op": binop, "lhs": l, "rhs": r},
+	}, true
+}
+
+// plainExec — extract the exec Call from an Expr statement if it is a
+// plain single command (no redirects, no block, no pipeline).
+func plainExec(st map[string]any) (map[string]any, bool) {
+	if st["type"] != "Expr" {
+		return nil, false
+	}
+	e, ok := st["expr"].(map[string]any)
+	if !ok || e["type"] != "Call" || e["func"] != "exec" {
+		return nil, false
+	}
+	return e, true
 }
 
 func (p *parser) parseSet(rest string) ([]map[string]any, string, error) {
-	// `set a=1 & echo b` — the statement separator splits the value off
-	before, after := cutAmp(rest)
+	// `set a=1 & echo b` — the statement operator splits the value off
+	before, op, after := cutCompound(rest)
 	rem := ""
 	if strings.TrimSpace(after) != "" {
-		rem = "& " + strings.TrimSpace(after)
+		rem = op + " " + strings.TrimSpace(after)
 	}
 	rest = strings.TrimSpace(before)
 	if rest == "" {
@@ -987,7 +1376,8 @@ func splitCondition(s string) (string, string, bool, error) {
 }
 
 // batchTestToShell adapts a batch if-condition to the shell-flavored
-// test text the A1 test call carries: %var% -> $var, == stays ==.
+// test text the A1 test call carries: %var% -> $var, %1..%9 / %* ->
+// $1..$9 / $* (positionals have NO closing % in batch), == stays ==.
 func batchTestToShell(t string) string {
 	var b strings.Builder
 	for i := 0; i < len(t); i++ {
@@ -996,6 +1386,12 @@ func batchTestToShell(t string) string {
 				name := t[i+1 : i+1+j]
 				b.WriteString("$" + strings.ToLower(name))
 				i += j + 1
+				continue
+			}
+			// %1..%9 / %* — positionals without a closing % (batch form)
+			if i+1 < len(t) && (t[i+1] >= '1' && t[i+1] <= '9' || t[i+1] == '*') {
+				b.WriteString("$" + string(t[i+1]))
+				i++
 				continue
 			}
 		}

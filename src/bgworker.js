@@ -37,6 +37,7 @@ function workerSource(moduleUrls, injected = {}) {
   // them without a base URL.
   const wasmUrl = injected.wasmUrl ? JSON.stringify(injected.wasmUrl) : "null";
   const examplesBase = injected.examplesBase ? JSON.stringify(injected.examplesBase) : "null";
+  const binBase = injected.binBase ? JSON.stringify(injected.binBase) : "null";
   return `
 // the BLOB worker has no page base — the main thread injects the
 // absolute URLs so the wasm fetch + /examples reads resolve (a
@@ -45,6 +46,7 @@ function workerSource(moduleUrls, injected = {}) {
 // during the menu).
 if (${wasmUrl}) globalThis.__SH2_OTRANSPILERL_WASM_URL = ${wasmUrl};
 if (${examplesBase}) globalThis.__SH2_EXAMPLES_BASE = ${examplesBase};
+if (${binBase}) globalThis.__SH2_BIN_BASE = ${binBase};
 
 const mods = await Promise.all([
   import(${JSON.stringify(moduleUrls.bash2js)}),
@@ -195,6 +197,7 @@ async function spawnWorker() {
   if (typeof document !== "undefined" && document.baseURI) {
     injected.wasmUrl = new URL("wasm-bin/otranspilerl.wasm", document.baseURI).href;
     injected.examplesBase = new URL("examples/", document.baseURI).href;
+    injected.binBase = new URL("bin/", document.baseURI).href;
   }
   const src = workerSource(urls, injected);
   const isNode = typeof process !== "undefined" && !!process.versions && !!process.versions.node;

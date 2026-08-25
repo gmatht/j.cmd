@@ -903,7 +903,7 @@
 </script>
 <script type="module">
 import { fs } from "../src/fs/index.js";
-import { materializeBinCommand } from "../src/binsync.js";
+import { probeBinCommand } from "../src/binsync.js";
 import { formatAge } from "../src/fs/lscache.js";
 import { WasmRunner } from "../src/wasm.js";
 import { WasmerRegistry } from "../src/wasmer.js";
@@ -3955,9 +3955,11 @@ const shellCtx = {
         return { type: "wasm", path: destPath };
       }
     } catch {}
-    // Lazy command templates: /bin/<name>.js (www/bin/) — fetch + write on
-    // first use.
-    const binPath = await materializeBinCommand(name);
+    // Last-resort command probe: /bin lists every www/bin template
+    // (OverlayFS over BinFS), so the $PATH walk finds them first — this
+    // only fires when even the manifest-backed listing is unavailable.
+    // Confirms a template by name WITHOUT writing anything.
+    const binPath = await probeBinCommand(name);
     if (binPath) {
       const denied = customExecDenied(binPath);
       if (denied) return denied;
@@ -4714,9 +4716,9 @@ async function complete(line, cursorPos) {
         }
       } catch { /* dir doesn't exist */ }
     }
-    // www/bin/ .sh command templates are materialized lazily (first
-    // use), so they're not in /bin yet — offer them by name so
-    // `MIME<Tab>` completes the bundled game before it's ever run.
+    // www/bin/ .sh command templates are listed by /bin itself now
+    // (OverlayFS over BinFS), so they complete through fs.list above;
+    // SH_TEMPLATES stays as a fallback for hosts without listings.
     for (const name of SH_TEMPLATES) {
       if (name.startsWith(prefix) && !matches.includes(name)) {
         matches.push(name);

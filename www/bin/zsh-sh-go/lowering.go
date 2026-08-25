@@ -42,6 +42,16 @@ type BinOpE struct {
 	Lhs, Rhs Expr
 }
 
+// CaptureE — the first-class A1 Capture node (mirror IrExpr::Capture;
+// core request zsh-sh-go-20260814-230503): `$(...)`/backticks lower to
+// `Capture { expr: Arrow, native: false }` instead of the opaque
+// `call("capture")` — the contract node whose analysis arms all exist
+// in the core (expr_len, nospace, lifetimes, lifts, ...).
+type CaptureE struct {
+	Expr   Expr
+	Native bool
+}
+
 type Stmt interface{}
 
 type AssignS struct {
@@ -64,6 +74,17 @@ type ForS struct {
 	Iter Expr
 	Body []Stmt
 }
+
+// ForInitS — the rich A1 C-style for node (`for (( init; cond; step ))`):
+// init/step are the lowered arith-assignment stmts (Assign{Arith}), cond
+// the exec-let call (or Int(1) when empty), body the do-block. Mirrors
+// the core's IrStmt::ForInit (shir.rs ast_to_ir CStyleFor arm).
+type ForInitS struct {
+	Init []Stmt
+	Cond Expr
+	Step []Stmt
+	Body []Stmt
+}
 type RedirectS struct {
 	Inner     []Stmt
 	Redirects []RedirectIR
@@ -75,6 +96,14 @@ type FunctionS struct {
 	Name string
 	Body []Stmt
 }
+
+// BreakS / ContinueS — first-class A1 nodes (core requests
+// zsh-sh-go-20260814-225040 / zsh-sh-go-20260815-015459 [Break] and
+// zsh-sh-go-20260813-003026 [Continue]): statement-position `break` /
+// `continue` lower to these instead of the opaque `call("break")` /
+// `call("continue")` forms (which remain only in expression context).
+type BreakS struct{}
+type ContinueS struct{}
 type ReturnS struct{ Value Expr } // nil → null
 type CaseS struct {
 	Disc    Expr
@@ -155,6 +184,10 @@ func applyTransforms(stmts []Stmt) bool {
 	for _, s := range stmts {
 		changed = transformStmt(s) || changed
 	}
+	// arith-forms: a SEPARATE pass after seq-range-for (mirror the core's
+	// transform registry order) — rewrites `let "x+=1"` / `let "x++"`
+	// execs as structured Assigns with Arith payloads.
+	changed = arithFormsStmts(stmts) || changed
 	return changed
 }
 
@@ -239,6 +272,362 @@ func transformExpr(e Expr) bool {
 			changed = transformExpr(p.Val) || changed
 		}
 		return changed
+	}
+	return false
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// arith-forms (mirror transforms/arith_forms.rs): rewrite `let "x+=1"` /
+// `let "x++"` execs as structured `Assign{var, Arith(...)}` stmts — a
+// single arg becomes one Assign, multiple args a Block of Assigns. Any
+// arg that doesn't parse as an arith Assign/IncDec leaves the whole exec
+// untouched (refuse > guess). Bottom-up, in place.
+// ─────────────────────────────────────────────────────────────────────
+
+func arithFormsStmts(stmts []Stmt) bool {
+	changed := false
+	for i, s := range stmts {
+		ns, c := arithFormsStmt(s)
+		if ns != nil {
+			stmts[i] = ns
+		}
+		changed = c || changed
+	}
+	return changed
+}
+
+func arithFormsStmt(st Stmt) (Stmt, bool) {
+	switch t := st.(type) {
+	case *ExprS:
+		// let-in-expr (the common shape: `((i++))` / `let "x+=1"` as a
+		// statement is an Expr(Call("exec", ...)) — handled here, with
+		// the enclosing ExprS replaced by a Block of assigns (the core
+		// wraps even a single assign in a Block)
+		if assigns, ok := lowerLetExpr(t.Expr); ok {
+			return &BlockS{Body: assigns}, true
+		}
+		return nil, false
+	case *IfS:
+		changed := arithFormsExpr(t.Cond)
+		changed = arithFormsStmts(t.Then) || changed
+		for _, e := range t.Elsifs {
+			if c, ok := e[0].(Expr); ok {
+				changed = arithFormsExpr(c) || changed
+			}
+			if b, ok := e[1].([]Stmt); ok {
+				changed = arithFormsStmts(b) || changed
+			}
+		}
+		changed = arithFormsStmts(t.Else) || changed
+		return nil, changed
+	case *WhileS:
+		changed := arithFormsStmts(t.Body)
+		changed = arithFormsExpr(t.Cond) || changed
+		return nil, changed
+	case *ForS:
+		changed := arithFormsExpr(t.Iter)
+		changed = arithFormsStmts(t.Body) || changed
+		return nil, changed
+	case *CaseS:
+		changed := arithFormsExpr(t.Disc)
+		for _, cl := range t.Clauses {
+			changed = arithFormsStmts(cl.Body) || changed
+		}
+		return nil, changed
+	case *BlockS:
+		return nil, arithFormsStmts(t.Body)
+	case *SubshellS:
+		return nil, arithFormsStmts(t.Body)
+	case *BackgroundS:
+		return nil, arithFormsStmts(t.Body)
+	case *FunctionS:
+		return nil, arithFormsStmts(t.Body)
+	case *PipelineS:
+		changed := false
+		for _, stage := range t.Stages {
+			changed = arithFormsStmts(stage) || changed
+		}
+		return nil, changed
+	case *RedirectS:
+		return nil, arithFormsStmts(t.Inner)
+	case *AssignS:
+		return nil, arithFormsExpr(t.Expr)
+	}
+	return nil, false
+}
+
+func arithFormsExpr(e Expr) bool {
+	switch t := e.(type) {
+	case *ArrowE:
+		return arithFormsStmts(t.Body)
+	case *CallE:
+		changed := false
+		for _, a := range t.Args {
+			changed = arithFormsExpr(a) || changed
+		}
+		return changed
+	case *ArrayE:
+		changed := false
+		for _, a := range t.Elems {
+			changed = arithFormsExpr(a) || changed
+		}
+		return changed
+	case *ObjectE:
+		changed := false
+		for _, p := range t.Props {
+			changed = arithFormsExpr(p.Val) || changed
+		}
+		return changed
+	case *BinOpE:
+		return arithFormsExpr(t.Lhs) || arithFormsExpr(t.Rhs)
+	}
+	return false
+}
+
+// lowerLetExpr — mirror lower_let_expr: recurse into the expr first, then
+// check the exec-let shape. Returns the Assign stmts when the whole expr
+// is a let-able exec (the caller replaces the enclosing ExprS).
+func lowerLetExpr(e Expr) ([]Stmt, bool) {
+	// recurse first — a let nested inside a deeper expr is handled by
+	// the same machinery on the way down
+	arithFormsExpr(e)
+	if call, ok := e.(*CallE); ok && call.Func == "exec" {
+		if len(call.Args) == 2 {
+			if name, ok := call.Args[0].(*StrE); ok && name.Value == "let" {
+				if items, ok := call.Args[1].(*ArrayE); ok {
+					if assigns := buildLetAssigns(items.Elems); assigns != nil {
+						return assigns, true
+					}
+				}
+			}
+		}
+	}
+	return nil, false
+}
+
+// buildLetAssigns — `let "x+=1" "y++"` → Assign stmts; nil when any arg
+// fails to parse as a let-able arith (or the arg shape doesn't match).
+func buildLetAssigns(items []Expr) []Stmt {
+	out := make([]Stmt, 0, len(items))
+	for _, a := range items {
+		text, ok := letArgText(a)
+		if !ok {
+			return nil
+		}
+		ast, ok := parseArith(text)
+		if !ok {
+			return nil
+		}
+		var target string
+		switch v := ast.(type) {
+		case *ArithAssign:
+			target = v.Var
+		case *ArithIncDec:
+			target = v.Var
+		default:
+			// any other node is not a let-able form (`let 5` is invalid)
+			return nil
+		}
+		out = append(out, &AssignS{Var: target, Expr: &ArithE{Ast: ast}})
+	}
+	return out
+}
+
+// letArgText — the single arith string of a let-arg IR element. The
+// parser wraps every let arg in a double-quoted Interpolate, so
+// `let "x+=1"` produces Array([Interpolate([lit("x+=1")])]) — the bare
+// Str shape is the stmt-level / synthetic path.
+func letArgText(a Expr) (string, bool) {
+	switch t := a.(type) {
+	case *StrE:
+		return t.Value, true
+	case *InterpE:
+		if len(t.Parts) == 1 && t.Parts[0].IsLit {
+			return t.Parts[0].Lit, true
+		}
+		return "", false
+	}
+	return "", false
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// provably-running loops (mirror shir.rs set_provably_running_loops /
+// loop_provably_runs_in): the loops whose body provably runs at least
+// once (DoWhile always; For over a non-empty list or a forward Range;
+// While whose test evaluates true under sound constant propagation of
+// the preceding assignments). Serialized as `"runs"` on the loop
+// nodes. Pointer-keyed like the core (the IR tree is stable during
+// emission).
+// ─────────────────────────────────────────────────────────────────────
+
+var provablyRunningLoops = map[Stmt]bool{}
+
+func setProvablyRunningLoops(stmts []Stmt) {
+	runs := map[Stmt]bool{}
+	collectProvablyRunningLoops(stmts, runs)
+	provablyRunningLoops = runs
+}
+
+func collectProvablyRunningLoops(stmts []Stmt, runs map[Stmt]bool) {
+	for idx, st := range stmts {
+		switch t := st.(type) {
+		case *WhileS:
+			if loopProvablyRunsIn(stmts, idx) {
+				runs[st] = true
+			}
+			collectProvablyRunningLoops(t.Body, runs)
+		case *ForS:
+			if loopProvablyRunsIn(stmts, idx) {
+				runs[st] = true
+			}
+			collectProvablyRunningLoops(t.Body, runs)
+		case *BlockS:
+			collectProvablyRunningLoops(t.Body, runs)
+		case *SubshellS:
+			collectProvablyRunningLoops(t.Body, runs)
+		case *BackgroundS:
+			collectProvablyRunningLoops(t.Body, runs)
+		case *IfS:
+			collectProvablyRunningLoops(t.Then, runs)
+			for _, e := range t.Elsifs {
+				if b, ok := e[1].([]Stmt); ok {
+					collectProvablyRunningLoops(b, runs)
+				}
+			}
+			collectProvablyRunningLoops(t.Else, runs)
+		}
+	}
+}
+
+func loopProvablyRunsIn(stmts []Stmt, idx int) bool {
+	switch t := stmts[idx].(type) {
+	case *ForS:
+		switch iter := t.Iter.(type) {
+		case *ArrayE:
+			return len(iter.Elems) > 0
+		case *RangeE:
+			return iter.Start <= iter.End
+		}
+		return false
+	case *WhileS:
+		// sound constant propagation over the statements BEFORE the
+		// loop, then evaluate a simple test condition
+		vals := map[string]int64{}
+		for _, st := range stmts[:idx] {
+			switch p := st.(type) {
+			case *AssignS:
+				if v, ok := constValue(p.Expr); ok {
+					vals[p.Var] = v
+				} else {
+					delete(vals, p.Var)
+				}
+			case *WhileS, *ForS, *IfS, *CaseS, *FunctionS,
+				*SubshellS, *BackgroundS, *PipelineS, *BlockS:
+				vals = map[string]int64{}
+			}
+		}
+		if call, ok := t.Cond.(*CallE); ok && call.Func == "test" {
+			if len(call.Args) > 0 {
+				if s, ok := call.Args[0].(*StrE); ok {
+					return evalTestStr(s.Value, vals)
+				}
+			}
+		}
+		return false
+	}
+	return false
+}
+
+func constValue(e Expr) (int64, bool) {
+	switch t := e.(type) {
+	case *IntE:
+		return t.Value, true
+	case *StrE:
+		v, err := strconv.ParseInt(strings.TrimSpace(t.Value), 10, 64)
+		return v, err == nil
+	case *ArithE:
+		return arithConstVal(t.Ast)
+	}
+	return 0, false
+}
+
+func arithConstVal(a ArithAst) (int64, bool) {
+	switch t := a.(type) {
+	case *ArithNum:
+		return t.Val, true
+	case *ArithBin:
+		l, ok := arithConstVal(t.Lhs)
+		if !ok {
+			return 0, false
+		}
+		r, ok := arithConstVal(t.Rhs)
+		if !ok {
+			return 0, false
+		}
+		switch t.Op {
+		case "+":
+			return l + r, true
+		case "-":
+			return l - r, true
+		case "*":
+			return l * r, true
+		case "/":
+			if r == 0 {
+				return 0, false
+			}
+			return l / r, true
+		case "%":
+			if r == 0 {
+				return 0, false
+			}
+			return l % r, true
+		}
+	}
+	return 0, false
+}
+
+func testOperand(s string, vals map[string]int64) (int64, bool) {
+	t := strings.Trim(strings.TrimSpace(s), `"`)
+	if strings.HasPrefix(t, "$") {
+		v, ok := vals[t[1:]]
+		return v, ok
+	}
+	if strings.HasPrefix(t, "${") && strings.HasSuffix(t, "}") {
+		v, ok := vals[t[2:len(t)-1]]
+		return v, ok
+	}
+	v, err := strconv.ParseInt(t, 10, 64)
+	return v, err == nil
+}
+
+func evalTestStr(s string, vals map[string]int64) bool {
+	type cmp struct {
+		op string
+		f  func(a, b int64) bool
+	}
+	ops := []cmp{
+		{"-lt", func(a, b int64) bool { return a < b }},
+		{"-gt", func(a, b int64) bool { return a > b }},
+		{"-le", func(a, b int64) bool { return a <= b }},
+		{"-ge", func(a, b int64) bool { return a >= b }},
+		{"-eq", func(a, b int64) bool { return a == b }},
+		{"-ne", func(a, b int64) bool { return a != b }},
+	}
+	for _, c := range ops {
+		needle := " " + c.op + " "
+		if pos := strings.Index(s, needle); pos >= 0 {
+			left := strings.TrimSpace(s[:pos])
+			right := strings.TrimSpace(s[pos+len(needle):])
+			l, ok := testOperand(left, vals)
+			if !ok {
+				return false
+			}
+			r, ok := testOperand(right, vals)
+			if !ok {
+				return false
+			}
+			return c.f(l, r)
+		}
 	}
 	return false
 }
@@ -737,13 +1126,13 @@ func partIR(part *Part, cmds map[string][]*Command) Expr {
 		return arithWordIR(part.ArithRaw)
 	case part.CSRaw != "":
 		if part.CSCmd != nil {
-			return call("capture", []Expr{&ArrowE{Body: commandArrowStmts([]*Command{part.CSCmd})}})
+			return &CaptureE{Expr: &ArrowE{Body: commandArrowStmts([]*Command{part.CSCmd})}, Native: false}
 		}
 		body, ok := parseCmdList(part.CSRaw)
 		if !ok {
 			return st("$(" + part.CSRaw + ")")
 		}
-		return call("capture", []Expr{&ArrowE{Body: commandArrowStmts(body)}})
+		return &CaptureE{Expr: &ArrowE{Body: commandArrowStmts(body)}, Native: false}
 	case part.MapKind == "access":
 		if slice, ok := zshSliceKey(part.MapName, part.MapKey); ok {
 			return call("join", []Expr{slice})
@@ -952,13 +1341,13 @@ func wordIR(w *Word, cmds map[string][]*Command) Expr {
 func wordIRQuoted(w *Word, cmds map[string][]*Command) Expr {
 	if w.Kind == "cs" {
 		if w.CSCmd != nil {
-			return call("capture", []Expr{&ArrowE{Body: commandArrowStmts([]*Command{w.CSCmd})}})
+			return &CaptureE{Expr: &ArrowE{Body: commandArrowStmts([]*Command{w.CSCmd})}, Native: false}
 		}
 		body, ok := parseCmdList(w.Raw)
 		if !ok {
 			body = echoPlaceholder(w.Raw)
 		}
-		return call("capture", []Expr{&ArrowE{Body: commandArrowStmts(body)}})
+		return &CaptureE{Expr: &ArrowE{Body: commandArrowStmts(body)}, Native: false}
 	}
 	return wordIR(w, cmds)
 }
@@ -1012,6 +1401,7 @@ func forItemIR(w *Word, cmds map[string][]*Command) Expr {
 type ArithAst interface{}
 type ArithNum struct{ Val int64 }
 type ArithVar struct{ Name string }
+type ArithIdent struct{ Name string } // A1 export-only (core request zsh-sh-go-20260813-155123): lifted loop-var reads
 type ArithIndex struct {
 	Var string
 	Key ArithAst
@@ -1500,6 +1890,148 @@ func parseArith(src string) (ArithAst, bool) {
 	return ast, true
 }
 
+// parseArithAssignExpr — mirror parse_arithmetic_assignment: the first
+// `=` that is not part of `==`, `!=`, `<=`, `>=`, `+=`, `-=`, `*=`, `/=`, `%=`.
+// Returns (name, value) when both sides are non-empty.
+func parseArithAssignExpr(expr string) (string, string, bool) {
+	b := []byte(expr)
+	i := 0
+	for i < len(b) {
+		if b[i] == '=' {
+			// compound operators skip past their `=`
+			if i > 0 {
+				switch b[i-1] {
+				case '<', '>', '!', '+', '-', '*', '/', '%':
+					i++
+					continue
+				}
+			}
+			// == is equality, not assignment
+			if i+1 < len(b) && b[i+1] == '=' {
+				i += 2
+				continue
+			}
+			name := strings.TrimSpace(expr[:i])
+			value := strings.TrimSpace(expr[i+1:])
+			if name != "" && value != "" {
+				return name, value, true
+			}
+			return "", "", false
+		}
+		i++
+	}
+	return "", "", false
+}
+
+// splitArithExpressions — mirror split_arithmetic_expressions: split on
+// depth-0 commas (parens/brackets/braces nest).
+func splitArithExpressions(content string) []string {
+	var parts []string
+	depth := 0
+	var cur strings.Builder
+	for _, ch := range content {
+		switch ch {
+		case '(', '[', '{':
+			depth++
+			cur.WriteRune(ch)
+		case ')', ']', '}':
+			depth--
+			cur.WriteRune(ch)
+		case ',':
+			if depth == 0 {
+				parts = append(parts, strings.TrimSpace(cur.String()))
+				cur.Reset()
+			} else {
+				cur.WriteRune(ch)
+			}
+		default:
+			cur.WriteRune(ch)
+		}
+	}
+	if rem := strings.TrimSpace(cur.String()); rem != "" {
+		parts = append(parts, rem)
+	}
+	return parts
+}
+
+// arithLetArg — the `let` arg word for a `(( ))` expression: the core
+// lowers it as an UNQUOTED literal exec word (arg_word_ir), so quote
+// removal + the GLOB_MAGIC glob tag apply. The magic prefix makes
+// parse_arith fail — the arith-forms rewrite refuses the tagged exec
+// (stays), exactly like the core.
+func arithLetArg(expr string) Expr {
+	s2 := shellQuoteRemoval(expr)
+	if hasGlobChars(s2) {
+		s2 = globMagic + s2
+	}
+	return st(s2)
+}
+
+// arithEvalStmt — the `(( ... ))` command in STATEMENT context (mirror
+// the core's parse_arithmetic_eval): empty → the false command; a single
+// plain-`=` expression → a real Assign{x, Arith(value)} (the core's
+// Command::Assignment path — NO Block, NO inner Assign node); a single
+// non-assignment expression → `exec let`; comma-separated expressions →
+// a Block of the commands (all-empty → the true command).
+func arithEvalStmt(raw string) Stmt {
+	content := strings.TrimSpace(raw)
+	if content == "" {
+		// `(( ))` — valid in bash (sets exit code 1): a false command
+		return &ExprS{Expr: call("exec", []Expr{st("false"), &ArrayE{Elems: []Expr{}}})}
+	}
+	parts := splitArithExpressions(content)
+	if len(parts) == 1 {
+		expr := strings.TrimSpace(parts[0])
+		if name, value, ok := parseArithAssignExpr(expr); ok {
+			return &AssignS{Var: name, Expr: arithWordIR(value)}
+		}
+		return &ExprS{Expr: call("exec", []Expr{st("let"), &ArrayE{Elems: []Expr{arithLetArg(expr)}}})}
+	}
+	var stmts []Stmt
+	for _, p := range parts {
+		expr := strings.TrimSpace(p)
+		if expr == "" {
+			continue
+		}
+		if name, value, ok := parseArithAssignExpr(expr); ok {
+			stmts = append(stmts, &AssignS{Var: name, Expr: arithWordIR(value)})
+		} else {
+			stmts = append(stmts, &ExprS{Expr: call("exec", []Expr{st("let"), &ArrayE{Elems: []Expr{arithLetArg(expr)}}})})
+		}
+	}
+	if len(stmts) == 0 {
+		return &ExprS{Expr: call("exec", []Expr{st("true"), &ArrayE{Elems: []Expr{}}})}
+	}
+	if len(stmts) == 1 {
+		return stmts[0]
+	}
+	return &BlockS{Body: stmts}
+}
+
+// arithEvalExpr — the `(( ... ))` command in EXPRESSION context (conds,
+// arrow bodies). Mirror command_to_ir: an Assignment keeps the VALUE
+// only (assignment_expr_ir — the write side effect is dropped); a let
+// stays an exec; the multi-expression Block has no command_to_ir arm
+// (falls to unsupported in the core).
+func arithEvalExpr(raw string) Expr {
+	content := strings.TrimSpace(raw)
+	if content == "" {
+		// `(( ))` — the false command
+		return call("exec", []Expr{st("false"), &ArrayE{Elems: []Expr{}}})
+	}
+	parts := splitArithExpressions(content)
+	if len(parts) == 1 {
+		expr := strings.TrimSpace(parts[0])
+		if _, value, ok := parseArithAssignExpr(expr); ok {
+			return arithWordIR(value)
+		}
+		return call("exec", []Expr{st("let"), &ArrayE{Elems: []Expr{arithLetArg(expr)}}})
+	}
+	// multi-expression in expr context: no command_to_ir Block arm in
+	// the core — unsupported (unreachable in practice)
+	return call("unsupported", []Expr{st("cmd:arith-multi")})
+}
+
 func arithHasDivMod(ast ArithAst) bool {
 	switch t := ast.(type) {
 	case *ArithBin:
@@ -1663,7 +2195,7 @@ func commandArrowStmts(cmds []*Command) []Stmt {
 	for _, c := range cmds {
 		switch c.Kind {
 		case "simple", "builtin", "test", "redirect", "pipeline", "and", "or",
-			"not", "assign", "arith", "break", "continue":
+			"not", "assign", "arith":
 			out = append(out, &ExprS{Expr: commandToIR(c)})
 		default:
 			if s := stmtForCommand(c); s != nil {
@@ -1688,6 +2220,11 @@ func bodyStmtsOfList(cmds []*Command) []Stmt {
 func commandToIR(cmd *Command) Expr {
 	switch cmd.Kind {
 	case "test":
+		// [[ ]] tests carry a trailing tag arg (mirror of the core's
+		// extglob-nocasematch-20260806 additive tag)
+		if cmd.TestDouble {
+			return call("test", []Expr{st(cmd.TestExpr), st("[[")})
+		}
 		return call("test", []Expr{st(cmd.TestExpr)})
 	case "simple", "builtin":
 		// exec_expr: redirects become a redirect CALL in expression context
@@ -1735,9 +2272,17 @@ func commandToIR(cmd *Command) Expr {
 		return notIR(commandToIR(cmd.BodyCmds[0]))
 	case "assign":
 		return assignmentExprIR(cmd)
+	case "break":
+		// expression context (an `&&`/`||`/`!` operand): the core keeps
+		// the opaque call forms here (command_to_ir Break/Continue arms)
+		return call("break", []Expr{})
+	case "continue":
+		return call("continue", []Expr{})
 	case "arith":
-		// (( expr )) → exec let with one arg
-		return call("exec", []Expr{st("let"), &ArrayE{Elems: []Expr{st(cmd.ArithRaw)}}})
+		// (( expr )) — mirror command_to_ir: an Assignment loses the
+		// side effect in expression context (assignment_expr_ir — the
+		// value only); a let stays an exec (GLOB_MAGIC-tagged).
+		return arithEvalExpr(cmd.ArithRaw)
 	}
 	return call("unsupported", []Expr{st("cmd:" + cmd.Kind)})
 }
@@ -1761,9 +2306,15 @@ func stmtForCommand(cmd *Command) Stmt {
 		}
 		return &RedirectS{Inner: []Stmt{&ExprS{Expr: e}}, Redirects: redirectsIR(cmd.Redirect)}
 	case "break":
-		return &ExprS{Expr: call("break", []Expr{})}
+		// first-class A1 nodes (core requests zsh-sh-go-20260814-225040 /
+		// zsh-sh-go-20260815-015459 [Break] and zsh-sh-go-20260813-003026
+		// [Continue]): every renderer lowers IrStmt::Break/IrStmt::Continue
+		// to the SAME runtime calls as the legacy call forms; the level
+		// argument is dropped exactly as before (the A1 nodes have no
+		// level field)
+		return &BreakS{}
 	case "continue":
-		return &ExprS{Expr: call("continue", []Expr{})}
+		return &ContinueS{}
 	case "return":
 		var val Expr
 		if cmd.RetVal != nil {
@@ -1814,6 +2365,8 @@ func stmtForCommand(cmd *Command) Stmt {
 	case "for":
 		items := mergedWordsIR(cmd.Items, func(w *Word) Expr { return forItemIR(w, nil) })
 		return &ForS{Var: cmd.ForVar, Iter: &ArrayE{Elems: items}, Body: bodyStmtsOfList(cmd.ForBody)}
+	case "cfor":
+		return lowerCStyleFor(cmd)
 	case "function":
 		// mirrors Command::Function → IrStmt::Function (body flattened
 		// from the Block, like body_stmts(&Command::Block(..)))
@@ -1837,11 +2390,81 @@ func stmtForCommand(cmd *Command) Stmt {
 	case "subshell":
 		return &SubshellS{Body: commandArrowStmts(cmd.BodyCmds)}
 	case "test":
+		// [[ ]] tests carry a trailing tag arg (mirror of the core's
+		// extglob-nocasematch-20260806 additive tag)
+		if cmd.TestDouble {
+			return &ExprS{Expr: call("test", []Expr{st(cmd.TestExpr), st("[[")})}
+		}
 		return &ExprS{Expr: call("test", []Expr{st(cmd.TestExpr)})}
 	case "arith":
-		return &ExprS{Expr: call("exec", []Expr{st("let"), &ArrayE{Elems: []Expr{st(cmd.ArithRaw)}}})}
+		// (( expr )) — mirror the core's parse: comma-split, the plain-= Assignment path, the let path
+		return arithEvalStmt(cmd.ArithRaw)
 	}
 	return nil
+}
+
+// lowerCStyleFor — mirror the core's Command::CStyleFor lowering (shir.rs
+// ast_to_ir): the header splits exactly like the runtime's
+// parseCStyleHeader (plain ';' split, parts trimmed — parts beyond the
+// third are ignored), init/step lower through the arith-assignment
+// machinery (`((i=0))` → Assign{Arith(Assign)} and `((i++))` →
+// Assign{Arith(IncDec)} — the arith-forms shapes), the cond through the
+// shell path's existing `while (( ... ))` lowering (exec "let" with the
+// arith text). An empty cond is always-true (`for ((;;))` — Int(1)). Any
+// init/step part that does not parse as a let-able arith assignment
+// (Assign/IncDec) keeps the WHOLE construct on the opaque cstyleFor Call
+// (REFUSE > GUESS — the raw header text verbatim, spacing preserved).
+func lowerCStyleFor(cmd *Command) Stmt {
+	parts := strings.Split(cmd.ArithRaw, ";")
+	part := func(i int) string {
+		if i < len(parts) {
+			return strings.TrimSpace(parts[i])
+		}
+		return ""
+	}
+	initTxt, condTxt, stepTxt := part(0), part(1), part(2)
+	arithAssign := func(t string) (Stmt, bool) {
+		if t == "" {
+			return nil, true
+		}
+		ast, ok := parseArith(t)
+		if !ok {
+			return nil, false
+		}
+		var target string
+		switch v := ast.(type) {
+		case *ArithAssign:
+			target = v.Var
+		case *ArithIncDec:
+			target = v.Var
+		default:
+			// any other node is not a let-able form (`i*2` is not a write)
+			return nil, false
+		}
+		return &AssignS{Var: target, Expr: &ArithE{Ast: ast}}, true
+	}
+	init, initOK := arithAssign(initTxt)
+	step, stepOK := arithAssign(stepTxt)
+	body := bodyStmtsOfList(cmd.ForBody)
+	if initOK && stepOK {
+		var initL, stepL []Stmt
+		if init != nil {
+			initL = append(initL, init)
+		}
+		if step != nil {
+			stepL = append(stepL, step)
+		}
+		var cond Expr
+		if condTxt == "" {
+			// `for ((;;))` — an empty cond is always-true (the runtime's
+			// cstyleFor loop treats '' as no break).
+			cond = &IntE{Value: 1}
+		} else {
+			cond = call("exec", []Expr{st("let"), &ArrayE{Elems: []Expr{st(condTxt)}}})
+		}
+		return &ForInitS{Init: initL, Cond: cond, Step: stepL, Body: body}
+	}
+	return &ExprS{Expr: call("cstyleFor", []Expr{st(cmd.ArithRaw), &ArrowE{Body: body}})}
 }
 
 // execCallIR — mirror exec_call_ir.

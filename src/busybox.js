@@ -41,7 +41,7 @@ const PREBUILT = "wasm-bin/otranspiler-busybox.wasm";  // shipped static build
 // changes so a browser never reuses a stale staged copy (the staged
 // VFS file at /usr/bin/otranspiler-busybox.wasm persists across page
 // loads; ensureBusyboxWasm re-fetches when this version differs).
-export const BUSYBOX_VERSION = "v30-purecpp";  // v30: rebuild with the pure-Go cpp tokenizer (main.go only — the tree-sitter parser.go is cgo, not wasm-buildable; otranspiler.html serves cpp via the merged busybox)  // v29: cpp-sh-go + zig-sh-go merged into the busybox (pure-Go tokenizers onto clib)  // v28: c-sh-go emits ForInit + first-class Break/Continue  // v27: user-fn for/seq decls, non-cast param lift, ptr-param index via mem seam
+export const BUSYBOX_VERSION = "v31";  // v31: resync all vendored frontends with sh2loop (posix-sh-go analysis/lowering, go-sh, py-sh-go, c-sh-go, bat-sh-go, zsh-sh-go, fish-sh-go); bat keeps the vendored-only Shir→Parse adapter, go-sh drops a duplicated pkgNames field left mid-edit upstream  // v30: rebuild with the pure-Go cpp tokenizer (main.go only — the tree-sitter parser.go is cgo, not wasm-buildable; otranspiler.html serves cpp via the merged busybox)  // v29: cpp-sh-go + zig-sh-go merged into the busybox (pure-Go tokenizers onto clib)  // v28: c-sh-go emits ForInit + first-class Break/Continue  // v27: user-fn for/seq decls, non-cast param lift, ptr-param index via mem seam
 
 // Read one vendored frontend source file (browser: fetch; node: disk).
 // `base` is unused in node (paths resolve against the repo root); in the

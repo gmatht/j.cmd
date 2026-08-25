@@ -1,0 +1,17 @@
+import { readFileSync } from "fs";
+import { getOtranspilerl } from "./src/otranspilerl.js";
+import { estreeToJs } from "./src/estree.js";
+const src = readFileSync("www/bin/mimecroft.sh", "utf8");
+const lib = await getOtranspilerl();
+const out = lib.compile(src);
+const estree = typeof out === "string" ? JSON.parse(out) : out;
+const program = estree.estree || estree;
+const bodyJs = await estreeToJs({ type: "Program", body: program.body || [] }, { repl: false, precompiledHead: true });
+const patternRe = /sh2\.vars\.(\w+) \?\? \(sh2\.env\.\1 \?\? ""\)/g;
+let rest = bodyJs.replace(patternRe, "PATTERN");
+const bareVars = [...new Set(rest.match(/sh2\.vars\.(\w+)/g) || [])].map((s) => s.split(".")[2]);
+const bareEnv = [...new Set(rest.match(/sh2\.env\.(\w+)/g) || [])].map((s) => s.split(".")[2]);
+console.log("bare vars names:", bareVars.join(", "));
+console.log("bare env names:", bareEnv.join(", "));
+const hot = ["gv", "bh", "cr", "cg", "cb", "tx", "fv", "av", "rv", "mf", "mt", "cs", "cv", "rd_cs", "rd_sn", "dpcx_ms", "dpcz_ms", "dpyw_ms", "dpx", "dpz", "dyaw"];
+console.log("hot helper vars with bare access:", hot.filter((h) => bareVars.includes(h) || bareEnv.includes(h)).join(", "));

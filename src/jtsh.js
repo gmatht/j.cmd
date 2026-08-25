@@ -68,7 +68,7 @@ import { fs } from "./fs/index.js";
 import { formatAge } from "./fs/lscache.js";
 import { WasmRunner } from "./wasm.js";
 import { WasmerRegistry } from "./wasmer.js";
-import { materializeBinCommand } from "./binsync.js";
+import { probeBinCommand } from "./binsync.js";
 import { env, expandRef, setShellStatus, getShellStatus, setLastBgPid,
          setPositional, getPositional, getArgv0, setOption, hasOption,
          markReadonly, isReadonly, listReadonly } from "./env.js";
@@ -418,10 +418,13 @@ const shellCtx = {
   resolveCommand: (name) => shellResolve(shellCtx, name),
   get builtins() { return builtins; },
   autoLoad: async (name) => {
-    // Lazy /bin command templates (www/bin/) — materialize on first use
-    // (perl, lua, tar, zip, mail, …). Only bare names are auto-loaded.
+    // Last-resort command probe — /bin lists every www/bin template
+    // (OverlayFS over BinFS), so the $PATH walk finds them before this;
+    // it only fires when even the manifest-backed listing is unavailable.
+    // Confirms a template by name WITHOUT writing anything. Only bare
+    // names are probed.
     if (!name.includes("/")) {
-      const p = await materializeBinCommand(name);
+      const p = await probeBinCommand(name);
       if (p) { const denied = customExecDenied(p); if (denied) return denied; return { type: p.endsWith(".sh") ? "sh" : "file", path: p }; }
     }
     // a wasm binary from wasm-bin/ (the CLI has no server — node fetches
@@ -1137,11 +1140,11 @@ function tabComplete(line, callback) {
     }
   } catch {}
   (async () => {
-    // Staged /bin templates (www/bin/) — materialize-on-first-use means
-    // the /bin RamFS lists nothing until a command runs, so `mimecro<Tab>`
-    // found no matches. Consult the template dir directly: the CLI reads
-    // the repo dir, the browser fetches the server's directory listing
-    // (SimpleHTTPRequestHandler serves one).
+    // Staged /bin templates — /bin itself lists them (OverlayFS over
+    // BinFS), but consult www/bin directly as well so completion works
+    // even before the first listing resolves (or on hosts without one):
+    // the CLI reads the repo dir, the browser fetches the server's
+    // directory listing (SimpleHTTPRequestHandler serves one).
     try {
       let staged = [];
       if (typeof process !== "undefined" && process.versions && process.versions.node) {

@@ -4,12 +4,14 @@
 // explicit paths → wasm binaries in $PATH → builtins → sourced
 // functions → .js/.mjs/.wasm files in $PATH, with case folding. The
 // shell-specific tail (auto-loading wasm binaries from the server /
-// staging lazy /bin templates) is a `ctx.autoLoad(name)` hook:
+// last-resort /bin template probing when even the listing is missing)
+// is a `ctx.autoLoad(name)` hook:
 //
-//   - CLI (node): read www/wasm-bin/*.wasm from disk + materialize
-//     the lazy /bin templates (src/binsync.js)
-//   - browser: fetch wasm-bin/*.wasm + writeBlob into the VFS +
-//     materialize the lazy templates
+//   - CLI (node): read www/wasm-bin/*.wasm from disk + probe www/bin
+//     templates by name (src/binsync.js — never writes; /bin itself is
+//     an OverlayFS over BinFS and lists every template from boot)
+//   - browser: fetch wasm-bin/*.wasm + writeBlob into the VFS + probe
+//     the templates by name
 import { fs } from "../fs/index.js";
 import { env } from "../env.js";
 
@@ -53,7 +55,7 @@ export async function resolveCommand(ctx, name) {
 // resolveCommandExact(ctx, name) — the walk. `ctx.builtins` is the
 // shell's merged builtins object, `ctx.otRt` the persistent transpiled
 // runtime (sourced functions shadow commands), `ctx.autoLoad(name)`
-// the shell-specific wasm staging + lazy-template materialization.
+// the shell-specific wasm staging + last-resort template probe.
 export async function resolveCommandExact(ctx, name) {
   // vim is an alias for vi
   if (name === "vim") name = "vi";
@@ -188,9 +190,9 @@ export async function resolveCommandExact(ctx, name) {
     } catch {}
   }
 
-  // Shell-specific tail: auto-load a wasm binary / lazy command
-  // template (the browser fetches wasm-bin/, the CLI reads it from
-  // disk; both materialize the /bin templates via binsync).
+  // Shell-specific tail: auto-load a wasm binary / probe a template by
+  // name (the browser fetches wasm-bin/, the CLI reads it from disk;
+  // /bin's own listing comes from BinFS via the plain walk above).
   if (ctx.autoLoad) return await ctx.autoLoad(name);
   return null;
 }

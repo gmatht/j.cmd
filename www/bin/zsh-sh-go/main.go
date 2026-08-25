@@ -127,7 +127,8 @@ type Command struct {
 	// redirect-wrapped
 	Inner *Command
 	// test
-	TestExpr string
+	TestExpr   string
+	TestDouble bool // [[ ]] — carries the core's trailing "[[" tag
 	// ((...))
 	ArithRaw string
 	// return value word
@@ -420,7 +421,10 @@ func (p *Parser) parseWord() (*Word, error) {
 			if p.isVarRefNext() {
 				break
 			}
-			if p.peekAt(1) == '{' || p.peekAt(1) == '(' {
+			// `$$` (DollarDollar, the pid special var) breaks out like a
+			// var ref — the merge loop parses it as an expansion part
+			// (mirror: the core lexes DollarDollar in word context).
+			if p.peekAt(1) == '{' || p.peekAt(1) == '(' || p.peekAt(1) == '$' {
 				break
 			}
 			sb.WriteByte('$')
@@ -524,7 +528,7 @@ func (p *Parser) mergeFragments(w *Word) {
 			// backtick becomes a new word (consumed, content dropped)
 			return
 		case c == '$':
-			if p.isVarRefNext() || p.peekAt(1) == '{' || p.peekAt(1) == '(' {
+			if p.isVarRefNext() || p.peekAt(1) == '{' || p.peekAt(1) == '(' || p.peekAt(1) == '$' {
 				exp, err := p.parseDollarExpansion()
 				if err != nil {
 					return
@@ -988,6 +992,27 @@ func parsePEContent(content string) *Word {
 			rest := content[cp+1:]
 			if sp := strings.Index(rest, ":"); sp >= 0 {
 				return &Word{Kind: "pe", PEVar: content[:cp], PEOp: "slice", PEExtra: []string{rest[:sp], rest[sp+1:]}}
+			}
+			// zsh `:modifier` forms (t70/t71): a bare single letter with NO
+			// length is a zsh case/path modifier — `${x:l}` lowercase,
+			// `${x:u}` uppercase, `${x:t}` basename, `${x:h}` dirname — never
+			// a bash slice. Emit the core's unambiguous ops (`^^`/`,,` from
+			// bash `${x^^}`/`${x,,}`, the `##*/`/`%/*` basename/dirname ops)
+			// so EVERY backend renders zsh semantics: the A1 must not depend
+			// on the JS runtime's zsh-mode source-extension hack (triage's
+			// estree reference runs without --source and mis-renders
+			// `param("slice", x, "l", "")` — the t70/t71 FAIL-FRONTEND
+			// escalations). Byte-equality vs the core's bash parse (slice)
+			// is waived for these files (harness/zsh-subscript.ere).
+			switch rest {
+			case "l":
+				return peWord(content[:cp], ",,")
+			case "u":
+				return peWord(content[:cp], "^^")
+			case "t":
+				return peWord(content[:cp], "basename")
+			case "h":
+				return peWord(content[:cp], "dirname")
 			}
 			return &Word{Kind: "pe", PEVar: content[:cp], PEOp: "slice", PEExtra: []string{rest, ""}}
 		}
@@ -2178,10 +2203,14 @@ func (p *Parser) parseWhile(until bool) (*Command, error) {
 	return &Command{Kind: "while", Cond: cond, Until: until, Body: body}, nil
 }
 
-// parseFor — `for var [in words]; do body; done`
+// parseFor — `for var [in words]; do body; done` and the C-style
+// `for (( init; cond; step )); do body; done` (zsh/bash C-style for).
 func (p *Parser) parseFor() (*Command, error) {
 	p.pos += 3 // "for"
 	p.skipInlineWSAndComments()
+	if p.starts("((") {
+		return p.parseCStyleFor()
+	}
 	if !isIdentStart(p.peek()) {
 		return nil, fmt.Errorf("for: expected variable at %d", p.pos)
 	}
@@ -2257,11 +2286,11 @@ func (p *Parser) parseBracketTest(dbl bool) (*Command, error) {
 	for !p.eof() {
 		if dbl && p.starts("]]") {
 			p.pos += 2
-			return &Command{Kind: "test", TestExpr: sb.String()}, nil
+			return &Command{Kind: "test", TestExpr: sb.String(), TestDouble: true}, nil
 		}
 		if !dbl && p.peek() == ']' {
 			p.pos++
-			return &Command{Kind: "test", TestExpr: sb.String()}, nil
+			return &Command{Kind: "test", TestExpr: sb.String(), TestDouble: false}, nil
 		}
 		c := p.peek()
 		if isWS(c) || isNL(c) {
@@ -2433,6 +2462,51 @@ func (p *Parser) parseBracketTest(dbl bool) (*Command, error) {
 		p.pos++
 	}
 	return nil, fmt.Errorf("test: missing closing bracket")
+}
+
+// parseCStyleFor — `for (( init; cond; step )); do body; done` (the
+// core's Command::CStyleFor). The header is captured RAW between the
+// parens (the core reconstructs arith_content from token texts with the
+// original spacing preserved): the ForInit lowering trims the ';'-split
+// parts, the opaque cstyleFor fallback emits the raw text verbatim.
+// Depth-counted like parseArithEval so nested parens/`$(( ))` survive.
+func (p *Parser) parseCStyleFor() (*Command, error) {
+	p.pos += 2 // ((
+	start := p.pos
+	depth := 2
+	for !p.eof() {
+		c := p.peek()
+		if c == '(' {
+			depth++
+		} else if c == ')' {
+			depth--
+			if depth == 0 {
+				content := p.src[start : p.pos-1]
+				p.pos++
+				p.skipInlineWSAndComments()
+				if p.peek() == ';' || isNL(p.peek()) {
+					p.pos++
+				}
+				p.skipWSAndComments()
+				if !p.atKeyword("do") {
+					return nil, fmt.Errorf("for: expected do at %d", p.pos)
+				}
+				p.pos += 2
+				p.skipWSAndComments()
+				body, err := p.parseCommandListUntil([]string{"done"})
+				if err != nil {
+					return nil, err
+				}
+				if !p.atKeyword("done") {
+					return nil, fmt.Errorf("for: expected done at %d", p.pos)
+				}
+				p.pos += 4
+				return &Command{Kind: "cfor", ArithRaw: content, ForBody: body}, nil
+			}
+		}
+		p.pos++
+	}
+	return nil, fmt.Errorf("for: missing ))")
 }
 
 // parseArithEval — `(( expr ))` → exec let with the raw expression.

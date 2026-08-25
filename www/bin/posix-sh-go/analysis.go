@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 const contractVersion = 1
@@ -2205,6 +2206,617 @@ func analyzeVarLifetimes(stmts []Stmt) []VarLifetimeOut {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// A1d: var_bash_env (mirror analyze_var_bash_env)
+// ─────────────────────────────────────────────────────────────────────
+
+// bashIdentityVars — bash-identity variables the program REFERENCES that
+// bash sets ITSELF at startup (never inherited): HOSTNAME (bash sets it
+// from the hostname if unset), BASH_VERSION / BASH_VERSINFO (bash's own
+// version), ZSH_VERSION (zsh's). A faithful translation must initialize
+// these before first use so `${HOSTNAME:-…}` matches what a bash run
+// sees. Detected from getVar("NAME") / param(NAME, …) calls in the
+// lowered IR.
+var bashIdentityVars = map[string]bool{
+	"HOSTNAME": true, "BASH_VERSION": true, "BASH_VERSINFO": true, "ZSH_VERSION": true,
+}
+
+func walkExprBashEnv(e Expr, out map[string]bool) {
+	switch t := e.(type) {
+	case *CallE:
+		if t.Func == "getVar" {
+			if len(t.Args) > 0 {
+				if n, ok := t.Args[0].(*StrE); ok && bashIdentityVars[n.Value] {
+					out[n.Value] = true
+				}
+			}
+		}
+		if t.Func == "param" {
+			// param(op, VAR, …) — the variable is the SECOND arg.
+			if len(t.Args) > 1 {
+				if n, ok := t.Args[1].(*StrE); ok && bashIdentityVars[n.Value] {
+					out[n.Value] = true
+				}
+			}
+		}
+		for _, a := range t.Args {
+			walkExprBashEnv(a, out)
+		}
+	case *ArrowE:
+		walkStmtsBashEnv(t.Body, out)
+	case *ArrayE:
+		for _, el := range t.Elems {
+			walkExprBashEnv(el, out)
+		}
+	case *ObjectE:
+		for _, p := range t.Props {
+			walkExprBashEnv(p.Val, out)
+		}
+	case *BinOpE:
+		walkExprBashEnv(t.Lhs, out)
+		walkExprBashEnv(t.Rhs, out)
+	case *InterpE:
+		for _, p := range t.Parts {
+			if !p.IsLit {
+				walkExprBashEnv(p.Expr, out)
+			}
+		}
+	}
+}
+
+func walkStmtBashEnv(st Stmt, out map[string]bool) {
+	switch t := st.(type) {
+	case *ExprS:
+		walkExprBashEnv(t.Expr, out)
+	case *AssignS:
+		walkExprBashEnv(t.Expr, out)
+	case *IfS:
+		walkExprBashEnv(t.Cond, out)
+		walkStmtsBashEnv(t.Then, out)
+		for _, e := range t.Elsifs {
+			if c, ok := e[0].(Expr); ok {
+				walkExprBashEnv(c, out)
+			}
+			if b, ok := e[1].([]Stmt); ok {
+				walkStmtsBashEnv(b, out)
+			}
+		}
+		walkStmtsBashEnv(t.Else, out)
+	case *WhileS:
+		walkExprBashEnv(t.Cond, out)
+		walkStmtsBashEnv(t.Body, out)
+	case *ForS:
+		walkExprBashEnv(t.Iter, out)
+		walkStmtsBashEnv(t.Body, out)
+	case *FunctionS:
+		walkStmtsBashEnv(t.Body, out)
+	case *ReturnS:
+		if t.Value != nil {
+			walkExprBashEnv(t.Value, out)
+		}
+	case *CaseS:
+		walkExprBashEnv(t.Disc, out)
+		for _, cl := range t.Clauses {
+			walkStmtsBashEnv(cl.Body, out)
+		}
+	case *RedirectS:
+		walkStmtsBashEnv(t.Inner, out)
+		for _, r := range t.Redirects {
+			walkExprBashEnv(r.Target, out)
+		}
+	case *BlockS:
+		walkStmtsBashEnv(t.Body, out)
+	case *SubshellS:
+		walkStmtsBashEnv(t.Body, out)
+	case *BackgroundS:
+		walkStmtsBashEnv(t.Body, out)
+	case *PipelineS:
+		for _, stage := range t.Stages {
+			walkStmtsBashEnv(stage, out)
+		}
+	}
+}
+
+func walkStmtsBashEnv(stmts []Stmt, out map[string]bool) {
+	for _, st := range stmts {
+		walkStmtBashEnv(st, out)
+	}
+}
+
+// analyzeVarBashEnv — mirror analyze_var_bash_env. Sorted by name
+// (BTreeSet order).
+func analyzeVarBashEnv(stmts []Stmt) []string {
+	out := map[string]bool{}
+	walkStmtsBashEnv(stmts, out)
+	names := []string{} // non-nil: an empty list serializes as [], not null
+	for n := range out {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// A1e: var_nospace verdicts (mirror analyze_var_nospace)
+// ─────────────────────────────────────────────────────────────────────
+
+type VarNoSpaceOut struct {
+	Name    string
+	NoSpace bool
+}
+
+type assignSite struct {
+	Name string
+	RHS  Expr
+}
+
+// whitespaceFree — mirror char::is_whitespace on the word.
+func whitespaceFree(s string) bool {
+	for _, r := range s {
+		if unicode.IsSpace(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// trDeleteSet — the delete-set text of a `tr -d <set>` arg; the set arg
+// is usually an Interpolate of literal text (quoted "\t\n " stays a
+// literal backslash-t — handle the common POSIX-class + literal-set
+// forms conservatively). Dynamic sets → not known.
+func trDeleteSet(arg Expr) (string, bool) {
+	switch t := arg.(type) {
+	case *StrE:
+		return t.Value, true
+	case *InterpE:
+		var out strings.Builder
+		for _, p := range t.Parts {
+			if !p.IsLit {
+				return "", false // dynamic set — no
+			}
+			out.WriteString(p.Lit)
+		}
+		return out.String(), true
+	}
+	return "", false
+}
+
+// coversIFSWhitespace — a delete set that provably removes the whole IFS
+// whitespace set.
+func coversIFSWhitespace(set string) bool {
+	if strings.Contains(set, "[:space:]") {
+		return true // the POSIX class — all whitespace
+	}
+	// literal set: must contain the space char, a tab and a newline
+	// (accept both the real control chars and the backslash spellings)
+	hasSpace := strings.Contains(set, " ") || strings.Contains(set, "\\ ")
+	hasTab := strings.Contains(set, "\t") || strings.Contains(set, "\\t")
+	hasNL := strings.Contains(set, "\n") || strings.Contains(set, "\\n")
+	return hasSpace && hasTab && hasNL
+}
+
+// execIsTrDeletes — is the capture's command a whitespace-removing
+// `tr -d`? The capture's arrow body is Expr(pipeline([Arrow(…), …,
+// Arrow(last)])) or a single Expr(exec tr -d <set> …); the output of
+// `tr -d <ifs-set>` is whitespace-free whatever the input.
+func execIsTrDeletes(stmts []Stmt) bool {
+	if len(stmts) == 0 {
+		return false
+	}
+	last, ok := stmts[len(stmts)-1].(*ExprS)
+	if !ok {
+		return false
+	}
+	call, ok := last.Expr.(*CallE)
+	if !ok {
+		return false
+	}
+	switch call.Func {
+	case "exec":
+		// exec args: [Str(cmd), Array([arg1, arg2, …])]
+		if len(call.Args) < 2 {
+			return false
+		}
+		cmd, ok := call.Args[0].(*StrE)
+		if !ok || cmd.Value != "tr" {
+			return false
+		}
+		argv, ok := call.Args[1].(*ArrayE)
+		if !ok || len(argv.Elems) < 2 {
+			return false
+		}
+		fl, ok := argv.Elems[0].(*StrE)
+		if !ok || fl.Value != "-d" {
+			return false
+		}
+		set, ok := trDeleteSet(argv.Elems[1])
+		if !ok {
+			return false
+		}
+		return coversIFSWhitespace(set)
+	case "pipeline":
+		if len(call.Args) < 1 {
+			return false
+		}
+		stages, ok := call.Args[0].(*ArrayE)
+		if !ok || len(stages.Elems) == 0 {
+			return false
+		}
+		lastStage, ok := stages.Elems[len(stages.Elems)-1].(*ArrowE)
+		if !ok {
+			return false
+		}
+		return execIsTrDeletes(lastStage.Body)
+	}
+	return false
+}
+
+// exprNoSpace — is the expression provably whitespace-free? verdicts is
+// the current fixed-point tag map.
+func exprNoSpace(e Expr, verdicts map[string]bool) bool {
+	switch t := e.(type) {
+	case *IntE:
+		return true
+	case *StrE:
+		return whitespaceFree(t.Value)
+	case *ArithE:
+		return true // numeric result
+	case *BinOpE:
+		return true // numeric binary op
+	case *VarE:
+		return verdicts[t.Name]
+	case *InterpE:
+		for _, p := range t.Parts {
+			if p.IsLit {
+				if !whitespaceFree(p.Lit) {
+					return false
+				}
+			} else if !exprNoSpace(p.Expr, verdicts) {
+				return false
+			}
+		}
+		return true
+	case *CallE:
+		switch t.Func {
+		case "getVar":
+			if len(t.Args) > 0 {
+				if n, ok := t.Args[0].(*StrE); ok {
+					return verdicts[n.Value]
+				}
+			}
+			return false
+		case "arith":
+			return true // the numeric result
+		case "capture":
+			// command substitution: provably whitespace-free output
+			if len(t.Args) > 0 {
+				if arr, ok := t.Args[0].(*ArrowE); ok {
+					return execIsTrDeletes(arr.Body)
+				}
+			}
+			return false
+		case "param":
+			// ${x}, ${x:-d}, … — the result is built from the var value
+			// (its verdict) and the literal/default parts. Conservative:
+			// only the pure-read forms are tagged; everything else stays
+			// untagged.
+			op, opIsStr := "", false
+			if len(t.Args) > 0 {
+				if o, ok := t.Args[0].(*StrE); ok {
+					op, opIsStr = o.Value, true
+				}
+			}
+			if !opIsStr {
+				return false
+			}
+			if op == "" || op == "len" {
+				// ${x} / ${#x} — the var value itself
+				if len(t.Args) > 1 {
+					if n, ok := t.Args[1].(*StrE); ok && !strings.HasPrefix(n.Value, "#") {
+						return verdicts[n.Value]
+					}
+				}
+				return false
+			}
+			switch op {
+			case ":=", ":-", ":+", ":?", "=", "+", "?":
+				// ${x:-d} etc. — tag only when BOTH the var and the
+				// default are spaceless
+				varOk := false
+				if len(t.Args) > 1 {
+					if n, ok := t.Args[1].(*StrE); ok {
+						varOk = verdicts[n.Value]
+					}
+				}
+				defaultOk := false
+				if len(t.Args) > 2 {
+					defaultOk = exprNoSpace(t.Args[2], verdicts)
+				}
+				return varOk && defaultOk
+			}
+			return false
+		}
+		return false
+	case *ArrayE, *ObjectE, *ArrowE, *RangeE:
+		return false
+	}
+	return false
+}
+
+// collectNoSpaceAssigns — all assignment targets + RHS exprs (mirror the
+// core's walk; every Go AssignS has index-free targets — the index is
+// baked into the name, like the core's empty-indices targets).
+func collectNoSpaceAssigns(stmts []Stmt, assigns *[]assignSite) {
+	for _, st := range stmts {
+		switch t := st.(type) {
+		case *AssignS:
+			*assigns = append(*assigns, assignSite{t.Var, t.Expr})
+		case *IfS:
+			collectNoSpaceAssigns(t.Then, assigns)
+			for _, e := range t.Elsifs {
+				if b, ok := e[1].([]Stmt); ok {
+					collectNoSpaceAssigns(b, assigns)
+				}
+			}
+			collectNoSpaceAssigns(t.Else, assigns)
+		case *ForS:
+			collectNoSpaceAssigns(t.Body, assigns)
+		case *WhileS:
+			collectNoSpaceAssigns(t.Body, assigns)
+		case *BlockS:
+			collectNoSpaceAssigns(t.Body, assigns)
+		case *SubshellS:
+			collectNoSpaceAssigns(t.Body, assigns)
+		case *BackgroundS:
+			collectNoSpaceAssigns(t.Body, assigns)
+		case *CaseS:
+			for _, cl := range t.Clauses {
+				collectNoSpaceAssigns(cl.Body, assigns)
+			}
+		}
+	}
+}
+
+// analyzeVarNoSpace — mirror analyze_var_nospace. A var becomes tagged
+// when EVERY assignment RHS is provably spaceless (monotone fixed point
+// — converges). A var with NO assignment sites stays untagged. Sorted by
+// name.
+func analyzeVarNoSpace(stmts []Stmt) []VarNoSpaceOut {
+	var assigns []assignSite
+	collectNoSpaceAssigns(stmts, &assigns)
+	verdicts := map[string]bool{}
+	for guard := 0; guard < 64; guard++ {
+		changed := false
+		for _, a := range assigns {
+			ok := exprNoSpace(a.RHS, verdicts)
+			if ok != verdicts[a.Name] {
+				verdicts[a.Name] = ok
+				changed = true
+			}
+		}
+		if !changed {
+			break
+		}
+	}
+	var names []string
+	for n := range verdicts {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	out := make([]VarNoSpaceOut, 0, len(names))
+	for _, n := range names {
+		out = append(out, VarNoSpaceOut{Name: n, NoSpace: verdicts[n]})
+	}
+	return out
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// A1f: "runs" loop markup (mirror set_provably_running_loops)
+// ─────────────────────────────────────────────────────────────────────
+
+// provablyRuns — the set of loop statements (by node identity) whose body
+// provably runs at least once. Mirrors the core's PROVABLY_RUNS global:
+// computed once per emit (shirForSource), consulted by stmtJSON. A nil
+// map (no emit yet / non-markup path) reads as all-false, like the
+// core's Option::None → unwrap_or(false).
+var provablyRuns map[Stmt]bool
+
+// arithConst — mirror arith_const: constant-fold an arith AST (Num / Bin
+// only; anything else → not known).
+func arithConst(a ArithAst) (int64, bool) {
+	switch t := a.(type) {
+	case *ArithNum:
+		return t.Val, true
+	case *ArithBin:
+		l, ok := arithConst(t.Lhs)
+		if !ok {
+			return 0, false
+		}
+		r, ok := arithConst(t.Rhs)
+		if !ok {
+			return 0, false
+		}
+		switch t.Op {
+		case "+":
+			return l + r, true
+		case "-":
+			return l - r, true
+		case "*":
+			return l * r, true
+		case "/":
+			if r == 0 {
+				return 0, false
+			}
+			return l / r, true
+		case "%":
+			if r == 0 {
+				return 0, false
+			}
+			return l % r, true
+		}
+		return 0, false
+	}
+	return 0, false
+}
+
+// constValue — mirror const_value: a provably-constant numeric value of
+// an expression (Int literal, numeric Str, const-folded arith).
+func constValue(e Expr) (int64, bool) {
+	switch t := e.(type) {
+	case *IntE:
+		return t.Value, true
+	case *StrE:
+		v, err := strconv.ParseInt(strings.TrimSpace(t.Value), 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		return v, true
+	case *ArithE:
+		return arithConst(t.Ast)
+	}
+	return 0, false
+}
+
+// testOperand — mirror test_operand: `"$name"` / `$name` / `${name}` /
+// a numeric literal. NOTE: the `${…}` arm is dead in the core too (any
+// `$`-prefixed operand takes the first branch — `${x}` looks up "{x}"),
+// mirrored exactly for byte-identity.
+func testOperand(s string, vals map[string]int64) (int64, bool) {
+	t := strings.TrimSpace(s)
+	t = strings.Trim(t, `"`)
+	if strings.HasPrefix(t, "$") {
+		v, ok := vals[t[1:]]
+		return v, ok
+	}
+	if strings.HasPrefix(t, "${") && strings.HasSuffix(t, "}") {
+		v, ok := vals[t[2:len(t)-1]]
+		return v, ok
+	}
+	v, err := strconv.ParseInt(t, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return v, true
+}
+
+// evalTestStr — mirror eval_test_str: a single -lt/-gt/-le/-ge/-eq/-ne
+// comparison between two constant operands.
+func evalTestStr(s string, vals map[string]int64) (bool, bool) {
+	type opFn struct {
+		op string
+		f  func(a, b int64) bool
+	}
+	ops := []opFn{
+		{"-lt", func(a, b int64) bool { return a < b }},
+		{"-gt", func(a, b int64) bool { return a > b }},
+		{"-le", func(a, b int64) bool { return a <= b }},
+		{"-ge", func(a, b int64) bool { return a >= b }},
+		{"-eq", func(a, b int64) bool { return a == b }},
+		{"-ne", func(a, b int64) bool { return a != b }},
+	}
+	for _, o := range ops {
+		needle := " " + o.op + " "
+		if pos := strings.Index(s, needle); pos >= 0 {
+			left := strings.TrimSpace(s[:pos])
+			right := strings.TrimSpace(s[pos+len(needle):])
+			l, ok := testOperand(left, vals)
+			if !ok {
+				return false, false
+			}
+			r, ok := testOperand(right, vals)
+			if !ok {
+				return false, false
+			}
+			return o.f(l, r), true
+		}
+	}
+	return false, false
+}
+
+// loopProvablyRunsIn — mirror loop_provably_runs_in: does the loop at
+// stmts[idx] provably execute at least once? For While: sound constant
+// propagation over the statements BEFORE the loop (any intervening
+// control flow clears the map), then a const -cmp test cond.
+func loopProvablyRunsIn(stmts []Stmt, idx int) bool {
+	switch t := stmts[idx].(type) {
+	case *ForS:
+		switch iter := t.Iter.(type) {
+		case *ArrayE:
+			return len(iter.Elems) > 0
+		case *RangeE:
+			return iter.Start <= iter.End
+		}
+		return false
+	case *WhileS:
+		vals := map[string]int64{}
+		for _, st := range stmts[:idx] {
+			switch prev := st.(type) {
+			case *AssignS:
+				if v, ok := constValue(prev.Expr); ok {
+					vals[prev.Var] = v
+				} else {
+					delete(vals, prev.Var)
+				}
+			case *WhileS, *ForS, *IfS, *CaseS, *FunctionS,
+				*SubshellS, *BackgroundS, *PipelineS, *BlockS:
+				vals = map[string]int64{}
+			}
+		}
+		if call, ok := t.Cond.(*CallE); ok && call.Func == "test" {
+			if len(call.Args) > 0 {
+				if s, ok := call.Args[0].(*StrE); ok {
+					r, _ := evalTestStr(s.Value, vals)
+					return r
+				}
+			}
+			return false
+		}
+		return false
+	}
+	return false
+}
+
+// collectProvablyRuns — mirror collect_provably_running_loops: record
+// every loop statement whose body provably runs (by node identity), and
+// recurse into loop/block/subshell/background bodies and if branches.
+func collectProvablyRuns(stmts []Stmt, out map[Stmt]bool) {
+	for idx, st := range stmts {
+		switch st.(type) {
+		case *WhileS, *ForS:
+			if loopProvablyRunsIn(stmts, idx) {
+				out[st] = true
+			}
+		}
+		switch t := st.(type) {
+		case *WhileS:
+			collectProvablyRuns(t.Body, out)
+		case *ForS:
+			collectProvablyRuns(t.Body, out)
+		case *BlockS:
+			collectProvablyRuns(t.Body, out)
+		case *SubshellS:
+			collectProvablyRuns(t.Body, out)
+		case *BackgroundS:
+			collectProvablyRuns(t.Body, out)
+		case *IfS:
+			collectProvablyRuns(t.Then, out)
+			for _, e := range t.Elsifs {
+				if b, ok := e[1].([]Stmt); ok {
+					collectProvablyRuns(b, out)
+				}
+			}
+			collectProvablyRuns(t.Else, out)
+		}
+	}
+}
+
+// computeProvablyRuns — mirror set_provably_running_loops: fill the
+// package-level verdict map consulted by stmtJSON.
+func computeProvablyRuns(stmts []Stmt) {
+	provablyRuns = map[Stmt]bool{}
+	collectProvablyRuns(stmts, provablyRuns)
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // optimize (mirror optimize_stmts: arith-const fold; self-assign removal
 // is a no-op for our node shapes — IrExpr::Var is never produced)
 // ─────────────────────────────────────────────────────────────────────
@@ -2275,6 +2887,358 @@ func optimizeStmts(stmts []Stmt) []Stmt {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// A1 `Ident` arith reads (mirror shir_json.rs rewrite_loop_var_idents /
+// shir.rs analyze_loop_var_refs; core request zsh-sh-go-20260813-155123)
+// ─────────────────────────────────────────────────────────────────────
+
+// analyzeLoopVarRefs — mirror analyze_loop_var_refs (shir.rs). Returns
+// (num, str) refined by the copy-region drop rule: a var with ANY loop
+// inside a copy region (subshell/background/capture) AND any external
+// ref stays store-bound and is removed from both lift sets.
+type loopRef struct{ Var string; InCopy bool }
+
+func analyzeLoopVarRefs(stmts []Stmt, num, str map[string]bool) (map[string]bool, map[string]bool) {
+	// per-For-stmt: (var, loop inside a copy region)
+	var loops []loopRef
+	// vars with any ref outside their loop stack
+	external := map[string]bool{}
+
+	copyArrowCall := func(fn string) bool {
+		switch fn {
+		case "capture", "captureWords", "subshell", "background":
+			return true
+		}
+		return false
+	}
+	inStack := func(stack []string, v string) bool {
+		for _, s := range stack {
+			if s == v {
+				return true
+			}
+		}
+		return false
+	}
+	var refExpr func(e Expr, stack []string, inCopy bool)
+	var refStmt func(st Stmt, stack []string, inCopy bool)
+	refExpr = func(e Expr, stack []string, inCopy bool) {
+		switch t := e.(type) {
+		case *VarE:
+			if !inStack(stack, t.Name) {
+				external[t.Name] = true
+			}
+		case *CallE:
+			if t.Func == "getVar" && len(t.Args) == 1 {
+				if n, ok := t.Args[0].(*StrE); ok && !inStack(stack, n.Value) {
+					external[n.Value] = true
+				}
+			}
+			if t.Func == "setVar" && len(t.Args) >= 1 {
+				if n, ok := t.Args[0].(*StrE); ok && !inStack(stack, n.Value) {
+					external[n.Value] = true
+				}
+			}
+			innerCopy := inCopy || copyArrowCall(t.Func)
+			for _, a := range t.Args {
+				refExpr(a, stack, innerCopy)
+			}
+		case *ArrowE:
+			for _, st := range t.Body {
+				refStmt(st, stack, inCopy)
+			}
+		case *BinOpE:
+			refExpr(t.Lhs, stack, inCopy)
+			refExpr(t.Rhs, stack, inCopy)
+		case *ArrayE:
+			for _, el := range t.Elems {
+				refExpr(el, stack, inCopy)
+			}
+		case *ObjectE:
+			for _, p := range t.Props {
+				refExpr(p.Val, stack, inCopy)
+			}
+		case *InterpE:
+			for _, p := range t.Parts {
+				if !p.IsLit {
+					refExpr(p.Expr, stack, inCopy)
+				}
+			}
+		}
+	}
+	refStmt = func(st Stmt, stack []string, inCopy bool) {
+		switch t := st.(type) {
+		case *ForS:
+			loops = append(loops, loopRef{Var: t.Var, InCopy: inCopy})
+			s2 := make([]string, 0, len(stack)+1)
+			s2 = append(s2, stack...)
+			s2 = append(s2, t.Var)
+			refExpr(t.Iter, s2, inCopy)
+			for _, b := range t.Body {
+				refStmt(b, s2, inCopy)
+			}
+		case *AssignS:
+			if !inStack(stack, t.Var) {
+				external[t.Var] = true
+			}
+			refExpr(t.Expr, stack, inCopy)
+		case *WhileS:
+			refExpr(t.Cond, stack, inCopy)
+			for _, b := range t.Body {
+				refStmt(b, stack, inCopy)
+			}
+		case *IfS:
+			refExpr(t.Cond, stack, inCopy)
+			for _, b := range t.Then {
+				refStmt(b, stack, inCopy)
+			}
+			for _, b := range t.Else {
+				refStmt(b, stack, inCopy)
+			}
+		case *ExprS:
+			refExpr(t.Expr, stack, inCopy)
+		case *FunctionS:
+			for _, b := range t.Body {
+				refStmt(b, stack, inCopy)
+			}
+		case *BlockS:
+			for _, b := range t.Body {
+				refStmt(b, stack, inCopy)
+			}
+		case *SubshellS:
+			for _, b := range t.Body {
+				refStmt(b, stack, true)
+			}
+		case *BackgroundS:
+			for _, b := range t.Body {
+				refStmt(b, stack, true)
+			}
+		case *RedirectS:
+			for _, b := range t.Inner {
+				refStmt(b, stack, inCopy)
+			}
+			for _, r := range t.Redirects {
+				refExpr(r.Target, stack, inCopy)
+			}
+		case *CaseS:
+			refExpr(t.Disc, stack, inCopy)
+			for _, c := range t.Clauses {
+				for _, b := range c.Body {
+					refStmt(b, stack, inCopy)
+				}
+			}
+		case *ReturnS:
+			if t.Value != nil {
+				refExpr(t.Value, stack, inCopy)
+			}
+		case *PipelineS:
+			for _, stage := range t.Stages {
+				for _, b := range stage {
+					refStmt(b, stack, inCopy)
+				}
+			}
+		}
+	}
+	for _, st := range stmts {
+		refStmt(st, nil, false)
+	}
+
+	num2 := make(map[string]bool, len(num))
+	for n := range num {
+		num2[n] = true
+	}
+	str2 := make(map[string]bool, len(str))
+	for n := range str {
+		str2[n] = true
+	}
+	// a var with ANY loop inside a copy region AND any external ref stays
+	// store-bound (the persist machinery would leak the copy-local loop
+	// writes into the module binding)
+	for _, l := range loops {
+		if l.InCopy && external[l.Var] {
+			delete(num2, l.Var)
+			delete(str2, l.Var)
+		}
+	}
+	return num2, str2
+}
+
+// rewriteLoopVarIdents — mirror rewrite_loop_var_idents (shir_json.rs):
+// in-body arith reads of a NUMERIC/STRING-LIFTED `for` loop variable are
+// rewritten Var → Ident (export-only; the analyses already ran).
+func rewriteLoopVarIdents(stmts []Stmt, lifted map[string]bool) {
+	for _, s := range stmts {
+		if t, ok := s.(*ForS); ok {
+			if lifted[t.Var] {
+				v := t.Var
+				for _, b := range t.Body {
+					rewriteStmtArithIdent(b, &v)
+				}
+				continue
+			}
+		}
+		// recurse into statement containers (a nested For inside an
+		// If/While/Block/Case/... body gets its own rewrite)
+		switch t := s.(type) {
+		case *BlockS:
+			rewriteLoopVarIdents(t.Body, lifted)
+		case *SubshellS:
+			rewriteLoopVarIdents(t.Body, lifted)
+		case *BackgroundS:
+			rewriteLoopVarIdents(t.Body, lifted)
+		case *IfS:
+			rewriteLoopVarIdents(t.Then, lifted)
+			rewriteLoopVarIdents(t.Else, lifted)
+		case *WhileS:
+			rewriteLoopVarIdents(t.Body, lifted)
+		case *FunctionS:
+			rewriteLoopVarIdents(t.Body, lifted)
+		case *RedirectS:
+			rewriteLoopVarIdents(t.Inner, lifted)
+		case *CaseS:
+			for _, c := range t.Clauses {
+				rewriteLoopVarIdents(c.Body, lifted)
+			}
+		case *PipelineS:
+			for _, stage := range t.Stages {
+				rewriteLoopVarIdents(stage, lifted)
+			}
+		case *ExprS:
+			rewriteExprArithIdent(t.Expr, nil)
+		case *AssignS:
+			rewriteExprArithIdent(t.Expr, nil)
+		}
+	}
+}
+
+// rewriteStmtArithIdent — mirror rewrite_stmt_arith_ident: rewrite every
+// arith read of `var` throughout a statement (recursing into containers).
+func rewriteStmtArithIdent(st Stmt, v *string) {
+	switch t := st.(type) {
+	case *ExprS:
+		rewriteExprArithIdent(t.Expr, v)
+	case *AssignS:
+		rewriteExprArithIdent(t.Expr, v)
+	case *IfS:
+		rewriteExprArithIdent(t.Cond, v)
+		for _, s := range t.Then {
+			rewriteStmtArithIdent(s, v)
+		}
+		for _, s := range t.Else {
+			rewriteStmtArithIdent(s, v)
+		}
+	case *WhileS:
+		rewriteExprArithIdent(t.Cond, v)
+		for _, s := range t.Body {
+			rewriteStmtArithIdent(s, v)
+		}
+	case *ForS:
+		rewriteExprArithIdent(t.Iter, v)
+		for _, s := range t.Body {
+			rewriteStmtArithIdent(s, v)
+		}
+	case *BlockS:
+		for _, s := range t.Body {
+			rewriteStmtArithIdent(s, v)
+		}
+	case *SubshellS:
+		for _, s := range t.Body {
+			rewriteStmtArithIdent(s, v)
+		}
+	case *BackgroundS:
+		for _, s := range t.Body {
+			rewriteStmtArithIdent(s, v)
+		}
+	case *FunctionS:
+		for _, s := range t.Body {
+			rewriteStmtArithIdent(s, v)
+		}
+	case *RedirectS:
+		for _, s := range t.Inner {
+			rewriteStmtArithIdent(s, v)
+		}
+		for _, r := range t.Redirects {
+			rewriteExprArithIdent(r.Target, v)
+		}
+	case *ReturnS:
+		if t.Value != nil {
+			rewriteExprArithIdent(t.Value, v)
+		}
+	case *CaseS:
+		rewriteExprArithIdent(t.Disc, v)
+		for _, c := range t.Clauses {
+			for _, s := range c.Body {
+				rewriteStmtArithIdent(s, v)
+			}
+		}
+	case *PipelineS:
+		for _, stage := range t.Stages {
+			for _, s := range stage {
+				rewriteStmtArithIdent(s, v)
+			}
+		}
+	}
+}
+
+// rewriteExprArithIdent — mirror rewrite_expr_arith_ident: with `v == nil`
+// this is the structural walk only (no rewrite), exactly like the core's
+// generic driver pass.
+func rewriteExprArithIdent(e Expr, v *string) {
+	switch t := e.(type) {
+	case *ArithE:
+		if v != nil {
+			t.Ast = rewriteArithIdent(t.Ast, *v)
+		}
+	case *ArrowE:
+		if v != nil {
+			for _, s := range t.Body {
+				rewriteStmtArithIdent(s, v)
+			}
+		}
+	case *CallE:
+		for _, a := range t.Args {
+			rewriteExprArithIdent(a, v)
+		}
+	case *ArrayE:
+		for _, el := range t.Elems {
+			rewriteExprArithIdent(el, v)
+		}
+	case *ObjectE:
+		for _, p := range t.Props {
+			rewriteExprArithIdent(p.Val, v)
+		}
+	case *BinOpE:
+		rewriteExprArithIdent(t.Lhs, v)
+		rewriteExprArithIdent(t.Rhs, v)
+	}
+}
+
+// rewriteArithIdent — mirror rewrite_arith_ident (reads only —
+// Assign/IncDec TARGETS keep their var name; the node's `name` field is
+// the read). Returns the (possibly replaced) node.
+func rewriteArithIdent(a ArithAst, v string) ArithAst {
+	switch t := a.(type) {
+	case *ArithVar:
+		if t.Name == v {
+			return &ArithIdent{Name: t.Name}
+		}
+	case *ArithIndex:
+		return &ArithIndex{Var: t.Var, Key: rewriteArithIdent(t.Key, v)}
+	case *ArithBin:
+		return &ArithBin{Op: t.Op, Lhs: rewriteArithIdent(t.Lhs, v), Rhs: rewriteArithIdent(t.Rhs, v)}
+	case *ArithUn:
+		return &ArithUn{Op: t.Op, Arg: rewriteArithIdent(t.Arg, v)}
+	case *ArithCond:
+		return &ArithCond{
+			Test: rewriteArithIdent(t.Test, v),
+			Then: rewriteArithIdent(t.Then, v),
+			Else: rewriteArithIdent(t.Else, v),
+		}
+	case *ArithAssign:
+		return &ArithAssign{Var: t.Var, Op: t.Op, Rhs: rewriteArithIdent(t.Rhs, v)}
+	}
+	return a
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // A1 JSON emit (mirror shir_json.rs)
 // ─────────────────────────────────────────────────────────────────────
 
@@ -2287,6 +3251,22 @@ func exprJSON(e Expr) map[string]interface{} {
 	case *VarE:
 		return map[string]interface{}{"type": "Var", "name": t.Name, "sigil": nil}
 	case *CallE:
+		// `$(...)` in quoted contexts (assignment RHS / env values /
+		// interpolated parts) lowers internally to the legacy capture
+		// call, but the A1 contract serializes it as the first-class
+		// Capture node (core request zsh-sh-go-20260814-230503):
+		// `{"type":"Capture","expr":<Arrow>,"native":false}` — the
+		// node whose analysis arms mirror the call form, so the internal
+		// IR keeps the call shape and only the emitted JSON differs.
+		if t.Func == "capture" && len(t.Args) == 1 {
+			if _, ok := t.Args[0].(*ArrowE); ok {
+				return map[string]interface{}{
+					"type":   "Capture",
+					"expr":   exprJSON(t.Args[0]),
+					"native": false,
+				}
+			}
+		}
 		return map[string]interface{}{
 			"type":   "Call",
 			"func":   t.Func,
@@ -2344,6 +3324,8 @@ func arithJSON(a ArithAst) map[string]interface{} {
 		return map[string]interface{}{"type": "Num", "value": t.Val}
 	case *ArithVar:
 		return map[string]interface{}{"type": "Var", "name": t.Name}
+	case *ArithIdent:
+		return map[string]interface{}{"type": "Ident", "name": t.Name}
 	case *ArithIndex:
 		return map[string]interface{}{"type": "Index", "var": t.Var, "key": arithJSON(t.Key)}
 	case *ArithBin:
@@ -2388,6 +3370,7 @@ func stmtJSON(s Stmt) map[string]interface{} {
 			"type": "While",
 			"cond": exprJSON(t.Cond),
 			"body": stmtsJSON(t.Body),
+			"runs": provablyRuns[s],
 		}
 	case *ForS:
 		return map[string]interface{}{
@@ -2395,6 +3378,7 @@ func stmtJSON(s Stmt) map[string]interface{} {
 			"var":  t.Var,
 			"iter": exprJSON(t.Iter),
 			"body": stmtsJSON(t.Body),
+			"runs": provablyRuns[s],
 		}
 	case *RedirectS:
 		return map[string]interface{}{
@@ -2416,6 +3400,10 @@ func stmtJSON(s Stmt) map[string]interface{} {
 			v = exprJSON(t.Value)
 		}
 		return map[string]interface{}{"type": "Return", "value": v}
+	case *BreakS:
+		return map[string]interface{}{"type": "Break", "runs": provablyRuns[s]}
+	case *ContinueS:
+		return map[string]interface{}{"type": "Continue", "runs": provablyRuns[s]}
 	case *CaseS:
 		var clauses []interface{}
 		for _, cl := range t.Clauses {
@@ -2458,8 +3446,16 @@ func redirectsJSON(rs []RedirectIR) []interface{} {
 	return out
 }
 
+func varNoSpaceJSON(vs []VarNoSpaceOut) []interface{} {
+	out := make([]interface{}, len(vs))
+	for i, v := range vs {
+		out[i] = map[string]interface{}{"name": v.Name, "nospace": v.NoSpace}
+	}
+	return out
+}
+
 // programJSON — the A1 program with stmt_lines.
-func programJSON(stmts []Stmt, varTypes []VarTypeOut, varLengths []VarLenOut, varConst []VarConstOut, varLifetimes []VarLifetimeOut) []byte {
+func programJSON(stmts []Stmt, varTypes []VarTypeOut, varLengths []VarLenOut, varConst []VarConstOut, varLifetimes []VarLifetimeOut, varNoSpace []VarNoSpaceOut, varBashEnv []string) []byte {
 	prog := map[string]interface{}{
 		"type":             "Program",
 		"contract_version": contractVersion,
@@ -2470,6 +3466,8 @@ func programJSON(stmts []Stmt, varTypes []VarTypeOut, varLengths []VarLenOut, va
 		"var_lengths":      varLengthsJSON(varLengths),
 		"var_const":        varConstJSON(varConst),
 		"var_lifetimes":    varLifetimesJSON(varLifetimes),
+		"var_nospace":      varNoSpaceJSON(varNoSpace),
+		"var_bash_env":     varBashEnv,
 		"subs":             []interface{}{},
 		"stmts":            stmtsJSON(stmts),
 	}
@@ -2545,7 +3543,27 @@ func shirForSource(src string) ([]byte, error) {
 	vl := analyzeStringLengths(stmts)
 	vc := analyzeVarConst(stmts)
 	vlif := analyzeVarLifetimes(stmts)
-	return programJSON(stmts, vt, vl, vc, vlif), nil
+	vn := analyzeVarNoSpace(stmts)
+	vbe := analyzeVarBashEnv(stmts)
+	// A1 `Ident` arith reads (core request zsh-sh-go-20260813-155123):
+	// in-body arith reads of a NUMERIC/STRING-LIFTED `for` loop variable
+	// are exported as `{"type":"Ident","name":…}` — mirror the core's
+	// gate (numeric_lift_vars + string_lift_vars + analyze_loop_var_refs)
+	// so every backend's output is unchanged (Ident renders like a lifted
+	// Var read everywhere).
+	numeric := numericLiftVars(stmts)
+	strs := stringLiftVars(stmts, numeric)
+	num2, str2 := analyzeLoopVarRefs(stmts, numeric, strs)
+	lifted := map[string]bool{}
+	for n := range num2 {
+		lifted[n] = true
+	}
+	for n := range str2 {
+		lifted[n] = true
+	}
+	rewriteLoopVarIdents(stmts, lifted)
+	computeProvablyRuns(stmts)
+	return programJSON(stmts, vt, vl, vc, vlif, vn, vbe), nil
 }
 
 func main() {

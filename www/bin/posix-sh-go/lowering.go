@@ -78,6 +78,11 @@ type FunctionS struct {
 	Body []Stmt
 }
 type ReturnS struct{ Value Expr } // nil → null
+// BreakS/ContinueS — first-class control stmt nodes (the A1 contract
+// emits `{"type":"Break","runs":…}` / `{"type":"Continue",…}`, not
+// the legacy `call("break")` expression form).
+type BreakS struct{}
+type ContinueS struct{}
 type CaseS struct {
 	Disc    Expr
 	Clauses []CaseClauseIR
@@ -100,15 +105,19 @@ type RedirectIR struct {
 
 var syncBuiltins = map[string]bool{
 	".": true, ":": true, "basename": true, "break": true, "cat": true,
-	"cd": true, "cmp": true, "comm": true, "continue": true, "cut": true,
-	"declare": true, "dirname": true, "echo": true, "eval": true, "exit": true,
-	"export": true, "false": true, "grep": true, "head": true, "let": true,
-	"local": true, "mapfile": true, "mktemp": true, "printf": true, "pwd": true,
-	"read": true, "readarray": true, "readonly": true, "return": true, "seq": true,
-	"sed": true, "set": true, "shift": true, "sort": true, "source": true,
-	"stat": true, "tail": true, "test": true, "touch": true, "tr": true,
-	"trap": true, "true": true, "type": true, "typeset": true, "uniq": true,
-	"unset": true, "wc": true,
+	"cd": true, "cmp": true, "comm": true, "continue": true, "cp": true,
+	"cut": true, "date": true, "declare": true, "diff": true, "dirname": true,
+	"echo": true, "egrep": true, "eval": true, "exit": true, "export": true,
+	"false": true, "find": true, "grep": true, "gzip": true, "gunzip": true,
+	"head": true, "hostname": true, "let": true, "local": true, "ls": true,
+	"mapfile": true, "mkdir": true, "mktemp": true, "mv": true, "paste": true,
+	"printf": true, "pwd": true, "read": true, "readarray": true, "readlink": true,
+	"readonly": true, "return": true, "rm": true, "rmdir": true, "seq": true,
+	"sed": true, "set": true, "sha256sum": true, "sha512sum": true, "shift": true,
+	"sort": true, "source": true, "stat": true, "tail": true, "tee": true,
+	"test": true, "touch": true, "tr": true, "trap": true, "true": true,
+	"type": true, "typeset": true, "uname": true, "uniq": true, "unset": true,
+	"wc": true, "which": true, "whoami": true,
 }
 
 func callPurity(fn string, args []Expr) string {
@@ -245,6 +254,16 @@ func paramIR(pe *Word) Expr {
 		}
 	case "//":
 		op = "//"
+		if len(pe.PEExtra) > 0 {
+			extra = append(extra, st(pe.PEExtra[0]))
+		}
+		if len(pe.PEExtra) > 1 {
+			extra = append(extra, st(pe.PEExtra[1]))
+		}
+	case "/":
+		// ${var/pattern/replacement} — first occurrence only (the core's
+		// SubstituteFirst); `//` is the global SubstituteAll above.
+		op = "/"
 		if len(pe.PEExtra) > 0 {
 			extra = append(extra, st(pe.PEExtra[0]))
 		}
@@ -393,6 +412,50 @@ func purePart(parts []Part) *Part {
 		nonLit = pt
 	}
 	return nonLit
+}
+
+// pureTemplatePart — mirror the core's pure_template_part: the single
+// non-literal part of a one-part interpolation, with WHOLE-WORD array /
+// positional expansions passed through BARE (no sh2.join) so the runtime
+// flattener splices them into separate args:
+//   - `"$@"` → listVar (each positional is one arg)
+//   - `"${arr[@]}"` / `"${#a[@]}"` / `"${@:off:len}"` → bare
+//     param(slice, …) (offset "@" and no length; or a positional
+//     variable "@"), array survives for the flattener
+// Multi-part templates keep partIR's join (bash joins with spaces).
+func pureTemplatePart(parts []Part, cmds map[string][]*Command) (Expr, bool) {
+	pt := purePart(parts)
+	if pt == nil {
+		return nil, false
+	}
+	if pt.Var != "" {
+		if pt.Var == "@" {
+			return call("listVar", []Expr{st(pt.Var)}), true
+		}
+		return partIR(pt, cmds), true
+	}
+	if pt.PE != nil {
+		if pt.PE.PEOp == "slice" {
+			// bare when the whole word is the array/positional slice:
+			// `"${@:off:len}"` (var "@"), or offset "@" with no length
+			// (`"${arr[@]}"` / `"${#a[@]}"` — the `#` stays in the name)
+			isBare := pt.PE.PEVar == "@" ||
+				(len(pt.PE.PEExtra) > 0 && pt.PE.PEExtra[0] == "@" &&
+					(len(pt.PE.PEExtra) < 2 || pt.PE.PEExtra[1] == ""))
+			if isBare {
+				return bracedParamIR(pt.PE), true
+			}
+		}
+		return partIR(pt, cmds), true
+	}
+	if pt.MapKind == "slice" && pt.SliceOff == "@" {
+		ln := ""
+		if pt.SliceLen != nil {
+			ln = *pt.SliceLen
+		}
+		return call("param", []Expr{st("slice"), st(pt.MapName), st(pt.SliceOff), st(ln)}), true
+	}
+	return partIR(pt, cmds), true
 }
 
 func interpolateIR(parts []Part, cmds map[string][]*Command) Expr {
@@ -546,8 +609,8 @@ func wordIR(w *Word, cmds map[string][]*Command) Expr {
 		}
 		return call("param", []Expr{st("slice"), st(w.MapName), st(w.SliceOff), st(ln)})
 	case "interp":
-		if part := purePart(w.Parts); part != nil {
-			return partIR(part, cmds)
+		if e, ok := pureTemplatePart(w.Parts, cmds); ok {
+			return e
 		}
 		return interpolateIR(w.Parts, cmds)
 	}
@@ -581,7 +644,7 @@ func argWordIR(w *Word, cmds map[string][]*Command) Expr {
 	case "array":
 		var elems []Expr
 		for _, e := range w.ArrayElems {
-			elems = append(elems, st(e))
+			elems = append(elems, arrayElementIR(e, cmds))
 		}
 		return call("setArray", []Expr{st(w.ArrayName), &ArrayE{Elems: elems}, &BoolE{Value: false}})
 	case "var":
@@ -864,6 +927,11 @@ func containsIdent(s, varName string) bool {
 type ArithAst interface{}
 type ArithNum struct{ Val int64 }
 type ArithVar struct{ Name string }
+// ArithIdent — A1 export-only node: an arith read of a NUMERIC/STRING-
+// LIFTED `for` loop variable inside its own loop body (mirror
+// shir_json.rs rewrite_loop_var_idents; core request
+// zsh-sh-go-20260813-155123). Emitted as `{"type":"Ident","name":…}`.
+type ArithIdent struct{ Name string }
 type ArithIndex struct {
 	Var string
 	Key ArithAst
@@ -1613,9 +1681,9 @@ func stmtForCommand(cmd *Command) Stmt {
 		}
 		return &RedirectS{Inner: []Stmt{&ExprS{Expr: e}}, Redirects: redirectsIR(cmd.Redirect)}
 	case "break":
-		return &ExprS{Expr: call("break", []Expr{})}
+		return &BreakS{}
 	case "continue":
-		return &ExprS{Expr: call("continue", []Expr{})}
+		return &ContinueS{}
 	case "return":
 		var val Expr
 		if cmd.RetVal != nil {
@@ -1800,12 +1868,34 @@ func redirectSpecObject(r *Redirect, persist bool) Expr {
 	return &ObjectE{Props: props}
 }
 
+// arrayElementIR — one array-literal element to IR (mirror the core's
+// array_element_ir): elements field-split like exec args, NOT like
+// assignment RHS values (core request posix-sh-go-20260806-174619): an
+// UNQUOTED `$x` element carries the A1 `split` marker (bash word-splits
+// it; the runner's setArray splices the resulting array), quoted `"$x"`
+// stays a single-element getVar/Interpolate (no split), `$@`/`$*` expand
+// to the positional list, and literals keep quote-removal WITHOUT the
+// GLOB_MAGIC tag (the runtime's setArray stores literal text — a magic
+// marker would leak into the value).
+func arrayElementIR(w *Word, cmds map[string][]*Command) Expr {
+	switch w.Kind {
+	case "lit":
+		return st(shellQuoteRemoval(w.Text))
+	case "var":
+		if w.VarName != "@" && w.VarName != "*" {
+			return call("split", []Expr{call("getVar", []Expr{st(w.VarName)})})
+		}
+		return call("listVar", []Expr{st(w.VarName)})
+	}
+	return wordIR(w, cmds)
+}
+
 // assignmentValueIR — mirror assignment_value_ir.
 func assignmentValueIR(cmd *Command) Expr {
 	if cmd.AssignVal.Kind == "array" {
 		var elems []Expr
 		for _, e := range cmd.AssignVal.ArrayElems {
-			elems = append(elems, st(e))
+			elems = append(elems, arrayElementIR(e, nil))
 		}
 		if cmd.AssignOp == "+=" {
 			return call("setArrayAppend", []Expr{st(cmd.AssignVal.ArrayName), &ArrayE{Elems: elems}})
@@ -1839,7 +1929,7 @@ func assignmentExprIR(cmd *Command) Expr {
 	if cmd.AssignVal.Kind == "array" {
 		var elems []Expr
 		for _, e := range cmd.AssignVal.ArrayElems {
-			elems = append(elems, st(e))
+			elems = append(elems, arrayElementIR(e, nil))
 		}
 		if cmd.AssignOp == "+=" {
 			return call("setArrayAppend", []Expr{st(cmd.AssignVal.ArrayName), &ArrayE{Elems: elems}})

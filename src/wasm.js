@@ -465,8 +465,9 @@ export class WasmRunner {
   async _seedWasmFs(wasmfs) {
     for (const dir of SEED_DIRS) {
       // The dir must EXIST in the sandbox even when the shell's copy is
-      // empty (e.g. /bin with lazy command materialization) — the WASI
-      // constructor stats every preopen path and dies on a missing one.
+      // empty (e.g. a /bin whose template listing hasn't resolved yet) —
+      // the WASI constructor stats every preopen path and dies on a
+      // missing one.
       wasmfs.fs.mkdirSync(dir, { recursive: true });
       await this._vfsToWasmFs(dir, wasmfs);
     }

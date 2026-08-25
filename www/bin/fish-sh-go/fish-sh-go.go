@@ -310,7 +310,9 @@ func (p *parser) parseProgram() ([]map[string]any, error) {
 		if t.kind == tEOF {
 			return out, nil
 		}
-		if t.kind == tNL {
+		if t.kind == tNL || t.kind == tSemi {
+			// `;` is a statement separator at top level too (`; and`/
+			// `; or` chains are consumed by parseStmt instead)
 			p.next()
 			continue
 		}
@@ -331,7 +333,7 @@ func (p *parser) parseBlock(terms map[string]bool) ([]map[string]any, string, er
 		if t.kind == tEOF {
 			return nil, "", fmt.Errorf("line %d: unexpected EOF inside a block (missing 'end'?)", t.line)
 		}
-		if t.kind == tNL {
+		if t.kind == tNL || t.kind == tSemi {
 			p.next()
 			continue
 		}
@@ -365,7 +367,129 @@ func (p *parser) parseStmt() ([]map[string]any, error) {
 			return nil, fmt.Errorf("line %d: unexpected %q", t.line, t.text)
 		}
 	}
-	return p.parseSimpleLine()
+	not := false
+	if t.kind == tWord && t.text == "not" {
+		p.next()
+		not = true
+	}
+	stmts, err := p.parseSimpleLine()
+	if err != nil {
+		return nil, err
+	}
+	// A plain line (no `not` prefix, no `; and`/`; or` chain) keeps its
+	// statement forms (Assign, Redirect, Background, ...). Chains need
+	// expression operands, so the line converts to the expr forms then.
+	if !not && !p.semiAndOr() {
+		return stmts, nil
+	}
+	expr, err := lineExpr(stmts)
+	if err != nil {
+		return nil, err
+	}
+	if not {
+		// the core's `! cmd` shape: BinOp Not with the operand on both
+		// sides (the same shape parseCond emits for `not` conditions)
+		expr = map[string]any{"type": "BinOp", "op": "Not", "lhs": expr, "rhs": expr}
+	}
+	// fish status connectors: `; and CMD` / `; or CMD`, left-associative
+	// (`A; and B; or C` ≡ bash `A && B || C`). Lowered to the core's own
+	// BinOp And/Or statement shapes for the bash analogs.
+	for p.semiAndOr() {
+		p.next() // ;
+		w := p.next()
+		rhs, err := p.parseLineExpr()
+		if err != nil {
+			return nil, err
+		}
+		op := "And"
+		if w.text == "or" {
+			op = "Or"
+		}
+		expr = map[string]any{"type": "BinOp", "op": op, "lhs": expr, "rhs": rhs}
+	}
+	return []map[string]any{exprStmt(expr)}, nil
+}
+
+// parseLineExpr parses one simple command line in expression form: an
+// optional `not` prefix plus the line. `not` negates the line's exit
+// status — the core's `! cmd` shape: BinOp Not with the operand on both
+// sides (the same shape parseCond emits for `not` conditions).
+func (p *parser) parseLineExpr() (map[string]any, error) {
+	not := false
+	if t := p.peek(); t.kind == tWord && t.text == "not" {
+		p.next()
+		not = true
+	}
+	stmts, err := p.parseSimpleLine()
+	if err != nil {
+		return nil, err
+	}
+	expr, err := lineExpr(stmts)
+	if err != nil {
+		return nil, err
+	}
+	if not {
+		expr = map[string]any{"type": "BinOp", "op": "Not", "lhs": expr, "rhs": expr}
+	}
+	return expr, nil
+}
+
+// lineExpr converts a parsed command line (a statement list) to the
+// expression form the BinOp And/Or/Not connectors need: a single Expr
+// statement passes through; Redirect/Background statements become the
+// Call("redirect") / Call("background") shapes parseCondCmd emits for
+// conditions.
+func lineExpr(stmts []map[string]any) (map[string]any, error) {
+	if len(stmts) == 1 {
+		s := stmts[0]
+		switch s["type"] {
+		case "Expr":
+			return s["expr"].(map[string]any), nil
+		case "Redirect":
+			inner, _ := s["inner"].([]map[string]any)
+			specs, _ := s["redirects"].([]map[string]any)
+			return redirectCall(inner, specs), nil
+		case "Background":
+			body, _ := s["body"].([]map[string]any)
+			return callExpr("background", []any{map[string]any{"type": "Arrow", "body": body}}), nil
+		}
+	}
+	return nil, fmt.Errorf("cannot connect 'and'/'or' after this statement")
+}
+
+// redirectCall converts a Redirect statement (inner stmts + raw redirect
+// specs) to the core's Call("redirect") expression form.
+func redirectCall(inner, specs []map[string]any) map[string]any {
+	objs := make([]any, 0, len(specs))
+	for _, r := range specs {
+		objs = append(objs, map[string]any{"type": "Object", "properties": []any{
+			map[string]any{"key": "fd", "value": map[string]any{"type": "Int", "value": r["fd"]}},
+			map[string]any{"key": "mode", "value": strExpr(r["mode"].(string))},
+			map[string]any{"key": "target", "value": r["target"]},
+			map[string]any{"key": "interpolate", "value": map[string]any{"type": "Bool", "value": r["interpolate"]}},
+		}})
+	}
+	return callExpr("redirect", []any{
+		map[string]any{"type": "Arrow", "body": inner},
+		map[string]any{"type": "Array", "elements": objs},
+	})
+}
+
+// semiAndOr reports whether the next tokens are `; and` / `; or` (fish's
+// status connectors) without consuming them. A bare `;` is left for the
+// callers, which treat it as a plain statement separator.
+func (p *parser) semiAndOr() bool {
+	if p.peek().kind != tSemi {
+		return false
+	}
+	first := *p.peeked
+	pos, line := p.lex.pos, p.lex.line
+	p.peeked = nil
+	w := p.peek()
+	ok := w.kind == tWord && (w.text == "and" || w.text == "or")
+	p.peeked = &first
+	p.lex.pos, p.lex.line = pos, line
+	return ok
 }
 
 func (p *parser) parseIf() ([]map[string]any, error) {
@@ -619,6 +743,23 @@ func (p *parser) parseCondCmd() (map[string]any, error) {
 			return e, nil
 		}
 	}
+	// fish `string match -rq PAT STR` — regex matching, lowered to the
+	// A1 `Regex` expr node (core request fish-sh-go-20260813-192709): a
+	// quiet ERE match over one value becomes
+	// `Call(regexMatch, [Regex{pattern, flags}, value])`, which the
+	// ESTree renderer prints as `sh2.regexMatch(/pattern/flags, value)`
+	// — the runtime consumes the rendered regex literal (a native
+	// RegExp) and records the status. Only the QUIET condition form
+	// lowers (fish prints matches otherwise; the print form has no A1
+	// shape); any other `string match` shape falls through to the
+	// generic exec emission below.
+	if name == "string" && len(args) >= 4 {
+		if sub, err := p.plainWord(args[1], "string subcommand"); err == nil && sub == "match" {
+			if e, ok := p.stringMatchCond(args[2:]); ok {
+				return e, nil
+			}
+		}
+	}
 	elems := make([]any, 0, len(args)-1)
 	for _, run := range mergeRuns(args[1:]) {
 		e, err := p.runValue(run)
@@ -852,6 +993,58 @@ func (p *parser) parseStage() ([]map[string]any, error) {
 	if name == "set" {
 		return p.setStmts(args)
 	}
+	if name == "return" {
+		// fish `return [N]` — stop the innermost function with status N
+		// (bare `return` keeps the last command's status; fish rejects
+		// extra arguments). Lowered to the core A1 `Return` node. A
+		// plain numeric word becomes `Int`: the ESTree backend's
+		// function-call status recording accepts only numeric return
+		// values (a Str would be dropped, leaving $status stale); any
+		// other single value keeps its natural value shape.
+		if len(args) > 2 {
+			return nil, fmt.Errorf("line %d: return: too many arguments", args[1].line)
+		}
+		var value any
+		if len(args) == 2 {
+			if n, err := strconv.ParseInt(args[1].text, 10, 64); err == nil {
+				value = map[string]any{"type": "Int", "value": n}
+			} else {
+				e, err := p.valueExpr(args[1])
+				if err != nil {
+					return nil, err
+				}
+				value = e
+			}
+		}
+		return []map[string]any{{"type": "Return", "value": value}}, nil
+	}
+	if name == "break" {
+		// fish `break` — halt the innermost loop. fish 3.x rejects any
+		// argument (`break N` -> "unknown option"); bare `break` is the
+		// whole construct. Lowered to the core's FIRST-CLASS A1 `Break`
+		// node — the legacy `exec("break")` Call form renders to
+		// sh2.builtin("break"), whose BREAK throw escapes a native JS
+		// while (crash); the `Break` node renders to sh2.break() and the
+		// loop renderer switches to the signal-catching runtime helper.
+		if len(args) > 1 {
+			return nil, fmt.Errorf("line %d: break: unknown option %q", args[1].line, args[1].text)
+		}
+		return []map[string]any{{"type": "Break"}}, nil
+	}
+	if name == "continue" {
+		// fish `continue` — skip the rest of the current iteration of the
+		// innermost loop. fish 3.x rejects any argument (`continue N` ->
+		// "unknown option"); bare `continue` is the whole construct.
+		// Lowered to the core's FIRST-CLASS A1 `Continue` node — the
+		// legacy `exec("continue")` Call form renders to a runtime
+		// CONTINUE throw that escapes the signal-catching loop helper
+		// (crash); the `Continue` node renders to sh2.continue(), which
+		// whileLoop/forLoop catch and turn into a skip.
+		if len(args) > 1 {
+			return nil, fmt.Errorf("line %d: continue: unknown option %q", args[1].line, args[1].text)
+		}
+		return []map[string]any{{"type": "Continue"}}, nil
+	}
 	// fish builtins with no external binary: lower to core A1 shapes (the
 	// bash analogs — see the header) or fall back to the generic exec.
 	if name == "math" || name == "string" || name == "count" {
@@ -877,11 +1070,15 @@ func (p *parser) parseStage() ([]map[string]any, error) {
 func (p *parser) setStmts(args []token) ([]map[string]any, error) {
 	i := 1
 	appendMode := false
+	localMode := false
 	for i < len(args) && args[i].kind == tWord && strings.HasPrefix(args[i].text, "-") {
 		if args[i].text == "-a" || args[i].text == "--append" {
 			appendMode = true
 		}
-		// -l / -g / -x / -e / ... options (scope/export) dropped in v1
+		if args[i].text == "-l" || args[i].text == "--local" {
+			localMode = true
+		}
+		// -g / -x / -e / ... options (scope/export) dropped in v1
 		i++
 	}
 	if i >= len(args) {
@@ -904,6 +1101,38 @@ func (p *parser) setStmts(args []token) ([]map[string]any, error) {
 	vals := args[i+1:]
 	if len(vals) == 0 {
 		return nil, fmt.Errorf("line %d: set %s requires a value", args[0].line, name)
+	}
+	if localMode && !appendMode {
+		// fish `set -l NAME VALUE` — a function-local variable, lowered
+		// to the core's own `local NAME=VALUE` exec shape (the exact
+		// node debashc emits for the bash analog): the core's
+		// per-function local lift (LOCAL_LIFT) turns it into a native
+		// `let` — the scope shadow. That is the ONLY path with real
+		// function scoping (the runtime's local builtin is a flat store
+		// write). Mirror the bash word forms exactly:
+		//   bare literal word → `local v=1`
+		//   bare `$var` word  → `local v=$x` (the raw text; the core's
+		//                       decl_value_source rewrites it to getVar)
+		//   quoted/interp     → `local v="..."` split form: `v=` + the
+		//                       value expr
+		// Multi-value `set -l a 1 2` (a local array) has no local
+		// DeclareArray form — falls back to the plain setArray.
+		var elems []any
+		if len(vals) == 1 && vals[0].kind == tWord {
+			elems = []any{strExpr(name + "=" + vals[0].text)}
+		} else if len(vals) == 1 {
+			e, err := p.valueExpr(vals[0])
+			if err != nil {
+				return nil, err
+			}
+			elems = []any{strExpr(name + "="), e}
+		}
+		if elems != nil {
+			return []map[string]any{exprStmt(callExpr("exec", []any{
+				strExpr("local"),
+				map[string]any{"type": "Array", "elements": elems},
+			}))}, nil
+		}
 	}
 	target := map[string]any{"var": targetVar, "sigil": nil, "indices": []any{}}
 	var expr map[string]any
@@ -1373,6 +1602,91 @@ func stringSubFromIR(e map[string]any, start, length string) (map[string]any, bo
 		return strExpr(s[lo:hi]), true
 	}
 	return nil, false
+}
+
+// stringMatchCond lowers the `string match` CONDITION form
+// `string match [-r] [-q] [-i] PAT STR` (exactly one STR operand) to
+// the A1 regex-test call `Call(regexMatch, [Regex{pattern, flags},
+// value])`. Only the quiet (-q) regex (-r) form lowers — fish prints
+// the match otherwise, and the print form has no A1 shape. Flags
+// accept fish's bundled shorts (`-rq`, `-qi`) and long forms
+// (--regex/--quiet/--ignore-case); any other shape returns ok=false
+// and the caller falls back to the generic exec emission.
+func (p *parser) stringMatchCond(args []token) (map[string]any, bool) {
+	regex := false
+	quiet := false
+	flags := ""
+	i := 0
+	for i < len(args) {
+		f, err := p.plainWord(args[i], "string match flag")
+		if err != nil || !strings.HasPrefix(f, "-") || f == "-" {
+			break
+		}
+		body := strings.TrimPrefix(f, "-")
+		if body == "" { // `--` ends option parsing
+			i++
+			break
+		}
+		switch body {
+		case "r", "regex":
+			regex = true
+		case "q", "quiet":
+			quiet = true
+		case "i", "ignore-case":
+			flags += "i"
+		default:
+			// bundled short flags (`-rq`): every char must be r/q/i
+			ok := true
+			for _, c := range body {
+				switch c {
+				case 'r':
+					regex = true
+				case 'q':
+					quiet = true
+				case 'i':
+					flags += "i"
+				default:
+					ok = false
+				}
+			}
+			if !ok {
+				return nil, false
+			}
+		}
+		i++
+	}
+	if !regex || !quiet || i >= len(args) {
+		return nil, false
+	}
+	// the pattern: a bare word (no expansions) or a single-quoted
+	// literal (fish's standard `'[0-9]+'` — quotes are literal text)
+	pat := ""
+	if args[i].kind == tWord {
+		var err error
+		pat, err = p.plainWord(args[i], "string match pattern")
+		if err != nil {
+			return nil, false
+		}
+	} else if args[i].kind == tSQuote {
+		pat = args[i].text
+	} else {
+		return nil, false
+	}
+	if i+2 != len(args) { // exactly one STR operand
+		return nil, false
+	}
+	runs := mergeRuns(args[i+1:])
+	if len(runs) != 1 {
+		return nil, false
+	}
+	value, err := p.runValue(runs[0])
+	if err != nil {
+		return nil, false
+	}
+	return callExpr("regexMatch", []any{
+		map[string]any{"type": "Regex", "pattern": pat, "flags": flags},
+		value,
+	}), true
 }
 
 // builtinCaptureValue detects a command substitution whose body is a

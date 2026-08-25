@@ -1,0 +1,12 @@
+import { readFileSync } from "fs";
+import { getOtranspilerl } from "./src/otranspilerl.js";
+import { estreeToJs } from "./src/estree.js";
+const src = readFileSync("www/bin/mimecroft.sh", "utf8");
+const lib = await getOtranspilerl();
+const out = lib.compile(src);
+const estree = typeof out === "string" ? JSON.parse(out) : out;
+const program = estree.estree || estree;
+const bodyJs = await estreeToJs({ type: "Program", body: program.body || [] }, { repl: false, precompiledHead: true });
+const i = bodyJs.indexOf("function claim_treasure");
+const j = bodyJs.indexOf("function gen_maze", i);
+console.log(bodyJs.slice(i, j).split("\n").filter((l) => /play|C5|E5|G5|audio|spawn|TREASURE FOUND/.test(l)).join("\n"));

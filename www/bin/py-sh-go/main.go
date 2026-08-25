@@ -10,7 +10,7 @@
 //	os.environ reads & sets                  → getVar / Assign
 //	os.system / subprocess.run / Popen       → exec / capture / Background
 //	if/elif/else, while, for, def/return     → If / While / For / Function
-//	lists, indexing, slicing, len            → setArray / arrayIndex /
+//	lists, indexing, slicing, len            → setArray / Index /
 //	                                           param("slice") / param("len")
 //	with open(...) as fh: fh.write(...)      → Redirect (echo > file)
 //
@@ -64,6 +64,22 @@ type BoolE struct {
 }
 type TernaryE struct{ Cond, Then, Else Expr }
 type ListE struct{ Elems []Expr }
+
+// CompE — list comprehension (grammars-v4 listcomp: `test comp_for`, with
+// the optional comp_if filter): an EXPRESSION evaluating to a NEW array
+// built by iterating Iter, binding each item to Var, and keeping Elem for
+// the items that pass the optional Cond filter. Lowered to the A1
+// ArrayComp expr node (core request py-sh-go-comp-if).
+type CompE struct {
+	Var  string
+	Iter Expr
+	Elem Expr
+	Cond Expr // nil = no filter
+}
+type DictE struct {
+	Keys   []Expr // string-literal keys in the v1 subset
+	Values []Expr
+}
 type SubscriptE struct {
 	Obj        Expr
 	Index      Expr // a[i] form
@@ -131,6 +147,22 @@ type WithS struct {
 	Path  string
 	Mode  string
 	FhVar string
+	Body  []Stmt
+}
+
+// TryS — Python try/except/else/finally (grammars-v4 `try_stmt`), the
+// A1 `Try` node (core request py-sh-go 20260813). Except arms lower to
+// TryExcept entries (match null for a bare except, as null when the
+// clause has no binding); else/finally are plain statement lists.
+type TryS struct {
+	Body     []Stmt
+	Except   []ExceptS
+	ElseBody []Stmt
+	Finally  []Stmt
+}
+type ExceptS struct {
+	Match Expr // nil = bare except
+	As    string
 	Body  []Stmt
 }
 type ImportS struct{}
@@ -257,7 +289,7 @@ func lexLine(src string) []tok {
 			continue
 		}
 		switch c {
-		case '(', ')', '[', ']', ',', ':', '.', '+', '-', '*', '/', '%', '<', '>', '=':
+		case '(', ')', '[', ']', '{', '}', ',', ':', '.', '+', '-', '*', '/', '%', '<', '>', '=':
 			toks = append(toks, tok{tOp, string(c), i})
 			i++
 			continue
@@ -493,6 +525,8 @@ func (p *parser) parseStmt() (Stmt, error) {
 			return p.parseReturn(toks[1:])
 		case "with":
 			return p.parseWith(toks[1:], ln.indent)
+		case "try":
+			return p.parseTry(toks[1:], ln.indent)
 		}
 	}
 	// expression statement — may be an assignment
@@ -599,6 +633,109 @@ func (p *parser) parseIf(toks []tok, indent int) (Stmt, error) {
 		}
 	}
 	return st, nil
+}
+
+// parseTry parses `try: body (except [expr [as name]]: body)*
+// [else: body] [finally: body]` (grammars-v4 `try_stmt`). The
+// except/else/finally clauses continue at the try's OWN indent — the
+// same continuation pattern parseIf uses for elif/else. Nothing may
+// follow a finally (Python forbids it); anything else at the same
+// indent ends the statement.
+func (p *parser) parseTry(toks []tok, indent int) (Stmt, error) {
+	if len(toks) == 0 || toks[0].text != ":" {
+		return nil, fmt.Errorf("try: expected :")
+	}
+	body, err := p.parseBody(indent)
+	if err != nil {
+		return nil, err
+	}
+	st := &TryS{Body: body}
+	for p.pos < len(p.lines) && p.lines[p.pos].indent == indent {
+		t2 := lexLine(p.lines[p.pos].text)
+		if len(t2) == 0 || t2[0].kind != tIdent {
+			break
+		}
+		switch t2[0].text {
+		case "except":
+			p.pos++
+			match, asName, err := p.parseExceptClause(t2[1:])
+			if err != nil {
+				return nil, err
+			}
+			b, err := p.parseBody(indent)
+			if err != nil {
+				return nil, err
+			}
+			st.Except = append(st.Except, ExceptS{Match: match, As: asName, Body: b})
+		case "else":
+			p.pos++
+			if len(t2) < 2 || t2[1].text != ":" {
+				return nil, fmt.Errorf("else: expected :")
+			}
+			b, err := p.parseBody(indent)
+			if err != nil {
+				return nil, err
+			}
+			st.ElseBody = b
+		case "finally":
+			p.pos++
+			if len(t2) < 2 || t2[1].text != ":" {
+				return nil, fmt.Errorf("finally: expected :")
+			}
+			b, err := p.parseBody(indent)
+			if err != nil {
+				return nil, err
+			}
+			st.Finally = b
+			return st, nil // nothing may follow finally
+		default:
+			return st, nil
+		}
+	}
+	return st, nil
+}
+
+// parseExceptClause parses the `[expr [as name]] :` tail after the
+// leading `except` keyword. Bare `except:` yields a nil match and no
+// binding; `except E:` a NameE match; `except E as n:` both.
+func (p *parser) parseExceptClause(toks []tok) (Expr, string, error) {
+	colon := -1
+	for i, t := range toks {
+		if t.text == ":" {
+			colon = i
+			break
+		}
+	}
+	if colon < 0 {
+		return nil, "", fmt.Errorf("except: expected :")
+	}
+	clause := toks[:colon]
+	if len(clause) == 0 {
+		return nil, "", nil // bare except
+	}
+	asName := ""
+	for i, t := range clause {
+		if t.kind == tIdent && t.text == "as" {
+			rest := clause[i+1:]
+			if len(rest) != 1 || rest[0].kind != tIdent {
+				return nil, "", fmt.Errorf("except: bad as binding")
+			}
+			asName = rest[0].text
+			clause = clause[:i]
+			break
+		}
+	}
+	if len(clause) == 0 {
+		return nil, "", fmt.Errorf("except: expected exception")
+	}
+	e, rest, err := parseExprUntil(clause, "\x00") // no terminator
+	if err != nil {
+		return nil, "", err
+	}
+	if len(rest) > 0 && rest[0].kind != tEOF {
+		return nil, "", fmt.Errorf("except: trailing tokens")
+	}
+	return e, asName, nil
 }
 
 func (p *parser) parseWhile(toks []tok, indent int) (Stmt, error) {
@@ -789,10 +926,12 @@ func parseRHS(toks []tok) (Expr, error) {
 			continue
 		}
 		switch t.text {
-		case "(", "[":
+		case "(", "[", "{":
 			depth++
-		case ")", "]":
-			depth--
+		case ")", "]", "}":
+			if depth > 0 {
+				depth--
+			}
 		case ",":
 			if depth == 0 {
 				parts = append(parts, toks[start:i])
@@ -912,10 +1051,10 @@ func parseExprUntil(toks []tok, stops ...string) (Expr, []tok, error) {
 			continue
 		}
 		switch t.text {
-		case "(", "[":
+		case "(", "[", "{":
 			depth++
 			continue
-		case ")", "]":
+		case ")", "]", "}":
 			if depth > 0 {
 				depth--
 				continue
@@ -1330,23 +1469,61 @@ func (e *exprParser) parsePrimary() (Expr, error) {
 			return first, nil
 		}
 		if t.text == "[" {
-			// list literal
+			// list literal — or a comprehension when the first element is
+			// followed by `for` (grammars-v4 comp_for [+ comp_if]; the A1
+			// ArrayComp expr node): `[elem for var in iter (if cond)]`
 			var elems []Expr
 			if e.isOp("]") {
 				e.next()
 				return &ListE{}, nil
 			}
-			for {
-				el, err := e.parseTernary()
+			el, err := e.parseTernary()
+			if err != nil {
+				return nil, err
+			}
+			if e.isKw("for") {
+				// comp_for: 'for' exprlist 'in' or_test comp_iter?
+				e.next()
+				vt := e.next()
+				if vt.kind != tIdent {
+					return nil, fmt.Errorf("comp: expected variable")
+				}
+				if !e.isKw("in") {
+					return nil, fmt.Errorf("comp: expected in")
+				}
+				e.next()
+				// or_test level (NOT ternary): a trailing `if` belongs to
+				// comp_if, not to an `if ... else` in the iterable.
+				iter, err := e.parseOr()
 				if err != nil {
 					return nil, err
 				}
-				elems = append(elems, el)
+				var cond Expr
+				if e.isKw("if") {
+					// comp_if: 'if' test_nocond comp_iter?
+					e.next()
+					cond, err = e.parseOr()
+					if err != nil {
+						return nil, err
+					}
+				}
+				if err := e.expectOp("]"); err != nil {
+					return nil, err
+				}
+				return &CompE{Var: vt.text, Iter: iter, Elem: el, Cond: cond}, nil
+			}
+			elems = append(elems, el)
+			for {
 				if e.isOp(",") {
 					e.next()
 					if e.isOp("]") {
 						break
 					}
+					el, err := e.parseTernary()
+					if err != nil {
+						return nil, err
+					}
+					elems = append(elems, el)
 					continue
 				}
 				break
@@ -1355,6 +1532,41 @@ func (e *exprParser) parsePrimary() (Expr, error) {
 				return nil, err
 			}
 			return &ListE{Elems: elems}, nil
+		}
+		if t.text == "{" {
+			// dict literal {k: v, ...}
+			var keys, vals []Expr
+			if e.isOp("}") {
+				e.next()
+				return &DictE{}, nil
+			}
+			for {
+				k, err := e.parseTernary()
+				if err != nil {
+					return nil, err
+				}
+				if err := e.expectOp(":"); err != nil {
+					return nil, err
+				}
+				v, err := e.parseTernary()
+				if err != nil {
+					return nil, err
+				}
+				keys = append(keys, k)
+				vals = append(vals, v)
+				if e.isOp(",") {
+					e.next()
+					if e.isOp("}") {
+						break
+					}
+					continue
+				}
+				break
+			}
+			if err := e.expectOp("}"); err != nil {
+				return nil, err
+			}
+			return &DictE{Keys: keys, Values: vals}, nil
 		}
 	}
 	return nil, fmt.Errorf("unexpected token %q", t.text)
@@ -1542,6 +1754,13 @@ type lowerer struct {
 	types     map[string]string   // var → int|str|list
 	params    map[string][]string // function name → params (for scoping)
 	curParams map[string]string   // active function: param → positional string
+	// pending Popen pipe chains (the `a | b` idiom): tail var → ordered
+	// stages (each stage is one exec statement). Flushed as an A1
+	// `Pipeline` statement at the first non-chain statement / end of
+	// body. pipeOrder keeps the flush order deterministic across
+	// concurrent chains.
+	pipes     map[string][][]map[string]any
+	pipeOrder []string
 }
 
 func (l *lowerer) collectFuncs(stmts []Stmt) {
@@ -1559,6 +1778,8 @@ func (l *lowerer) setType(name, t string) {
 
 func (l *lowerer) typeOf(e Expr) string {
 	switch t := e.(type) {
+	case *CompE:
+		return "list"
 	case *LitInt:
 		return "int"
 	case *LitStr, *FStrE, *PercentE:
@@ -1582,6 +1803,8 @@ func (l *lowerer) typeOf(e Expr) string {
 		return "int"
 	case *ListE:
 		return "list"
+	case *DictE:
+		return "dict"
 	case *SubscriptE:
 		if t.Index != nil {
 			return "str"
@@ -1763,6 +1986,26 @@ func interpExpr(e map[string]any) map[string]any {
 
 func arrow(body []map[string]any) map[string]any {
 	return map[string]any{"type": "Arrow", "body": toAnyStmts(body)}
+}
+
+// pipelineStmt builds the A1 `Pipeline` statement node (schema.json
+// "Pipeline", the exact shape src/shir_json.rs emits for a top-level
+// shell `a | b`): each stage is a stmt[] (one exec per stage here), and
+// the optional fields are null — the same node the core request
+// py-sh-go-20260814-164552-pipeline made the ESTree renderer accept.
+func pipelineStmt(stages [][]map[string]any) map[string]any {
+	ss := make([]any, 0, len(stages))
+	for _, st := range stages {
+		ss = append(ss, toAnyStmts(st))
+	}
+	return map[string]any{
+		"type":        "Pipeline",
+		"stages":      ss,
+		"last_output": nil,
+		"capture":     nil,
+		"cmd_str":     nil,
+		"purity":      "Spawn",
+	}
 }
 
 func capture(e map[string]any) map[string]any {
@@ -1961,6 +2204,31 @@ func (l *lowerer) subscriptIR(t *SubscriptE) (map[string]any, error) {
 		}
 		return nil, fmt.Errorf("rsplit subscript: expected var.rsplit(str, 1)[1]")
 	}
+	// s.split()[0] — the first whitespace-separated word; s.split(sep)[0]
+	// — the part before the FIRST sep occurrence. Both lower to ${s%%P*}:
+	// strip the longest suffix that starts at the first space/sep (bash
+	// param expansion; the core's param lift lowers it natively for a
+	// literal core like " " or ","). No-arg split() on a string with
+	// LEADING whitespace differs (python skips the whitespace run, the
+	// glob keeps it) — out of the corpus idiom's scope.
+	if mc, ok := t.Obj.(*MethodCallE); ok && mc.Name == "split" {
+		if one, ok := t.Index.(*LitInt); ok && one.Text == "0" {
+			if n, ok := mc.Obj.(*NameE); ok {
+				sep := " "
+				if len(mc.Args) == 1 {
+					pa, ok := mc.Args[0].(*LitStr)
+					if !ok {
+						return nil, fmt.Errorf("split subscript: expected var.split(str)[0]")
+					}
+					sep = pa.Value
+				} else if len(mc.Args) > 1 {
+					return nil, fmt.Errorf("split subscript: expected var.split([str])[0]")
+				}
+				return call("param", []any{st("%%"), st(n.Name), st(sep + "*")}), nil
+			}
+		}
+		return nil, fmt.Errorf("split subscript: expected var.split()[0]")
+	}
 	name, ok := t.Obj.(*NameE)
 	if !ok {
 		return nil, fmt.Errorf("subscript target must be a variable")
@@ -1970,7 +2238,13 @@ func (l *lowerer) subscriptIR(t *SubscriptE) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return call("arrayIndex", []any{st(name.Name), key}), nil
+		// A1 `Index` expr node — the contract's rich array-element read
+		// ({"type":"Index","var":V,"key":K}), the canonical form of the
+		// `arrayIndex` call (core request py-sh-go-20260814-125405; the
+		// ESTree renderer's IrExpr::Index arm executes it as
+		// sh2.arrayIndex(V, K)). Keys lower as full exprs: Int/Str
+		// literals, getVar calls, ...
+		return map[string]any{"type": "Index", "var": name.Name, "key": key}, nil
 	}
 	// slice a[i:j] → param("slice", a, start, len)
 	start := "0"
@@ -2218,6 +2492,27 @@ func (l *lowerer) methodIR(t *MethodCallE) (map[string]any, error) {
 			}
 		}
 		return nil, fmt.Errorf("replace: expected var.replace(str, str)")
+	case "upper":
+		// s.upper() — ${s^^} (uppercase all): the core's param lift maps
+		// "^^" to the runtime/native toUpperCase.
+		if n, ok := t.Obj.(*NameE); ok {
+			return call("param", []any{st("^^"), st(n.Name)}), nil
+		}
+		return nil, fmt.Errorf("upper: expected var.upper()")
+	case "get":
+		// d.get(k) — dict lookup: the runtime's assocGet (${d[k]}). A
+		// missing key yields "" (the subset has no None; Python's None
+		// default arg is out of scope).
+		if len(t.Args) == 1 {
+			if n, ok := t.Obj.(*NameE); ok {
+				key, err := l.argIR(t.Args[0])
+				if err != nil {
+					return nil, err
+				}
+				return call("arrayIndex", []any{st(n.Name), key}), nil
+			}
+		}
+		return nil, fmt.Errorf("get: expected var.get(key)")
 	case "write":
 		// fh.write("...") — handled at statement level (with-block)
 		return nil, fmt.Errorf("write handled at statement level")
@@ -2345,15 +2640,134 @@ func (l *lowerer) testOperand(e Expr) (string, error) {
 // Statement lowering
 // ─────────────────────────────────────────────────────────────────────
 
+// pipeChainStmt recognizes a statement in the Popen pipe-chain idiom
+// (the Python spelling of `a | b`):
+//
+//	p1 = subprocess.Popen(["a"], stdout=subprocess.PIPE)
+//	p2 = subprocess.Popen(["b"], stdin=p1.stdout)
+//	p2.wait()
+//
+// Chain statements are CONSUMED (no A1 emitted for them); the chain is
+// flushed as one A1 `Pipeline` statement at the first non-chain
+// statement or the end of the enclosing body. Returns (flushPending,
+// consumed, err): a non-chain statement requests a flush of every
+// pending chain before it lowers normally.
+func (l *lowerer) pipeChainStmt(s Stmt) (bool, bool, error) {
+	switch t := s.(type) {
+	case *AssignS:
+		if len(t.Targets) != 1 || t.Op != "=" {
+			return true, false, nil
+		}
+		c, ok := t.Expr.(*CallE)
+		if !ok || strings.Join(c.Path, ".") != "subprocess.Popen" {
+			return true, false, nil
+		}
+		prog, ws, err := l.procArgs(c.Args)
+		if err != nil {
+			return false, false, err
+		}
+		stage := []map[string]any{exprStmt(execCall(prog, ws))}
+		stdinFrom := ""
+		toPipe := false
+		for _, kw := range c.Kwargs {
+			switch kw.Key {
+			case "stdout":
+				if at, ok := kw.Value.(*AttrE); ok {
+					if path, ok2 := dottedPath(at); ok2 && strings.Join(path, ".") == "subprocess.PIPE" {
+						toPipe = true
+					}
+				}
+			case "stdin":
+				if at, ok := kw.Value.(*AttrE); ok && at.Name == "stdout" {
+					if n, ok := at.Obj.(*NameE); ok {
+						stdinFrom = n.Name
+					}
+				}
+			}
+		}
+		if !toPipe && stdinFrom == "" {
+			// plain background Popen — normal lowering
+			return true, false, nil
+		}
+		if stdinFrom != "" {
+			stages, ok := l.pipes[stdinFrom]
+			if !ok {
+				return false, false, fmt.Errorf("Popen: stdin feeds %s which is not a piped Popen", stdinFrom)
+			}
+			delete(l.pipes, stdinFrom)
+			for i, v := range l.pipeOrder {
+				if v == stdinFrom {
+					l.pipeOrder = append(l.pipeOrder[:i], l.pipeOrder[i+1:]...)
+					break
+				}
+			}
+			l.pipes[t.Targets[0]] = append(stages, stage)
+			l.pipeOrder = append(l.pipeOrder, t.Targets[0])
+		} else {
+			// stdout=PIPE starts a chain; re-assigning an existing tail
+			// flushes the old chain first (deterministic order)
+			if _, exists := l.pipes[t.Targets[0]]; exists {
+				for i, v := range l.pipeOrder {
+					if v == t.Targets[0] {
+						l.pipeOrder = append(l.pipeOrder[:i], l.pipeOrder[i+1:]...)
+						break
+					}
+				}
+			}
+			l.pipes[t.Targets[0]] = [][]map[string]any{stage}
+			l.pipeOrder = append(l.pipeOrder, t.Targets[0])
+		}
+		return false, true, nil
+	case *ExprS:
+		// p2.wait() — the Pipeline statement runs synchronously, so the
+		// wait on the chain's tail is a no-op
+		mc, ok := t.Expr.(*MethodCallE)
+		if !ok || mc.Name != "wait" {
+			return true, false, nil
+		}
+		if n, ok := mc.Obj.(*NameE); ok {
+			if _, isTail := l.pipes[n.Name]; isTail {
+				return false, true, nil
+			}
+		}
+		return true, false, nil
+	}
+	return true, false, nil
+}
+
+func (l *lowerer) flushPipes() []map[string]any {
+	var out []map[string]any
+	for _, tail := range l.pipeOrder {
+		if stages, ok := l.pipes[tail]; ok {
+			out = append(out, pipelineStmt(stages))
+			delete(l.pipes, tail)
+		}
+	}
+	l.pipeOrder = nil
+	return out
+}
+
 func (l *lowerer) stmtsIR(stmts []Stmt) ([]map[string]any, error) {
 	var out []map[string]any
 	for _, s := range stmts {
+		flush, consumed, err := l.pipeChainStmt(s)
+		if err != nil {
+			return nil, err
+		}
+		if flush {
+			out = append(out, l.flushPipes()...)
+		}
+		if consumed {
+			continue
+		}
 		irs, err := l.stmtIR(s)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, irs...)
 	}
+	// end of body: close any chains the body left open
+	out = append(out, l.flushPipes()...)
 	return out, nil
 }
 
@@ -2437,8 +2851,62 @@ func (l *lowerer) stmtIR(s Stmt) ([]map[string]any, error) {
 		return l.exprStmtIR(t.Expr)
 	case *WithS:
 		return l.withIR(t)
+	case *TryS:
+		return l.tryIR(t)
 	}
 	return nil, fmt.Errorf("unsupported statement")
+}
+
+// tryIR lowers Python try/except/else/finally to the A1 `Try` node
+// (core request py-sh-go 20260813): body/excepts/else/finally, with
+// TryExcept entries {type, match (null for bare except), as (null when
+// absent), body} — the exact shape src/shir_json.rs emits and
+// src/shir_json_in.rs ingests.
+func (l *lowerer) tryIR(t *TryS) ([]map[string]any, error) {
+	body, err := l.stmtsIR(t.Body)
+	if err != nil {
+		return nil, err
+	}
+	excepts := []any{}
+	for _, e := range t.Except {
+		eb, err := l.stmtsIR(e.Body)
+		if err != nil {
+			return nil, err
+		}
+		var match any
+		if e.Match != nil {
+			m, err := l.argIR(e.Match)
+			if err != nil {
+				return nil, err
+			}
+			match = m
+		}
+		var asName any
+		if e.As != "" {
+			asName = e.As
+		}
+		excepts = append(excepts, map[string]any{
+			"type":  "TryExcept",
+			"match": match,
+			"as":    asName,
+			"body":  toAnyStmts(eb),
+		})
+	}
+	elseB, err := l.stmtsIR(t.ElseBody)
+	if err != nil {
+		return nil, err
+	}
+	finB, err := l.stmtsIR(t.Finally)
+	if err != nil {
+		return nil, err
+	}
+	return []map[string]any{{
+		"type":    "Try",
+		"body":    toAnyStmts(body),
+		"excepts": excepts,
+		"else":    toAnyStmts(elseB),
+		"finally": toAnyStmts(finB),
+	}}, nil
 }
 
 func (l *lowerer) printIR(t *PrintS) ([]map[string]any, error) {
@@ -2602,6 +3070,60 @@ func (l *lowerer) assignOne(target, op string, val Expr) ([]map[string]any, erro
 			return nil, err
 		}
 		return []map[string]any{backgroundStmt([]map[string]any{exprStmt(ir)})}, nil
+	}
+	// dict literal → declare -A + setArray ([k]=v elements): the exact
+	// shape the core frontend emits for `declare -A d; d=([a]=1 [b]=2)`
+	// (the estree runtime registers the name via the declare builtin and
+	// stores key=value pairs; reads dispatch through arrayIndex).
+	if dt, ok := val.(*DictE); ok {
+		var elems []any
+		for i, k := range dt.Keys {
+			ks, ok := k.(*LitStr)
+			if !ok {
+				return nil, fmt.Errorf("dict: keys must be string literals")
+			}
+			switch v := dt.Values[i].(type) {
+			case *LitStr:
+				elems = append(elems, st("["+ks.Value+"]="+v.Value))
+			case *LitInt:
+				elems = append(elems, st("["+ks.Value+"]="+v.Text))
+			default:
+				return nil, fmt.Errorf("dict: value for %q must be a literal", ks.Value)
+			}
+		}
+		l.setType(target, "dict")
+		return []map[string]any{
+			exprStmt(execCall("declare", []any{st("-A"), st(target)})),
+			assignStmt(target, call("setArray", []any{st(target), array(elems)})),
+		}, nil
+	}
+	// list comprehension → the A1 ArrayComp expr node (core request
+	// py-sh-go-comp-if): setArray(target, ArrayComp) — the runtime builds
+	// a NEW array, binding each iter item to the comp var and skipping
+	// items that fail the optional comp_if filter.
+	if cp, ok := val.(*CompE); ok {
+		if op == "+=" {
+			return nil, fmt.Errorf("comp: += unsupported")
+		}
+		iter, err := l.iterIR(cp.Iter)
+		if err != nil {
+			return nil, err
+		}
+		elem, err := l.argIR(cp.Elem)
+		if err != nil {
+			return nil, err
+		}
+		var cond any
+		if cp.Cond != nil {
+			c, err := l.testIR(cp.Cond)
+			if err != nil {
+				return nil, err
+			}
+			cond = c
+		}
+		l.setType(target, "list")
+		ac := map[string]any{"type": "ArrayComp", "var": cp.Var, "iter": iter, "elem": elem, "cond": cond}
+		return []map[string]any{assignStmt(target, call("setArray", []any{st(target), ac}))}, nil
 	}
 	// list literal → setArray / setArrayAppend (arr += (...))
 	if lst, ok := val.(*ListE); ok {
@@ -2816,6 +3338,21 @@ func (l *lowerer) exprStmtIR(e Expr) ([]map[string]any, error) {
 		if t.Name == "wait" {
 			return []map[string]any{exprStmt(execCall("wait", []any{}))}, nil
 		}
+		if t.Name == "append" {
+			// l.append(x) — list append → arr+=(x): the same
+			// Assign(setArrayAppend) shape `a += [x]` lowers to (t56).
+			if len(t.Args) == 1 {
+				if n, ok := t.Obj.(*NameE); ok {
+					ir, err := l.argIR(t.Args[0])
+					if err != nil {
+						return nil, err
+					}
+					l.setType(n.Name, "list")
+					return []map[string]any{assignStmt(n.Name, call("setArrayAppend", []any{st(n.Name), array([]any{ir})}))}, nil
+				}
+			}
+			return nil, fmt.Errorf("append: expected var.append(value)")
+		}
 		if t.Name == "write" {
 			// fh.write("...") — handled inside with-blocks
 			return nil, fmt.Errorf("write outside with-block")
@@ -2862,6 +3399,7 @@ func buildProgram(stmts []Stmt) (*shiremit.Program, error) {
 		fns:    map[string]bool{},
 		types:  map[string]string{},
 		params: map[string][]string{},
+		pipes:  map[string][][]map[string]any{},
 	}
 	l.collectFuncs(stmts)
 	irs, err := l.stmtsIR(stmts)
