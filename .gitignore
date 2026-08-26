@@ -33,3 +33,6 @@ __pycache__/
 
 # Zig bootstrap (build-wasm-zig.sh work dir)
 .zig-bootstrap/
+
+# Compiler output at the repo root (e.g. stray `cc` invocations)
+a.out

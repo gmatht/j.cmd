@@ -217,6 +217,208 @@ will be missing whatever they were supposed to do. A correct shader has
    footer says `// TODO(unsupported): 0 construct(s)`. Any nonzero
    count names the constructs that silently did nothing.
 
+## 6b. Automatic capability detection — `sh2glsl --check`
+
+Checking the footer by hand is the manual workflow; the detector makes
+it automatic and closes the three gaps where the footer **lies** (a
+clean `0 construct(s)` footer on a shader that still fails to compile
+or renders nothing):
+
+```
+$ sh2glsl --check your-shader.sh
+sh2glsl --check /examples/your-shader.sh
+fragment CAPABLE
+vertex   NOT CAPABLE — byte output (echo/print/printf/putb) is not
+         representable in a vertex shader — out_buf/out_len are
+         fragment-only and undeclared here; output through vp_*/vc_*/vu_* instead
+```
+
+The report (`src/shglsl-capable.js`, the `glslCapable(src)` library
+entry, or the `sh2.*glslCapable` namespace call) is:
+
+```json
+{
+  "recursion": [],
+  "fragment": { "capable": true, "total": 0, "unsupported": [], "warnings": [] },
+  "vertex":   { "capable": false, "total": 0, "unsupported": [],
+                 "warnings": ["byte output …"] }
+}
+```
+
+- **`capable`** — the program compiles to a *working* shader for that
+  stage: clean footer (0 unsupported) **and** no recursion **and** no
+  stage-contract violation.
+- **`unsupported`** — the `what`/`count` breakdown parsed from the
+  rendered markers (`exec ls`, `pipeline`, `subshell`, `background`,
+  `printf non-literal format`, `call split`, `arith parse`, …).
+- **`warnings`** — compiles but renders nothing: a fragment program
+  that only sets `vp_*`/`vc_*`/`vu_*` (no `gl_Position` in a fragment),
+  a vertex program with no `vp_*`/`vc_*`/`vu_*` output, or no output
+  at all.
+- **`recursion`** — the cycle members (`["f","f"]` for a self-call,
+  `["a","b","a"]` for mutual recursion). GLSL forbids recursion in
+  every stage, but the backend emits a self-call with a clean footer —
+  the detector walks the A1 shIR call graph to catch it.
+
+The three footer blind spots, all caught by `--check`:
+
+1. **Recursion** — the backend emits `g_f();` inside `void g_f()` with
+   `0 construct(s)`; the shader then fails to compile. The detector
+   finds the cycle in the shIR.
+2. **Byte output in a vertex program** — `echo`/`print`/`printf`/
+   `putb` lower to `putStr`/`putCh`/`out_buf`, which are fragment-only
+   (`out_buf`/`out_len` are never declared in a vertex shader — the
+   generated shader is broken with a clean footer).
+3. **No output at all** — a fragment program that only sets `vp_*`
+   (or a vertex program that only echoes) compiles but renders
+   nothing; reported as a warning.
+
+`sh2glsl --check` runs the same raw `otranspilerl_glsl`/`_glslv`
+renders `sh2glsl` uses (the marker format and footer are the stable
+contract), so the verdict is exactly what the compiler would produce —
+no separate analysis pass to drift.
+
+## 6c. The automatic pipeline — `sh2glsl --auto` (eval-fallback)
+
+The endgame: replace the explicit `sh2glsl` step with a **plain eval**
+— the runtime runs the bash as a normal shell program, and the
+pipeline (`src/shglsl-auto.js`, the `glslAuto(src)` library entry, or
+`sh2.*glslAuto`) automatically decides whether to transparently
+offload it to the GPU. Four questions, four signals:
+
+```
+$ sh2glsl --auto your-shader.sh
+sh2glsl --auto /examples/your-shader.sh
+  static · shader: fragment · worth offloading
+  fragment: capable · vertex: not capable · readsFrag: true · readsVert: false · loops: 0 · ops: 76
+```
+
+| question | signal |
+|---|---|
+| **(a) pre-compile & reuse** | the bash→GLSL translation is a pure function of the source text — `getShaderTranslation(src)` caches both stages by source string, so any re-eval reuses the compiled shaders. `static` additionally reports the program is self-contained (no `eval`/`source`/`.` — it is not a code generator whose real program only exists at runtime). |
+| **(b) is it a shader** | the `glslCapable` verdict: compiles to a WORKING shader in ≥1 stage (clean footer, no recursion, no stage-contract violation). |
+| **(c) what sort** | the output model decides the stage: byte output (`putb`/`echo`/`printf`) is fragment-only, `vp_*`/`vc_*`/`vu_*` writes are vertex-only — so a program is exactly one of `fragment` \| `vertex` \| `null` (a program that does both is broken in both stages; no output is not a shader). |
+| **(d) worth it** | the GPU path has fixed overhead (compile, upload, render, readback), so it only pays when the work is **invocation-parameterized** — the program reads the stage's input bridges (the backend's use-gated declarations in the raw renders are the ground truth) — **and** the invocation count is large enough (pixels ≥ 4096 for a fragment, vertices ≥ 256 for a vertex). |
+
+`x=3` fails all four: no output (not a shader), no bridge reads (the
+GPU would compute the same result N times redundantly — the single
+CPU eval always wins), trivial work. `putb $((frag_x % 256))` passes:
+static, fragment, reads `frag_x` → per-pixel gradient → worth it.
+
+The runtime decision is `shouldOffload(src)` → `offload` = static ∧
+shader ∧ worth. When true, render the cached translation on the GPU;
+otherwise eval the bash normally — the shader pipeline becomes
+invisible.
+
+## 6d. The factor.sh case study — how to run the benchmark
+
+`www/examples/factor.sh` (bash trial division) and its C twin
+`www/examples/c/factor.c` are the worked example of a partial lift:
+the whole program is NOT a shader (argv, `exit`, regex `!`, array
+append, `[ ]` tests — `sh2glsl --check` names them), but the
+trial-division core IS liftable once the parallel dimension is
+exposed (batch: one pixel per number; sieve: one pixel per divisor
+candidate). `__factor-bench.mjs` measures the node-faithful half of
+the decision:
+
+```
+node __factor-bench.mjs          # full table (min of 5 runs per number)
+node __factor-bench.mjs --quick  # one run per number (CI)
+```
+
+It builds the C twin (`cc www/examples/c/factor.c -o /tmp/factor-c -O2`),
+then reports:
+
+1. **CPU fallback** — bash vs C wall time per number (360, 999983,
+   2³¹−1, 999999937, 2³², 1000000007). On the measured box: C is
+   **~114× faster** than bash on the same algorithm (267× for 2³¹−1:
+   438 ms vs 1.6 ms).
+2. **GPU-path fixed overhead** — the cold bash→GLSL compile (~29 ms,
+   the same wasm the browser runs) and the cached re-eval
+   (~0.003 ms — the (a) reuse win).
+3. **Lift-pattern verdicts** — the batch and sieve shaders must be
+   detected as shaders, worth it, with 0 unsupported (the gate fails
+   loudly otherwise).
+4. **Crossover** — the batch size where the GPU path (compile +
+   render) beats the bash loop. With bash at ~165 ms/number and the
+   GPU path fixed at ~30 ms, the GPU wins at **batch size 1** — a
+   single large factorization pays for the whole pipeline.
+
+The render half (per-pixel ALU, draw + readback) is browser-side —
+measure it with `www/glsl-int-vs-float-bench.html` on a real GPU;
+headless-gl on node is SwiftShader software rendering and would
+mislead.
+
+## 6e. The fuzzy-search case study — the chunk-and-reduce transform
+
+`__fuzzy-bench.mjs` + `www/fuzzy-bench.html` + `src/fuzzygpu.js` are the
+worked example of a **data-load transform**: a per-offset fuzzy
+matcher (`score[x] = Σ|needle[i] − haystack[i+x]|`) whose GPU shape is
+one pixel per offset — the whole needle loop runs in the fragment. The
+load problem is that a pixel's result must round-trip through the RGBA
+byte buffer, and the needle must fit the backend's inline-array cap:
+
+| limit | value | what breaks above it |
+|---|---|---|
+| inline array (ARR_CAP) | 1024 elements | the needle (or haystack) can't embed — the backend stores past the declared `[1024]` (OOB, UB) |
+| accumulator int | mediump ±2¹⁵ = 32767 (ES 1.00 minimum; highp needs `OES_fragment_precision_high`) | the per-pixel score wraps |
+| RGBA pack | 0 … 2³¹−1 (4 exact byte writes + the A≥128 sentinel) | the score can't be represented |
+
+**The transform (the pattern you proposed — break the needle into
+chunks, reduce on the CPU):** `src/fuzzygpu.js` computes the chunk
+size from the representability bounds, not a constant:
+
+```
+CHUNK_SIZE = floor(INT_MAX / MAXDIFF)      # INT_MAX = mediump int ±2¹⁵ (default)
+                                           # MAXDIFF = max |a−b| over the data (digits → 9)
+           = min(that, ARR_CAP)            # a chunk must still inline
+```
+
+Then it emits one shader source per chunk — the chunk inline + the
+FULL haystack inline, the loop `score += |needle[i] − haystack[chunk_start + i + x]|`
+(global index — every chunk needs the whole haystack) — ending in a
+single `putb $((score))`, which the **pack transform**
+(`packFragmentResultToRGBA` in `shglsl-opt.js`) widens into the four
+exact little-endian byte writes + the A≥128 sentinel. The CPU reads
+every pass's RGBA row, sums the partials per offset in JS numbers
+(exact to 2⁵³), and takes the argmin. The per-pass guarantee:
+
+```
+partial_c[x] ≤ CHUNK_SIZE·MAXDIFF ≤ INT_MAX      # accumulator can't wrap
+partial_c[x] ≤ 2³¹−1                              # RGBA pack can't overflow
+```
+
+headroom at mediump: 2³¹−1/32767 ≈ 65,535× — and a future 1M-digit
+chunk (9·10⁶ ≪ 2³¹−1) still packs, so the transform is scale-agnostic:
+chunking is about *representability*, the array cap just sets the
+largest chunk that can inline today.
+
+`__fuzzy-bench.mjs` verifies the node-faithful half and the emitted
+code (exit ≠ 0 on any regression):
+
+1. **chunk-size derivation** — digits: floor(32767/9) = 3640 → capped
+to 1024; a 0..255 domain: 128; a 0..999 domain: 32; highp digits:
+238,609,294. Same formula, different data.
+2. **correctness gate** — the chunked reduce (multi-chunk: 3, 3 and
+   15 chunks) equals the exact CPU reference and the C twin, offset by
+   offset; the generic-domain case too.
+3. **pack-text verification** — the *emitted* `out_buf[i]` byte
+   formulas are parsed out of the transformed GLSL and evaluated for
+   sample scores; they must decode exactly to the score's bytes
+   (the transform's output, not a reimplementation, is what's checked).
+4. **the pipeline price** — one cold bash→GLSL compile per chunk
+   (~15 ms/chunk here; the cached re-eval is ~0.001 ms). Chunking is
+   exact and overflow-proof, but it pays a compile per chunk — the
+   template-shader + texture-window path (compile once, load the data
+   per pass) is the follow-up that removes that price at scale.
+
+`www/fuzzy-bench.html` runs the same generator in the browser: single-
+pass vs chunked, per-pass draw+readback, the CPU reduce, and three
+PASS checks — the chunked argmin equals the single-pass argmin, every
+offset equals, and 0 sentinels. (The same shader equality is runnable
+on node with headless-gl — SwiftShader, so timing misleads, but the
+shader correctness is real.)
+
 ---
 
 See `www/examples/mimecroft-frag.sh` (CRT scanlines, per-pixel

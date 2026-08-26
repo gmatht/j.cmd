@@ -105,5 +105,6 @@
  "my_qsort.c",
  "linked_list.c",
  "generic_walk.c",
- "doubly_linked_list.c"
+ "doubly_linked_list.c",
+ "factor.c"
 ]

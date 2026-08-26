@@ -672,11 +672,19 @@ async function interceptCompilers(cmd, args, stdin, isLast, { outputRedirect, ap
   // otranspilerl wasm (the MIMEcroft shader pipeline). `sh2glsl file.sh`
   // compiles a fragment shader (frag_x/frag_y/vcolor/uv/tex/crack
   // bridges); `sh2glsl --vertex file.sh` compiles a VERTEX shader (the
-  // ap_*/ash_*/auv_*/ucp_*/ucy_*/uop_*/usc_*/ublk_*/uov bridges).
+  // ap_*/ash_*/auv_*/ucp_*/ucy_*/uop_*/usc_*/ublk_*/uov bridges);
+  // `sh2glsl --check file.sh` prints the GPU-capability report instead
+  // of GLSL — does the program compile to a WORKING vertex and/or
+  // fragment shader, and what would be unsupported in each stage;
+  // `sh2glsl --auto file.sh` runs the full automatic pipeline — is it
+  // static (pre-compilable), a shader, what kind, and is it worth
+  // offloading to the GPU (the eval-fallback decision).
   if (cmd === "sh2glsl" && args.length > 0) {
     const { getOtranspilerl } = await import("./otranspilerl.js");
-    const vert = args[0] === "--vertex";
-    const srcArg = vert ? args[1] : args[0];
+    const auto = args[0] === "--auto";
+    const check = !auto && args[0] === "--check";
+    const vert = !auto && !check && args[0] === "--vertex";
+    const srcArg = auto ? args[1] : check ? args[1] : vert ? args[1] : args[0];
     if (!srcArg) {
       process.stderr.write(`sh2glsl: missing source file\n`);
       return { ok: false, code: 1, output: "" };
@@ -690,6 +698,53 @@ async function interceptCompilers(cmd, args, stdin, isLast, { outputRedirect, ap
       return { ok: false, code: 1, output: "" };
     }
     const lib = await getOtranspilerl();
+    if (auto) {
+      const { analyzeShader } = await import("./shglsl-auto.js");
+      let a;
+      try {
+        a = await analyzeShader(src, { lib });
+      } catch (e) {
+        process.stderr.write(`sh2glsl: ${e.message}\n`);
+        return { ok: false, code: 1, output: "" };
+      }
+      const why = [
+        a.static ? "static" : `self-modifying (${a.selfModifying.join(", ")})`,
+        a.shader ? `shader: ${a.kind}` : "not a shader",
+        a.worth ? "worth offloading" : "not worth offloading",
+      ];
+      const out = `sh2glsl --auto ${srcFile}\n  ${why.join(" · ")}\n` +
+        `  fragment: ${a.report.fragment.capable ? "capable" : "not capable"}` +
+        (a.report.fragment.total ? ` (${a.report.fragment.total} unsupported)` : "") +
+        ` · vertex: ${a.report.vertex.capable ? "capable" : "not capable"}` +
+        (a.report.vertex.total ? ` (${a.report.vertex.total} unsupported)` : "") +
+        ` · readsFrag: ${a.readsFrag} · readsVert: ${a.readsVert} · loops: ${a.loops} · ops: ${a.ops}\n`;
+      if (outputRedirect) await writeOut(outputRedirect, out, appendRedirect);
+      else process.stdout.write(out);
+      return { ok: true, code: 0, output: out };
+    }
+    if (check) {
+      let report;
+      try {
+        report = await lib.glslCapable(src);
+      } catch (e) {
+        process.stderr.write(`sh2glsl: ${e.message}\n`);
+        return { ok: false, code: 1, output: "" };
+      }
+      const line = (stage) => {
+        const r = report[stage];
+        const why = [
+          ...r.unsupported.map((u) => `${u.what}×${u.count}`),
+          ...(report.recursion.length ? [`recursion: ${report.recursion.join(" → ")}`] : []),
+          ...r.warnings,
+        ];
+        return `${stage.padEnd(8)} ${r.capable ? "CAPABLE" : "NOT CAPABLE"}` +
+          (why.length ? ` — ${why.join("; ")}` : "");
+      };
+      const out = `sh2glsl --check ${srcFile}\n${line("fragment")}\n${line("vertex")}\n`;
+      if (outputRedirect) await writeOut(outputRedirect, out, appendRedirect);
+      else process.stdout.write(out);
+      return { ok: true, code: 0, output: out };
+    }
     let glsl;
     try {
       glsl = vert ? lib.glslv(src) : lib.glsl(src);

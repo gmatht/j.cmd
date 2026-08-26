@@ -45,11 +45,19 @@ async function bashToJSA1(fs, bashSource) {
   // back to the plain transpile when the export is missing (a stale
   // wasm).
   let program;
-  if (lib.compile) {
-    program = JSON.parse(lib.compile(String(bashSource))).estree;
-  } else {
-    program = JSON.parse(lib.transpile(String(bashSource), "sh", "js"));
-  }
+  // Use the PLAIN transpile path, NOT lib.compile. The compile export
+  // runs the estreeToJs head passes INSIDE the wasm (post-#4), and those
+  // wasm-side passes mis-place an array APPEND that sits at the start of
+  // a nested inner loop: `factors+=("$d")` inside a `while` inside a
+  // `while` is hoisted OUT of the inner loop into the outer block — the
+  // AST literally comes back with `setArrayAppend` as a direct child of
+  // the outer While's block, before the inner WhileStatement. The result
+  // appends each divisor once regardless of divisibility (factor.sh 360 →
+  // "2 3 5" instead of "2 2 2 3 3 5"). lib.transpile leaves the passes
+  // on the JS side (estreeToJs runs them correctly — the same path
+  // runShellScript uses), so it is correct. Fixing the wasm-side pass is
+  // a sh2perl rebuild (the AST is structurally wrong at the source).
+  program = JSON.parse(lib.transpile(String(bashSource), "sh", "js"));
   const scriptArrays = [];
   const arrayVals = new Map();
   // The A1 shIR is built INSIDE the transpile call — the wasm's
@@ -136,6 +144,8 @@ export function buildSh2LibFacade(fs) {
     transpile: async (src, s, t) => (await getOtranspilerl()).transpile(String(src), s, t),
     render: async (a1, t) => (await getOtranspilerl()).render(String(a1), t),
     glsl: async (src) => (await getOtranspilerl()).glsl(String(src)),   // shell → GLSL ES 1.00 (the sh2glsl path)
+    glslCapable: async (src) => (await getOtranspilerl()).glslCapable(String(src)), // shell → GPU-capability report (sh2glsl --check)
+    glslAuto: async (src) => (await getOtranspilerl()).glslAuto(String(src)),       // shell → automatic shader pipeline (sh2glsl --auto)
     estreeToJs: async (estree) => estreeToJs(estree),
     // the unified frontend (src/busybox.js) — the SAME artifact the
     // otranspiler GUI uses: the shipped prebuilt

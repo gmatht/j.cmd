@@ -88,7 +88,7 @@ export class ExamplesFS {
 
   // loose files at the corpus root (not in any index.json) — completion
   // and `ls /examples` should still find them
-  TOP_LOOSE_FILES = ["source.c"];
+  TOP_LOOSE_FILES = ["source.c", "factor.sh"];
 
   async read(path) {
     const rel = this._rel(path);

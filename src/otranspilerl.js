@@ -208,6 +208,24 @@ function wrapLibrary(instance, mem, out) {
     // shell → GLSL ES 1.00 render VERTEX shader (the other MIMEcroft
     // stage; `sh2glsl --vertex` drives this)
     glslv: (src, view = GLSL_VIEW) => call("otranspilerl_glslv", [String(src)], [view]).output,
+    // shell → GPU-capability report (the `sh2glsl --check` path): does
+    // this bash program compile to a WORKING vertex and/or fragment
+    // shader? Runs the raw glsl/glslv renders, parses the unsupported-
+    // construct markers, and adds the recursion + stage-contract checks
+    // the footer misses (see src/shglsl-capable.js).
+    glslCapable: async (src) => {
+      const lib = await libPromise;
+      const m = await import("./shglsl-capable.js");
+      return m.glslCapable(String(src), { lib });
+    },
+    // shell → the full automatic pipeline (a)–(d): static/pre-compilable,
+    // is it a shader, what kind, worth offloading — plus the cached
+    // translation (see src/shglsl-auto.js; `sh2glsl --auto` drives this)
+    glslAuto: async (src) => {
+      const lib = await libPromise;
+      const m = await import("./shglsl-auto.js");
+      return m.analyzeShader(String(src), { lib });
+    },
     raw: call,
   };
 }

@@ -163,13 +163,22 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     const withLen = str
       .replace(/\$\{#([A-Za-z_][A-Za-z0-9_]*)\[@\]\}/g, (m, name) => arrayLen(name))
       .replace(/\$\{#([A-Za-z_][A-Za-z0-9_]*)\}/g, (m, name) => String(getVar(name)).length);
+    // `${arr[*]}` / `${arr[@]}` / `$arr[*]` / `$arr[@]` — the WHOLE-array
+    // expansion (all elements SPACE-JOINED; the element-read rule below
+    // would treat `*`/`@` as an index → Number("*") = NaN → "" — factor.sh's
+    // `echo "...: ${factors[*]}"` printed an empty list because of that).
+    // `${#arr[@]}` (length) is a different shape and is handled above.
+    const withWhole = withLen.replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*)\[(\*|@)\]\}?/g, (m, name) => {
+      const v = vars.get(name);
+      return Array.isArray(v) ? v.join(" ") : "";
+    });
     // `${arr[$i]}` / `$arr[0]` — array ELEMENT reads (a quoted test
     // operand like `[ "${sh_env16[0]}" -gt 0 ]`; the scalar rule below
     // would read the WHOLE array and Number() it to NaN → the shatter
     // generator's shard guard silently became false). The index may be
     // the emitter's `\$`+value artifact or a live `$name` — arrayIndex's
     // expandOperand resolves both.
-    const withArr = withLen.replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*)\[([^\]]*)\]\}?/g, (m, name, idx) =>
+    const withArr = withWhole.replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*)\[([^\]]*)\]\}?/g, (m, name, idx) =>
       String(arrayIndex(name, String(idx).trim())));
     return withArr.replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*|\d+|#|@|\*|\?|\$|\!)\}?/g, (m, name) => {
       const v = getVar(name);
@@ -179,8 +188,28 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
 
   function getVar(name) {
     const sName = String(name);
+    // `${#arr[@]}` / `${#arr[*]}` — array LENGTH (a direct getVar read;
+    // the naive lastIndexOf below would treat the `@`/`*` as an element
+    // index and return "").
+    const hb = sName.indexOf("[");
+    if (sName.startsWith("#") && hb > 0 && sName.endsWith("]")) {
+      const inner = sName.slice(hb + 1, -1).trim();
+      if (inner === "@" || inner === "*") {
+        const v = vars.get(sName.slice(1, hb));
+        return Array.isArray(v) ? String(v.length) : "0";
+      }
+    }
     const b = sName.lastIndexOf("[");
     if (b > 0 && sName.endsWith("]")) {
+      // `arr[*]` / `arr[@]` — the WHOLE-array expansion (all elements
+      // space-joined). Without this, `*`/`@` were read as an element
+      // index → Number("*") = NaN → "" — so `sh2.getVar("factors[*]")
+      // (factor.sh's echo) printed an empty list.
+      const inner = sName.slice(b + 1, -1).trim();
+      if (inner === "*" || inner === "@") {
+        const v = vars.get(sName.slice(0, b));
+        return Array.isArray(v) ? v.join(" ") : "";
+      }
       const arrName = sName.slice(0, b);
       const idx = Number(expandOperand(sName.slice(b + 1, -1)));
       const v = vars.get(arrName);
