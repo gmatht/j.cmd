@@ -50,7 +50,7 @@
 // text are verified against the C twin by __fuzzy-bench.mjs, and the
 // browser harness (www/fuzzy-bench.html) runs the same generator.
 
-import { packFragmentResultToRGBA, liftTextureWindowSample, tileOffsetUniform } from "./shglsl-opt.js";
+import { packFragmentResultToRGBA, liftTextureWindowSample, tileOffsetUniform, needleLengthUniform } from "./shglsl-opt.js";
 
 // ── the representability bounds the chunk size is computed from ───
 export const MEDIUM_INT_MAX = 32767;    // ES 1.00 mediump int minimum (±2¹⁵) — the SAFE accumulator bound on every device
@@ -222,6 +222,78 @@ export function tileLayout(offsets, tileW) {
     tiles.push({ t, start, w: Math.min(tileW, offsets - start) });
   }
   return { n, tiles };
+}
+
+// ── 2b. the compile-once TEMPLATE: the needle moves into uCrack ──
+// The remaining price of the chunk path is one cold compile per chunk
+// (the needle digits inline → each chunk is a distinct source). This
+// template moves the needle into the SECOND sampler (uCrack via the
+// cr_* bridge — the same window lift as the haystack) and the per-chunk
+// constants (needle_len, chunk_start) into uniforms (needleLengthUniform),
+// so ONE compiled shader runs every chunk: the data — needle texture,
+// uNeedleLen, uNeedleStart — varies at bind time, not compile time.
+// The source is data-independent (no needle digits at all).
+export function fuzzyTemplateShader() {
+  return [
+    "x=$frag_x",
+    "needle_len=0",   // → uNeedleLen  (needleLengthUniform)
+    "chunk_start=0",  // → uNeedleStart (needleLengthUniform)
+    "score=0",
+    "i=0",
+    "while [ $i -lt $needle_len ]; do",
+    "    tex_idx=$(( chunk_start + i + x ))",   // haystack window (uTex)
+    "    crack_idx=$(( chunk_start + i ))",     // needle window (uCrack)
+    "    diff=$(( cr_r - tex_r ))",
+    "    if [ $diff -lt 0 ]; then diff=$((-diff)); fi",
+    "    score=$(( score + diff ))",
+    "    i=$(( i + 1 ))",
+    "done",
+    "putb $(( score ))",
+  ].join("\n");
+}
+
+// the needle → RGBA texel bytes (the uCrack texture; digits in R, like
+// the haystack texture). Holds the FULL needle — chunks are uniform
+// windows (uNeedleStart/uNeedleLen) into it, no per-chunk upload.
+export function needleTexelData(needle, width = 4096) {
+  const nl = needle.length;
+  const h = Math.max(1, Math.ceil(nl / width));
+  const data = new Uint8Array(width * h * 4);
+  for (let i = 0; i < nl; i++) {
+    data[i * 4] = needle[i];
+    data[i * 4 + 3] = 255;
+  }
+  return { width, height: h, data };
+}
+
+// the template GLSL pipeline: raw render → the tex+crack window lift →
+// the needle-length/start uniforms → (optional) the tile uniform → the
+// RGBA pack. Returns {glsl, fired}. Compile ONCE; run per chunk by
+// binding uNeedleLen/uNeedleStart (+ uTileStart when tiled).
+export function compileTemplateGLSL(rawGlsl, opts = {}) {
+  const {
+    width = 4096, height = 1,        // haystack (uTex) layout
+    crackWidth = width, crackHeight = height, // needle (uCrack) layout
+    tile = false,
+  } = opts;
+  let g = liftTextureWindowSample(rawGlsl, { width, height, crackWidth, crackHeight, highp: true });
+  g = needleLengthUniform(g);
+  if (tile) g = tileOffsetUniform(g);
+  const fired = g !== String(rawGlsl);
+  return { glsl: packFragmentResultToRGBA(g), fired };
+}
+
+// the chunk windows for the template: uniform (start, len) pairs
+// (needle in uCrack; the loop bound is uNeedleLen, not a baked literal)
+export function templateChunkWindows(nl, chunkSize) {
+  const m = Math.max(1, Math.ceil(nl / chunkSize));
+  const chunks = [];
+  for (let c = 0; c < m; c++) {
+    const start = c * chunkSize;
+    const len = Math.min(chunkSize, nl - start);
+    chunks.push({ c, start, len });
+  }
+  return { m, chunks };
 }
 
 // ── 3. the optimise transform wiring: RGBA-pack the chunk GLSL ──

@@ -1,6 +1,6 @@
 <!doctype html>
 <html>
-<head><meta charset="utf-8"><title>fuzzy-match GPU bench (shader lift + chunk/reduce + texture window)</title>
+<head><meta charset="utf-8"><title>fuzzy-match GPU bench (shader lift + chunk/reduce + texture window + template)</title>
 <style>
   body { font-family: ui-monospace, monospace; margin: 1.5rem; background: #111; color: #ddd; }
   h1 { font-size: 1.1rem; }
@@ -12,47 +12,41 @@
 </style>
 </head>
 <body>
-<h1>Fuzzy-match → fragment shader: GPU score matrix + readback, chunked, texture-window</h1>
+<h1>Fuzzy-match → fragment shader: GPU score matrix, chunked, texture-window, compile-once template</h1>
 <p>The per-offset fuzzy matcher is a <b>fragment shader</b>: one pixel = one haystack offset <code>x</code>, computing
-<code>score[x] = Σ|needle[i] − haystack[i+x]|</code>. The needle is chunked from the integer precision and the
-data domain (<code>CHUNK_SIZE = floor(INT_MAX/MAXDIFF)</code>); the haystack comes from one of two
-<code>src/fuzzygpu.js</code> load paths:</p>
+<code>score[x] = Σ|needle[i] − haystack[i+x]|</code>. Two data paths (<code>src/fuzzygpu.js</code>):</p>
 <ul>
-  <li><b>inline</b> — the haystack is an inline array (backend cap <b>ARR_CAP = 1024</b>);</li>
-  <li><b>texture</b> — the haystack is an uploaded W×H RGBA texture, and the
-      <code>liftTextureWindowSample</code> transform rewrites every <code>tex_r</code> read into a per-use sample at
-      the program-set <code>tex_idx</code> — the backend emits NO sample for loop reads, this is the gap the
-      transform fills. Haystack lengths up to the texture capacity (~16384·rows).</li>
+  <li><b>chunked</b> — the needle chunk inlines per pass (ARR_CAP 1024; one cold compile per chunk), the haystack
+      comes inline (≤ 1024) or as an uploaded texture (&gt; 1024);</li>
+  <li><b>template</b> — BOTH the needle and the haystack are uploaded textures (uTex + uCrack via the cr_* bridge),
+      and the per-chunk window (<code>uNeedleLen</code>/<code>uNeedleStart</code>) + the offset tile
+      (<code>uTileStart</code>) are uniforms: <b>ONE compiled shader runs every chunk of any needle</b> — the
+      per-chunk cold-compile cost is gone (the needle loop bound is a dynamic uniform; verified on
+      ANGLE/SwiftShader — ES 1.00 static-bound caveat for very old mobile is documented in §6f).</li>
 </ul>
-<p>Either way: one draw per needle chunk emits the <i>partial</i> score RGBA-packed, the CPU reduces
-(the total can never overflow the 32-bit buffer: per-pass partial ≤ INT_MAX), and the argmin is exact.
-When the offset count exceeds the canvas limit (~16384) the offset axis is <b>tiled</b> — the same compiled
-shader runs every tile via an injected <code>uTileStart</code> uniform (compile once, bind per tile).</p>
+<p>Either way: per-pass partial ≤ INT_MAX → the RGBA buffer can never overflow; the CPU reduces and argmins.</p>
 
 <div class="row">
-  <div><label>needle len</label> <input id="nl" value="200" size="4"></div>
-  <div><label>haystack len</label> <input id="hl" value="5000" size="5" title="inline caps at 1024; texture goes to the max texture size"></div>
-  <div><label>haystack via</label>
-    <select id="src">
-      <option value="auto">auto (texture when hl &gt; 1024)</option>
-      <option value="inline">inline array</option>
-      <option value="texture">texture</option>
+  <div><label>needle len</label> <input id="nl" value="2000" size="4"></div>
+  <div><label>haystack len</label> <input id="hl" value="5000" size="5"></div>
+  <div><label>path</label>
+    <select id="mode">
+      <option value="template">template (needle+haystack textures, 1 compile)</option>
+      <option value="chunked">chunked (needle inline per chunk)</option>
     </select>
   </div>
-  <div><label>chunk size</label> <input id="cs" value="auto" size="5" title="auto = floor(32767/9), capped by ARR_CAP; a small value forces a real multi-pass run"></div>
+  <div><label>chunk size</label> <input id="cs" value="auto" size="5" title="auto = floor(32767/9), capped by ARR_CAP"></div>
   <button id="run">Compile + render + readback</button>
 </div>
-<p>score channel: each pixel's RGBA = the 32-bit score (packed little-endian by the pack transform;
-A≥128 = unrepresentable sentinel — the chunk bound makes it impossible).</p>
 <div id="out">…</div>
-
 <canvas id="c" width="0" height="1"></canvas>
 
 <script type="module">
 import { getOtranspilerl } from "../src/otranspilerl.js";
 import {
   fuzzyChunkShaders, fuzzyTextureChunkShaders, packChunkGLSL, packTextureChunkGLSL,
-  haystackTexelData, tileLayout, decodeRGBA, reducePartials, cpuFuzzy,
+  fuzzyTemplateShader, compileTemplateGLSL, needleTexelData, haystackTexelData,
+  templateChunkWindows, tileLayout, decodeRGBA, reducePartials, cpuFuzzy,
   chunkSizeFor, chunkBound, MEDIUM_INT_MAX, ARR_CAP,
 } from "../src/fuzzygpu.js";
 
@@ -60,17 +54,11 @@ const $ = (id) => document.getElementById(id);
 const outEl = $("out");
 const out = (t) => { outEl.textContent = t; };
 
-// deterministic digit generator (matches __fuzzy-bench.mjs)
 function digits(len, seed = 12345) {
   let s = seed, o = "";
   for (let i = 0; i < len; i++) { s = (s * 1103515245 + 12345) % 2147483648; o += String(s % 10); }
   return o;
 }
-const argminOf = (scores) => {
-  let best = Infinity, bestX = -1;
-  for (let x = 0; x < scores.length; x++) if (scores[x] >= 0 && scores[x] < best) { best = scores[x]; bestX = x; }
-  return { best, bestX };
-};
 function singlePassSrc(nl, hl) {
   const needle = [...digits(nl)].map(Number);
   const hay = [...digits(hl)].map(Number);
@@ -90,34 +78,37 @@ function singlePassSrc(nl, hl) {
     "putb $(( score ))",
   ].join("\n");
 }
-
-// the vertex shader declares vUv for the texture-mode fragment (the
-// backend always emits `varying highp vec2 vUv;` when tex_* is read);
-// inline-mode fragments don't consume it — an unused vertex varying is fine.
 const VERT = `
 attribute vec2 aPos;
 varying highp vec2 vUv;
 void main(){ gl_Position = vec4(aPos, 0.0, 1.0); vUv = aPos * 0.5 + 0.5; }`;
 
+function uploadTex(gl, unit, data, w, h) {
+  gl.activeTexture(gl.TEXTURE0 + unit);
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.activeTexture(gl.TEXTURE0);
+}
+
 async function main() {
   const lib = await getOtranspilerl();
-  const nl = Number($("nl").value) || 200;
+  const nl = Number($("nl").value) || 2000;
   const hl = Number($("hl").value) || 5000;
-  const transport = $("src").value;
+  const mode = $("mode").value;
   const csRaw = $("cs").value.trim();
   if (hl < nl + 1) { out("needle must be shorter than haystack"); return; }
   const offsets = hl - nl + 1;
-
   const needle = [...digits(nl)].map(Number);
   const hay = [...digits(hl)].map(Number);
-  const useTex = transport === "texture" || (transport === "auto" && hl > ARR_CAP);
-  if (!useTex && hl > ARR_CAP) { out("inline haystack > ARR_CAP " + ARR_CAP + " is out of bounds — use the texture transport"); return; }
-
-  // chunk size: auto → floor(MEDIUM_INT_MAX/9), capped by ARR_CAP
   const cs = csRaw === "auto" ? chunkSizeFor({ maxDiff: 9 }) : Math.max(1, Number(csRaw) || 1);
-  if (cs > ARR_CAP) { out("chunk size " + cs + " > ARR_CAP " + ARR_CAP + " — a chunk must inline"); return; }
+  if (cs > ARR_CAP) { out("chunk size " + cs + " > ARR_CAP " + ARR_CAP); return; }
 
-  // ---- context (canvas = one tile; the offset axis tiles when needed) ----
   const cv = $("c");
   const gl = cv.getContext("webgl", { antialias: false, preserveDrawingBuffer: true });
   if (!gl) { out("no webgl"); return; }
@@ -127,8 +118,9 @@ async function main() {
   cv.width = useTiles ? maxTex : offsets; cv.height = 1;
 
   const TEX_W = 4096;
-  const texH = Math.ceil(hl / TEX_W);
-  if (useTex && TEX_W > maxTex) { out("texture width " + TEX_W + " > MAX_TEXTURE_SIZE " + maxTex); return; }
+  const hayTex = haystackTexelData(hay, TEX_W);
+  const ndlTex = needleTexelData(needle, TEX_W);
+  if (TEX_W > maxTex) { out("texture width " + TEX_W + " > MAX_TEXTURE_SIZE " + maxTex); return; }
 
   function makeProgram(fragSrc) {
     const vs = gl.createShader(gl.VERTEX_SHADER);
@@ -142,16 +134,20 @@ async function main() {
     gl.linkProgram(prog);
     if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return { err: "link: " + gl.getProgramInfoLog(prog) };
     gl.useProgram(prog);
-    const uloc = gl.getUniformLocation(prog, "uTex");
-    if (uloc) gl.uniform1i(uloc, 0);
-    const tileLoc = gl.getUniformLocation(prog, "uTileStart");
+    const uTex = gl.getUniformLocation(prog, "uTex");
+    if (uTex) gl.uniform1i(uTex, 0);
+    const uCrack = gl.getUniformLocation(prog, "uCrack");
+    if (uCrack) gl.uniform1i(uCrack, 1);
     const buf = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, buf);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
-    const loc = gl.getAttribLocation(prog, "aPos");
-    gl.enableVertexAttribArray(loc);
-    gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-    return { prog, tileLoc };
+    const a = gl.getAttribLocation(prog, "aPos");
+    gl.enableVertexAttribArray(a);
+    gl.vertexAttribPointer(a, 2, gl.FLOAT, false, 0, 0);
+    return { prog,
+      len: gl.getUniformLocation(prog, "uNeedleLen"),
+      start: gl.getUniformLocation(prog, "uNeedleStart"),
+      tile: gl.getUniformLocation(prog, "uTileStart") };
   }
   const renderRead = (prog, w) => {
     gl.useProgram(prog);
@@ -161,102 +157,98 @@ async function main() {
     return px;
   };
 
-  // upload the haystack texture (only the texture transport uses it)
-  if (useTex) {
-    const { data } = haystackTexelData(hay, TEX_W);
-    const tex = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, TEX_W, texH, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, tex);
-  }
+  // upload both textures (the chunked path uses only uTex; the template uses both)
+  uploadTex(gl, 0, hayTex.data, hayTex.width, hayTex.height);
+  uploadTex(gl, 1, ndlTex.data, ndlTex.width, ndlTex.height);
 
-  const gen = useTex
-    ? fuzzyTextureChunkShaders(needle, hay, { chunkSize: cs })
-    : fuzzyChunkShaders(needle, hay, { chunkSize: cs });
-  const { m, chunks, chunkSize } = gen;
-  const bound = chunkBound(Math.min(chunkSize, nl), 9);
+  const templateMode = mode === "template";
+  const { m, chunks } = templateMode
+    ? templateChunkWindows(nl, cs)
+    : fuzzyTextureChunkShaders(needle, hay, { chunkSize: cs });
+  const bound = chunkBound(Math.min(cs, nl), 9);
+  out("compiling " + (templateMode ? "THE ONE template" : m + " chunk shaders") + " (C=" + cs + ")…");
 
-  out("compiling " + m + " chunk shaders (" + (useTex ? "texture" : "inline") + " transport, C=" + chunkSize + ")…");
-
-  // ---- the chunked pipeline: per-pass packed partials + CPU reduce ----
   const partials = [];
   const passLines = [];
-  let coldTotal = 0, renderTotal = 0;
+  let coldTotal = 0, renderTotal = 0, compiles = 0, sentTotal = 0;
   const N = 15;
   let pxLast;
-  for (const ch of chunks) {
-    const raw = lib.raw("otranspilerl_glsl", [ch.src], [800]).output;
-    const packed = useTex
-      ? packTextureChunkGLSL(raw, { width: TEX_W, height: texH, tile: useTiles })
-      : packChunkGLSL(raw);
-    if (!packed.fired) { out("transform did not fire on chunk " + ch.c); return; }
+  if (templateMode) {
+    // ONE compile for every chunk of any needle
+    const raw = lib.raw("otranspilerl_glsl", [fuzzyTemplateShader()], [800]).output;
     let t0 = performance.now();
+    const packed = compileTemplateGLSL(raw, { width: TEX_W, height: hayTex.height, crackWidth: TEX_W, crackHeight: ndlTex.height, tile: useTiles });
     const pr = makeProgram(packed.glsl);
     let t1 = performance.now();
-    if (pr.err) { out("chunk " + ch.c + " shader error: " + pr.err); return; }
-    coldTotal += t1 - t0;
-    const p = new Int32Array(offsets);
-    let tileSents = 0, passTime = 0;
-    for (const tile of layout.tiles) {
-      gl.viewport(0, 0, tile.w, 1);
-      if (useTiles && pr.tileLoc) gl.uniform1i(pr.tileLoc, tile.start);
-      t0 = performance.now();
-      for (let k = 0; k < N; k++) pxLast = renderRead(pr.prog, tile.w);
-      t1 = performance.now();
-      const perTile = (t1 - t0) / N;
-      passTime += perTile;
-      renderTotal += perTile;
-      const dec = decodeRGBA(pxLast, tile.w);
-      tileSents += dec.sentinels;
-      for (let x = 0; x < tile.w; x++) p[tile.start + x] = dec.scores[x];
+    compiles = 1;
+    coldTotal = t1 - t0;
+    if (!packed.fired) { out("template transform did not fire"); return; }
+    if (pr.err) { out("template shader error: " + pr.err); return; }
+    for (const ch of chunks) {
+      const p = new Int32Array(offsets);
+      let sents = 0, passTime = 0;
+      for (const tile of layout.tiles) {
+        gl.viewport(0, 0, tile.w, 1);
+        if (useTiles && pr.tile) gl.uniform1i(pr.tile, tile.start);
+        gl.uniform1i(pr.len, ch.len);
+        gl.uniform1i(pr.start, ch.start);
+        t0 = performance.now();
+        for (let k = 0; k < N; k++) pxLast = renderRead(pr.prog, tile.w);
+        t1 = performance.now();
+        const perTile = (t1 - t0) / N;
+        passTime += perTile; renderTotal += perTile;
+        const dec = decodeRGBA(pxLast, tile.w);
+        sents += dec.sentinels;
+        for (let x = 0; x < tile.w; x++) p[tile.start + x] = dec.scores[x];
+      }
+      passLines.push(`  pass ${ch.c}: needle[${ch.start}..${ch.start + ch.len}) via uNeedleLen/Start · draw+read ${passTime.toFixed(3)} ms · sentinels ${sents}`);
+      sentTotal += sents;
+      partials.push(p);
     }
-    passLines.push(
-      `  pass ${ch.c}: ${ch.len} digits (${ch.start}..${ch.start + ch.len}) · ` +
-      (useTiles ? `tiles=${layout.n} · ` : "") +
-      `draw+read ${passTime.toFixed(3)} ms${useTiles ? " (" + (passTime / layout.n).toFixed(3) + "/tile)" : ""} · sentinels ${tileSents}`
-    );
-    partials.push(p);
+  } else {
+    for (const ch of chunks) {
+      const raw = lib.raw("otranspilerl_glsl", [ch.src], [800]).output;
+      const packed = packTextureChunkGLSL(raw, { width: TEX_W, height: hayTex.height, tile: useTiles });
+      let t0 = performance.now();
+      const pr = makeProgram(packed.glsl);
+      let t1 = performance.now();
+      compiles++;
+      coldTotal += t1 - t0;
+      if (pr.err) { out("chunk " + ch.c + " shader error: " + pr.err); return; }
+      const p = new Int32Array(offsets);
+      let sents = 0, passTime = 0;
+      for (const tile of layout.tiles) {
+        gl.viewport(0, 0, tile.w, 1);
+        if (useTiles && pr.tile) gl.uniform1i(pr.tile, tile.start);
+        t0 = performance.now();
+        for (let k = 0; k < N; k++) pxLast = renderRead(pr.prog, tile.w);
+        t1 = performance.now();
+        const perTile = (t1 - t0) / N;
+        passTime += perTile; renderTotal += perTile;
+        const dec = decodeRGBA(pxLast, tile.w);
+        sents += dec.sentinels;
+        for (let x = 0; x < tile.w; x++) p[tile.start + x] = dec.scores[x];
+      }
+      passLines.push(`  pass ${ch.c}: ${ch.len} digits inline · draw+read ${passTime.toFixed(3)} ms · sentinels ${sents}`);
+      sentTotal += sents;
+      partials.push(p);
+    }
   }
   const reduced = reducePartials(partials, offsets);
   const ref = cpuFuzzy(needle, hay);
   const sameRef = reduced.best === ref.best && reduced.bestX === ref.bestX &&
     reduced.total.every((v, i) => v === ref.scores[i]);
-  const sentTotal = partials.reduce((s, d) => s + d.sentinels, 0);
-
-  // the inline single-pass cross-check (only when the haystack fits inline)
-  let singleLine = "";
-  if (!useTex) {
-    const packed = packChunkGLSL(lib.raw("otranspilerl_glsl", [singlePassSrc(nl, hl)], [800]).output);
-    const sp = makeProgram(packed.glsl);
-    if (sp.err) singleLine = "single-pass error: " + sp.err;
-    else {
-      const dec = decodeRGBA(renderRead(sp.prog, offsets), offsets);
-      const { best, bestX } = argminOf(dec.scores);
-      singleLine = `single-pass: best ${best}@${bestX} · ==chunked ${reduced.total.every((v, i) => v === dec.scores[i]) ? "PASS" : "FAIL"}`;
-    }
-  }
 
   out(
-`${useTex ? "TEXTURE-window transport" : "INLINE transport"} · C=${cs} · m=${m} passes` +
-(useTex ? ` · haystack tex ${TEX_W}×${texH} (hl=${hl})` : "") +
-(useTiles ? ` · offset axis TILED ×${layout.n} (uTileStart uniform, one compile)` : "") +
-` · per-pass bound ≤ ${bound} ≤ ${MEDIUM_INT_MAX} (mediump int) → RGBA can't overflow
-compile: ${coldTotal.toFixed(1)} ms for ${m} chunks (${(coldTotal / m).toFixed(1)} ms/pass, cached after first)
-render+readback per frame (${offsets} offsets, N=${N}): Σ ${renderTotal.toFixed(3)} ms (${(renderTotal / (m * layout.n)).toFixed(3)} ms/pass·tile)
-
-${passLines.join("\n")}
-
-chunked+CPU-reduce: best offset ${reduced.bestX} score ${reduced.best}${reduced.best === 0 ? " (Perfect Match)" : ""}
-  == cpuFuzzy reference (argmin + every offset): ${sameRef ? "PASS" : "FAIL"}
-chunked sentinel total: ${sentTotal} (must be 0 — the chunk bound holds)
-${singleLine}`
-  );
+`${templateMode ? "TEMPLATE" : "CHUNKED"} path · C=${cs} · ${m} chunk passes · compiles=${compiles} · per-pass bound ≤ ${bound} ≤ ${MEDIUM_INT_MAX} → RGBA can't overflow
+haystack tex ${TEX_W}×${hayTex.height} (hl=${hl}) · needle tex ${TEX_W}×${ndlTex.height} (nl=${nl})` +
+(useTiles ? ` · offset axis TILED ×${layout.n}` : "") +
+`\ncompile: ${coldTotal.toFixed(1)} ms (${compiles} compile${compiles > 1 ? "s" : ""})` +
+`\nrender+readback per frame (${offsets} offsets, N=${N}): Σ ${renderTotal.toFixed(3)} ms\n\n${passLines.join("\n")}\n\n` +
+`chunked+CPU-reduce: best offset ${reduced.bestX} score ${reduced.best}${reduced.best === 0 ? " (Perfect Match)" : ""}\n` +
+`  == cpuFuzzy reference (argmin + every offset): ${sameRef ? "PASS" : "FAIL"}\n` +
+`sentinel total: ${sentTotal} (must be 0)\n` +
+(templateMode ? `→ the needle never compiles per chunk: nl=1M would be the SAME 1 compile + uniform binds` : ""));
 }
 $("run").addEventListener("click", main);
 main();

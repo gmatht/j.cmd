@@ -238,68 +238,85 @@ export function packFragmentResultToRGBA(src, opts = {}) {
 // the loop silently reads the same garbage every iteration). The
 // fragment cannot index the texture by a program value at all.
 //
-// This pass rewrites the generated fragment so every tex_* USE becomes
-// a per-use sample at a PROGRAM-SET index (the convention: the bash
-// assigns `tex_idx` before reading `tex_r`):
+// This pass rewrites the generated fragment so every tex_*/cr_* USE
+// becomes a per-use sample at a PROGRAM-SET index (the convention: the
+// bash assigns `tex_idx` / `crack_idx` before reading `tex_r` / `cr_r`):
 //
-//     texture2D(uTex, windowUV(g_tex_idx))     // uv from a W×H layout
+//     texture2D(uTex,   windowUV(g_tex_idx))     // haystack, W×H layout
+//     texture2D(uCrack, windowUV(g_crack_idx))   // needle, same layout
 //
 // The fuzzy texture-window shader sets `tex_idx = chunk_start + i + x`
-// inside its needle loop, so each iteration fetches haystack[i+x] from
-// the uploaded haystack texture — the haystack stops being an inline
-// array (ARR_CAP 1024) and becomes texture data (W×H, any size up to
-// the texture capacity). The pass:
+// (the haystack window) and `crack_idx = chunk_start + i` (the needle
+// window) inside its needle loop, so each iteration fetches
+// haystack[i+x] from uTex and needle[i] from uCrack — neither array
+// stays inline (ARR_CAP 1024): both become texture data (W×H, any size
+// up to the texture capacity). The pass:
 //
-//   • strips the hoisted `vec4 _tex = texture2D(uTex, fract(vUv));`
-//     sample and the dead `g_tex_r = int(_tex.r * 255.0);` line;
-//   • replaces every tex channel USE (not declaration/assignment) with
-//     `int(texture2D(uTex, <uv of g_tex_idx>).<ch> * 255.0)`;
+//   • strips the hoisted `vec4 _tex/_crack = texture2D(…, fract(vUv));`
+//     samples and the dead `g_tex_r/g_cr_r = int(_.r * 255.0);` lines;
+//   • replaces every tex/crack channel USE (not declaration/
+//     assignment) with `int(texture2D(uTex/uCrack, <uv of the index
+//     var>).<ch> * 255.0)`;
 //   • promotes the fragment to highp float when asked (the wide-texture
 //     uv math AND the texel /255 decode both need > mediump mantissa —
 //     at mediump fp16 the (idx+0.5)/W coordinate and the digit/255×255
 //     round-trip both break past ~2K texels);
 //   • FAIL-SAFE: fires only when the generated shape is present AND the
-//     shader declares the index variable (`g_tex_idx`); any other
-//     program passes through unchanged.
+//     shader declares the index variable(s); any other program passes
+//     through unchanged.
 export function liftTextureWindowSample(src, opts = {}) {
   const s = String(src);
   const width = opts.width || 4096;   // the texture layout (W×H texels)
   const height = opts.height || 1;
-  const indexVar = opts.indexVar || "g_tex_idx";
+  const indexVar = opts.indexVar || "g_tex_idx";            // the haystack window index
+  const crackIndexVar = opts.crackIndexVar || "g_crack_idx"; // the needle window index
+  const crackWidth = opts.crackWidth ?? width;   // per-sampler layouts
+  const crackHeight = opts.crackHeight ?? height;
   const highp = opts.highp !== false;
   if (!Number.isInteger(width) || width <= 0 || !Number.isInteger(height) || height <= 0) return s;
-  // guards: the putb contract + the index variable must exist + at least
-  // one tex channel is read somewhere
+  if (!Number.isInteger(crackWidth) || crackWidth <= 0 || !Number.isInteger(crackHeight) || crackHeight <= 0) return s;
+  // guards: the putb contract + the index variable(s) must exist + at
+  // least one tex or crack channel is read somewhere
   if (!s.includes("int out_buf[4];")) return s;
-  if (!new RegExp(`int ${indexVar};`).test(s)) return s;
-  const chRe = /g_tex_[rgba]/.test(s);
-  if (!chRe) return s;
+  const readsTex = /g_tex_[rgba]/.test(s);
+  const readsCrack = /g_cr_[rgba]/.test(s);
+  if (readsTex && !new RegExp(`int ${indexVar};`).test(s)) return s;
+  if (readsCrack && !new RegExp(`int ${crackIndexVar};`).test(s)) return s;
+  if (!readsTex && !readsCrack) return s;
 
   // the per-index window UV (texel centre; CLAMP_TO_EDGE, NEAREST):
   //   1D (height=1):  vec2((float(idx)+0.5)/W, 0.5)
   //   2D (W×H):       col = idx − W·(idx/W)  (int div — exact for ≥0)
   //                   row = idx / W
   //                   uv  = ((float(col)+0.5)/W, (float(row)+0.5)/H)
-  const col = `(${indexVar} - (${width} * (${indexVar} / ${width})))`;
-  const row = `(${indexVar} / ${width})`;
-  const uv = height === 1
-    ? `vec2((float(${indexVar}) + 0.5) / ${width}.0, 0.5)`
-    : `vec2((float(${col}) + 0.5) / ${width}.0, (float(${row}) + 0.5) / ${height}.0)`;
+  const uvOf = (iv, w, h) => {
+    const col = `(${iv} - (${w} * (${iv} / ${w})))`;
+    const row = `(${iv} / ${w})`;
+    return h === 1
+      ? `vec2((float(${iv}) + 0.5) / ${w}.0, 0.5)`
+      : `vec2((float(${col}) + 0.5) / ${w}.0, (float(${row}) + 0.5) / ${h}.0)`;
+  };
+  const uvTex = uvOf(indexVar, width, height);
+  const uvCrack = uvOf(crackIndexVar, crackWidth, crackHeight);
 
   let out = s;
-  // strip the hoisted sample + its dead assignment (the per-use samples
-  // replace them)
-  out = out.replace(/^\s*vec4 _tex = texture2D\(uTex, fract\(vUv\)\);\n/gm, "");
-  out = out.replace(/^\s*g_tex_[rgba] = int\(_tex\.[rgba] \* 255\.0\);\n/gm, "");
+  // strip the hoisted samples + their dead assignments (the per-use
+  // samples replace them)
+  out = out.replace(/^\s*vec4 _tex = texture2D\(uTex, fract\(vUv\)\);/gm, "");
+  out = out.replace(/^\s*vec4 _crack = texture2D\(uCrack, fract\(vUv\)\);/gm, "");
+  out = out.replace(/^\s*g_tex_[rgba] = int\(_tex\.[rgba] \* 255\.0\);/gm, "");
+  out = out.replace(/^\s*g_cr_[rgba] = int\(_crack\.[rgba] \* 255\.0\);/gm, "");
   // replace every channel USE with a per-use windowed sample. The
   // declaration (`int g_tex_r;`) and assignments (`g_tex_r = …`) are
   // excluded: the decl is followed by `;`, assignments by ` =`.
-  const sample = (ch) =>
-    `int(texture2D(uTex, ${uv}).${ch} * 255.0)`;
   for (const ch of ["r", "g", "b", "a"]) {
     out = out.replace(
       new RegExp(`(?<![A-Za-z0-9_])g_tex_${ch}(?![A-Za-z0-9_])(?!\\s*=|;)`, "g"),
-      () => sample(ch)
+      () => `int(texture2D(uTex, ${uvTex}).${ch} * 255.0)`
+    );
+    out = out.replace(
+      new RegExp(`(?<![A-Za-z0-9_])g_cr_${ch}(?![A-Za-z0-9_])(?!\\s*=|;)`, "g"),
+      () => `int(texture2D(uCrack, ${uvCrack}).${ch} * 255.0)`
     );
   }
   if (out === s) return s; // nothing changed (no use sites)
@@ -307,7 +324,41 @@ export function liftTextureWindowSample(src, opts = {}) {
   return out;
 }
 
-// ─── tileOffsetUniform — the offset-axis tiling pass ──
+// ─── needleLengthUniform — the compile-once template pass ──
+//
+// With the needle in uCrack the shader body is data-independent EXCEPT
+// the baked per-chunk constants `needle_len` and `chunk_start` (the
+// loop bound and the needle-window offset). This pass turns those two
+// into uniforms, so ONE compiled shader runs every chunk (the data —
+// needle texture, uNeedleLen, uNeedleStart — varies at bind time):
+//
+//     g_needle_len  = 0;   →   g_needle_len  = uNeedleLen;
+//     g_chunk_start = 0;   →   g_chunk_start = uNeedleStart;
+//
+// with `uniform int uNeedleLen; uNeedleStart;` injected. The loop
+// condition `(g_i < g_needle_len)` is then a dynamic uniform bound —
+// fine on modern translators (ANGLE/SwiftShader, verified in the
+// gate); the ES 1.00 static-loop-bounds caveat for very old mobile
+// drivers is documented, with the fixed-geometry + padding fallback
+// noted.
+//
+// FAIL-SAFE: fires only when BOTH bridge assignments are present;
+// anything else passes through unchanged.
+export function needleLengthUniform(src) {
+  const s = String(src);
+  if (!s.includes("int out_buf[4];")) return s;
+  if (!/g_needle_len = -?\d+;/.test(s)) return s;
+  if (!/g_chunk_start = -?\d+;/.test(s)) return s;
+  let out = s
+    .replace(/([ \t]*)g_needle_len = -?\d+;/, (m, ind) => `${ind}g_needle_len = uNeedleLen;`)
+    .replace(/([ \t]*)g_chunk_start = -?\d+;/, (m, ind) => `${ind}g_chunk_start = uNeedleStart;`);
+  if (out === s) return s;
+  out = out.replace(
+    "int out_buf[4];",
+    "int out_buf[4];\nuniform int uNeedleLen;\nuniform int uNeedleStart;"
+  );
+  return out;
+}// ─── tileOffsetUniform — the offset-axis tiling pass ──
 //
 // The offset canvas is one pixel per haystack offset — capped at
 // MAX_TEXTURE_SIZE (~16384). For wider scans the offset axis is tiled:

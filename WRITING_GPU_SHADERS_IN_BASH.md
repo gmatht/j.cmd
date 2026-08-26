@@ -480,12 +480,53 @@ data varies per tile at bind time, not compile time. Measured: hl =
 24000 (23501 offsets → 3 tiles at 8192 px, texture 4096×6) reduces
 exactly to the CPU reference on headless-gl.
 
-Remaining at scale: the compile-once template for the NEEDLE — the
-needle digits still inline per chunk (one cold compile per chunk,
-~15-45 ms); moving the needle into a second texture (the cr_* bridge's
-uCrack sampler) removes the per-chunk compiles entirely, leaving one
-shader for any needle length.
+## 6g. The compile-once template — the needle moves into uCrack
 
+The remaining cost above is now removed. `fuzzyTemplateShader`
+(`src/fuzzygpu.js`) is a **data-independent source** — no needle digits
+at all — and the needle reads from the SECOND sampler, uCrack, via the
+`cr_*` bridge (which has the SAME loop-read-no-sample gap as `tex_*`,
+filled by the same `liftTextureWindowSample` pass, now extended to both
+samplers with separate index vars `tex_idx` / `crack_idx`):
+
+```
+while [ $i -lt $needle_len ]; do
+    tex_idx=$(( chunk_start + i + x ))   # haystack window (uTex)
+    crack_idx=$(( chunk_start + i ))     # needle window (uCrack)
+    diff=$(( cr_r - tex_r ))
+    ...
+done
+```
+
+`needleLengthUniform` then turns the two baked per-chunk constants into
+uniforms, so ONE compiled shader runs every chunk of any needle:
+
+```
+g_needle_len  = 0;   →   g_needle_len  = uNeedleLen;
+g_chunk_start = 0;   →   g_chunk_start = uNeedleStart;
+```
+
+**The loop-bound decision (made explicit):** the needle loop bound is a
+DYNAMIC UNIFORM (`while (g_i < uNeedleLen)`), chosen over fixed-geometry
++ padding. Verified working on SwiftShader and ANGLE (the gate renders
+it at nl=2000 » ARR_CAP and hl=24000 tiled, exact). The ES 1.00
+tradeoff: the strictest early mobile drivers require statically
+computable loop counts — the fixed-geometry + validity-mask padding
+variant (full-C loop, the needle texture's G channel masks padding) is
+the documented fallback for those. `precision highp float` is required
+(the same wide-texture + /255-decode argument as §6f).
+
+**Measured (`__fuzzy-bench.mjs` §5):** template = **1 compile** (~4 ms)
+vs the chunked path's m compiles (~15 ms each) for the same
+nl=2000/C=700 — and the needle is a texture window, so nl=1M is still
+**ONE compile** (~4 ms) vs 977 chunked compiles (~15 s): the per-chunk
+compile cost is GONE. The gate (`gl-tex-gate.mjs` section B) verifies
+the real shaders on headless-gl at nl=2000 (needle » ARR_CAP),
+multi-chunk, and tiled hl=24000 — all reduce EXACTLY to the CPU
+reference, 0 sentinels, compiles=1. The browser harness gains a
+template/chunked selector; the overflow-free bound is unchanged (per
+partial ≤ INT_MAX; chunking exists only for that bound, and the uniform
+window makes the chunk count FREE).
 ---
 
 See `www/examples/mimecroft-frag.sh` (CRT scanlines, per-pixel

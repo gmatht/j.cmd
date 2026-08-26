@@ -39,6 +39,8 @@ import {
   fuzzyChunkShaders, packChunkGLSL, reducePartials, cpuFuzzy, decodeRGBA,
   parsePackedBytes, evaluatePackedBytes, naiveBytes, evalGLSLInt, tileLayout,
   chunkSizeFor, chunkBound, maxInputDiff,
+  fuzzyTextureChunkShaders, packTextureChunkGLSL, haystackTexelData,
+  fuzzyTemplateShader, compileTemplateGLSL, needleTexelData, templateChunkWindows,
   MEDIUM_INT_MAX, HIGH_INT_MAX, PACK_MAX, ARR_CAP,
 } from "./src/fuzzygpu.js";
 import { getOtranspilerl } from "./src/otranspilerl.js";
@@ -408,13 +410,105 @@ console.log("  (shglsl-opt.liftTextureWindowSample — per-use sample at the pro
   try {
     createRequire(import.meta.url)("gl");
     const gate = await import("./gl-tex-gate.mjs");
-    const res = await gate.run({ lib, digits, fuzzyTextureChunkShaders, packTextureChunkGLSL, haystackTexelData, tileLayout, decodeRGBA, reducePartials, cpuFuzzy });
+    const res = await gate.run({
+      lib, digits, fuzzyTextureChunkShaders, packTextureChunkGLSL, haystackTexelData,
+      fuzzyTemplateShader, compileTemplateGLSL, needleTexelData, templateChunkWindows,
+      tileLayout, decodeRGBA, reducePartials, cpuFuzzy,
+    });
     glGate = res === true ? "PASS" : "FAIL: " + res;
   } catch (e) {
     if (!/Cannot find package|Cannot find module/.test(String(e.message))) glGate = "FAIL: " + e.message;
   }
   console.log(`  4d. headless-gl full-pipeline gate: ${glGate}`);
   if (glGate.startsWith("FAIL")) process.exit(1);
+}
+
+// ── 5. the compile-once TEMPLATE: the needle moves into uCrack ────
+// The remaining price of the chunk path is one cold compile per chunk
+// (the needle digits inline → each chunk is a distinct source). The
+// template puts the needle in the SECOND sampler (uCrack via the cr_*
+// bridge — the same window lift as the haystack) and the per-chunk
+// constants (needle_len, chunk_start) into uniforms
+// (needleLengthUniform), so ONE compiled shader runs every chunk.
+console.log("\n== the compile-once template: the needle moves into uCrack ==");
+console.log("  (fuzzyTemplateShader — data-independent source; the chunk window is uniforms, not compiles)");
+{
+  const { fuzzyTemplateShader, compileTemplateGLSL, templateChunkWindows } = await import("./src/fuzzygpu.js");
+  const { needleLengthUniform } = await import("./src/shglsl-opt.js");
+  const lib = await getOtranspilerl();
+  const raw = lib.raw("otranspilerl_glsl", [fuzzyTemplateShader()], [800]).output;
+
+  // 5a. the template transforms fire / refuse
+  const tpl = compileTemplateGLSL(raw, { width: 4096, height: 2, crackHeight: 1 });
+  const refuses = needleLengthUniform("putb 0") === "putb 0"; // no markers → refuse
+  const ok5a = tpl.fired &&
+    tpl.glsl.includes("texture2D(uCrack, vec2((float(g_crack_idx) + 0.5) / 4096.0, 0.5))") && // needle 1D window
+    tpl.glsl.includes("texture2D(uTex, vec2((float((g_tex_idx - (4096 * (g_tex_idx / 4096))))") &&
+    tpl.glsl.includes("g_needle_len = uNeedleLen;") &&
+    tpl.glsl.includes("g_chunk_start = uNeedleStart;") &&
+    tpl.glsl.includes("uniform int uNeedleLen;") &&
+    tpl.glsl.includes("precision highp float;") &&
+    refuses;
+  console.log(`  5a. template fires: needle-window=${tpl.glsl.includes("texture2D(uCrack")} haystack-window=${tpl.glsl.includes("texture2D(uTex")} uniforms=${tpl.glsl.includes("uNeedleLen") && tpl.glsl.includes("uNeedleStart")} highp=${tpl.glsl.includes("precision highp float;")} refuses-no-markers=${refuses}` + (ok5a ? "" : "  ← FAIL"));
+  if (!ok5a) process.exit(1);
+
+  // 5b. the emitted needle-window uv math (index → texel) on a 2D
+  // needle layout (crackHeight=2 emits the col/row form)
+  const tpl2 = compileTemplateGLSL(raw, { width: 4096, height: 2, crackHeight: 2 });
+  const colExpr = "g_crack_idx - (4096 * (g_crack_idx / 4096))";
+  const rowExpr = "g_crack_idx / 4096";
+  let uvOk = tpl2.glsl.includes(colExpr);
+  if (uvOk) {
+    for (const v of [0, 1, 4095, 4096, 8191, 12345]) {
+      const col = evalGLSLInt(colExpr, { g_crack_idx: v });
+      const row = evalGLSLInt(rowExpr, { g_crack_idx: v });
+      if (col !== (v % 4096) || row !== Math.floor(v / 4096)) { uvOk = false; break; }
+    }
+  }
+  console.log(`  5b. needle-window uv math: col=idx%4096, row=idx/4096 (evaluated from the emitted text)=${uvOk}` + (uvOk ? "" : "  ← FAIL"));
+  if (!uvOk) process.exit(1);
+
+  // 5c. the compile-count proof: template = ONE compile; the chunked
+  // path = m compiles (distinct sources). Same case, both measured.
+  const needle = [...digits(2000)].map(Number), hay = [...digits(5000)].map(Number);
+  const { m, chunks } = templateChunkWindows(2000, 700);
+  shaderCache().clear();
+  let t0 = performance.now();
+  await getShaderTranslation(fuzzyTemplateShader(), { lib });
+  let t1 = performance.now();
+  const tplCold = t1 - t0;
+  const { m: m2, chunks: chs2 } = fuzzyTextureChunkShaders([...digits(2000)].map(Number), hay, { chunkSize: 700 });
+  shaderCache().clear();
+  t0 = performance.now();
+  for (const ch of chs2) await getShaderTranslation(ch.src, { lib });
+  t1 = performance.now();
+  const chunkedCold = t1 - t0;
+  const bigM = Math.ceil(1000000 / 1024);
+  console.log(`  5c. compile cost: template = 1 compile (${tplCold.toFixed(1)} ms) vs chunked = ${m2} compiles (${chunkedCold.toFixed(1)} ms) — same nl=2000 C=700`);
+  console.log(`      → nl=1M: template ≈ ${tplCold.toFixed(0)} ms (ONE compile) vs chunked ${bigM} compiles ≈ ${((bigM * chunkedCold) / m2 / 1000).toFixed(1)} s — the per-chunk compile cost is GONE`);
+  console.log(`      (the needle texture holds the whole needle; uNeedleLen/uNeedleStart vary at bind time)`);
+
+  // 5d. semantics: the template's uniform windows reduce == cpuFuzzy at
+  // needle len » ARR_CAP
+  const ref = cpuFuzzy(needle, hay);
+  const offsets = 5000 - 2000 + 1;
+  const partials = [];
+  for (const ch of chunks) {
+    const p = new Int32Array(offsets);
+    for (let x = 0; x < offsets; x++) {
+      let s = 0;
+      for (let j = 0; j < ch.len; j++) s += Math.abs(needle[ch.start + j] - hay[ch.start + j + x]);
+      p[x] = s;
+    }
+    partials.push(p);
+  }
+  const { best, bestX } = reducePartials(partials, offsets);
+  const ok5d = best === ref.best && bestX === ref.bestX;
+  console.log(`  5d. template windows == cpuFuzzy at nl=2000 » ARR_CAP: best=${best}@${bestX} · ${ok5d ? "PASS" : "FAIL"}`);
+  if (!ok5d) process.exit(1);
+  // the full GPU half (real shaders, dynamic uniform loop bound) is the
+  // (B) section of the gl-tex-gate run in §4d — one compile per case,
+  // needle » ARR_CAP, tiled included.
 }
 
 // ── 5. crossover estimate (the decision, node-faithful) ──────────
