@@ -80,6 +80,17 @@ Use `serve.py` (not bare `http.server`) — it sets COOP/COEP headers
 (required for SharedArrayBuffer, used by the WASI Python REPL) and
 no-cache headers (stale files cause confusing bugs while developing).
 
+**GPU shader benches** (see WRITING_GPU_SHADERS_IN_BASH.md §6e–6i): the
+GPU-lift work — the fuzzy matcher (chunk + CPU reduce, texture-window
+transports, compile-once template) and the algorithm catalog
+(collatz / 1D cellular automaton / per-record vertex hash) — runs in
+the browser from the same server: open
+`http://localhost:8080/www/fuzzy-bench.html` or
+`http://localhost:8080/www/gpu-catalog-bench.html` (WebGL1; the pages
+compile the shaders in-browser, render + read back, and PASS-check every
+result against the exact CPU reference). The node-faithful half runs
+without a browser: `node __fuzzy-bench.mjs` and `node __gpu-catalog-bench.mjs`.
+
 Same runtime as the Node CLI, but the terminal is a DOM-based shell
 where you type directly on the prompt line, inline in the scrollback
 — like a real terminal emulator.

@@ -570,7 +570,78 @@ output checks, and the headless-gl equality gate for all three. The
 overflow-free bound carries over per algorithm (each item's result is bounded
 and RGBA-packed; collatz keeps inputs ≤ 2³¹'s headroom so the 3n+1
 intermediates stay < 2³¹).
+
+## 6i. Running the GPU benches in a web browser
+
+The GPU half of every benchmark above is a static page under `www/` —
+no build step, just ES modules served over HTTP. The one setup step:
+
+```
+cd /root/src/sh2runtime
+python3 www/serve.py          # → http://localhost:8080/www/
+```
+
+then open **http://localhost:8080/www/fuzzy-bench.html** (the fuzzy
+matcher) or **http://localhost:8080/www/gpu-catalog-bench.html** (the
+catalog: collatz / ca1d / recordhash). Requirements and notes:
+
+- **HTTP, not `file://`** — the pages import `../src/*.js` (ES modules,
+  same-origin) and fetch `wasm-bin/otranspilerl.wasm` (page-relative).
+  Opening the HTML file directly breaks both. Use `serve.py` (not a
+  bare `http.server`): it sets COOP/COEP (SharedArrayBuffer for the
+  WASI shell) and the `application/wasm` MIME type.
+- **WebGL1** (any modern desktop browser). The pages print `no webgl`
+  and stop otherwise.
+- **The compile is in-browser**: each run does the real bash→GLSL
+  compile (the same wasm the node benches measure) and prints it
+  (`compile: … ms`), then renders and reads back per frame. The render
+  + readback timing is THE browser-only number — node can't measure it
+  (headless-gl is SwiftShader software rendering and would mislead).
+- **The PASS checks are the correctness contract**: the fuzzy page
+  checks chunked/template argmin + every offset against the exact CPU
+  reference and reports the sentinel total (must be 0 — the RGBA
+  overflow-free bound); the catalog page checks each algorithm's GPU
+  result against its CPU reference. A FAIL means a real mismatch, not a
+  timing artifact.
+
+**www/fuzzy-bench.html** — the fuzzy matcher (one pixel per offset).
+Defaults: needle 2000, haystack 5000, `template` path (needle + haystack
+as uploaded textures, ONE compile), chunk `auto`
+(`floor(32767/9)` capped by the array cap). Try: a small chunk size
+(e.g. `64`) to force a many-pass run and watch the compile count stay
+at 1 in template mode; a large haystack (e.g. 20000) to see the offset
+axis tile automatically past MAX_TEXTURE_SIZE; the `chunked` path to
+compare the per-chunk-compile behaviour. The output documents the
+per-pass bound ≤ INT_MAX and the sentinel total.
+
+**www/gpu-catalog-bench.html** — the catalog (see §6h). Defaults:
+collatz, width 64. Pick the algorithm and run: the collatz case shows
+data-driven per-pixel loops, ca1d shows the three-neighbour reads,
+recordhash shows the VERTEX stage (the record arrives through the
+attribute bridges, the payload leaves through vc_*, the POINTS raster
+reads back). Every case is PASS-checked against the CPU reference.
+
+**The node-side half (no browser needed):**
+`node __fuzzy-bench.mjs`, `node __gpu-catalog-bench.mjs` (both exit ≠ 0
+on any regression) and the gates `node gl-tex-gate.mjs`,
+`node gl-catalog-gate.mjs` cover the CPU baselines, the compile
+overheads, the transform fire/refuse + emitted-output checks, and the
+headless-gl EXACTNESS of every shader — but not the render timing. Run
+the pages for that.
+
+**Known platform caveats (all documented where they bite):**
+- the texture-window pages promote the fragment to `precision highp
+  float` — required for wide textures; desktop/ANGLE fine, mobile ES
+  1.00 without `OES_fragment_precision_high` will fail the fragment
+  compile with a clear error;
+- the template's uniform loop bound (§6g) and the collatz data-driven
+  loop are verified on ANGLE/SwiftShader; the strictest very-old mobile
+  drivers may require statically bounded loops (the fixed-geometry +
+  mask fallback is described in §6g);
+- MAX_TEXTURE_SIZE (~4096-16384) is printed by the pages; the fuzzy page
+  tiles the offset axis past it automatically.
 ---
+
 
 
 See `www/examples/mimecroft-frag.sh` (CRT scanlines, per-pixel
