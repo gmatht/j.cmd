@@ -1,35 +1,42 @@
 <!doctype html>
 <html>
-<head><meta charset="utf-8"><title>fuzzy-match GPU bench (shader lift + chunk/reduce)</title>
+<head><meta charset="utf-8"><title>fuzzy-match GPU bench (shader lift + chunk/reduce + texture window)</title>
 <style>
   body { font-family: ui-monospace, monospace; margin: 1.5rem; background: #111; color: #ddd; }
   h1 { font-size: 1.1rem; }
   p, li { font-size: 0.85rem; line-height: 1.5; }
   .row { display: flex; gap: 1rem; flex-wrap: wrap; align-items: center; }
   input { width: 6em; background: #222; color: #8f8; border: 1px solid #444; }
-  .mono { color: #8f8; }
+  select { background: #222; color: #8f8; border: 1px solid #444; }
   #out { white-space: pre; font-size: 0.8rem; color: #8df; }
-  .fail { color: #f66; }
 </style>
 </head>
 <body>
-<h1>Fuzzy-match → fragment shader: GPU score matrix + readback, chunked</h1>
+<h1>Fuzzy-match → fragment shader: GPU score matrix + readback, chunked, texture-window</h1>
 <p>The per-offset fuzzy matcher is a <b>fragment shader</b>: one pixel = one haystack offset <code>x</code>, computing
-<code>score[x] = Σ|needle[i] − haystack[i+x]|</code>. Two pipelines, same generator
-(<code>src/fuzzygpu.js</code>):</p>
+<code>score[x] = Σ|needle[i] − haystack[i+x]|</code>. The needle is chunked from the integer precision and the
+data domain (<code>CHUNK_SIZE = floor(INT_MAX/MAXDIFF)</code>); the haystack comes from one of two
+<code>src/fuzzygpu.js</code> load paths:</p>
 <ul>
-  <li><b>single-pass</b> — the whole needle inline, every offset parallel in one draw;</li>
-  <li><b>chunked</b> — the needle is broken into CHUNK_SIZE pieces sized from the integer precision
-      and the data domain (<code>CHUNK_SIZE = floor(INT_MAX/MAXDIFF)</code>, capped by the backend's
-      array cap), one draw per chunk emits the <i>partial</i> score RGBA-packed, and the CPU reduces.
-      Per-pass partial ≤ INT_MAX → the RGBA buffer can never overflow, at any needle length.</li>
+  <li><b>inline</b> — the haystack is an inline array (backend cap <b>ARR_CAP = 1024</b>);</li>
+  <li><b>texture</b> — the haystack is an uploaded W×H RGBA texture, and the
+      <code>liftTextureWindowSample</code> transform rewrites every <code>tex_r</code> read into a per-use sample at
+      the program-set <code>tex_idx</code> — the backend emits NO sample for loop reads, this is the gap the
+      transform fills. Haystack lengths up to the texture capacity (~16384·rows).</li>
 </ul>
-<p>Backend limits this harness respects: the inline haystack array is capped at <b>ARR_CAP = 1024</b>
-digits (past that the backend writes out of bounds), and the offset canvas at the texture-size limit.</p>
+<p>Either way: one draw per needle chunk emits the <i>partial</i> score RGBA-packed, the CPU reduces
+(the total can never overflow the 32-bit buffer: per-pass partial ≤ INT_MAX), and the argmin is exact.</p>
 
 <div class="row">
-  <div><label>needle len</label> <input id="nl" value="100" size="4"></div>
-  <div><label>haystack len</label> <input id="hl" value="1000" size="4"></div>
+  <div><label>needle len</label> <input id="nl" value="200" size="4"></div>
+  <div><label>haystack len</label> <input id="hl" value="5000" size="5" title="inline caps at 1024; texture goes to the max texture size"></div>
+  <div><label>haystack via</label>
+    <select id="src">
+      <option value="auto">auto (texture when hl &gt; 1024)</option>
+      <option value="inline">inline array</option>
+      <option value="texture">texture</option>
+    </select>
+  </div>
   <div><label>chunk size</label> <input id="cs" value="auto" size="5" title="auto = floor(32767/9), capped by ARR_CAP; a small value forces a real multi-pass run"></div>
   <button id="run">Compile + render + readback</button>
 </div>
@@ -42,13 +49,14 @@ A≥128 = unrepresentable sentinel — the chunk bound makes it impossible).</p>
 <script type="module">
 import { getOtranspilerl } from "../src/otranspilerl.js";
 import {
-  fuzzyChunkShaders, packChunkGLSL, decodeRGBA, reducePartials, cpuFuzzy,
+  fuzzyChunkShaders, fuzzyTextureChunkShaders, packChunkGLSL, packTextureChunkGLSL,
+  haystackTexelData, decodeRGBA, reducePartials, cpuFuzzy,
   chunkSizeFor, chunkBound, MEDIUM_INT_MAX, ARR_CAP,
 } from "../src/fuzzygpu.js";
 
 const $ = (id) => document.getElementById(id);
 const outEl = $("out");
-const out = (t) => { outEl.textContent = t; outEl.classList.remove("fail"); };
+const out = (t) => { outEl.textContent = t; };
 
 // deterministic digit generator (matches __fuzzy-bench.mjs)
 function digits(len, seed = 12345) {
@@ -56,9 +64,11 @@ function digits(len, seed = 12345) {
   for (let i = 0; i < len; i++) { s = (s * 1103515245 + 12345) % 2147483648; o += String(s % 10); }
   return o;
 }
-
-// per-offset shader source: full needle, ONE putb — packChunkGLSL
-// (the shglsl-opt transform) widens it to the 4-byte RGBA result.
+const argminOf = (scores) => {
+  let best = Infinity, bestX = -1;
+  for (let x = 0; x < scores.length; x++) if (scores[x] >= 0 && scores[x] < best) { best = scores[x]; bestX = x; }
+  return { best, bestX };
+};
 function singlePassSrc(nl, hl) {
   const needle = [...digits(nl)].map(Number);
   const hay = [...digits(hl)].map(Number);
@@ -79,43 +89,43 @@ function singlePassSrc(nl, hl) {
   ].join("\n");
 }
 
+// the vertex shader declares vUv for the texture-mode fragment (the
+// backend always emits `varying highp vec2 vUv;` when tex_* is read);
+// inline-mode fragments don't consume it — an unused vertex varying is fine.
 const VERT = `
 attribute vec2 aPos;
-void main(){ gl_Position = vec4(aPos, 0.0, 1.0); }`;
-
-const argmin = (scores) => {
-  let best = Infinity, bestX = -1;
-  for (let x = 0; x < scores.length; x++) if (scores[x] >= 0 && scores[x] < best) { best = scores[x]; bestX = x; }
-  return { best, bestX };
-};
+varying highp vec2 vUv;
+void main(){ gl_Position = vec4(aPos, 0.0, 1.0); vUv = aPos * 0.5 + 0.5; }`;
 
 async function main() {
   const lib = await getOtranspilerl();
-  const nl = Number($("nl").value) || 100;
-  const hl = Math.min(ARR_CAP, Number($("hl").value) || 1000);
+  const nl = Number($("nl").value) || 200;
+  const hl = Number($("hl").value) || 5000;
+  const transport = $("src").value;
   const csRaw = $("cs").value.trim();
+  if (hl < nl + 1) { out("needle must be shorter than haystack"); return; }
   const offsets = hl - nl + 1;
-  if (offsets < 1) { out("needle ≥ haystack — no offsets"); return; }
-
-  // the chunk size: auto → floor(MEDIUM_INT_MAX/9), capped by ARR_CAP
-  const cs = csRaw === "auto" ? chunkSizeFor({ maxDiff: 9 }) : Math.max(1, Number(csRaw) || 1);
-  if (cs > ARR_CAP) { out("chunk size " + cs + " > ARR_CAP " + ARR_CAP + " — a chunk must inline; cap it"); return; }
-  const csNote = csRaw === "auto"
-    ? `auto: floor(${MEDIUM_INT_MAX}/9)=${Math.floor(MEDIUM_INT_MAX / 9)} → capped by ARR_CAP=${ARR_CAP}`
-    : `explicit C=${cs}`;
 
   const needle = [...digits(nl)].map(Number);
   const hay = [...digits(hl)].map(Number);
-  const { m, chunks } = fuzzyChunkShaders(needle, hay, { chunkSize: cs });
-  const bound = chunkBound(chunks[0].len, 9);
+  const useTex = transport === "texture" || (transport === "auto" && hl > ARR_CAP);
+  if (!useTex && hl > ARR_CAP) { out("inline haystack > ARR_CAP " + ARR_CAP + " is out of bounds — use the texture transport"); return; }
 
-  // ---- context / program / draw-read helpers ----
+  // chunk size: auto → floor(MEDIUM_INT_MAX/9), capped by ARR_CAP
+  const cs = csRaw === "auto" ? chunkSizeFor({ maxDiff: 9 }) : Math.max(1, Number(csRaw) || 1);
+  if (cs > ARR_CAP) { out("chunk size " + cs + " > ARR_CAP " + ARR_CAP + " — a chunk must inline"); return; }
+
+  // ---- context (canvas = offsets pixels; texture for the haystack) ----
   const cv = $("c");
   cv.width = offsets; cv.height = 1;
   const gl = cv.getContext("webgl", { antialias: false, preserveDrawingBuffer: true });
   if (!gl) { out("no webgl"); return; }
   const maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE);
   if (offsets > maxTex) { out("offsets " + offsets + " > MAX_TEXTURE_SIZE " + maxTex + " — tile the offset axis first"); return; }
+
+  const TEX_W = 4096;
+  const texH = Math.ceil(hl / TEX_W);
+  if (useTex && TEX_W > maxTex) { out("texture width " + TEX_W + " > MAX_TEXTURE_SIZE " + maxTex); return; }
 
   function makeProgram(fragSrc) {
     const vs = gl.createShader(gl.VERTEX_SHADER);
@@ -129,6 +139,8 @@ async function main() {
     gl.linkProgram(prog);
     if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return { err: "link: " + gl.getProgramInfoLog(prog) };
     gl.useProgram(prog);
+    const uloc = gl.getUniformLocation(prog, "uTex");
+    if (uloc) gl.uniform1i(uloc, 0);
     const buf = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, buf);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
@@ -146,68 +158,90 @@ async function main() {
     return px;
   };
 
-  out("compiling single-pass + " + m + " chunk shaders (" + csNote + ")…");
+  // upload the haystack texture (only the texture transport uses it)
+  if (useTex) {
+    const { data } = haystackTexelData(hay, TEX_W);
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, TEX_W, texH, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+  }
 
-  // ---- single-pass (the baseline the chunked path must equal) ----
-  const singlePacked = packChunkGLSL(lib.raw("otranspilerl_glsl", [singlePassSrc(nl, hl)], [800]).output);
-  if (!singlePacked.fired) { out("pack transform did not fire on the single-pass shader"); return; }
-  let t0 = performance.now();
-  const sp = makeProgram(singlePacked.glsl);
-  const t1 = performance.now();
-  if (sp.err) { out("single-pass shader error: " + sp.err); return; }
-  const coldMs = t1 - t0;
-  const N = 15;
-  let pxLast;
-  t0 = performance.now();
-  for (let k = 0; k < N; k++) pxLast = renderRead(sp.prog);
-  t1 = performance.now();
-  const singlePer = (t1 - t0) / N;
-  const singleDec = decodeRGBA(pxLast, offsets);
-  const singleBest = argmin(singleDec.scores);
+  const gen = useTex
+    ? fuzzyTextureChunkShaders(needle, hay, { chunkSize: cs })
+    : fuzzyChunkShaders(needle, hay, { chunkSize: cs });
+  const { m, chunks, chunkSize } = gen;
+  const bound = chunkBound(Math.min(chunkSize, nl), 9);
 
-  // ---- chunked: m passes, each packed partial; CPU reduce ----
+  out("compiling " + m + " chunk shaders (" + (useTex ? "texture" : "inline") + " transport, C=" + chunkSize + ")…");
+
+  // ---- the chunked pipeline: per-pass packed partials + CPU reduce ----
   const partials = [];
   const passLines = [];
   let coldTotal = 0, renderTotal = 0;
+  const N = 15;
+  let pxLast;
   for (const ch of chunks) {
     const raw = lib.raw("otranspilerl_glsl", [ch.src], [800]).output;
-    const packed = packChunkGLSL(raw);
-    if (!packed.fired) { out("pack did not fire on chunk " + ch.c); return; }
-    let t2 = performance.now();
+    const packed = useTex
+      ? packTextureChunkGLSL(raw, { width: TEX_W, height: texH })
+      : packChunkGLSL(raw);
+    if (!packed.fired) { out("transform did not fire on chunk " + ch.c); return; }
+    let t0 = performance.now();
     const pr = makeProgram(packed.glsl);
-    const t3 = performance.now();
+    let t1 = performance.now();
     if (pr.err) { out("chunk " + ch.c + " shader error: " + pr.err); return; }
-    coldTotal += t3 - t2;
-    t2 = performance.now();
+    coldTotal += t1 - t0;
+    t0 = performance.now();
     for (let k = 0; k < N; k++) pxLast = renderRead(pr.prog);
-    t3 = performance.now();
-    renderTotal += (t3 - t2) / N;
+    t1 = performance.now();
+    renderTotal += (t1 - t0) / N;
     const dec = decodeRGBA(pxLast, offsets);
     passLines.push(
       `  pass ${ch.c}: ${ch.len} digits (${ch.start}..${ch.start + ch.len}) · ` +
-      `draw+read ${((t3 - t2) / N).toFixed(3)} ms · sentinels ${dec.sentinels}`
+      `draw+read ${((t1 - t0) / N).toFixed(3)} ms · sentinels ${dec.sentinels}`
     );
     partials.push(dec.scores);
   }
   const reduced = reducePartials(partials, offsets);
-  const sameBest = reduced.best === singleBest.best && reduced.bestX === singleBest.bestX;
-  const sameAll = reduced.total.every((v, i) => v === singleDec.scores[i]);
   const ref = cpuFuzzy(needle, hay);
-  const sameRef = reduced.best === ref.best && reduced.bestX === ref.bestX;
+  const sameRef = reduced.best === ref.best && reduced.bestX === ref.bestX &&
+    reduced.total.every((v, i) => v === ref.scores[i]);
+  const sentTotal = partials.reduce((s, d) => s + d.sentinels, 0);
+
+  // the inline single-pass cross-check (only when the haystack fits inline)
+  let singleLine = "";
+  if (!useTex) {
+    const packed = packChunkGLSL(lib.raw("otranspilerl_glsl", [singlePassSrc(nl, hl)], [800]).output);
+    const sp = makeProgram(packed.glsl);
+    if (sp.err) singleLine = "single-pass error: " + sp.err;
+    else {
+      const dec = decodeRGBA(renderRead(sp.prog), offsets);
+      const { best, bestX } = argminOf(dec.scores);
+      singleLine = `single-pass: best ${best}@${bestX} · ==chunked ${reduced.total.every((v, i) => v === dec.scores[i]) ? "PASS" : "FAIL"}`;
+    }
+  }
 
   out(
-`chunk size ${csNote} → m=${m} passes · per-pass bound ≤ ${bound} ≤ ${MEDIUM_INT_MAX} (mediump int) → RGBA can't overflow
-compile: single-pass ${coldMs.toFixed(1)} ms · ${m} chunks ≈ ${coldTotal.toFixed(1)} ms (${(coldTotal / m).toFixed(1)} ms/pass, cached after first)
-render+readback per frame (${offsets} offsets, N=${N}): single ${singlePer.toFixed(3)} ms · chunked Σ ${renderTotal.toFixed(3)} ms (${(renderTotal / m).toFixed(3)} ms/pass)
+`${useTex ? "TEXTURE-window transport" : "INLINE transport"} · C=${cs} · m=${m} passes` +
+(useTex ? ` · haystack tex ${TEX_W}×${texH} (hl=${hl})` : "") +
+` · per-pass bound ≤ ${bound} ≤ ${MEDIUM_INT_MAX} (mediump int) → RGBA can't overflow
+compile: ${coldTotal.toFixed(1)} ms for ${m} chunks (${(coldTotal / m).toFixed(1)} ms/pass, cached after first)
+render+readback per frame (${offsets} offsets, N=${N}): Σ ${renderTotal.toFixed(3)} ms (${(renderTotal / m).toFixed(3)} ms/pass)
 
 ${passLines.join("\n")}
 
-single-pass: best offset ${singleBest.bestX} score ${singleBest.best}${singleBest.best === 0 ? " (Perfect Match)" : ""} · sentinels ${singleDec.sentinels}
-chunked+CPU-reduce: best offset ${reduced.bestX} score ${reduced.best}
-  == single-pass argmin: ${sameBest ? "PASS" : "FAIL"}
-  == single-pass every offset: ${sameAll ? "PASS" : "FAIL"}
-  == cpuFuzzy reference: ${sameRef ? "PASS" : "FAIL"}
-chunked sentinel total: ${partials.reduce((s, d) => s + d.sentinels, 0)} (must be 0 — the chunk bound holds)`);
+chunked+CPU-reduce: best offset ${reduced.bestX} score ${reduced.best}${reduced.best === 0 ? " (Perfect Match)" : ""}
+  == cpuFuzzy reference (argmin + every offset): ${sameRef ? "PASS" : "FAIL"}
+chunked sentinel total: ${sentTotal} (must be 0 — the chunk bound holds)
+${singleLine}`
+  );
 }
 $("run").addEventListener("click", main);
 main();

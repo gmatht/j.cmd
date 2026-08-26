@@ -229,3 +229,80 @@ export function packFragmentResultToRGBA(src, opts = {}) {
     `${ind}}`;
   return s.replace(m[0], packed);
 }
+
+// ─── liftTextureWindowSample — the texture-window data-load pass ──
+//
+// The backend's tex_* bridge samples ONE hoisted texel at `fract(vUv)`
+// — and only for a top-level read. A tex read INSIDE a loop emits NO
+// sample at all (`g_tex_r` is declared, never assigned → uninitialized,
+// the loop silently reads the same garbage every iteration). The
+// fragment cannot index the texture by a program value at all.
+//
+// This pass rewrites the generated fragment so every tex_* USE becomes
+// a per-use sample at a PROGRAM-SET index (the convention: the bash
+// assigns `tex_idx` before reading `tex_r`):
+//
+//     texture2D(uTex, windowUV(g_tex_idx))     // uv from a W×H layout
+//
+// The fuzzy texture-window shader sets `tex_idx = chunk_start + i + x`
+// inside its needle loop, so each iteration fetches haystack[i+x] from
+// the uploaded haystack texture — the haystack stops being an inline
+// array (ARR_CAP 1024) and becomes texture data (W×H, any size up to
+// the texture capacity). The pass:
+//
+//   • strips the hoisted `vec4 _tex = texture2D(uTex, fract(vUv));`
+//     sample and the dead `g_tex_r = int(_tex.r * 255.0);` line;
+//   • replaces every tex channel USE (not declaration/assignment) with
+//     `int(texture2D(uTex, <uv of g_tex_idx>).<ch> * 255.0)`;
+//   • promotes the fragment to highp float when asked (the wide-texture
+//     uv math AND the texel /255 decode both need > mediump mantissa —
+//     at mediump fp16 the (idx+0.5)/W coordinate and the digit/255×255
+//     round-trip both break past ~2K texels);
+//   • FAIL-SAFE: fires only when the generated shape is present AND the
+//     shader declares the index variable (`g_tex_idx`); any other
+//     program passes through unchanged.
+export function liftTextureWindowSample(src, opts = {}) {
+  const s = String(src);
+  const width = opts.width || 4096;   // the texture layout (W×H texels)
+  const height = opts.height || 1;
+  const indexVar = opts.indexVar || "g_tex_idx";
+  const highp = opts.highp !== false;
+  if (!Number.isInteger(width) || width <= 0 || !Number.isInteger(height) || height <= 0) return s;
+  // guards: the putb contract + the index variable must exist + at least
+  // one tex channel is read somewhere
+  if (!s.includes("int out_buf[4];")) return s;
+  if (!new RegExp(`int ${indexVar};`).test(s)) return s;
+  const chRe = /g_tex_[rgba]/.test(s);
+  if (!chRe) return s;
+
+  // the per-index window UV (texel centre; CLAMP_TO_EDGE, NEAREST):
+  //   1D (height=1):  vec2((float(idx)+0.5)/W, 0.5)
+  //   2D (W×H):       col = idx − W·(idx/W)  (int div — exact for ≥0)
+  //                   row = idx / W
+  //                   uv  = ((float(col)+0.5)/W, (float(row)+0.5)/H)
+  const col = `(${indexVar} - (${width} * (${indexVar} / ${width})))`;
+  const row = `(${indexVar} / ${width})`;
+  const uv = height === 1
+    ? `vec2((float(${indexVar}) + 0.5) / ${width}.0, 0.5)`
+    : `vec2((float(${col}) + 0.5) / ${width}.0, (float(${row}) + 0.5) / ${height}.0)`;
+
+  let out = s;
+  // strip the hoisted sample + its dead assignment (the per-use samples
+  // replace them)
+  out = out.replace(/^\s*vec4 _tex = texture2D\(uTex, fract\(vUv\)\);\n/gm, "");
+  out = out.replace(/^\s*g_tex_[rgba] = int\(_tex\.[rgba] \* 255\.0\);\n/gm, "");
+  // replace every channel USE with a per-use windowed sample. The
+  // declaration (`int g_tex_r;`) and assignments (`g_tex_r = …`) are
+  // excluded: the decl is followed by `;`, assignments by ` =`.
+  const sample = (ch) =>
+    `int(texture2D(uTex, ${uv}).${ch} * 255.0)`;
+  for (const ch of ["r", "g", "b", "a"]) {
+    out = out.replace(
+      new RegExp(`(?<![A-Za-z0-9_])g_tex_${ch}(?![A-Za-z0-9_])(?!\\s*=|;)`, "g"),
+      () => sample(ch)
+    );
+  }
+  if (out === s) return s; // nothing changed (no use sites)
+  if (highp) out = out.replace("precision mediump float;", "precision highp float;");
+  return out;
+}

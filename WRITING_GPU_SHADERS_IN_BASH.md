@@ -407,10 +407,11 @@ to 1024; a 0..255 domain: 128; a 0..999 domain: 32; highp digits:
    sample scores; they must decode exactly to the score's bytes
    (the transform's output, not a reimplementation, is what's checked).
 4. **the pipeline price** — one cold bash→GLSL compile per chunk
-   (~15 ms/chunk here; the cached re-eval is ~0.001 ms). Chunking is
+   (~15-45 ms/chunk here; the cached re-eval is ~0.001 ms). Chunking is
    exact and overflow-proof, but it pays a compile per chunk — the
-   template-shader + texture-window path (compile once, load the data
-   per pass) is the follow-up that removes that price at scale.
+   compile-once template + data-in-texture variant is the remaining
+   price reduction at scale (the texture-window transport in §6f
+   already removes the *array* limit).
 
 `www/fuzzy-bench.html` runs the same generator in the browser: single-
 pass vs chunked, per-pass draw+readback, the CPU reduce, and three
@@ -418,6 +419,63 @@ PASS checks — the chunked argmin equals the single-pass argmin, every
 offset equals, and 0 sentinels. (The same shader equality is runnable
 on node with headless-gl — SwiftShader, so timing misleads, but the
 shader correctness is real.)
+
+## 6f. The texture-window transport — haystack past the array cap
+
+The chunk-and-reduce transform (§6e) still needs the haystack inline
+(ARR_CAP 1024) — every needle chunk scores against the FULL haystack, so
+the haystack is the binding cap. The texture-window transport removes it:
+the haystack becomes an uploaded W×H RGBA texture (digit in the R byte),
+and the shader reads it through the `tex_*` bridge at a program-set
+`tex_idx`. The needle loop sets `tex_idx = chunk_start + i + x` before
+reading `tex_r`:
+
+```
+while [ $i -lt $chunk_len ]; do
+    tex_idx=$(( chunk_start + i + x ))
+    diff=$(( needle[i] - tex_r ))
+    ...
+done
+```
+
+**The gap this fills:** the backend emits a texture sample ONLY for a
+top-level `tex_*` read (`vec4 _tex = texture2D(uTex, fract(vUv));`), and
+even then the uv is the interpolated varying, not a program value. A
+tex read INSIDE a loop emits NO sample at all — `g_tex_r` is declared
+and never assigned (silently uninitialized). `liftTextureWindowSample`
+(`shglsl-opt.js`) rewrites every tex USE into a per-use sample at the
+index:
+
+```glsl
+g_diff = ((g_needle[g_i]) - int(texture2D(uTex,
+    vec2((float((g_tex_idx - (4096 * (g_tex_idx / 4096)))) + 0.5) / 4096.0,
+         (float((g_tex_idx / 4096)) + 0.5) / 2.0)).r * 255.0));   // W×H layout
+```
+
+The 2D layout (row = idx/W, col = idx − W·(idx/W) — exact int div, no `%`)
+means a 4096×N texture holds ~16384·N haystack digits. The pass also
+strips the hoisted `fract(vUv)` sample and promotes the fragment to
+`precision highp float;` — mandatory for wide textures: the texel-centre
+uv `(idx+0.5)/W` and the `digit/255 × 255` decode both need > mediump
+mantissa (at fp16 the coordinate quantises past ~2K texels and the
+round-trip can truncate a digit). Note the ES 1.00 caveat: highp float in
+a fragment needs `OES_fragment_precision_high` on mobile — the harness is
+a desktop-compute experiment, so that's accepted and reported on failure.
+
+**What it unlocks (measured):** haystack lengths far past ARR_CAP on the
+real shaders — hl = 5000 (4096×2) and hl = 12000 (4096×3), single- and
+multi-chunk, all reduce EXACTLY to the CPU reference (0 sentinels) on
+headless-gl (`gl-tex-gate.mjs`, the same shaders the browser runs). The
+bench §4 also checks the emitted uv arithmetic by extracting the
+col/row expressions from the transformed text and evaluating them
+(col=idx%4096, row=idx/4096 over sample indices), the fail-safe refusal
+on a foreign index variable, and the no-GPU semantics at hl » ARR_CAP.
+
+Remaining at scale: the offset canvas is still one pixel per offset
+(capped at MAX_TEXTURE_SIZE ~16384) — tile the offset axis (per-tile
+`x = frag_x + tile_start` compiles) for wider scans, and the compile-once
+template (the shader body is data-independent once the needle digits move
+into a second texture) to kill the per-chunk compile cost.
 
 ---
 

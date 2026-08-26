@@ -41,11 +41,16 @@
 //   • REDUCE on the CPU — total[x] = Σ_c partial_c[x] in JS numbers
 //     (exact to 2⁵³), then the argmin.
 //
+// For the haystack (the other half of the data): when hl > ARR_CAP the
+// inline array can't hold it, so the haystack moves to an uploaded W×H
+// texture read through the tex_* bridge at a program-set tex_idx — the
+// texture-window transport (fuzzyTextureChunkShaders + the
+// liftTextureWindowSample pass, see §2 and shglsl-opt.js).
 // Everything here is node-faithful: the generator + reduce + the pack
 // text are verified against the C twin by __fuzzy-bench.mjs, and the
 // browser harness (www/fuzzy-bench.html) runs the same generator.
 
-import { packFragmentResultToRGBA } from "./shglsl-opt.js";
+import { packFragmentResultToRGBA, liftTextureWindowSample } from "./shglsl-opt.js";
 
 // ── the representability bounds the chunk size is computed from ───
 export const MEDIUM_INT_MAX = 32767;    // ES 1.00 mediump int minimum (±2¹⁵) — the SAFE accumulator bound on every device
@@ -101,8 +106,8 @@ export function fuzzyChunkShaders(needle, haystack, opts = {}) {
   }
   if (hl > ARR_CAP) {
     throw new Error(
-      `fuzzyChunkShaders: haystack ${hl} > ARR_CAP ${ARR_CAP} — the inline haystack can't load yet ` +
-      `(the texture-window path is the next step)`
+      `fuzzyChunkShaders: haystack ${hl} > ARR_CAP ${ARR_CAP} — use fuzzyTextureChunkShaders ` +
+      `(the haystack loads as an uploaded texture, §6f)`
     );
   }
   const m = Math.max(1, Math.ceil(nl / chunkSize));
@@ -136,7 +141,75 @@ function chunkSrc(needle, haystack, start, len) {
   ].join("\n");
 }
 
-// ── 2. the optimise transform wiring: RGBA-pack the chunk GLSL ──
+// ── 2. the TEXTURE-WINDOW variant: the haystack lives in a texture ─
+// The inline haystack is capped at ARR_CAP — for hl > 1024 the haystack
+// moves to an uploaded W×H texture and the shader reads it through
+// `tex_r` at a program-set `tex_idx` (per-iteration: tex_idx =
+// chunk_start + i + x). The backend emits NO sample for loop reads, so
+// liftTextureWindowSample rewrites every tex read into a per-use sample
+// at that index (see shglsl-opt.js). The needle stays inline (chunked).
+export function fuzzyTextureChunkShaders(needle, haystack, opts = {}) {
+  const nl = needle.length, hl = haystack.length;
+  const maxDiff = maxInputDiff(needle, haystack, opts.maxDiff ?? null);
+  const chunkSize = opts.chunkSize ?? chunkSizeFor({ intMax: opts.intMax ?? MEDIUM_INT_MAX, maxDiff, arrCap: opts.arrCap ?? ARR_CAP });
+  if (chunkSize > ARR_CAP && !opts.allowOverCap) {
+    throw new Error(`fuzzyTextureChunkShaders: chunkSize ${chunkSize} > ARR_CAP ${ARR_CAP} — the needle chunk must inline`);
+  }
+  const m = Math.max(1, Math.ceil(nl / chunkSize));
+  const chunks = [];
+  for (let c = 0; c < m; c++) {
+    const start = c * chunkSize;
+    const len = Math.min(chunkSize, nl - start);
+    chunks.push({ c, start, len, src: textureChunkSrc(needle, start, len) });
+  }
+  return { nl, hl, m, chunkSize, maxDiff, chunks, texture: true };
+}
+
+function textureChunkSrc(needle, start, len) {
+  const chunk = needle.slice(start, start + len);
+  return [
+    "x=$frag_x",
+    "needle=(" + chunk.join(" ") + ")",
+    "chunk_len=" + len,
+    "chunk_start=" + start,
+    "score=0",
+    "i=0",
+    "while [ $i -lt $chunk_len ]; do",
+    "    tex_idx=$(( chunk_start + i + x ))",
+    "    diff=$(( needle[i] - tex_r ))",
+    "    if [ $diff -lt 0 ]; then diff=$((-diff)); fi",
+    "    score=$(( score + diff ))",
+    "    i=$(( i + 1 ))",
+    "done",
+    "putb $(( score ))",
+  ].join("\n");
+}
+
+// the haystack → RGBA texel bytes for a W×H layout (digit in R, the
+// texel A=255 so the A≥128 sentinel check stays meaningful); height is
+// the smallest row count that holds hl digits.
+export function haystackTexelData(haystack, width = 4096) {
+  const hl = haystack.length;
+  const h = Math.max(1, Math.ceil(hl / width));
+  const data = new Uint8Array(width * h * 4);
+  for (let i = 0; i < hl; i++) {
+    data[i * 4] = haystack[i]; // digit 0..9 in the R byte
+    data[i * 4 + 3] = 255;
+  }
+  return { width, height: h, data };
+}
+
+// the texture-mode GLSL pipeline for one chunk: raw render → the
+// windowed-sample lift → the RGBA pack. Returns {glsl, fired} (fired =
+// the window lift changed the shader).
+export function packTextureChunkGLSL(rawGlsl, { width = 4096, height = 1 } = {}) {
+  const windowed = liftTextureWindowSample(rawGlsl, { width, height, highp: true });
+  const fired = windowed !== String(rawGlsl);
+  const packed = packFragmentResultToRGBA(windowed);
+  return { glsl: packed, fired };
+}
+
+// ── 3. the optimise transform wiring: RGBA-pack the chunk GLSL ──
 // The backend emits a single-byte `out_buf[0] = g_score;` (one putb →
 // low byte only). packFragmentResultToRGBA rewrites that ONE write into
 // the four little-endian byte writes + the A≥128 sentinel. Returns the
@@ -196,6 +269,13 @@ export function cpuFuzzy(needle, haystack) {
 // bench verifies the emitted code (not a parallel reimplementation):
 //    evalPackedBytes("…out_buf[0] = ((g_score) - (256 * ((g_score) / 256))); …", score)
 // returns [r,g,b,a] exactly as the shader would write them.
+
+// evaluate a GLSL int expression (the emitted forms: identifiers, ints,
+// `+ - * / ( )`, unary minus — int div truncates toward zero) with an
+// environment. This is what the pack-formula and window-uv checks use.
+export function evalGLSLInt(expr, env = {}) {
+  return evalArith(expr, env);
+}
 
 function evalArith(expr, env) {
   const s = expr.replace(/[A-Za-z_]\w*/g, (m) => String(env[m] ?? 0));

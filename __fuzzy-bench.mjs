@@ -14,7 +14,13 @@
 //      reduces. Node-verified: chunked reduce == C twin exactly; the
 //      emitted pack bytes decode to the right scores; per-chunk score ≤
 //      INT_MAX → the RGBA buffer can never overflow (src/fuzzygpu.js);
-//   4. the crossover — where the GPU path's fixed cost beats the CPU.
+//   4. the TEXTURE-WINDOW path — the haystack > ARR_CAP loads as an
+//      uploaded W×H texture; liftTextureWindowSample rewrites the tex_*
+//      reads into per-use samples at the program-set tex_idx (the
+//      backend emits NO sample for loop reads). Verified: the emitted
+//      uv math, the semantics vs cpuFuzzy at hl=5000/12000, and the
+//      real shaders on headless-gl (equality, not timing);
+//   5. the crossover — where the GPU path's fixed cost beats the CPU.
 // The actual GPU render + readBack throughput is BROWSER-only — open
 // www/fuzzy-bench.html on a real GPU for that number.
 //
@@ -27,10 +33,11 @@
 import { execFileSync } from "node:child_process";
 import { performance } from "node:perf_hooks";
 import { writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { analyzeShader, getShaderTranslation, shaderCache } from "./src/shglsl-auto.js";
 import {
   fuzzyChunkShaders, packChunkGLSL, reducePartials, cpuFuzzy, decodeRGBA,
-  parsePackedBytes, evaluatePackedBytes, naiveBytes,
+  parsePackedBytes, evaluatePackedBytes, naiveBytes, evalGLSLInt,
   chunkSizeFor, chunkBound, maxInputDiff,
   MEDIUM_INT_MAX, HIGH_INT_MAX, PACK_MAX, ARR_CAP,
 } from "./src/fuzzygpu.js";
@@ -307,7 +314,93 @@ console.log("\n  3c. pack transform: the emitted RGBA byte formulas decode exact
 }
 if (!allOk) process.exit(1);
 
-// ── 4. crossover estimate (the decision, node-faithful) ──────────
+// ── 4. the TEXTURE-WINDOW path: the haystack stops being an inline ──
+// array and moves to an uploaded W×H texture; the shader reads it via
+// `tex_r` at a program-set `tex_idx`. The backend emits NO sample for
+// loop reads (g_tex_r stays uninitialized) — liftTextureWindowSample
+// rewrites every tex read into a per-use sample at the index. This
+// unlocks hl » ARR_CAP (the whole point: the inline haystack capped at
+// 1024; a 4096×N texture holds ~16384·N digits).
+console.log("\n== the texture-window path: haystack as an uploaded texture ==");
+console.log("  (shglsl-opt.liftTextureWindowSample — per-use sample at the program-set tex_idx)");
+{
+  const lib = await getOtranspilerl();
+  const { liftTextureWindowSample } = await import("./src/shglsl-opt.js");
+  const { fuzzyTextureChunkShaders, packTextureChunkGLSL, haystackTexelData } = await import("./src/fuzzygpu.js");
+  // 4a. the transform fires / refuses (fail-safe)
+  const needle = [...digits(200)].map(Number), hay = [...digits(5000)].map(Number);
+  const { chunks } = fuzzyTextureChunkShaders(needle, hay, { chunkSize: 128 });
+  const raw = lib.raw("otranspilerl_glsl", [chunks[0].src], [800]).output;
+  const win = liftTextureWindowSample(raw, { width: 4096, height: 2, highp: true });
+  const foreign = raw.replace(/tex_idx/g, "cursor"); // no index var → must refuse
+  const refuses = liftTextureWindowSample(foreign, { width: 4096 }) === foreign;
+  const hasSample = win.includes("texture2D(uTex, vec2((float((g_tex_idx - (4096 * (g_tex_idx / 4096))))");
+  const noHoist = !win.includes("fract(vUv)");
+  const highp = win.includes("precision highp float;");
+  const okA = hasSample && win !== raw && noHoist && highp && refuses;
+  console.log(`  4a. fire: per-use sample injected=${hasSample} · hoisted stripped=${noHoist} · highp=${highp} · refuses foreign index=${refuses}` + (okA ? "" : "  ← FAIL"));
+  if (!okA) process.exit(1);
+
+  // 4b. the emitted uv arithmetic — extract the col/row exprs from the
+  // transformed TEXT and check they map idx → true texel coordinates
+  const colExpr = "g_tex_idx - (4096 * (g_tex_idx / 4096))";
+  const rowExpr = "g_tex_idx / 4096";
+  let uvOk = win.includes(colExpr) && win.includes(rowExpr);
+  if (uvOk) {
+    for (const v of [0, 1, 4095, 4096, 8191, 8192, 12345, 20000]) {
+      const col = evalGLSLInt(colExpr, { g_tex_idx: v });
+      const row = evalGLSLInt(rowExpr, { g_tex_idx: v });
+      if (col !== (v % 4096) || row !== Math.floor(v / 4096)) { uvOk = false; break; }
+    }
+  }
+  console.log(`  4b. emitted uv math: col=idx%4096, row=idx/4096 (evaluated from the transformed text)=${uvOk}` + (uvOk ? "" : "  ← FAIL"));
+  if (!uvOk) process.exit(1);
+
+  // 4c. semantics: the texture-side partials (simulated) == cpuFuzzy at
+  //     hl » ARR_CAP, multi-chunk
+  const cases4 = [
+    { nl: 200, hl: 5000, chunk: 128 },
+    { nl: 600, hl: 5000, chunk: 200 },
+    { nl: 100, hl: 12000, chunk: 64 },
+  ];
+  console.log("  4c. texture semantics == cpuFuzzy at hl » ARR_CAP (no GPU):");
+  for (const { nl, hl, chunk } of cases4) {
+    const n = [...digits(nl)].map(Number), h = [...digits(hl)].map(Number);
+    const { m, chunks: chs } = fuzzyTextureChunkShaders(n, h, { chunkSize: chunk });
+    const ref = cpuFuzzy(n, h);
+    const offsets = hl - nl + 1;
+    const partials = [];
+    for (const ch of chs) {
+      const p = new Int32Array(offsets);
+      for (let x = 0; x < offsets; x++) {
+        let s = 0;
+        for (let j = 0; j < ch.len; j++) s += Math.abs(n[ch.start + j] - h[ch.start + j + x]);
+        p[x] = s;
+      }
+      partials.push(p);
+    }
+    const { best, bestX } = reducePartials(partials, offsets);
+    const ok = best === ref.best && bestX === ref.bestX;
+    console.log(`    ${String(nl + "/" + hl + " C=" + chunk).padEnd(16)} m=${m} · best=${best}@${bestX} · ==cpuFuzzy ${ok}`);
+    if (!ok) process.exit(1);
+  }
+  // 4d. the REAL transformed shaders + uploaded texture on headless-gl
+  // (SwiftShader — equality only; timing would mislead). Skipped when
+  // headless-gl isn't installed.
+  let glGate = "skipped (no headless-gl)";
+  try {
+    createRequire(import.meta.url)("gl");
+    const gate = await import("./gl-tex-gate.mjs");
+    const res = await gate.run({ lib, digits, fuzzyTextureChunkShaders, packTextureChunkGLSL, haystackTexelData, decodeRGBA, reducePartials, cpuFuzzy });
+    glGate = res === true ? "PASS" : "FAIL: " + res;
+  } catch (e) {
+    if (!/Cannot find package|Cannot find module/.test(String(e.message))) glGate = "FAIL: " + e.message;
+  }
+  console.log(`  4d. headless-gl full-pipeline gate: ${glGate}`);
+  if (glGate.startsWith("FAIL")) process.exit(1);
+}
+
+// ── 5. crossover estimate (the decision, node-faithful) ──────────
 console.log("\n== crossover (where the GPU path pays) ==");
 // GPU path ≈ compile (once) + render (browser, ~1ms est) — CPU path ≈ offsets × per-offset-CPU
 const renderEstMs = 1.0;
