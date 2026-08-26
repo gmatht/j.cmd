@@ -25,7 +25,9 @@ data domain (<code>CHUNK_SIZE = floor(INT_MAX/MAXDIFF)</code>); the haystack com
       transform fills. Haystack lengths up to the texture capacity (~16384·rows).</li>
 </ul>
 <p>Either way: one draw per needle chunk emits the <i>partial</i> score RGBA-packed, the CPU reduces
-(the total can never overflow the 32-bit buffer: per-pass partial ≤ INT_MAX), and the argmin is exact.</p>
+(the total can never overflow the 32-bit buffer: per-pass partial ≤ INT_MAX), and the argmin is exact.
+When the offset count exceeds the canvas limit (~16384) the offset axis is <b>tiled</b> — the same compiled
+shader runs every tile via an injected <code>uTileStart</code> uniform (compile once, bind per tile).</p>
 
 <div class="row">
   <div><label>needle len</label> <input id="nl" value="200" size="4"></div>
@@ -50,7 +52,7 @@ A≥128 = unrepresentable sentinel — the chunk bound makes it impossible).</p>
 import { getOtranspilerl } from "../src/otranspilerl.js";
 import {
   fuzzyChunkShaders, fuzzyTextureChunkShaders, packChunkGLSL, packTextureChunkGLSL,
-  haystackTexelData, decodeRGBA, reducePartials, cpuFuzzy,
+  haystackTexelData, tileLayout, decodeRGBA, reducePartials, cpuFuzzy,
   chunkSizeFor, chunkBound, MEDIUM_INT_MAX, ARR_CAP,
 } from "../src/fuzzygpu.js";
 
@@ -115,13 +117,14 @@ async function main() {
   const cs = csRaw === "auto" ? chunkSizeFor({ maxDiff: 9 }) : Math.max(1, Number(csRaw) || 1);
   if (cs > ARR_CAP) { out("chunk size " + cs + " > ARR_CAP " + ARR_CAP + " — a chunk must inline"); return; }
 
-  // ---- context (canvas = offsets pixels; texture for the haystack) ----
+  // ---- context (canvas = one tile; the offset axis tiles when needed) ----
   const cv = $("c");
-  cv.width = offsets; cv.height = 1;
   const gl = cv.getContext("webgl", { antialias: false, preserveDrawingBuffer: true });
   if (!gl) { out("no webgl"); return; }
   const maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE);
-  if (offsets > maxTex) { out("offsets " + offsets + " > MAX_TEXTURE_SIZE " + maxTex + " — tile the offset axis first"); return; }
+  const useTiles = offsets > maxTex;
+  const layout = useTiles ? tileLayout(offsets, maxTex) : { n: 1, tiles: [{ t: 0, start: 0, w: offsets }] };
+  cv.width = useTiles ? maxTex : offsets; cv.height = 1;
 
   const TEX_W = 4096;
   const texH = Math.ceil(hl / TEX_W);
@@ -141,20 +144,20 @@ async function main() {
     gl.useProgram(prog);
     const uloc = gl.getUniformLocation(prog, "uTex");
     if (uloc) gl.uniform1i(uloc, 0);
+    const tileLoc = gl.getUniformLocation(prog, "uTileStart");
     const buf = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, buf);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
     const loc = gl.getAttribLocation(prog, "aPos");
     gl.enableVertexAttribArray(loc);
     gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-    gl.viewport(0, 0, offsets, 1);
-    return { prog };
+    return { prog, tileLoc };
   }
-  const renderRead = (prog) => {
+  const renderRead = (prog, w) => {
     gl.useProgram(prog);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
-    const px = new Uint8Array(offsets * 4);
-    gl.readPixels(0, 0, offsets, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    const px = new Uint8Array(w * 4);
+    gl.readPixels(0, 0, w, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
     return px;
   };
 
@@ -190,7 +193,7 @@ async function main() {
   for (const ch of chunks) {
     const raw = lib.raw("otranspilerl_glsl", [ch.src], [800]).output;
     const packed = useTex
-      ? packTextureChunkGLSL(raw, { width: TEX_W, height: texH })
+      ? packTextureChunkGLSL(raw, { width: TEX_W, height: texH, tile: useTiles })
       : packChunkGLSL(raw);
     if (!packed.fired) { out("transform did not fire on chunk " + ch.c); return; }
     let t0 = performance.now();
@@ -198,16 +201,27 @@ async function main() {
     let t1 = performance.now();
     if (pr.err) { out("chunk " + ch.c + " shader error: " + pr.err); return; }
     coldTotal += t1 - t0;
-    t0 = performance.now();
-    for (let k = 0; k < N; k++) pxLast = renderRead(pr.prog);
-    t1 = performance.now();
-    renderTotal += (t1 - t0) / N;
-    const dec = decodeRGBA(pxLast, offsets);
+    const p = new Int32Array(offsets);
+    let tileSents = 0, passTime = 0;
+    for (const tile of layout.tiles) {
+      gl.viewport(0, 0, tile.w, 1);
+      if (useTiles && pr.tileLoc) gl.uniform1i(pr.tileLoc, tile.start);
+      t0 = performance.now();
+      for (let k = 0; k < N; k++) pxLast = renderRead(pr.prog, tile.w);
+      t1 = performance.now();
+      const perTile = (t1 - t0) / N;
+      passTime += perTile;
+      renderTotal += perTile;
+      const dec = decodeRGBA(pxLast, tile.w);
+      tileSents += dec.sentinels;
+      for (let x = 0; x < tile.w; x++) p[tile.start + x] = dec.scores[x];
+    }
     passLines.push(
       `  pass ${ch.c}: ${ch.len} digits (${ch.start}..${ch.start + ch.len}) · ` +
-      `draw+read ${((t1 - t0) / N).toFixed(3)} ms · sentinels ${dec.sentinels}`
+      (useTiles ? `tiles=${layout.n} · ` : "") +
+      `draw+read ${passTime.toFixed(3)} ms${useTiles ? " (" + (passTime / layout.n).toFixed(3) + "/tile)" : ""} · sentinels ${tileSents}`
     );
-    partials.push(dec.scores);
+    partials.push(p);
   }
   const reduced = reducePartials(partials, offsets);
   const ref = cpuFuzzy(needle, hay);
@@ -222,7 +236,7 @@ async function main() {
     const sp = makeProgram(packed.glsl);
     if (sp.err) singleLine = "single-pass error: " + sp.err;
     else {
-      const dec = decodeRGBA(renderRead(sp.prog), offsets);
+      const dec = decodeRGBA(renderRead(sp.prog, offsets), offsets);
       const { best, bestX } = argminOf(dec.scores);
       singleLine = `single-pass: best ${best}@${bestX} · ==chunked ${reduced.total.every((v, i) => v === dec.scores[i]) ? "PASS" : "FAIL"}`;
     }
@@ -231,9 +245,10 @@ async function main() {
   out(
 `${useTex ? "TEXTURE-window transport" : "INLINE transport"} · C=${cs} · m=${m} passes` +
 (useTex ? ` · haystack tex ${TEX_W}×${texH} (hl=${hl})` : "") +
+(useTiles ? ` · offset axis TILED ×${layout.n} (uTileStart uniform, one compile)` : "") +
 ` · per-pass bound ≤ ${bound} ≤ ${MEDIUM_INT_MAX} (mediump int) → RGBA can't overflow
 compile: ${coldTotal.toFixed(1)} ms for ${m} chunks (${(coldTotal / m).toFixed(1)} ms/pass, cached after first)
-render+readback per frame (${offsets} offsets, N=${N}): Σ ${renderTotal.toFixed(3)} ms (${(renderTotal / m).toFixed(3)} ms/pass)
+render+readback per frame (${offsets} offsets, N=${N}): Σ ${renderTotal.toFixed(3)} ms (${(renderTotal / (m * layout.n)).toFixed(3)} ms/pass·tile)
 
 ${passLines.join("\n")}
 

@@ -50,7 +50,7 @@
 // text are verified against the C twin by __fuzzy-bench.mjs, and the
 // browser harness (www/fuzzy-bench.html) runs the same generator.
 
-import { packFragmentResultToRGBA, liftTextureWindowSample } from "./shglsl-opt.js";
+import { packFragmentResultToRGBA, liftTextureWindowSample, tileOffsetUniform } from "./shglsl-opt.js";
 
 // ── the representability bounds the chunk size is computed from ───
 export const MEDIUM_INT_MAX = 32767;    // ES 1.00 mediump int minimum (±2¹⁵) — the SAFE accumulator bound on every device
@@ -200,13 +200,28 @@ export function haystackTexelData(haystack, width = 4096) {
 }
 
 // the texture-mode GLSL pipeline for one chunk: raw render → the
-// windowed-sample lift → the RGBA pack. Returns {glsl, fired} (fired =
-// the window lift changed the shader).
-export function packTextureChunkGLSL(rawGlsl, { width = 4096, height = 1 } = {}) {
-  const windowed = liftTextureWindowSample(rawGlsl, { width, height, highp: true });
-  const fired = windowed !== String(rawGlsl);
-  const packed = packFragmentResultToRGBA(windowed);
-  return { glsl: packed, fired };
+// windowed-sample lift → (optional) the offset-axis tile uniform → the
+// RGBA pack. Returns {glsl, fired} (fired = any transform changed the
+// shader). With tile: true the SAME compiled shader runs every offset
+// tile (uTileStart varies at bind time, not compile time).
+export function packTextureChunkGLSL(rawGlsl, { width = 4096, height = 1, tile = false } = {}) {
+  let g = liftTextureWindowSample(rawGlsl, { width, height, highp: true });
+  if (tile) g = tileOffsetUniform(g);
+  const fired = g !== String(rawGlsl);
+  return { glsl: packFragmentResultToRGBA(g), fired };
+}
+
+// the offset-axis tiling: offsets pixels split into ≤ tileW-wide tiles
+// (the canvas cap). Each tile renders tileW pixels at a global offset
+// t·tileW; the uTileStart uniform shifts the frag_x bridge.
+export function tileLayout(offsets, tileW) {
+  const n = Math.max(1, Math.ceil(offsets / tileW));
+  const tiles = [];
+  for (let t = 0; t < n; t++) {
+    const start = t * tileW;
+    tiles.push({ t, start, w: Math.min(tileW, offsets - start) });
+  }
+  return { n, tiles };
 }
 
 // ── 3. the optimise transform wiring: RGBA-pack the chunk GLSL ──

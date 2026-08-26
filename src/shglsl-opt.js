@@ -306,3 +306,37 @@ export function liftTextureWindowSample(src, opts = {}) {
   if (highp) out = out.replace("precision mediump float;", "precision highp float;");
   return out;
 }
+
+// ─── tileOffsetUniform — the offset-axis tiling pass ──
+//
+// The offset canvas is one pixel per haystack offset — capped at
+// MAX_TEXTURE_SIZE (~16384). For wider scans the offset axis is tiled:
+// each tile renders ≤ TILE pixels and the fragment must score the
+// GLOBAL offset t·TILE + frag_x. This pass injects a per-tile uniform
+// and rewrites the frag_x bridge so the SAME compiled shader runs every
+// tile (the uniform varies at bind time, not compile time):
+//
+//     g_frag_x = int(gl_FragCoord.x);
+//     g_x = g_frag_x;                  →   g_x = (g_frag_x + uTileStart);
+//
+// with `uniform int uTileStart;` added to the declaration block. The
+// harness binds uTileStart = t·TILE per tile and concatenates the
+// per-tile readbacks — the compile-once pattern applied to the offset
+// dimension (data varies per tile, code does not).
+//
+// FAIL-SAFE: fires only when the generated bridge assignment
+// `g_x = g_frag_x;` is present; any other program passes through.
+export function tileOffsetUniform(src) {
+  const s = String(src);
+  if (!s.includes("int out_buf[4];")) return s;        // the putb contract
+  if (!s.includes("uniform sampler2D uTex;")) return s; // a texture-window program (the tiling target)
+  if (!/\bg_x = g_frag_x;/.test(s)) return s;           // the frag_x bridge assignment
+  let out = s.replace(
+    /([ \t]*)g_x = g_frag_x;/,
+    (m, ind) => `${ind}g_x = (g_frag_x + uTileStart);`
+  );
+  if (out === s) return s;
+  // inject the uniform into the declaration block (after out_buf[4];)
+  out = out.replace("int out_buf[4];", "int out_buf[4];\nuniform int uTileStart;");
+  return out;
+}

@@ -471,11 +471,20 @@ col/row expressions from the transformed text and evaluating them
 (col=idx%4096, row=idx/4096 over sample indices), the fail-safe refusal
 on a foreign index variable, and the no-GPU semantics at hl » ARR_CAP.
 
-Remaining at scale: the offset canvas is still one pixel per offset
-(capped at MAX_TEXTURE_SIZE ~16384) — tile the offset axis (per-tile
-`x = frag_x + tile_start` compiles) for wider scans, and the compile-once
-template (the shader body is data-independent once the needle digits move
-into a second texture) to kill the per-chunk compile cost.
+**The offset axis tiles** (`tileOffsetUniform`, §6f continuation): the
+canvas is one pixel per offset, capped at MAX_TEXTURE_SIZE (~16384).
+Past that the offset axis splits into tiles and the SAME compiled
+shader runs every tile — the pass injects `uniform int uTileStart;` and
+rewrites the frag_x bridge to `g_x = (g_frag_x + uTileStart)`, so the
+data varies per tile at bind time, not compile time. Measured: hl =
+24000 (23501 offsets → 3 tiles at 8192 px, texture 4096×6) reduces
+exactly to the CPU reference on headless-gl.
+
+Remaining at scale: the compile-once template for the NEEDLE — the
+needle digits still inline per chunk (one cold compile per chunk,
+~15-45 ms); moving the needle into a second texture (the cr_* bridge's
+uCrack sampler) removes the per-chunk compiles entirely, leaving one
+shader for any needle length.
 
 ---
 

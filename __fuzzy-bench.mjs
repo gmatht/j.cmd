@@ -37,7 +37,7 @@ import { createRequire } from "node:module";
 import { analyzeShader, getShaderTranslation, shaderCache } from "./src/shglsl-auto.js";
 import {
   fuzzyChunkShaders, packChunkGLSL, reducePartials, cpuFuzzy, decodeRGBA,
-  parsePackedBytes, evaluatePackedBytes, naiveBytes, evalGLSLInt,
+  parsePackedBytes, evaluatePackedBytes, naiveBytes, evalGLSLInt, tileLayout,
   chunkSizeFor, chunkBound, maxInputDiff,
   MEDIUM_INT_MAX, HIGH_INT_MAX, PACK_MAX, ARR_CAP,
 } from "./src/fuzzygpu.js";
@@ -310,7 +310,8 @@ console.log("\n  3c. pack transform: the emitted RGBA byte formulas decode exact
   const bigM = Math.ceil(1000000 / ARR_CAP);
   console.log(`    extrapolated nl=1M, C=ARR_CAP=${ARR_CAP}: ${bigM} chunks × ${coldPer.toFixed(1)} ms ≈ ${((bigM * coldPer) / 1000).toFixed(1)} s cold`);
   console.log(`    → the chunk transform is exact and overflow-proof, but its price is one cold compile per`);
-  console.log(`      chunk — the template-shader + texture-window path (compile once, load data per pass) is the follow-up.`);
+  console.log(`      chunk — the needle-in-texture template (compile once, data in textures) is the remaining`);
+  console.log(`      price reduction at scale (the haystack texture-window + the offset tiling already landed).`);
 }
 if (!allOk) process.exit(1);
 
@@ -384,6 +385,22 @@ console.log("  (shglsl-opt.liftTextureWindowSample — per-use sample at the pro
     console.log(`    ${String(nl + "/" + hl + " C=" + chunk).padEnd(16)} m=${m} · best=${best}@${bestX} · ==cpuFuzzy ${ok}`);
     if (!ok) process.exit(1);
   }
+  // 4e. the offset-axis tiling: the SAME compiled shader runs every
+  // tile via an injected uTileStart uniform (x = frag_x + uTileStart)
+  {
+    const { tileOffsetUniform } = await import("./src/shglsl-opt.js");
+    const needle = [...digits(200)].map(Number), hay = [...digits(5000)].map(Number);
+    const { chunks } = fuzzyTextureChunkShaders(needle, hay, { chunkSize: 128 });
+    const raw = lib.raw("otranspilerl_glsl", [chunks[0].src], [800]).output;
+    const win = tileOffsetUniform(raw);
+    const noBridge = raw.replace(/g_x = g_frag_x;/, ""); // no frag_x bridge → must refuse
+    const refuses = tileOffsetUniform(noBridge) === noBridge;
+    const okE = win !== raw && win.includes("uniform int uTileStart;") &&
+      win.includes("g_x = (g_frag_x + uTileStart);") && refuses;
+    console.log(`  4e. tile uniform: injected=${win !== raw} · bridge rewritten=${win.includes("g_x = (g_frag_x + uTileStart);")} · refuses without bridge=${refuses}` + (okE ? "" : "  ← FAIL"));
+    if (!okE) process.exit(1);
+  }
+
   // 4d. the REAL transformed shaders + uploaded texture on headless-gl
   // (SwiftShader — equality only; timing would mislead). Skipped when
   // headless-gl isn't installed.
@@ -391,7 +408,7 @@ console.log("  (shglsl-opt.liftTextureWindowSample — per-use sample at the pro
   try {
     createRequire(import.meta.url)("gl");
     const gate = await import("./gl-tex-gate.mjs");
-    const res = await gate.run({ lib, digits, fuzzyTextureChunkShaders, packTextureChunkGLSL, haystackTexelData, decodeRGBA, reducePartials, cpuFuzzy });
+    const res = await gate.run({ lib, digits, fuzzyTextureChunkShaders, packTextureChunkGLSL, haystackTexelData, tileLayout, decodeRGBA, reducePartials, cpuFuzzy });
     glGate = res === true ? "PASS" : "FAIL: " + res;
   } catch (e) {
     if (!/Cannot find package|Cannot find module/.test(String(e.message))) glGate = "FAIL: " + e.message;
