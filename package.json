@@ -32,5 +32,9 @@
   },
   "allowScripts": {
     "gl@8.1.6": true
+  },
+  "devDependencies": {
+    "gl": "^8.1.6",
+    "playwright-core": "^1.62.1"
   }
 }

@@ -143,6 +143,52 @@ void main(){ gl_FragColor = vColor; }`;
     if (!ok) failures.push("hash");
   }
 
+  // ── 4. the STRICT ES 1.00 variants (fixed-iteration loop / arithmetic
+  // rule) — the documented fallbacks for compilers that reject dynamic
+  // loops AND dynamic array indices (verified in headless Chromium).
+  {
+    const values = [1, 7, 27, 255, 64, 97];
+    const raw = lib.raw("otranspilerl_glsl", [deps.collatzStrictShader(512)], [800]).output;
+    const { glsl, fired } = deps.compileCollatzStrictGLSL(raw, { width: 6 });
+    if (!fired) throw new Error("strict collatz transform did not fire");
+    const gl = createGL(6, 1, { preserveDrawingBuffer: true });
+    const data = new Uint8Array(6 * 4);
+    values.forEach((v, i) => { data[i * 4] = v; data[i * 4 + 3] = 255; });
+    const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 6, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const pr = fragProgram(gl, glsl, 6);
+    const { scores, sentinels } = readScores(gl, pr, 6, decodeRGBA);
+    const want = deps.collatzCPU(values);
+    const ok = scores.every((v, i) => v === want[i]) && sentinels === 0;
+    console.log(`  collatz-strict: got=[${[...scores].join(",")}] ==cpu ${ok ? "PASS" : "FAIL"} sentinels ${sentinels}`);
+    if (!ok) failures.push("collatz-strict");
+
+    const W = 32;
+    const row = new Array(W).fill(0); row[7] = 1; row[19] = 1; row[26] = 1;
+    const rule = [0, 1, 1, 1, 0, 1, 1, 0];
+    const raw2 = lib.raw("otranspilerl_glsl", [deps.ca1dStrictShader(rule)], [800]).output;
+    const { glsl: glsl2 } = deps.compileCa1dStrictGLSL(raw2, { width: W });
+    const gl2 = createGL(W, 1, { preserveDrawingBuffer: true });
+    const data2 = new Uint8Array(W * 4);
+    row.forEach((v, i) => { data2[i * 4] = v; data2[i * 4 + 3] = 255; });
+    const tex2 = gl2.createTexture(); gl2.bindTexture(gl2.TEXTURE_2D, tex2);
+    gl2.pixelStorei(gl2.UNPACK_ALIGNMENT, 1);
+    gl2.texImage2D(gl2.TEXTURE_2D, 0, gl2.RGBA, W, 1, 0, gl2.RGBA, gl2.UNSIGNED_BYTE, data2);
+    gl2.texParameteri(gl2.TEXTURE_2D, gl2.TEXTURE_MIN_FILTER, gl2.NEAREST);
+    gl2.texParameteri(gl2.TEXTURE_2D, gl2.TEXTURE_MAG_FILTER, gl2.NEAREST);
+    const pr2 = fragProgram(gl2, glsl2, W);
+    const { scores: s2 } = readScores(gl2, pr2, W, decodeRGBA);
+    const want2 = deps.ca1DCPU(row, rule);
+    const ok2 = [...s2].every((v, i) => v === want2[i]);
+    console.log(`  ca1d-strict: next-row == cpu ${ok2 ? "PASS" : "FAIL"}`);
+    if (!ok2) failures.push("ca1d-strict");
+  }
+
   return failures.length === 0 ? true : failures.join(", ");
 }
 
@@ -154,7 +200,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const deps = await import("./src/otranspilerl.js").then((m) => ({ lib: m.getOtranspilerl() }));
   deps.lib = await deps.lib;
   const c = await import("./src/gpucatalog.js");
-  for (const k of ["collatzShader", "compileCollatzGLSL", "collatzCPU", "ca1dShader", "compileCa1DGLSL", "ca1DCPU", "hashVertexShader", "hashCPU"]) deps[k] = c[k];
+  for (const k of ["collatzShader", "compileCollatzGLSL", "collatzStrictShader", "compileCollatzStrictGLSL", "collatzCPU", "ca1dShader", "compileCa1DGLSL", "ca1dStrictShader", "compileCa1dStrictGLSL", "ca1DCPU", "hashVertexShader", "hashCPU"]) deps[k] = c[k];
   const f = await import("./src/fuzzygpu.js");
   deps.decodeRGBA = f.decodeRGBA;
   deps.decodeVertexBytes = c.decodeVertexBytes;

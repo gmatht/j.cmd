@@ -45,8 +45,10 @@
 import { getOtranspilerl } from "../src/otranspilerl.js";
 import {
   fuzzyChunkShaders, fuzzyTextureChunkShaders, packChunkGLSL, packTextureChunkGLSL,
-  fuzzyTemplateShader, compileTemplateGLSL, needleTexelData, haystackTexelData,
-  templateChunkWindows, tileLayout, decodeRGBA, reducePartials, cpuFuzzy,
+  fuzzyTemplateShader, compileTemplateGLSL, fuzzyTemplateStrictShader, compileStrictTemplateGLSL,
+  chunkMaskTexture, templateChunkWindows, templateStrictChunks,
+  needleTexelData, haystackTexelData,
+  tileLayout, decodeRGBA, reducePartials, cpuFuzzy,
   chunkSizeFor, chunkBound, MEDIUM_INT_MAX, ARR_CAP,
 } from "../src/fuzzygpu.js";
 
@@ -98,10 +100,11 @@ function uploadTex(gl, unit, data, w, h) {
 
 async function main() {
   const lib = await getOtranspilerl();
-  const nl = Number($("nl").value) || 2000;
-  const hl = Number($("hl").value) || 5000;
-  const mode = $("mode").value;
-  const csRaw = $("cs").value.trim();
+  const q = new URLSearchParams(location.search);
+  const nl = Number(q.get("nl") ?? $("nl").value) || 2000;
+  const hl = Number(q.get("hl") ?? $("hl").value) || 5000;
+  const mode = q.get("mode") ?? $("mode").value;
+  const csRaw = q.get("cs") ?? $("cs").value.trim();
   if (hl < nl + 1) { out("needle must be shorter than haystack"); return; }
   const offsets = hl - nl + 1;
   const needle = [...digits(nl)].map(Number);
@@ -162,10 +165,9 @@ async function main() {
   uploadTex(gl, 1, ndlTex.data, ndlTex.width, ndlTex.height);
 
   const templateMode = mode === "template";
-  const { m, chunks } = templateMode
-    ? templateChunkWindows(nl, cs)
-    : fuzzyTextureChunkShaders(needle, hay, { chunkSize: cs });
+  const chunksBase = templateMode ? templateChunkWindows(nl, cs) : fuzzyTextureChunkShaders(needle, hay, { chunkSize: cs });
   const bound = chunkBound(Math.min(cs, nl), 9);
+  let m = chunksBase.m, chunks = chunksBase.chunks;
   out("compiling " + (templateMode ? "THE ONE template" : m + " chunk shaders") + " (C=" + cs + ")…");
 
   const partials = [];
@@ -173,24 +175,36 @@ async function main() {
   let coldTotal = 0, renderTotal = 0, compiles = 0, sentTotal = 0;
   const N = 15;
   let pxLast;
+  let strict = false;
   if (templateMode) {
-    // ONE compile for every chunk of any needle
-    const raw = lib.raw("otranspilerl_glsl", [fuzzyTemplateShader()], [800]).output;
+    // ONE compile for every chunk of any needle — with the strict ES 1.00
+    // fallback (fixed C + G-channel validity mask) when the compiler
+    // rejects the dynamic uniform loop bound (verified: headless
+    // Chromium SwiftShader does exactly that, §6g/§6i).
+    let raw = lib.raw("otranspilerl_glsl", [fuzzyTemplateShader()], [800]).output;
+    let packed = compileTemplateGLSL(raw, { width: TEX_W, height: hayTex.height, crackWidth: TEX_W, crackHeight: ndlTex.height, tile: useTiles });
     let t0 = performance.now();
-    const packed = compileTemplateGLSL(raw, { width: TEX_W, height: hayTex.height, crackWidth: TEX_W, crackHeight: ndlTex.height, tile: useTiles });
-    const pr = makeProgram(packed.glsl);
+    let pr = makeProgram(packed.glsl);
+    if (pr.err) {
+      strict = true;
+      raw = lib.raw("otranspilerl_glsl", [fuzzyTemplateStrictShader(ARR_CAP)], [800]).output;
+      packed = compileStrictTemplateGLSL(raw, { width: TEX_W, height: hayTex.height, crackWidth: ARR_CAP, crackHeight: 1 });
+      pr = makeProgram(packed.glsl);
+    }
     let t1 = performance.now();
+    if (strict) { const s = templateStrictChunks(needle, ARR_CAP); m = s.m; chunks = s.chunks; }
     compiles = 1;
     coldTotal = t1 - t0;
     if (!packed.fired) { out("template transform did not fire"); return; }
     if (pr.err) { out("template shader error: " + pr.err); return; }
     for (const ch of chunks) {
+      if (strict) uploadTex(gl, 1, chunkMaskTexture(ch, ARR_CAP, ARR_CAP), ARR_CAP, 1); // per-chunk needle+mask
       const p = new Int32Array(offsets);
       let sents = 0, passTime = 0;
       for (const tile of layout.tiles) {
         gl.viewport(0, 0, tile.w, 1);
         if (useTiles && pr.tile) gl.uniform1i(pr.tile, tile.start);
-        gl.uniform1i(pr.len, ch.len);
+        if (!strict && pr.len) gl.uniform1i(pr.len, ch.len);
         gl.uniform1i(pr.start, ch.start);
         t0 = performance.now();
         for (let k = 0; k < N; k++) pxLast = renderRead(pr.prog, tile.w);
@@ -201,7 +215,7 @@ async function main() {
         sents += dec.sentinels;
         for (let x = 0; x < tile.w; x++) p[tile.start + x] = dec.scores[x];
       }
-      passLines.push(`  pass ${ch.c}: needle[${ch.start}..${ch.start + ch.len}) via uNeedleLen/Start · draw+read ${passTime.toFixed(3)} ms · sentinels ${sents}`);
+      passLines.push(`  pass ${ch.c}: needle[${ch.start}..${ch.start + ch.len}) via ${strict ? "mask+uNeedleStart" : "uNeedleLen/Start"} · draw+read ${passTime.toFixed(3)} ms · sentinels ${sents}`);
       sentTotal += sents;
       partials.push(p);
     }

@@ -28,8 +28,8 @@ import { createRequire } from "node:module";
 import { getOtranspilerl } from "./src/otranspilerl.js";
 import { getShaderTranslation, shaderCache } from "./src/shglsl-auto.js";
 import {
-  collatzShader, compileCollatzGLSL, collatzCPU,
-  ca1dShader, compileCa1DGLSL, ca1DCPU,
+  collatzShader, compileCollatzGLSL, collatzStrictShader, compileCollatzStrictGLSL, collatzCPU,
+  ca1dShader, compileCa1DGLSL, ca1dStrictShader, compileCa1dStrictGLSL, ca1DCPU,
   hashVertexShader, hashCPU, decodeVertexBytes, CATALOG,
 } from "./src/gpucatalog.js";
 import { liftTextureWindowSample, packFragmentResultToRGBA } from "./src/shglsl-opt.js";
@@ -109,8 +109,8 @@ async function runGate() {
     createRequire(import.meta.url)("gl");
     const gate = await import("./gl-catalog-gate.mjs");
     const res = await gate.run({
-      lib, collatzShader, compileCollatzGLSL, collatzCPU,
-      ca1dShader, compileCa1DGLSL, ca1DCPU,
+      lib, collatzShader, compileCollatzGLSL, collatzStrictShader, compileCollatzStrictGLSL, collatzCPU,
+      ca1dShader, compileCa1DGLSL, ca1dStrictShader, compileCa1dStrictGLSL, ca1DCPU,
       hashVertexShader, hashCPU, decodeRGBA, decodeVertexBytes,
     });
     return res === true;

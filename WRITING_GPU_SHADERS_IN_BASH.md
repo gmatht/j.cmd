@@ -640,6 +640,42 @@ the pages for that.
   mask fallback is described in §6g);
 - MAX_TEXTURE_SIZE (~4096-16384) is printed by the pages; the fuzzy page
   tiles the offset axis past it automatically.
+
+**Driving the benches from a script (verified end-to-end):**
+`bench-browser-playwright.mjs` runs both pages in headless Chromium
+(WebGL via SwiftShader — the same strict-ES-1.00 story below applies to
+this interpreter), collects the results, and writes a JSON summary:
+
+```
+node bench-browser-playwright.mjs            # both pages → results + results.json
+node bench-browser-playwright.mjs --page catalog --out /tmp/cat.json
+node bench-browser-playwright.mjs --headed  # a visible window (a real GPU, if any)
+```
+
+(playwright-core + `gl` are devDependencies; the cached Chromium is used
+via `executablePath` — override with `CHROME_PATH`.) The raw-CDP driver
+`driver_bench.mjs` is the no-playwright equivalent.
+
+**What the strict ES 1.00 fallbacks are (implemented + auto-engaged):**
+driving the pages in headless Chromium exposed that some interpreters
+(that SwiftShader build) are the STRICTEST kind of ES 1.00: they reject
+EVERY `while` loop (even well-formed literal-bound ones) and any dynamic
+ARRAY index. The pages therefore auto-fall back on a failed compile:
+
+- fuzzy template → the fixed-geometry + G-channel validity-mask variant
+  (`fuzzyTemplateStrictShader`, §2c of src/fuzzygpu.js): a constant
+  1024-iteration `for i in <list>` loop with `diff·(cr_g/255)` masking
+  the padding — one compile, any needle, EXACT (0 sentinels, PASS);
+- collatz → a fixed 512-iteration loop with an early `break` on
+  convergence (`collatzStrictShader`);
+- ca1d → the rule as an arithmetic ternary over its set bits instead of
+  an array lookup (`ca1dStrictShader`);
+- recordhash (vertex) needed no fallback (no loops, no arrays).
+
+All five runs PASS in the browser: the fuzzy matcher at nl=100/hl=1000
+and at the default nl=2000/hl=5000 (1 compile, 2 masked passes, 0
+sentinels), collatz (strict), ca1d (strict), and the vertex hash.
+
 ---
 
 

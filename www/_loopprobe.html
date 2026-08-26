@@ -1,0 +1,28 @@
+<!doctype html>
+<html><body><pre id="out">…</pre>
+<script type="module">
+import { getOtranspilerl } from "../src/otranspilerl.js";
+const lib = await getOtranspilerl();
+const cv = document.createElement("canvas");
+const gl = cv.getContext("webgl");
+const VERT = "attribute vec2 aPos; void main(){ gl_Position = vec4(aPos, 0.0, 1.0); }";
+function tryCompile(name, bash) {
+  let raw;
+  try { raw = lib.raw("otranspilerl_glsl", [bash], [800]).output; }
+  catch (e) { return `${name}: bash→GLSL ERROR ${String(e).slice(0, 60)}`; }
+  const s = gl.createShader(gl.FRAGMENT_SHADER);
+  gl.shaderSource(s, raw); gl.compileShader(s);
+  const ok = gl.getShaderParameter(s, gl.COMPILE_STATUS);
+  return `${name}: ${ok ? "COMPILES" : "REJECTED — " + gl.getShaderInfoLog(s).split("\n")[0]}`;
+}
+const out = [];
+out.push(tryCompile("literal 4", `i=0\ns=0\nwhile [ $i -lt 4 ]; do s=$(( s + 1 )); i=$(( i + 1 )); done\nputb $(( s ))`));
+out.push(tryCompile("literal 1024", `i=0\ns=0\nwhile [ $i -lt 1024 ]; do s=$(( s + 1 )); i=$(( i + 1 )); done\nputb $(( s ))`));
+out.push(tryCompile("literal 1024 + frag_x", `x=$frag_x\ni=0\ns=0\nwhile [ $i -lt 1024 ]; do s=$(( s + x )); i=$(( i + 1 )); done\nputb $(( s ))`));
+out.push(tryCompile("c-for literal", `s=0\nfor (( i=0; i<1024; i++ )); do s=$(( s + 1 )); done\nputb $(( s ))`));
+out.push(tryCompile("c-for var bound (const)", `n=1024\ns=0\nfor (( i=0; i<n; i++ )); do s=$(( s + 1 )); done\nputb $(( s ))`));
+out.push(tryCompile("for-in list", `s=0\nfor i in 1 2 3 4; do s=$(( s + 1 )); done\nputb $(( s ))`));
+out.push(tryCompile("c-for data-driven cond", `n=$(( frag_x + 1 ))\ns=0\nfor (( i=0; n>1; i++ )); do n=$(( n / 2 )); s=$(( s + 1 )); done\nputb $(( s ))`));
+document.getElementById("out").textContent = out.join("\n");
+</script>
+</body></html>

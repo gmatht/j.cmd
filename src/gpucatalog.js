@@ -78,6 +78,36 @@ export function compileCollatzGLSL(rawGlsl, { width = 64, height = 1 } = {}) {
   return { glsl: packFragmentResultToRGBA(g), fired: g !== String(rawGlsl) };
 }
 
+// the STRICT ES 1.00 collatz (the fixed-iteration fallback): the strict
+// compilers reject the data-driven `while` — the loop is a CONSTANT
+// maxIters `for k in <list>` with an early `break` on convergence. For
+// n ≤ 255 the trajectory always converges in ≤ 111 steps < maxIters, so
+// the result is identical; a non-converged pixel caps at maxIters (a
+// sentinel the reader can distinguish by equality with maxIters).
+export function collatzStrictShader(maxIters = 512) {
+  const list = Array.from({ length: maxIters }, (_, i) => i).join(" ");
+  return [
+    "tex_idx=$(( frag_x ))",
+    "n=$(( tex_r ))",
+    "steps=0",
+    "for k in " + list + "; do",
+    "    if [ $n -eq 1 ]; then break; fi",
+    "    if [ $(( n % 2 )) -eq 0 ]; then",
+    "        n=$(( n / 2 ))",
+    "    else",
+    "        n=$(( 3 * n + 1 ))",
+    "    fi",
+    "    steps=$(( k + 1 ))",
+    "done",
+    "putb $(( steps ))",
+  ].join("\n");
+}
+
+export function compileCollatzStrictGLSL(rawGlsl, { width = 64, height = 1 } = {}) {
+  const g = liftTextureWindowSample(rawGlsl, { width, height, highp: true });
+  return { glsl: packFragmentResultToRGBA(g), fired: g !== String(rawGlsl) };
+}
+
 // ── 2. fragment: one 1D cellular-automaton step ─────────────────
 // one pixel per cell; the three neighbour reads reassign tex_idx
 // between reads so each per-use sample hits left/mid/right (the per-use
@@ -107,6 +137,32 @@ export function ca1DCPU(row, rule = [0, 1, 1, 1, 0, 1, 1, 0]) {
 }
 
 export function compileCa1DGLSL(rawGlsl, { width = 64, height = 1 } = {}) {
+  const g = liftTextureWindowSample(rawGlsl, { width, height, highp: true });
+  return { glsl: packFragmentResultToRGBA(g), fired: g !== String(rawGlsl) };
+}
+
+// the STRICT ES 1.00 ca1d: strict compilers reject dynamic ARRAY indices
+// ('Index expression can only contain const or loop symbols' — verified
+// in headless Chromium) AND every `while`, so the rule lookup becomes an
+// arithmetic ternary over the rule's set bits (no array, no loop):
+//   cell = (idx == a || idx == b || …) ? 1 : 0
+export function ca1dStrictShader(rule = [0, 1, 1, 1, 0, 1, 1, 0]) {
+  const set = rule.map((v, i) => (v ? i : null)).filter((v) => v !== null);
+  const cond = set.map((i) => `idx == ${i}`).join(" || ");
+  return [
+    "tex_idx=$(( frag_x - 1 ))",
+    "left=$tex_r",
+    "tex_idx=$(( frag_x ))",
+    "mid=$tex_r",
+    "tex_idx=$(( frag_x + 1 ))",
+    "right=$tex_r",
+    "idx=$(( left * 4 + mid * 2 + right ))",
+    `cell=$(( (${cond}) ? 1 : 0 ))`,
+    "putb $(( cell ))",
+  ].join("\n");
+}
+
+export function compileCa1dStrictGLSL(rawGlsl, { width = 64, height = 1 } = {}) {
   const g = liftTextureWindowSample(rawGlsl, { width, height, highp: true });
   return { glsl: packFragmentResultToRGBA(g), fired: g !== String(rawGlsl) };
 }

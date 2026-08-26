@@ -50,7 +50,7 @@
 // text are verified against the C twin by __fuzzy-bench.mjs, and the
 // browser harness (www/fuzzy-bench.html) runs the same generator.
 
-import { packFragmentResultToRGBA, liftTextureWindowSample, tileOffsetUniform, needleLengthUniform } from "./shglsl-opt.js";
+import { packFragmentResultToRGBA, liftTextureWindowSample, tileOffsetUniform, needleLengthUniform, chunkStartUniform } from "./shglsl-opt.js";
 
 // ── the representability bounds the chunk size is computed from ───
 export const MEDIUM_INT_MAX = 32767;    // ES 1.00 mediump int minimum (±2¹⁵) — the SAFE accumulator bound on every device
@@ -294,6 +294,70 @@ export function templateChunkWindows(nl, chunkSize) {
     chunks.push({ c, start, len });
   }
   return { m, chunks };
+}
+
+// ── 2c. the STRICT ES 1.00 template (the fixed-geometry fallback) ─
+// Some ES 1.00 compilers (verified: this repo's headless-Chromium
+// SwiftShader) reject EVERY `while` — even well-formed literal-bound
+// ones — accepting only `for i in <constant list>` loops (the backend
+// emits a constant-bound `for` for those). The strict template loops a
+// CONSTANT maxC (the array cap) and reads the chunk as a per-chunk
+// texture whose G channel is a 0/1 validity mask, so padding contributes
+// diff·0 = 0 — the compile-once + uniform-window pattern survives with
+// NO dynamic bound, at the price of maxC−len masked iterations.
+export function fuzzyTemplateStrictShader(maxC = ARR_CAP) {
+  const list = Array.from({ length: maxC }, (_, i) => i).join(" ");
+  return [
+    "x=$frag_x",
+    "chunk_start=0",   // → uNeedleStart (chunkStartUniform)
+    "score=0",
+    "for k in " + list + "; do",
+    "    tex_idx=$(( chunk_start + k + x ))",   // haystack window (uTex)
+    "    crack_idx=$(( k ))",                    // needle chunk window (uCrack)
+    "    diff=$(( cr_r - tex_r ))",
+    "    if [ $diff -lt 0 ]; then diff=$((-diff)); fi",
+    "    mask=$(( cr_g / 255 ))",                // 255 = real digit, 0 = padding
+    "    score=$(( score + diff * mask ))",
+    "done",
+    "putb $(( score ))",
+  ].join("\n");
+}
+
+// the strict template GLSL pipeline: window lift (tex_r + cr_r + cr_g)
+// → the chunk-start uniform → the pack.
+export function compileStrictTemplateGLSL(rawGlsl, opts = {}) {
+  const { width = 4096, height = 1, crackWidth = width, crackHeight = height } = opts;
+  let g = liftTextureWindowSample(rawGlsl, { width, height, crackWidth, crackHeight, highp: true });
+  g = chunkStartUniform(g);
+  const fired = g !== String(rawGlsl);
+  return { glsl: packFragmentResultToRGBA(g), fired };
+}
+
+// the per-chunk uCrack texture for the strict template: the chunk's
+// digits in R (padded to maxC with zeros) and a 0/1 validity mask in G.
+export function chunkMaskTexture(chunk, maxC = ARR_CAP, width = 4096) {
+  const data = new Uint8Array(width * 4);
+  for (let j = 0; j < maxC; j++) {
+    const valid = j < chunk.len;
+    data[j * 4] = valid ? chunk.digits[j] : 0;
+    data[j * 4 + 1] = valid ? 255 : 0;
+    data[j * 4 + 3] = 255;
+  }
+  return data;
+}
+
+// chunk windows for the strict template: each chunk carries its own
+// digits (the source is geometry-only, the chunk data is a texture)
+export function templateStrictChunks(needle, maxC = ARR_CAP) {
+  const nl = needle.length;
+  const m = Math.max(1, Math.ceil(nl / maxC));
+  const chunks = [];
+  for (let c = 0; c < m; c++) {
+    const start = c * maxC;
+    const len = Math.min(maxC, nl - start);
+    chunks.push({ c, start, len, digits: needle.slice(start, start + len) });
+  }
+  return { nl, m, chunks };
 }
 
 // ── 3. the optimise transform wiring: RGBA-pack the chunk GLSL ──

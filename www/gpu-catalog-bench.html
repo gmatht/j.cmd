@@ -40,8 +40,8 @@ algorithm and run it on <b>your GPU</b> — every result is PASS-checked against
 <script type="module">
 import { getOtranspilerl } from "../src/otranspilerl.js";
 import {
-  collatzShader, compileCollatzGLSL, collatzCPU,
-  ca1dShader, compileCa1DGLSL, ca1DCPU,
+  collatzShader, compileCollatzGLSL, collatzStrictShader, compileCollatzStrictGLSL, collatzCPU,
+  ca1dShader, compileCa1DGLSL, ca1dStrictShader, compileCa1dStrictGLSL, ca1DCPU,
   hashVertexShader, hashCPU, decodeVertexBytes,
 } from "../src/gpucatalog.js";
 import { liftTextureWindowSample, packFragmentResultToRGBA } from "../src/shglsl-opt.js";
@@ -72,8 +72,9 @@ function uploadTexelTexture(gl, values, width) {
 
 async function main() {
   const lib = await getOtranspilerl();
-  const alg = $("alg").value;
-  const W = Math.max(2, Number($("w").value) || 64);
+  const q = new URLSearchParams(location.search);
+  const alg = q.get("alg") ?? $("alg").value;
+  const W = Math.max(2, Number(q.get("w") ?? $("w").value) || 64);
   const cv = $("c");
   cv.width = W; cv.height = 1;
   const gl = cv.getContext("webgl", { antialias: false, preserveDrawingBuffer: true });
@@ -83,16 +84,24 @@ async function main() {
   if (alg === "collatz") {
     // deterministic inputs ≤ 255 (the int32 Collatz-intermediate bound)
     const values = Array.from({ length: W }, (_, i) => (i * 37 + 3) % 251);
-    const raw = lib.raw("otranspilerl_glsl", [collatzShader()], [800]).output;
-    let t0 = performance.now();
-    const { glsl, fired } = compileCollatzGLSL(raw, { width: W });
-    let t1 = performance.now();
-    if (!fired) { out("transform did not fire"); return; }
-    const vs = gl.createShader(gl.VERTEX_SHADER); gl.shaderSource(vs, VERT); gl.compileShader(vs);
-    const fs = gl.createShader(gl.FRAGMENT_SHADER); gl.shaderSource(fs, glsl); gl.compileShader(fs);
+    let raw = lib.raw("otranspilerl_glsl", [collatzShader()], [800]).output;
+    let strict = false;
+    let { glsl, fired } = compileCollatzGLSL(raw, { width: W });
+    let vs = gl.createShader(gl.VERTEX_SHADER); gl.shaderSource(vs, VERT); gl.compileShader(vs);
+    let fs = gl.createShader(gl.FRAGMENT_SHADER); gl.shaderSource(fs, glsl); gl.compileShader(fs);
+    if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+      // strict ES 1.00 fallback: the data-driven while is rejected (headless
+      // Chromium SwiftShader verifies exactly this) → fixed 512 iterations + break
+      strict = true;
+      raw = lib.raw("otranspilerl_glsl", [collatzStrictShader(512)], [800]).output;
+      ({ glsl, fired } = compileCollatzStrictGLSL(raw, { width: W }));
+      fs = gl.createShader(gl.FRAGMENT_SHADER); gl.shaderSource(fs, glsl); gl.compileShader(fs);
+    }
     if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) { out("fragment: " + gl.getShaderInfoLog(fs)); return; }
+    const t0 = performance.now();
     const prog = gl.createProgram(); gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);
     if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) { out("link: " + gl.getProgramInfoLog(prog)); return; }
+    const t1 = performance.now();
     gl.useProgram(prog);
     const loc = gl.getUniformLocation(prog, "uTex"); if (loc) gl.uniform1i(loc, 0);
     const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
@@ -112,7 +121,7 @@ async function main() {
     const want = collatzCPU(values);
     const ok = scores.every((v, i) => v === want[i]) && sentinels === 0;
     out(
-`collatz (fragment · data-driven loop): ${W} pixels
+`collatz (fragment${strict ? " · strict ES 1.00: fixed 512-iteration loop" : " · data-driven loop"}): ${W} pixels
 compile ${(t1 - t0).toFixed(1)} ms · draw+readback ${per.toFixed(3)} ms/frame (N=${N})
   == cpuFuzzy-style CPU reference: ${ok ? "PASS" : "FAIL"}
   sentinels: ${sentinels} · sample ${scores.slice(0, 8).join(",")}…
@@ -120,14 +129,20 @@ compile ${(t1 - t0).toFixed(1)} ms · draw+readback ${per.toFixed(3)} ms/frame (
   } else if (alg === "ca1d") {
     const row = Array.from({ length: W }, (_, i) => (i * 7 + 3) % 2 ? 1 : 0);
     const rule = [0, 1, 1, 1, 0, 1, 1, 0]; // 118
-    const raw = lib.raw("otranspilerl_glsl", [ca1dShader(rule)], [800]).output;
+    let raw = lib.raw("otranspilerl_glsl", [ca1dShader(rule)], [800]).output;
+    let strict = false;
+    let { glsl, fired } = compileCa1DGLSL(raw, { width: W });
     let t0 = performance.now();
-    const { glsl, fired } = compileCa1DGLSL(raw, { width: W });
-    let t1 = performance.now();
-    if (!fired) { out("transform did not fire"); return; }
-    const vs = gl.createShader(gl.VERTEX_SHADER); gl.shaderSource(vs, VERT); gl.compileShader(vs);
-    const fs = gl.createShader(gl.FRAGMENT_SHADER); gl.shaderSource(fs, glsl); gl.compileShader(fs);
+    let vs = gl.createShader(gl.VERTEX_SHADER); gl.shaderSource(vs, VERT); gl.compileShader(vs);
+    let fs = gl.createShader(gl.FRAGMENT_SHADER); gl.shaderSource(fs, glsl); gl.compileShader(fs);
+    if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+      strict = true; // strict ES 1.00: dynamic array index rejected → arithmetic rule
+      raw = lib.raw("otranspilerl_glsl", [ca1dStrictShader(rule)], [800]).output;
+      ({ glsl, fired } = compileCa1dStrictGLSL(raw, { width: W }));
+      fs = gl.createShader(gl.FRAGMENT_SHADER); gl.shaderSource(fs, glsl); gl.compileShader(fs);
+    }
     if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) { out("fragment: " + gl.getShaderInfoLog(fs)); return; }
+    const t1 = performance.now();
     const prog = gl.createProgram(); gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);
     gl.useProgram(prog);
     const loc = gl.getUniformLocation(prog, "uTex"); if (loc) gl.uniform1i(loc, 0);
@@ -143,7 +158,7 @@ compile ${(t1 - t0).toFixed(1)} ms · draw+readback ${per.toFixed(3)} ms/frame (
     const want = ca1DCPU(row, rule);
     const ok = scores.every((v, i) => v === want[i]) && sentinels === 0;
     out(
-`ca1d (fragment · rule ${rule.join("")}): ${W} cells
+`ca1d (fragment${strict ? " · strict ES 1.00: arithmetic rule" : ""} · rule ${rule.join("")}): ${W} cells
 compile ${(t1 - t0).toFixed(1)} ms · draw+readback ${per.toFixed(3)} ms/frame
   == CPU reference: ${ok ? "PASS" : "FAIL"} · sentinels: ${sentinels}
   next row: ${[...scores].join("")}` + (ok ? "" : `\n  want:    ${want.join("")}`));

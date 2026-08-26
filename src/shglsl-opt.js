@@ -391,3 +391,20 @@ export function tileOffsetUniform(src) {
   out = out.replace("int out_buf[4];", "int out_buf[4];\nuniform int uTileStart;");
   return out;
 }
+
+// ─── chunkStartUniform — the strict-template window-start pass ──
+// The fixed-geometry template (the strict ES 1.00 fallback, §6g/§6i)
+// loops a CONSTANT iteration count, so only the haystack-window offset
+// varies per chunk: `g_chunk_start = <lit>;` → `g_chunk_start =
+// uNeedleStart;` with the uniform injected — the same compile-once
+// pattern as needleLengthUniform, minus the loop bound (which is baked
+// as a constant list to satisfy strict loop-index rules).
+// FAIL-SAFE: fires only when the bridge assignment is present.
+export function chunkStartUniform(src) {
+  const s = String(src);
+  if (!s.includes("int out_buf[4];")) return s;
+  if (!/g_chunk_start = -?\d+;/.test(s)) return s;
+  let out = s.replace(/([ \t]*)g_chunk_start = -?\d+;/, (m, ind) => `${ind}g_chunk_start = uNeedleStart;`);
+  if (out === s) return s;
+  return out.replace("int out_buf[4];", "int out_buf[4];\nuniform int uNeedleStart;");
+}
