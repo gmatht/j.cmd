@@ -1,0 +1,164 @@
+// ─── gl-catalog-gate.mjs — the GPU-lift catalog on headless-gl ──
+// The REAL transformed shaders for the catalog algorithms (collatz,
+// ca1d, recordhash), run on headless-gl (SwiftShader). Equality only —
+// timing would mislead. Every case must reproduce the CPU reference
+// exactly (0 sentinels); imported by __gpu-catalog-bench.mjs; also
+// runnable standalone:  node gl-catalog-gate.mjs  (exit 0 on all pass)
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const createGL = require("gl");
+
+const VERT = `
+attribute vec2 aPos;
+varying highp vec2 vUv;
+void main(){ gl_Position = vec4(aPos, 0.0, 1.0); vUv = aPos * 0.5 + 0.5; }`;
+
+function texelTexture(gl, values, width) {
+  const data = new Uint8Array(width * 4);
+  values.forEach((v, i) => { data[i * 4] = v; data[i * 4 + 3] = 255; });
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return tex;
+}
+
+function fragProgram(gl, fragSrc, width) {
+  const vs = gl.createShader(gl.VERTEX_SHADER);
+  gl.shaderSource(vs, VERT); gl.compileShader(vs);
+  const fs = gl.createShader(gl.FRAGMENT_SHADER);
+  gl.shaderSource(fs, fragSrc); gl.compileShader(fs);
+  if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) throw new Error("frag: " + gl.getShaderInfoLog(fs));
+  const prog = gl.createProgram();
+  gl.attachShader(prog, vs); gl.attachShader(prog, fs);
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error("link: " + gl.getProgramInfoLog(prog));
+  gl.useProgram(prog);
+  const loc = gl.getUniformLocation(prog, "uTex"); if (loc) gl.uniform1i(loc, 0);
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+  const a = gl.getAttribLocation(prog, "aPos");
+  gl.enableVertexAttribArray(a); gl.vertexAttribPointer(a, 2, gl.FLOAT, false, 0, 0);
+  gl.viewport(0, 0, width, 1);
+  return prog;
+}
+
+function readScores(gl, prog, width, decodeRGBA) {
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  const px = new Uint8Array(width * 4);
+  gl.readPixels(0, 0, width, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  return decodeRGBA(px, width);
+}
+
+export async function run(deps) {
+  const {
+    lib,
+    collatzShader, compileCollatzGLSL, collatzCPU,
+    ca1dShader, compileCa1DGLSL, ca1DCPU,
+    hashVertexShader, hashCPU,
+    decodeRGBA,
+  } = deps;
+  const failures = [];
+
+  // ── 1. collatz: fragment, data-driven loop ──
+  {
+    const values = [1, 7, 27, 255, 64, 97, 3, 129];
+    const W = values.length;
+    const raw = lib.raw("otranspilerl_glsl", [collatzShader()], [800]).output;
+    const { glsl, fired } = compileCollatzGLSL(raw, { width: W });
+    if (!fired) throw new Error("collatz transform did not fire");
+    const gl = createGL(W, 1, { preserveDrawingBuffer: true });
+    gl.bindTexture(gl.TEXTURE_2D, texelTexture(gl, values, W));
+    const prog = fragProgram(gl, glsl, W);
+    const { scores, sentinels } = readScores(gl, prog, W, decodeRGBA);
+    const want = collatzCPU(values);
+    const ok = scores.every((v, i) => v === want[i]) && sentinels === 0;
+    console.log(`  collatz: got=[${[...scores].join(",")}] want=[${want.join(",")}] ==cpu ${ok ? "PASS" : "FAIL"} sentinels ${sentinels}`);
+    if (!ok) failures.push("collatz");
+  }
+
+  // ── 2. ca1d: one rule-118 step, three neighbours per fragment ──
+  {
+    const W = 64;
+    const row = new Array(W).fill(0);
+    row[7] = 1; row[19] = 1; row[26] = 1; row[44] = 1;
+    const rule = [0, 1, 1, 1, 0, 1, 1, 0]; // 118
+    const raw = lib.raw("otranspilerl_glsl", [ca1dShader(rule)], [800]).output;
+    const { glsl, fired } = compileCa1DGLSL(raw, { width: W });
+    if (!fired) throw new Error("ca1d transform did not fire");
+    const gl = createGL(W, 1, { preserveDrawingBuffer: true });
+    gl.bindTexture(gl.TEXTURE_2D, texelTexture(gl, row, W));
+    const prog = fragProgram(gl, glsl, W);
+    const { scores, sentinels } = readScores(gl, prog, W, decodeRGBA);
+    const want = ca1DCPU(row, rule);
+    const ok = scores.every((v, i) => v === want[i]) && sentinels === 0;
+    console.log(`  ca1d: seeds at 7,19,26,44 → next row [${[...scores].join("")}] ?== cpu ${ok ? "PASS" : "FAIL"} sentinels ${sentinels}`);
+    if (!ok) failures.push("ca1d");
+  }
+
+  // ── 3. hash: per-record vertex compute + POINTS readback ──
+  {
+    const records = [[7, 3, 9], [0, 0, 0], [255, 255, 255], [100, 200, 50], [13, 29, 17], [1, 2, 3], [250, 1, 1], [64, 64, 64]];
+    const N = records.length;
+    const raw = lib.raw("otranspilerl_glslv", [hashVertexShader()], [800]).output;
+    const gl = createGL(N, 1, { preserveDrawingBuffer: true });
+    const FRAG = `precision mediump float;
+varying highp vec4 vColor;
+void main(){ gl_FragColor = vColor; }`;
+    const vs = gl.createShader(gl.VERTEX_SHADER);
+    gl.shaderSource(vs, raw); gl.compileShader(vs);
+    if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) throw new Error("vertex: " + gl.getShaderInfoLog(vs));
+    const fs = gl.createShader(gl.FRAGMENT_SHADER);
+    gl.shaderSource(fs, FRAG); gl.compileShader(fs);
+    const prog = gl.createProgram();
+    gl.attachShader(prog, vs); gl.attachShader(prog, fs);
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error("link: " + gl.getProgramInfoLog(prog));
+    gl.useProgram(prog);
+    const aPos = new Float32Array(N * 3);
+    records.forEach((r, i) => { aPos[i * 3] = r[0] / 1000; aPos[i * 3 + 1] = r[1] / 1000; aPos[i * 3 + 2] = r[2] / 1000; });
+    const aUv = new Float32Array(N * 2);
+    for (let i = 0; i < N; i++) { aUv[i * 2] = (i + 0.5) * 2 / N - 1; aUv[i * 2 + 1] = 0; }
+    const b1 = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b1);
+    gl.bufferData(gl.ARRAY_BUFFER, aPos, gl.STATIC_DRAW);
+    const a1 = gl.getAttribLocation(prog, "aPosition");
+    gl.enableVertexAttribArray(a1); gl.vertexAttribPointer(a1, 3, gl.FLOAT, false, 0, 0);
+    const b2 = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b2);
+    gl.bufferData(gl.ARRAY_BUFFER, aUv, gl.STATIC_DRAW);
+    const a2 = gl.getAttribLocation(prog, "aUv");
+    gl.enableVertexAttribArray(a2); gl.vertexAttribPointer(a2, 2, gl.FLOAT, false, 0, 0);
+    gl.viewport(0, 0, N, 1);
+    gl.drawArrays(gl.POINTS, 0, N);
+    const px = new Uint8Array(N * 4);
+    gl.readPixels(0, 0, N, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    const { scores } = deps.decodeVertexBytes(px, N);
+    const want = hashCPU(records);
+    const ok = scores.every((v, i) => v === want[i]);
+    console.log(`  hash: got=[${[...scores].join(",")}] want=[${want.join(",")}] ?== cpu ${ok ? "PASS" : "FAIL"}`);
+    if (!ok) failures.push("hash");
+  }
+
+  return failures.length === 0 ? true : failures.join(", ");
+}
+
+function hashShaderSrc() {
+  // unused placeholder — removed
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const deps = await import("./src/otranspilerl.js").then((m) => ({ lib: m.getOtranspilerl() }));
+  deps.lib = await deps.lib;
+  const c = await import("./src/gpucatalog.js");
+  for (const k of ["collatzShader", "compileCollatzGLSL", "collatzCPU", "ca1dShader", "compileCa1DGLSL", "ca1DCPU", "hashVertexShader", "hashCPU"]) deps[k] = c[k];
+  const f = await import("./src/fuzzygpu.js");
+  deps.decodeRGBA = f.decodeRGBA;
+  deps.decodeVertexBytes = c.decodeVertexBytes;
+  const res = await run(deps);
+  console.log(res === true ? "CATALOG GL GATE: PASS" : "CATALOG GL GATE: FAIL " + res);
+  process.exit(res === true ? 0 : 1);
+}

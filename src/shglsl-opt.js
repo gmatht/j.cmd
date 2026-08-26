@@ -311,11 +311,11 @@ export function liftTextureWindowSample(src, opts = {}) {
   // excluded: the decl is followed by `;`, assignments by ` =`.
   for (const ch of ["r", "g", "b", "a"]) {
     out = out.replace(
-      new RegExp(`(?<![A-Za-z0-9_])g_tex_${ch}(?![A-Za-z0-9_])(?!\\s*=|;)`, "g"),
+      new RegExp(`(?<![A-Za-z0-9_])(?<!int )g_tex_${ch}(?![A-Za-z0-9_])(?!\\s*=)`, "g"),
       () => `int(texture2D(uTex, ${uvTex}).${ch} * 255.0)`
     );
     out = out.replace(
-      new RegExp(`(?<![A-Za-z0-9_])g_cr_${ch}(?![A-Za-z0-9_])(?!\\s*=|;)`, "g"),
+      new RegExp(`(?<![A-Za-z0-9_])(?<!int )g_cr_${ch}(?![A-Za-z0-9_])(?!\\s*=)`, "g"),
       () => `int(texture2D(uCrack, ${uvCrack}).${ch} * 255.0)`
     );
   }

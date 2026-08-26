@@ -527,7 +527,51 @@ reference, 0 sentinels, compiles=1. The browser harness gains a
 template/chunked selector; the overflow-free bound is unchanged (per
 partial ≤ INT_MAX; chunking exists only for that bound, and the uniform
 window makes the chunk count FREE).
+
+## 6h. The GPU-lift catalog — other algorithms that move to the GPU
+
+The fuzzy matcher's recipe generalises (src/gpucatalog.js + gl-catalog-gate.mjs +
+__gpu-catalog-bench.mjs + www/gpu-catalog-bench.html): expose a parallel dimension
+as ONE shader invocation per work item, keep the body integer-compute, load the
+data through the texture-window lift (fragment) or the attribute bridges
+(vertex), and round-trip the per-item result through the RGBA byte buffer.
+Three more algorithms are implemented and verified EXACTLY (headless-gl == the
+CPU reference, 0 sentinels):
+
+| algorithm | stage | parallel dimension | data load | the lifted feature |
+|---|---|---|---|---|
+| collatz (step count per number) | fragment | one pixel per input | texture window (tex_idx = frag_x) | a DATA-DRIVEN loop — `while n > 1`, each pixel runs its own iteration count |
+| ca1d (one 1D CA step, rule baked) | fragment | one pixel per cell | texture window; THREE reads per fragment by reassigning tex_idx between reads | the per-use sample reads MULTIPLE texels per fragment (left/mid/right) |
+| recordhash (per-record hash) | vertex | one vertex per record | ap_*/auv_* attribute bridges | the vertex compute stage + the vc_* varyings output model |
+
+**The vertex stage specifics** (the recordhash transport): the record arrives via
+ap_* (aPosition ×1000), the payload leaves via vc_* and the POINTS raster reads
+back like any canvas. Two traps, both verified: vp_* must be set through the bc
+float captures AND every capture must reference a variable (a bare literal takes
+the string path and drags in the itos/cat `do`-loop helpers, which fail strict
+compilers); and vc_* is ×1000, so the exact byte round-trip is
+`vc = b·1000/255` (floor) with the readback decoding `int(vc/1000·255+0.5)` — the
+vertex readback has NO A≥128 sentinel (vc_a is the alpha filler).
+
+**What was considered and rejected, with the blocker:**
+- edit-distance DP — the DP cell depends on the previous cell (no parallel
+  dimension; a scan, not a map);
+- prefix sums / scan — data-dependent sequential dependency chain;
+- histogram scatter — scatter to an arbitrary bin needs atomics/scatter writes
+  (absent in ES 1.00); the bin-per-pixel readback is hl×bins texels;
+- float Mandelbrot — per-iteration fp math; the bc-float path is
+  constant-folding, not per-pixel-iteration (a fixed-point escape-time
+  variant stays liftable).
+
+Measured (`node __gpu-catalog-bench.mjs`, exit ≠ 0 on any gate failure):
+per-algorithm CPU baselines (bash vs C twin), the GPU-path fixed overhead
+(cold bash→GLSL ~24-28 ms / cached ~0.004 ms), the transform fire + emitted-
+output checks, and the headless-gl equality gate for all three. The
+overflow-free bound carries over per algorithm (each item's result is bounded
+and RGBA-packed; collatz keeps inputs ≤ 2³¹'s headroom so the 3n+1
+intermediates stay < 2³¹).
 ---
+
 
 See `www/examples/mimecroft-frag.sh` (CRT scanlines, per-pixel
 corruption hashing, vignette, textured blocks with a crack overlay)
