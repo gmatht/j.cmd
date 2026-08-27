@@ -50,7 +50,7 @@
 // text are verified against the C twin by __fuzzy-bench.mjs, and the
 // browser harness (www/fuzzy-bench.html) runs the same generator.
 
-import { packFragmentResultToRGBA, liftTextureWindowSample, tileOffsetUniform, needleLengthUniform, chunkStartUniform } from "./shglsl-opt.js";
+import { packFragmentResultToRGBA, liftTextureWindowSample, tileOffsetUniform, needleLengthUniform, chunkStartUniform, collapseConsecutiveListLoop } from "./shglsl-opt.js";
 
 // ── the representability bounds the chunk size is computed from ───
 export const MEDIUM_INT_MAX = 32767;    // ES 1.00 mediump int minimum (±2¹⁵) — the SAFE accumulator bound on every device
@@ -329,6 +329,7 @@ export function fuzzyTemplateStrictShader(maxC = ARR_CAP) {
 export function compileStrictTemplateGLSL(rawGlsl, opts = {}) {
   const { width = 4096, height = 1, crackWidth = width, crackHeight = height, tile = false } = opts;
   let g = liftTextureWindowSample(rawGlsl, { width, height, crackWidth, crackHeight, highp: true });
+  g = collapseConsecutiveListLoop(g);   // the 1024-branch if-chain → g_k = _fi
   g = chunkStartUniform(g);
   if (tile) g = tileOffsetUniform(g);
   const fired = g !== String(rawGlsl);

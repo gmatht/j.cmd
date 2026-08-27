@@ -408,3 +408,37 @@ export function chunkStartUniform(src) {
   if (out === s) return s;
   return out.replace("int out_buf[4];", "int out_buf[4];\nuniform int uNeedleStart;");
 }
+
+// ─── collapseConsecutiveListLoop — shrink the strict-loop if-chain ──
+// The backend lowers `for k in 0 1 2 … N-1` (the ONLY loop form strict
+// ES 1.00 compilers accept) into a constant-bound `for` whose body maps
+// the loop index to the list value with an if per element:
+//
+//     for (int _fi = 0; _fi < 1024; _fi++) {
+//         if (_fi == 0) { g_k = 0; }
+//         if (_fi == 1) { g_k = 1; }
+//         … 1024 branches …
+//         <body>
+//     }
+//
+// For a CONSECUTIVE 0..N-1 list the whole chain is exactly `g_k = _fi;`
+// — a one-line assignment. Collapsing it shrinks the strict shader from
+// ~40 KB to ~2 KB, which is what makes the ANGLE-D3D11 driver compile
+// (measured ~4.9 s on the 1024-branch form) drop to the ~50 ms class.
+// FAIL-SAFE: fires only when the chain is EXACTLY the consecutive
+// 0..N-1 sequence for the same variable; any other list passes through.
+export function collapseConsecutiveListLoop(src) {
+  const s = String(src);
+  const m = /for \(int _fi = 0; _fi < (\d+); _fi\+\+\) \{\n((?:[ \t]*if \(_fi == \d+\) \{ g_(\w+) = \d+; \}\n)+)/.exec(s);
+  if (!m) return s;
+  const N = Number(m[1]);
+  const chain = m[2];
+  const varName = m[3];
+  const ifs = [...chain.matchAll(/if \(_fi == (\d+)\) \{ g_\w+ = (\d+); \}/g)];
+  if (ifs.length !== N) return s;
+  for (let i = 0; i < N; i++) {
+    if (Number(ifs[i][1]) !== i || Number(ifs[i][2]) !== i) return s;
+  }
+  const ind = chain.match(/^([ \t]*)/)[1];
+  return s.replace(m[0], `for (int _fi = 0; _fi < ${N}; _fi++) {\n${ind}g_${varName} = _fi;\n`);
+}

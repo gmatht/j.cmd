@@ -39,7 +39,7 @@
 //   float Mandelbrot      — per-iteration fp math; the bc-float path is
 //                           constant-folding, not per-pixel-iteration.
 
-import { liftTextureWindowSample, packFragmentResultToRGBA } from "./shglsl-opt.js";
+import { liftTextureWindowSample, packFragmentResultToRGBA, collapseConsecutiveListLoop } from "./shglsl-opt.js";
 import { decodeRGBA } from "./fuzzygpu.js";
 
 // ── 1. fragment: the Collatz step count ──────────────────────────
@@ -104,7 +104,8 @@ export function collatzStrictShader(maxIters = 512) {
 }
 
 export function compileCollatzStrictGLSL(rawGlsl, { width = 64, height = 1 } = {}) {
-  const g = liftTextureWindowSample(rawGlsl, { width, height, highp: true });
+  let g = liftTextureWindowSample(rawGlsl, { width, height, highp: true });
+  g = collapseConsecutiveListLoop(g);   // the 512-branch if-chain → g_k = _fi
   return { glsl: packFragmentResultToRGBA(g), fired: g !== String(rawGlsl) };
 }
 

@@ -41,6 +41,7 @@ import {
   chunkSizeFor, chunkBound, maxInputDiff,
   fuzzyTextureChunkShaders, packTextureChunkGLSL, haystackTexelData,
   fuzzyTemplateShader, compileTemplateGLSL, needleTexelData, templateChunkWindows,
+  fuzzyTemplateStrictShader, compileStrictTemplateGLSL, chunkMaskTexture, templateStrictChunks,
   MEDIUM_INT_MAX, HIGH_INT_MAX, PACK_MAX, ARR_CAP,
 } from "./src/fuzzygpu.js";
 import { getOtranspilerl } from "./src/otranspilerl.js";
@@ -413,6 +414,7 @@ console.log("  (shglsl-opt.liftTextureWindowSample — per-use sample at the pro
     const res = await gate.run({
       lib, digits, fuzzyTextureChunkShaders, packTextureChunkGLSL, haystackTexelData,
       fuzzyTemplateShader, compileTemplateGLSL, needleTexelData, templateChunkWindows,
+      fuzzyTemplateStrictShader, compileStrictTemplateGLSL, chunkMaskTexture, templateStrictChunks,
       tileLayout, decodeRGBA, reducePartials, cpuFuzzy,
     });
     glGate = res === true ? "PASS" : "FAIL: " + res;
