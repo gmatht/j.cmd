@@ -60,7 +60,7 @@ export async function run(deps) {
     lib,
     collatzShader, compileCollatzGLSL, collatzCPU,
     ca1dShader, compileCa1DGLSL, ca1DCPU,
-    hashVertexShader, hashCPU,
+    hashVertexShader, hashCPU, injectPointSize,
     decodeRGBA,
   } = deps;
   const failures = [];
@@ -105,8 +105,9 @@ export async function run(deps) {
   {
     const records = [[7, 3, 9], [0, 0, 0], [255, 255, 255], [100, 200, 50], [13, 29, 17], [1, 2, 3], [250, 1, 1], [64, 64, 64]];
     const N = records.length;
-    const raw = lib.raw("otranspilerl_glslv", [hashVertexShader()], [800]).output;
-    const gl = createGL(N, 1, { preserveDrawingBuffer: true });
+    const raw = injectPointSize(lib.raw("otranspilerl_glslv", [hashVertexShader()], [800]).output, 3.0);
+    const W2 = N * 2; // stride-2 point transport (a 3px point per record, read every 2nd pixel)
+    const gl = createGL(W2, 1, { preserveDrawingBuffer: true });
     const FRAG = `precision mediump float;
 varying highp vec4 vColor;
 void main(){ gl_FragColor = vColor; }`;
@@ -123,7 +124,7 @@ void main(){ gl_FragColor = vColor; }`;
     const aPos = new Float32Array(N * 3);
     records.forEach((r, i) => { aPos[i * 3] = r[0] / 1000; aPos[i * 3 + 1] = r[1] / 1000; aPos[i * 3 + 2] = r[2] / 1000; });
     const aUv = new Float32Array(N * 2);
-    for (let i = 0; i < N; i++) { aUv[i * 2] = (i + 0.5) * 2 / N - 1; aUv[i * 2 + 1] = 0; }
+    for (let i = 0; i < N; i++) { aUv[i * 2] = ((2 * i + 0.5) / W2) * 2 - 1; aUv[i * 2 + 1] = 0; }
     const b1 = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b1);
     gl.bufferData(gl.ARRAY_BUFFER, aPos, gl.STATIC_DRAW);
     const a1 = gl.getAttribLocation(prog, "aPosition");
@@ -132,11 +133,13 @@ void main(){ gl_FragColor = vColor; }`;
     gl.bufferData(gl.ARRAY_BUFFER, aUv, gl.STATIC_DRAW);
     const a2 = gl.getAttribLocation(prog, "aUv");
     gl.enableVertexAttribArray(a2); gl.vertexAttribPointer(a2, 2, gl.FLOAT, false, 0, 0);
-    gl.viewport(0, 0, N, 1);
+    gl.viewport(0, 0, W2, 1);
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
     gl.drawArrays(gl.POINTS, 0, N);
-    const px = new Uint8Array(N * 4);
-    gl.readPixels(0, 0, N, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
-    const { scores } = deps.decodeVertexBytes(px, N);
+    const px = new Uint8Array(W2 * 4);
+    gl.readPixels(0, 0, W2, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    const scores = new Int32Array(N);
+    for (let i = 0; i < N; i++) scores[i] = px[i * 2 * 4] + 256 * px[i * 2 * 4 + 1] + 65536 * px[i * 2 * 4 + 2];
     const want = hashCPU(records);
     const ok = scores.every((v, i) => v === want[i]);
     console.log(`  hash: got=[${[...scores].join(",")}] want=[${want.join(",")}] ?== cpu ${ok ? "PASS" : "FAIL"}`);
@@ -204,6 +207,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const f = await import("./src/fuzzygpu.js");
   deps.decodeRGBA = f.decodeRGBA;
   deps.decodeVertexBytes = c.decodeVertexBytes;
+  const o = await import("./src/shglsl-opt.js");
+  deps.injectPointSize = o.injectPointSize;
   const res = await run(deps);
   console.log(res === true ? "CATALOG GL GATE: PASS" : "CATALOG GL GATE: FAIL " + res);
   process.exit(res === true ? 0 : 1);

@@ -32,7 +32,7 @@ import {
   ca1dShader, compileCa1DGLSL, ca1dStrictShader, compileCa1dStrictGLSL, ca1DCPU,
   hashVertexShader, hashCPU, decodeVertexBytes, CATALOG,
 } from "./src/gpucatalog.js";
-import { liftTextureWindowSample, packFragmentResultToRGBA } from "./src/shglsl-opt.js";
+import { liftTextureWindowSample, packFragmentResultToRGBA, injectPointSize } from "./src/shglsl-opt.js";
 import { decodeRGBA } from "./src/fuzzygpu.js";
 
 const quick = process.argv.includes("--quick");
@@ -111,7 +111,7 @@ async function runGate() {
     const res = await gate.run({
       lib, collatzShader, compileCollatzGLSL, collatzStrictShader, compileCollatzStrictGLSL, collatzCPU,
       ca1dShader, compileCa1DGLSL, ca1dStrictShader, compileCa1dStrictGLSL, ca1DCPU,
-      hashVertexShader, hashCPU, decodeRGBA, decodeVertexBytes,
+      hashVertexShader, hashCPU, injectPointSize, decodeRGBA, decodeVertexBytes,
     });
     return res === true;
   } catch (e) {

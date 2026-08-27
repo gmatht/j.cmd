@@ -46,6 +46,7 @@ import {
   hashVertexShader, hashCPU, decodeVertexBytes,
 } from "../src/gpucatalog.js";
 import { decodeRGBA } from "../src/fuzzygpu.js";
+import { injectPointSize } from "../src/shglsl-opt.js";
 
 const $ = (id) => document.getElementById(id);
 const outEl = $("out");
@@ -103,6 +104,7 @@ function runCollatz(gl, lib, W, N) {
   const prog = pr.p;
   const t1 = performance.now();
   uploadTexelTexture(gl, values, W);
+  gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
   const px = new Uint8Array(W * 4);
   let per = 0;
   for (let k = 0; k < N; k++) { const t2 = performance.now(); gl.drawArrays(gl.TRIANGLES, 0, 3); gl.readPixels(0, 0, W, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); per += (performance.now() - t2) / N; }
@@ -130,6 +132,7 @@ function runCa1d(gl, lib, W, N) {
   const prog = pr.p;
   const t1 = performance.now();
   uploadTexelTexture(gl, row, W);
+  gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
   const px = new Uint8Array(W * 4);
   let per = 0;
   for (let k = 0; k < N; k++) { const t2 = performance.now(); gl.drawArrays(gl.TRIANGLES, 0, 3); gl.readPixels(0, 0, W, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); per += (performance.now() - t2) / N; }
@@ -141,7 +144,7 @@ function runCa1d(gl, lib, W, N) {
 
 function runHash(gl, lib, W, N) {
   const records = Array.from({ length: W }, (_, i) => [(i * 53) % 256, (i * 89) % 256, (i * 127) % 256]);
-  const raw = lib.raw("otranspilerl_glslv", [hashVertexShader()], [800]).output;
+  const raw = injectPointSize(lib.raw("otranspilerl_glslv", [hashVertexShader()], [800]).output, 3.0);
   const FRAG = `precision mediump float;\nvarying highp vec4 vColor;\nvoid main(){ gl_FragColor = vColor; }`;
   const t0 = performance.now();
   const vs = gl.createShader(gl.VERTEX_SHADER); gl.shaderSource(vs, raw); gl.compileShader(vs);
@@ -153,19 +156,22 @@ function runHash(gl, lib, W, N) {
   const t1 = performance.now();
   const aPos = new Float32Array(W * 3);
   records.forEach((r, i) => { aPos[i * 3] = r[0] / 1000; aPos[i * 3 + 1] = r[1] / 1000; aPos[i * 3 + 2] = r[2] / 1000; });
+  const W2 = W * 2; // stride-2 point transport: a 3px point per record, read every 2nd pixel
   const aUv = new Float32Array(W * 2);
-  for (let i = 0; i < W; i++) { aUv[i * 2] = (i + 0.5) * 2 / W - 1; aUv[i * 2 + 1] = 0; }
+  for (let i = 0; i < W; i++) { aUv[i * 2] = ((2 * i + 0.5) / W2) * 2 - 1; aUv[i * 2 + 1] = 0; }
   const b1 = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b1);
   gl.bufferData(gl.ARRAY_BUFFER, aPos, gl.STATIC_DRAW);
   const a1 = gl.getAttribLocation(prog, "aPosition"); gl.enableVertexAttribArray(a1); gl.vertexAttribPointer(a1, 3, gl.FLOAT, false, 0, 0);
   const b2 = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b2);
   gl.bufferData(gl.ARRAY_BUFFER, aUv, gl.STATIC_DRAW);
   const a2 = gl.getAttribLocation(prog, "aUv"); gl.enableVertexAttribArray(a2); gl.vertexAttribPointer(a2, 2, gl.FLOAT, false, 0, 0);
-  gl.viewport(0, 0, W, 1);
-  const px = new Uint8Array(W * 4);
+  gl.viewport(0, 0, W2, 1);
+  gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+  const px = new Uint8Array(W2 * 4);
   let per = 0;
-  for (let k = 0; k < N; k++) { const t2 = performance.now(); gl.drawArrays(gl.POINTS, 0, W); gl.readPixels(0, 0, W, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); per += (performance.now() - t2) / N; }
-  const { scores } = decodeVertexBytes(px, W);
+  for (let k = 0; k < N; k++) { const t2 = performance.now(); gl.drawArrays(gl.POINTS, 0, W); gl.readPixels(0, 0, W2, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); per += (performance.now() - t2) / N; }
+  const scores = new Int32Array(W);
+  for (let i = 0; i < W; i++) scores[i] = px[i * 2 * 4] + 256 * px[i * 2 * 4 + 1] + 65536 * px[i * 2 * 4 + 2];
   const want = hashCPU(records);
   const ok = scores.every((v, i) => v === want[i]);
   return { name: "hash", compileMs: t1 - t0, perFrameMs: per, ok, strict: false, sample: [...scores].slice(0, 8).join(",") };
@@ -187,7 +193,7 @@ async function main() {
   const alg = q.get("alg") ?? $("alg").value;
   const W = Math.max(2, Number(q.get("w") ?? $("w").value) || 64);
   const cv = $("c");
-  cv.width = W; cv.height = 1;
+  cv.width = 2 * W; cv.height = 1; // 2× for the hash's stride-2 point transport
   const gl = cv.getContext("webgl", { antialias: false, preserveDrawingBuffer: true });
   if (!gl) { out("no webgl"); return; }
   const dbg = gl.getExtension("WEBGL_debug_renderer_info");
@@ -206,7 +212,7 @@ async function runAll() {
   const q = new URLSearchParams(location.search);
   const W = Math.max(2, Number(q.get("w") ?? $("w").value) || 64);
   const cv = $("c");
-  cv.width = W; cv.height = 1;
+  cv.width = 2 * W; cv.height = 1; // 2× for the hash's stride-2 point transport
   const gl = cv.getContext("webgl", { antialias: false, preserveDrawingBuffer: true });
   if (!gl) { out("no webgl"); return; }
   const dbg = gl.getExtension("WEBGL_debug_renderer_info");

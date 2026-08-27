@@ -442,3 +442,18 @@ export function collapseConsecutiveListLoop(src) {
   const ind = chain.match(/^([ \t]*)/)[1];
   return s.replace(m[0], `for (int _fi = 0; _fi < ${N}; _fi++) {\n${ind}g_${varName} = _fi;\n`);
 }
+
+// ─── injectPointSize — make GL_POINTS rasterize robustly ──
+// The vertex-compute transport (recordhash) draws one GL_POINT per
+// record and reads the raster back. The backend never sets gl_PointSize
+// (default 1.0), and some drivers (verified: ANGLE-D3D11 on Intel UHD)
+// fail to rasterize a default-size point at a pixel centre — the readback
+// then returns the STALE canvas from the previous draw. Injecting an
+// explicit point size (2.0 px covers the centre robustly) fixes it.
+// FAIL-SAFE: fires only when main() exists and gl_PointSize is unset.
+export function injectPointSize(src, size = 2.0) {
+  const s = String(src);
+  if (!s.includes("void main()")) return s;
+  if (s.includes("gl_PointSize")) return s;
+  return s.replace("void main() {", `void main() {\n    gl_PointSize = ${Number(size).toFixed(1)};`);
+}

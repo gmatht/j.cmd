@@ -32,6 +32,7 @@ import {
   ca1dShader, compileCa1DGLSL, ca1DCPU,
   hashVertexShader, hashCPU, decodeVertexBytes,
 } from "./src/gpucatalog.js";
+import { injectPointSize } from "./src/shglsl-opt.js";
 
 const require = createRequire(import.meta.url);
 const createGL = require("gl");
@@ -233,9 +234,10 @@ const spawnMs = minOf(() => execFileSync("/bin/true", [], { stdio: "ignore" }), 
   const records = Array.from({ length: N }, (_, i) => [(i * 53) % 256, (i * 89) % 256, (i * 127) % 256]);
   const jsMs = minOf(() => hashCPU(records), runs);
   const cMs = minOf(() => execFileSync("/tmp/vs_hash", [records.map((r) => r.join(",")).join(";")], { stdio: "ignore" }), runs);
-  const raw = lib.raw("otranspilerl_glslv", [hashVertexShader()], [800]).output;
+  const raw = injectPointSize(lib.raw("otranspilerl_glslv", [hashVertexShader()], [800]).output, 3.0);
   const cold = minOf(() => lib.raw("otranspilerl_glslv", [hashVertexShader()], [800]).output, runs);
-  const gl = createGL(N, 1, { preserveDrawingBuffer: true });
+  const W2 = N * 2; // stride-2 point transport
+  const gl = createGL(W2, 1, { preserveDrawingBuffer: true });
   const FRAG = `precision mediump float;\nvarying highp vec4 vColor;\nvoid main(){ gl_FragColor = vColor; }`;
   const vs = gl.createShader(gl.VERTEX_SHADER); gl.shaderSource(vs, raw); gl.compileShader(vs);
   const fs = gl.createShader(gl.FRAGMENT_SHADER); gl.shaderSource(fs, FRAG); gl.compileShader(fs);
@@ -244,15 +246,15 @@ const spawnMs = minOf(() => execFileSync("/bin/true", [], { stdio: "ignore" }), 
   const aPos = new Float32Array(N * 3);
   records.forEach((r, i) => { aPos[i * 3] = r[0] / 1000; aPos[i * 3 + 1] = r[1] / 1000; aPos[i * 3 + 2] = r[2] / 1000; });
   const aUv = new Float32Array(N * 2);
-  for (let i = 0; i < N; i++) { aUv[i * 2] = (i + 0.5) * 2 / N - 1; aUv[i * 2 + 1] = 0; }
+  for (let i = 0; i < N; i++) { aUv[i * 2] = ((2 * i + 0.5) / W2) * 2 - 1; aUv[i * 2 + 1] = 0; }
   const b1 = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b1);
   gl.bufferData(gl.ARRAY_BUFFER, aPos, gl.STATIC_DRAW);
   const a1 = gl.getAttribLocation(p, "aPosition"); gl.enableVertexAttribArray(a1); gl.vertexAttribPointer(a1, 3, gl.FLOAT, false, 0, 0);
   const b2 = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b2);
   gl.bufferData(gl.ARRAY_BUFFER, aUv, gl.STATIC_DRAW);
   const a2 = gl.getAttribLocation(p, "aUv"); gl.enableVertexAttribArray(a2); gl.vertexAttribPointer(a2, 2, gl.FLOAT, false, 0, 0);
-  gl.viewport(0, 0, N, 1);
-  const shMs = minOf(() => { gl.drawArrays(gl.POINTS, 0, N); const px = new Uint8Array(N * 4); gl.readPixels(0, 0, N, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); }, runs);
+  gl.viewport(0, 0, W2, 1);
+  const shMs = minOf(() => { gl.drawArrays(gl.POINTS, 0, N); const px = new Uint8Array(W2 * 4); gl.readPixels(0, 0, W2, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); }, runs);
   row(["hash 64 (vertex)", jsMs.toFixed(3), cMs.toFixed(3), shMs.toFixed(2), (cold + shMs).toFixed(2), (jsMs / cMs).toFixed(1), (shMs / jsMs).toFixed(1), (shMs / cMs).toFixed(1)]);
 }
 
