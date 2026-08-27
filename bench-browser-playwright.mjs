@@ -34,10 +34,12 @@ await sleep(1200);
 const browser = await chromium.launch({
   executablePath: CHROME,
   headless: !headed,
-  args: [
-    "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu-sandbox",
-    "--enable-unsafe-swiftshader", "--use-gl=angle", "--use-angle=swiftshader-webgl",
-  ],
+  // headed: let the system GL stack drive WebGL (a real GPU if present);
+  // headless: force SwiftShader (no display, no GLX).
+  args: headed
+    ? ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu-sandbox"]
+    : ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu-sandbox",
+       "--enable-unsafe-swiftshader", "--use-gl=angle", "--use-angle=swiftshader-webgl"],
 });
 const pageCtx = await browser.newContext({ viewport: { width: 1200, height: 900 } });
 const p = await pageCtx.newPage();
