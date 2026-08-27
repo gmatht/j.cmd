@@ -77,7 +77,7 @@ export const ALGORITHMS = {
         `if [ $p -lt ${P} ]; then`,
         "    for b in " + blist + "; do",
         "        g=$(( g0 + b ))",
-        "        v=$(( (g * 37 + 11) % 1000 ))",
+        "        v=$(( ((g % 1000) * 37 + 11) % 1000 ))",
         "        if [ $v -gt $max ]; then max=$v; fi",
         "    done",
         "fi",
@@ -89,9 +89,9 @@ export const ALGORITHMS = {
       for (let p = 0; p < N / BLOCK; p++) {
         let m = 0;
         for (let b = 0; b < BLOCK; b++) {
-          const v = (p * BLOCK + b) * 37 + 11;
-          const vm = v - 1000 * ((v / 1000) | 0);
-          if (vm > m) m = vm;
+          const g = p * BLOCK + b;
+          const v = ((g % 1000) * 37 + 11) % 1000;
+          if (v > m) m = v;
         }
         sum = (sum + m) >>> 0;
       }
@@ -110,7 +110,7 @@ export const ALGORITHMS = {
         `if [ $p -lt ${P} ]; then`,
         "    for b in " + blist + "; do",
         "        g=$(( g0 + b ))",
-        "        v=$(( (g * 53 + 7) % 1000 ))",
+        "        v=$(( ((g % 1000) * 53 + 7) % 1000 ))",
         "        if [ $v -gt 500 ]; then count=$(( count + 1 )); fi",
         "    done",
         "fi",
@@ -123,7 +123,7 @@ export const ALGORITHMS = {
         let c = 0;
         for (let b = 0; b < BLOCK; b++) {
           const g = p * BLOCK + b;
-          const v = (g * 53 + 7) - 1000 * (((g * 53 + 7) / 1000) | 0);
+          const v = ((g % 1000) * 53 + 7) % 1000;
           if (v > 500) c++;
         }
         sum = (sum + c) >>> 0;
@@ -143,7 +143,7 @@ export const ALGORITHMS = {
         `if [ $p -lt ${P} ]; then`,
         "    for b in " + blist + "; do",
         "        g=$(( g0 + b ))",
-        "        v=$(( (g * 89 + 3) % 1000 - 500 ))",
+        "        v=$(( ((g % 1000) * 89 + 3) % 1000 - 500 ))",
         "        if [ $v -lt 0 ]; then v=0; fi",
         "        if [ $v -gt 255 ]; then v=255; fi",
         "        sum=$(( sum + v ))",
@@ -157,7 +157,7 @@ export const ALGORITHMS = {
       for (let p = 0; p < N / BLOCK; p++) {
         for (let b = 0; b < BLOCK; b++) {
           const g = p * BLOCK + b;
-          const v = (g * 89 + 3) - 1000 * (((g * 89 + 3) / 1000) | 0) - 500;
+          const v = ((g % 1000) * 89 + 3) % 1000 - 500;
           const c = v < 0 ? 0 : v > 255 ? 255 : v;
           sum = (sum + c) >>> 0;
         }

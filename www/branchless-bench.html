@@ -84,7 +84,9 @@ async function main() {
   if (!gl) { out("no webgl"); return; }
   const dbg = gl.getExtension("WEBGL_debug_renderer_info");
   const renderer = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : String(gl.getParameter(gl.RENDERER));
-  const N = 2000000, BLOCK = 64;
+  const q = new URLSearchParams(location.search);
+  const N = Math.max(1000, Number(q.get("n")) || 2000000);
+  const BLOCK = Number(q.get("block")) || 64;
   const Nc = Math.ceil(N / BLOCK) * BLOCK, P = Nc / BLOCK;
   const { TW, TH } = grid(P);
   out(`renderer: ${renderer}\nN=${Nc}, BLOCK=${BLOCK}\n`);
