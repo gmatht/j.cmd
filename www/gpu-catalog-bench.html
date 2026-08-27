@@ -79,6 +79,12 @@ async function main() {
   cv.width = W; cv.height = 1;
   const gl = cv.getContext("webgl", { antialias: false, preserveDrawingBuffer: true });
   if (!gl) { out("no webgl"); return; }
+  // the renderer report — tells you whether the browser gave you the real
+  // GPU or a software fallback (SwiftShader/llvmpipe). Hardware acceleration
+  // is a browser setting, not a page one; this is how you verify it.
+  const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+  const renderer = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : String(gl.getParameter(gl.RENDERER));
+  const hw = /swiftshader|llvmpipe|software|basic render|microsoft basic/i.test(renderer) ? "SOFTWARE" : "HARDWARE";
   const N = 15;
 
   if (alg === "collatz") {
@@ -121,7 +127,7 @@ async function main() {
     const want = collatzCPU(values);
     const ok = scores.every((v, i) => v === want[i]) && sentinels === 0;
     out(
-`collatz (fragment${strict ? " · strict ES 1.00: fixed 512-iteration loop" : " · data-driven loop"}): ${W} pixels
+`renderer: ${renderer} (${hw})\ncollatz (fragment${strict ? " · strict ES 1.00: fixed 512-iteration loop" : " · data-driven loop"}): ${W} pixels
 compile ${(t1 - t0).toFixed(1)} ms · draw+readback ${per.toFixed(3)} ms/frame (N=${N})
   == cpuFuzzy-style CPU reference: ${ok ? "PASS" : "FAIL"}
   sentinels: ${sentinels} · sample ${scores.slice(0, 8).join(",")}…
@@ -158,7 +164,7 @@ compile ${(t1 - t0).toFixed(1)} ms · draw+readback ${per.toFixed(3)} ms/frame (
     const want = ca1DCPU(row, rule);
     const ok = scores.every((v, i) => v === want[i]) && sentinels === 0;
     out(
-`ca1d (fragment${strict ? " · strict ES 1.00: arithmetic rule" : ""} · rule ${rule.join("")}): ${W} cells
+`renderer: ${renderer} (${hw})\nca1d (fragment${strict ? " · strict ES 1.00: arithmetic rule" : ""} · rule ${rule.join("")}): ${W} cells
 compile ${(t1 - t0).toFixed(1)} ms · draw+readback ${per.toFixed(3)} ms/frame
   == CPU reference: ${ok ? "PASS" : "FAIL"} · sentinels: ${sentinels}
   next row: ${[...scores].join("")}` + (ok ? "" : `\n  want:    ${want.join("")}`));
@@ -193,7 +199,7 @@ compile ${(t1 - t0).toFixed(1)} ms · draw+readback ${per.toFixed(3)} ms/frame
     const want = hashCPU(records);
     const ok = scores.every((v, i) => v === want[i]);
     out(
-`recordhash (VERTEX · ${N} vertices): compile ${(t1 - t0).toFixed(1)} ms · draw+readback ${per.toFixed(3)} ms/frame
+`renderer: ${renderer} (${hw})\nrecordhash (VERTEX · ${N} vertices): compile ${(t1 - t0).toFixed(1)} ms · draw+readback ${per.toFixed(3)} ms/frame
   == CPU reference: ${ok ? "PASS" : "FAIL"}
   first hashes: ${[...scores].slice(0, 8).join(",")} (want ${want.slice(0, 8).join(",")})` +
   (ok ? "" : `\n  FAIL mismatch`));

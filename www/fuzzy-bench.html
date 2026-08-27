@@ -115,6 +115,12 @@ async function main() {
   const cv = $("c");
   const gl = cv.getContext("webgl", { antialias: false, preserveDrawingBuffer: true });
   if (!gl) { out("no webgl"); return; }
+  // the renderer report — tells you whether the browser gave you the real
+  // GPU or a software fallback (SwiftShader/llvmpipe). Hardware acceleration
+  // is a browser setting, not a page one; this is how you verify it.
+  const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+  const renderer = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : String(gl.getParameter(gl.RENDERER));
+  const hw = /swiftshader|llvmpipe|software|basic render|microsoft basic/i.test(renderer) ? "SOFTWARE" : "HARDWARE";
   const maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE);
   const useTiles = offsets > maxTex;
   const layout = useTiles ? tileLayout(offsets, maxTex) : { n: 1, tiles: [{ t: 0, start: 0, w: offsets }] };
@@ -254,7 +260,7 @@ async function main() {
     reduced.total.every((v, i) => v === ref.scores[i]);
 
   out(
-`${templateMode ? "TEMPLATE" : "CHUNKED"} path · C=${cs} · ${m} chunk passes · compiles=${compiles} · per-pass bound ≤ ${bound} ≤ ${MEDIUM_INT_MAX} → RGBA can't overflow
+`renderer: ${renderer} (${hw})\n${templateMode ? "TEMPLATE" : "CHUNKED"} path${strict ? " → strict ES 1.00 fallback (fixed C=" + ARR_CAP + " + mask)" : ""} · C=${cs} · ${m} chunk passes · compiles=${compiles} · per-pass bound ≤ ${bound} ≤ ${MEDIUM_INT_MAX} → RGBA can't overflow
 haystack tex ${TEX_W}×${hayTex.height} (hl=${hl}) · needle tex ${TEX_W}×${ndlTex.height} (nl=${nl})` +
 (useTiles ? ` · offset axis TILED ×${layout.n}` : "") +
 `\ncompile: ${coldTotal.toFixed(1)} ms (${compiles} compile${compiles > 1 ? "s" : ""})` +
