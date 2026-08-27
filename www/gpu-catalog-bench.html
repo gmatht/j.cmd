@@ -33,6 +33,7 @@ algorithm and run it on <b>your GPU</b> — every result is PASS-checked against
   </select>
   <div><label>width (items)</label> <input id="w" value="64" size="4"></div>
   <button id="run">Compile + render + readback</button>
+  <button id="runall">Run all 3 algorithms</button>
 </div>
 <div id="out">…</div>
 <canvas id="c" width="0" height="1"></canvas>
@@ -44,12 +45,12 @@ import {
   ca1dShader, compileCa1DGLSL, ca1dStrictShader, compileCa1dStrictGLSL, ca1DCPU,
   hashVertexShader, hashCPU, decodeVertexBytes,
 } from "../src/gpucatalog.js";
-import { liftTextureWindowSample, packFragmentResultToRGBA } from "../src/shglsl-opt.js";
 import { decodeRGBA } from "../src/fuzzygpu.js";
 
 const $ = (id) => document.getElementById(id);
 const outEl = $("out");
 const out = (t) => { outEl.textContent = t; };
+const progress = (line) => { outEl.textContent += "\n" + line; };
 
 const VERT = `
 attribute vec2 aPos;
@@ -69,6 +70,116 @@ function uploadTexelTexture(gl, values, width) {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   return tex;
 }
+function fragProgram(gl, glsl, w) {
+  const vs = gl.createShader(gl.VERTEX_SHADER); gl.shaderSource(vs, VERT); gl.compileShader(vs);
+  const fs = gl.createShader(gl.FRAGMENT_SHADER); gl.shaderSource(fs, glsl); gl.compileShader(fs);
+  if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) return { err: gl.getShaderInfoLog(fs) };
+  const p = gl.createProgram(); gl.attachShader(p, vs); gl.attachShader(p, fs); gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) return { err: gl.getProgramInfoLog(p) };
+  gl.useProgram(p);
+  const l = gl.getUniformLocation(p, "uTex"); if (l) gl.uniform1i(l, 0);
+  const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+  const a = gl.getAttribLocation(p, "aPos"); gl.enableVertexAttribArray(a); gl.vertexAttribPointer(a, 2, gl.FLOAT, false, 0, 0);
+  gl.viewport(0, 0, w, 1);
+  return { p };
+}
+
+// ── the three algorithms, each returning {compileMs, perFrameMs, ok, …} ──
+function runCollatz(gl, lib, W, N) {
+  const values = Array.from({ length: W }, (_, i) => (i * 37 + 3) % 251);
+  let raw = lib.raw("otranspilerl_glsl", [collatzShader()], [800]).output;
+  let strict = false;
+  let { glsl, fired } = compileCollatzGLSL(raw, { width: W });
+  let pr = fragProgram(gl, glsl, W);
+  if (pr.err) {
+    strict = true; // strict ES 1.00: the data-driven while is rejected → fixed 512 + break
+    raw = lib.raw("otranspilerl_glsl", [collatzStrictShader(512)], [800]).output;
+    ({ glsl, fired } = compileCollatzStrictGLSL(raw, { width: W }));
+    pr = fragProgram(gl, glsl, W);
+  }
+  if (pr.err) return { name: "collatz", err: pr.err };
+  const t0 = performance.now();
+  const prog = pr.p;
+  const t1 = performance.now();
+  uploadTexelTexture(gl, values, W);
+  const px = new Uint8Array(W * 4);
+  let per = 0;
+  for (let k = 0; k < N; k++) { const t2 = performance.now(); gl.drawArrays(gl.TRIANGLES, 0, 3); gl.readPixels(0, 0, W, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); per += (performance.now() - t2) / N; }
+  const { scores, sentinels } = decodeRGBA(px, W);
+  const want = collatzCPU(values);
+  const ok = scores.every((v, i) => v === want[i]) && sentinels === 0;
+  return { name: "collatz", compileMs: t1 - t0, perFrameMs: per, ok, sentinels, strict, sample: [...scores].slice(0, 8).join(",") };
+}
+
+function runCa1d(gl, lib, W, N) {
+  const row = Array.from({ length: W }, (_, i) => (i * 7 + 3) % 2 ? 1 : 0);
+  const rule = [0, 1, 1, 1, 0, 1, 1, 0]; // 118
+  let raw = lib.raw("otranspilerl_glsl", [ca1dShader(rule)], [800]).output;
+  let strict = false;
+  let { glsl, fired } = compileCa1DGLSL(raw, { width: W });
+  let pr = fragProgram(gl, glsl, W);
+  if (pr.err) {
+    strict = true; // strict ES 1.00: dynamic array index rejected → arithmetic rule
+    raw = lib.raw("otranspilerl_glsl", [ca1dStrictShader(rule)], [800]).output;
+    ({ glsl, fired } = compileCa1dStrictGLSL(raw, { width: W }));
+    pr = fragProgram(gl, glsl, W);
+  }
+  if (pr.err) return { name: "ca1d", err: pr.err };
+  const t0 = performance.now();
+  const prog = pr.p;
+  const t1 = performance.now();
+  uploadTexelTexture(gl, row, W);
+  const px = new Uint8Array(W * 4);
+  let per = 0;
+  for (let k = 0; k < N; k++) { const t2 = performance.now(); gl.drawArrays(gl.TRIANGLES, 0, 3); gl.readPixels(0, 0, W, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); per += (performance.now() - t2) / N; }
+  const { scores, sentinels } = decodeRGBA(px, W);
+  const want = ca1DCPU(row, rule);
+  const ok = scores.every((v, i) => v === want[i]) && sentinels === 0;
+  return { name: "ca1d", compileMs: t1 - t0, perFrameMs: per, ok, sentinels, strict, next: [...scores].join("") };
+}
+
+function runHash(gl, lib, W, N) {
+  const records = Array.from({ length: W }, (_, i) => [(i * 53) % 256, (i * 89) % 256, (i * 127) % 256]);
+  const raw = lib.raw("otranspilerl_glslv", [hashVertexShader()], [800]).output;
+  const FRAG = `precision mediump float;\nvarying highp vec4 vColor;\nvoid main(){ gl_FragColor = vColor; }`;
+  const t0 = performance.now();
+  const vs = gl.createShader(gl.VERTEX_SHADER); gl.shaderSource(vs, raw); gl.compileShader(vs);
+  if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) return { name: "hash", err: gl.getShaderInfoLog(vs) };
+  const fs = gl.createShader(gl.FRAGMENT_SHADER); gl.shaderSource(fs, FRAG); gl.compileShader(fs);
+  const prog = gl.createProgram(); gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return { name: "hash", err: gl.getProgramInfoLog(prog) };
+  gl.useProgram(prog);
+  const t1 = performance.now();
+  const aPos = new Float32Array(W * 3);
+  records.forEach((r, i) => { aPos[i * 3] = r[0] / 1000; aPos[i * 3 + 1] = r[1] / 1000; aPos[i * 3 + 2] = r[2] / 1000; });
+  const aUv = new Float32Array(W * 2);
+  for (let i = 0; i < W; i++) { aUv[i * 2] = (i + 0.5) * 2 / W - 1; aUv[i * 2 + 1] = 0; }
+  const b1 = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b1);
+  gl.bufferData(gl.ARRAY_BUFFER, aPos, gl.STATIC_DRAW);
+  const a1 = gl.getAttribLocation(prog, "aPosition"); gl.enableVertexAttribArray(a1); gl.vertexAttribPointer(a1, 3, gl.FLOAT, false, 0, 0);
+  const b2 = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b2);
+  gl.bufferData(gl.ARRAY_BUFFER, aUv, gl.STATIC_DRAW);
+  const a2 = gl.getAttribLocation(prog, "aUv"); gl.enableVertexAttribArray(a2); gl.vertexAttribPointer(a2, 2, gl.FLOAT, false, 0, 0);
+  gl.viewport(0, 0, W, 1);
+  const px = new Uint8Array(W * 4);
+  let per = 0;
+  for (let k = 0; k < N; k++) { const t2 = performance.now(); gl.drawArrays(gl.POINTS, 0, W); gl.readPixels(0, 0, W, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); per += (performance.now() - t2) / N; }
+  const { scores } = decodeVertexBytes(px, W);
+  const want = hashCPU(records);
+  const ok = scores.every((v, i) => v === want[i]);
+  return { name: "hash", compileMs: t1 - t0, perFrameMs: per, ok, strict: false, sample: [...scores].slice(0, 8).join(",") };
+}
+
+function detail(r, renderer, hw, W, N) {
+  if (r.err) return `renderer: ${renderer} (${hw})\n${r.name}: ERROR ${r.err}`;
+  const strictNote = r.strict ? " · strict ES 1.00" : "";
+  let extra = "";
+  if (r.name === "collatz") extra = `  sentinels: ${r.sentinels} · sample ${r.sample}…`;
+  if (r.name === "ca1d") extra = `  sentinels: ${r.sentinels} · next row: ${r.next}`;
+  if (r.name === "hash") extra = `  first hashes: ${r.sample} (want ${hashCPU(Array.from({ length: W }, (_, i) => [(i * 53) % 256, (i * 89) % 256, (i * 127) % 256])).slice(0, 8).join(",")})`;
+  return `renderer: ${renderer} (${hw})\n${r.name} (${r.name === "hash" ? "VERTEX · " + W + " vertices" : r.name === "ca1d" ? "fragment · " + W + " cells" : "fragment · " + W + " pixels"}${strictNote}): compile ${r.compileMs.toFixed(1)} ms · draw+readback ${r.perFrameMs.toFixed(3)} ms/frame (N=${N})\n  == CPU reference: ${r.ok ? "PASS" : "FAIL"}\n${extra}`;
+}
 
 async function main() {
   const lib = await getOtranspilerl();
@@ -79,134 +190,50 @@ async function main() {
   cv.width = W; cv.height = 1;
   const gl = cv.getContext("webgl", { antialias: false, preserveDrawingBuffer: true });
   if (!gl) { out("no webgl"); return; }
-  // the renderer report — tells you whether the browser gave you the real
-  // GPU or a software fallback (SwiftShader/llvmpipe). Hardware acceleration
-  // is a browser setting, not a page one; this is how you verify it.
   const dbg = gl.getExtension("WEBGL_debug_renderer_info");
   const renderer = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : String(gl.getParameter(gl.RENDERER));
   const hw = /swiftshader|llvmpipe|software|basic render|microsoft basic/i.test(renderer) ? "SOFTWARE" : "HARDWARE";
   const N = 15;
+  outEl.classList.add("running");
+  out("⏳ RUNNING… " + alg + " (compile + " + N + " frames)…");
+  const r = alg === "collatz" ? runCollatz(gl, lib, W, N) : alg === "ca1d" ? runCa1d(gl, lib, W, N) : runHash(gl, lib, W, N);
+  out(detail(r, renderer, hw, W, N) + `\n\n${r.ok ? "✅ DONE — PASS" : "❌ DONE — FAIL"}`);
+  outEl.classList.remove("running");
+}
 
-  if (alg === "collatz") {
-    // deterministic inputs ≤ 255 (the int32 Collatz-intermediate bound)
-    const values = Array.from({ length: W }, (_, i) => (i * 37 + 3) % 251);
-    let raw = lib.raw("otranspilerl_glsl", [collatzShader()], [800]).output;
-    let strict = false;
-    let { glsl, fired } = compileCollatzGLSL(raw, { width: W });
-    let vs = gl.createShader(gl.VERTEX_SHADER); gl.shaderSource(vs, VERT); gl.compileShader(vs);
-    let fs = gl.createShader(gl.FRAGMENT_SHADER); gl.shaderSource(fs, glsl); gl.compileShader(fs);
-    if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
-      // strict ES 1.00 fallback: the data-driven while is rejected (headless
-      // Chromium SwiftShader verifies exactly this) → fixed 512 iterations + break
-      strict = true;
-      raw = lib.raw("otranspilerl_glsl", [collatzStrictShader(512)], [800]).output;
-      ({ glsl, fired } = compileCollatzStrictGLSL(raw, { width: W }));
-      fs = gl.createShader(gl.FRAGMENT_SHADER); gl.shaderSource(fs, glsl); gl.compileShader(fs);
-    }
-    if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) { out("fragment: " + gl.getShaderInfoLog(fs)); return; }
-    const t0 = performance.now();
-    const prog = gl.createProgram(); gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);
-    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) { out("link: " + gl.getProgramInfoLog(prog)); return; }
-    const t1 = performance.now();
-    gl.useProgram(prog);
-    const loc = gl.getUniformLocation(prog, "uTex"); if (loc) gl.uniform1i(loc, 0);
-    const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
-    const a = gl.getAttribLocation(prog, "aPos"); gl.enableVertexAttribArray(a); gl.vertexAttribPointer(a, 2, gl.FLOAT, false, 0, 0);
-    gl.viewport(0, 0, W, 1);
-    uploadTexelTexture(gl, values, W);
-    const px = new Uint8Array(W * 4);
-    let per = 0;
-    for (let k = 0; k < N; k++) {
-      const t2 = performance.now();
-      gl.drawArrays(gl.TRIANGLES, 0, 3);
-      gl.readPixels(0, 0, W, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
-      per += (performance.now() - t2) / N;
-    }
-    const { scores, sentinels } = decodeRGBA(px, W);
-    const want = collatzCPU(values);
-    const ok = scores.every((v, i) => v === want[i]) && sentinels === 0;
-    out(
-`renderer: ${renderer} (${hw})\ncollatz (fragment${strict ? " · strict ES 1.00: fixed 512-iteration loop" : " · data-driven loop"}): ${W} pixels
-compile ${(t1 - t0).toFixed(1)} ms · draw+readback ${per.toFixed(3)} ms/frame (N=${N})
-  == cpuFuzzy-style CPU reference: ${ok ? "PASS" : "FAIL"}
-  sentinels: ${sentinels} · sample ${scores.slice(0, 8).join(",")}…
-  (per-pass result ≤ 2³¹−1 → RGBA-safe; inputs ≤ 251 keep the 3n+1 intermediates < 2³¹)`);
-  } else if (alg === "ca1d") {
-    const row = Array.from({ length: W }, (_, i) => (i * 7 + 3) % 2 ? 1 : 0);
-    const rule = [0, 1, 1, 1, 0, 1, 1, 0]; // 118
-    let raw = lib.raw("otranspilerl_glsl", [ca1dShader(rule)], [800]).output;
-    let strict = false;
-    let { glsl, fired } = compileCa1DGLSL(raw, { width: W });
-    let t0 = performance.now();
-    let vs = gl.createShader(gl.VERTEX_SHADER); gl.shaderSource(vs, VERT); gl.compileShader(vs);
-    let fs = gl.createShader(gl.FRAGMENT_SHADER); gl.shaderSource(fs, glsl); gl.compileShader(fs);
-    if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
-      strict = true; // strict ES 1.00: dynamic array index rejected → arithmetic rule
-      raw = lib.raw("otranspilerl_glsl", [ca1dStrictShader(rule)], [800]).output;
-      ({ glsl, fired } = compileCa1dStrictGLSL(raw, { width: W }));
-      fs = gl.createShader(gl.FRAGMENT_SHADER); gl.shaderSource(fs, glsl); gl.compileShader(fs);
-    }
-    if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) { out("fragment: " + gl.getShaderInfoLog(fs)); return; }
-    const t1 = performance.now();
-    const prog = gl.createProgram(); gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);
-    gl.useProgram(prog);
-    const loc = gl.getUniformLocation(prog, "uTex"); if (loc) gl.uniform1i(loc, 0);
-    const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
-    const a = gl.getAttribLocation(prog, "aPos"); gl.enableVertexAttribArray(a); gl.vertexAttribPointer(a, 2, gl.FLOAT, false, 0, 0);
-    gl.viewport(0, 0, W, 1);
-    uploadTexelTexture(gl, row, W);
-    const px = new Uint8Array(W * 4);
-    let per = 0;
-    for (let k = 0; k < N; k++) { const t2 = performance.now(); gl.drawArrays(gl.TRIANGLES, 0, 3); gl.readPixels(0, 0, W, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); per += (performance.now() - t2) / N; }
-    const { scores, sentinels } = decodeRGBA(px, W);
-    const want = ca1DCPU(row, rule);
-    const ok = scores.every((v, i) => v === want[i]) && sentinels === 0;
-    out(
-`renderer: ${renderer} (${hw})\nca1d (fragment${strict ? " · strict ES 1.00: arithmetic rule" : ""} · rule ${rule.join("")}): ${W} cells
-compile ${(t1 - t0).toFixed(1)} ms · draw+readback ${per.toFixed(3)} ms/frame
-  == CPU reference: ${ok ? "PASS" : "FAIL"} · sentinels: ${sentinels}
-  next row: ${[...scores].join("")}` + (ok ? "" : `\n  want:    ${want.join("")}`));
-  } else { // hash — the vertex compute
-    const N = W;
-    const records = Array.from({ length: N }, (_, i) => [(i * 53) % 256, (i * 89) % 256, (i * 127) % 256]);
-    const raw = lib.raw("otranspilerl_glslv", [hashVertexShader()], [800]).output;
-    const FRAG = `precision mediump float;\nvarying highp vec4 vColor;\nvoid main(){ gl_FragColor = vColor; }`;
-    let t0 = performance.now();
-    const vs = gl.createShader(gl.VERTEX_SHADER); gl.shaderSource(vs, raw); gl.compileShader(vs);
-    if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) { out("vertex: " + gl.getShaderInfoLog(vs)); return; }
-    const fs = gl.createShader(gl.FRAGMENT_SHADER); gl.shaderSource(fs, FRAG); gl.compileShader(fs);
-    const prog = gl.createProgram(); gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);
-    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) { out("link: " + gl.getProgramInfoLog(prog)); return; }
-    gl.useProgram(prog);
-    let t1 = performance.now();
-    const aPos = new Float32Array(N * 3);
-    records.forEach((r, i) => { aPos[i * 3] = r[0] / 1000; aPos[i * 3 + 1] = r[1] / 1000; aPos[i * 3 + 2] = r[2] / 1000; });
-    const aUv = new Float32Array(N * 2);
-    for (let i = 0; i < N; i++) { aUv[i * 2] = (i + 0.5) * 2 / N - 1; aUv[i * 2 + 1] = 0; }
-    const b1 = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b1);
-    gl.bufferData(gl.ARRAY_BUFFER, aPos, gl.STATIC_DRAW);
-    const a1 = gl.getAttribLocation(prog, "aPosition"); gl.enableVertexAttribArray(a1); gl.vertexAttribPointer(a1, 3, gl.FLOAT, false, 0, 0);
-    const b2 = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b2);
-    gl.bufferData(gl.ARRAY_BUFFER, aUv, gl.STATIC_DRAW);
-    const a2 = gl.getAttribLocation(prog, "aUv"); gl.enableVertexAttribArray(a2); gl.vertexAttribPointer(a2, 2, gl.FLOAT, false, 0, 0);
-    gl.viewport(0, 0, N, 1);
-    const px = new Uint8Array(N * 4);
-    let per = 0;
-    for (let k = 0; k < N; k++) { const t2 = performance.now(); gl.drawArrays(gl.POINTS, 0, N); gl.readPixels(0, 0, N, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); per += (performance.now() - t2) / N; }
-    const { scores } = decodeVertexBytes(px, N);
-    const want = hashCPU(records);
-    const ok = scores.every((v, i) => v === want[i]);
-    out(
-`renderer: ${renderer} (${hw})\nrecordhash (VERTEX · ${N} vertices): compile ${(t1 - t0).toFixed(1)} ms · draw+readback ${per.toFixed(3)} ms/frame
-  == CPU reference: ${ok ? "PASS" : "FAIL"}
-  first hashes: ${[...scores].slice(0, 8).join(",")} (want ${want.slice(0, 8).join(",")})` +
-  (ok ? "" : `\n  FAIL mismatch`));
+async function runAll() {
+  const lib = await getOtranspilerl();
+  const q = new URLSearchParams(location.search);
+  const W = Math.max(2, Number(q.get("w") ?? $("w").value) || 64);
+  const cv = $("c");
+  cv.width = W; cv.height = 1;
+  const gl = cv.getContext("webgl", { antialias: false, preserveDrawingBuffer: true });
+  if (!gl) { out("no webgl"); return; }
+  const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+  const renderer = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : String(gl.getParameter(gl.RENDERER));
+  const hw = /swiftshader|llvmpipe|software|basic render|microsoft basic/i.test(renderer) ? "SOFTWARE" : "HARDWARE";
+  const N = 15;
+  outEl.classList.add("running");
+  out(`renderer: ${renderer} (${hw})\n⏳ RUNNING all 3 algorithms (${W} items, N=${N} frames each)…`);
+  const results = [];
+  for (const [name, fn] of [["collatz", runCollatz], ["ca1d", runCa1d], ["hash", runHash]]) {
+    progress("  … " + name);
+    const r = fn(gl, lib, W, N);
+    results.push(r);
+    progress("  " + name + " done: " + (r.err ? "ERROR " + r.err : (r.ok ? "PASS" : "FAIL") + " · " + r.perFrameMs.toFixed(3) + " ms/frame"));
   }
+  const allOk = results.every((r) => r.ok);
+  out(
+`renderer: ${renderer} (${hw})\n=== ALL 3 ALGORITHMS (${W} items, N=${N}) ===
+  algorithm   compile ms   draw+readback ms/frame   result
+` +
+results.map((r) => `  ${r.name.padEnd(10)} ${(r.err ? "—" : r.compileMs.toFixed(1)).padEnd(11)} ${(r.err ? "—" : r.perFrameMs.toFixed(3)).padEnd(24)} ${r.err ? "ERROR" : r.ok ? "PASS" : "FAIL"}`).join("\n") +
+`\n\n${allOk ? "✅ DONE — 3/3 PASS" : "❌ DONE — FAIL"}`);
+  outEl.classList.remove("running");
 }
 $("run").addEventListener("click", main);
+$("runall").addEventListener("click", runAll);
 main();
-</script>
+</script></script>
 </body>
 </html>

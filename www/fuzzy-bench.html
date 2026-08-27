@@ -9,6 +9,8 @@
   input { width: 6em; background: #222; color: #8f8; border: 1px solid #444; }
   select { background: #222; color: #8f8; border: 1px solid #444; }
   #out { white-space: pre; font-size: 0.8rem; color: #8df; }
+  #out.running { color: #fd8; }
+  #out:not(.running) { color: #8df; }
 </style>
 </head>
 <body>
@@ -174,10 +176,12 @@ async function main() {
   const chunksBase = templateMode ? templateChunkWindows(nl, cs) : fuzzyTextureChunkShaders(needle, hay, { chunkSize: cs });
   const bound = chunkBound(Math.min(cs, nl), 9);
   let m = chunksBase.m, chunks = chunksBase.chunks;
-  out("compiling " + (templateMode ? "THE ONE template" : m + " chunk shaders") + " (C=" + cs + ")…");
+  outEl.classList.add("running");
+  out("⏳ RUNNING… compiling " + (templateMode ? "THE ONE template" : m + " chunk shaders") + " (C=" + cs + ")…");
 
   const partials = [];
   const passLines = [];
+  const progress = (line) => { passLines.push(line); outEl.textContent += "\n" + line; };
   let coldTotal = 0, renderTotal = 0, compiles = 0, sentTotal = 0;
   const N = 15;
   let pxLast;
@@ -221,7 +225,7 @@ async function main() {
         sents += dec.sentinels;
         for (let x = 0; x < tile.w; x++) p[tile.start + x] = dec.scores[x];
       }
-      passLines.push(`  pass ${ch.c}: needle[${ch.start}..${ch.start + ch.len}) via ${strict ? "mask+uNeedleStart" : "uNeedleLen/Start"} · draw+read ${passTime.toFixed(3)} ms · sentinels ${sents}`);
+      progress(`  pass ${ch.c}: needle[${ch.start}..${ch.start + ch.len}) via ${strict ? "mask+uNeedleStart" : "uNeedleLen/Start"} · draw+read ${passTime.toFixed(3)} ms · sentinels ${sents}`);
       sentTotal += sents;
       partials.push(p);
     }
@@ -249,7 +253,7 @@ async function main() {
         sents += dec.sentinels;
         for (let x = 0; x < tile.w; x++) p[tile.start + x] = dec.scores[x];
       }
-      passLines.push(`  pass ${ch.c}: ${ch.len} digits inline · draw+read ${passTime.toFixed(3)} ms · sentinels ${sents}`);
+      progress(`  pass ${ch.c}: ${ch.len} digits inline · draw+read ${passTime.toFixed(3)} ms · sentinels ${sents}`);
       sentTotal += sents;
       partials.push(p);
     }
@@ -268,7 +272,9 @@ haystack tex ${TEX_W}×${hayTex.height} (hl=${hl}) · needle tex ${TEX_W}×${ndl
 `chunked+CPU-reduce: best offset ${reduced.bestX} score ${reduced.best}${reduced.best === 0 ? " (Perfect Match)" : ""}\n` +
 `  == cpuFuzzy reference (argmin + every offset): ${sameRef ? "PASS" : "FAIL"}\n` +
 `sentinel total: ${sentTotal} (must be 0)\n` +
-(templateMode ? `→ the needle never compiles per chunk: nl=1M would be the SAME 1 compile + uniform binds` : ""));
+(templateMode ? `→ the needle never compiles per chunk: nl=1M would be the SAME 1 compile + uniform binds` : "") +
+`\n\n${sameRef && sentTotal === 0 ? "✅ DONE — all checks PASS" : "❌ DONE — FAIL"}`);
+  outEl.classList.remove("running");
 }
 $("run").addEventListener("click", main);
 main();
