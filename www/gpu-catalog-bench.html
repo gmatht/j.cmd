@@ -223,12 +223,15 @@ async function runAll() {
     progress("  " + name + " done: " + (r.err ? "ERROR " + r.err : (r.ok ? "PASS" : "FAIL") + " · " + r.perFrameMs.toFixed(3) + " ms/frame"));
   }
   const allOk = results.every((r) => r.ok);
-  out(
-`renderer: ${renderer} (${hw})\n=== ALL 3 ALGORITHMS (${W} items, N=${N}) ===
-  algorithm   compile ms   draw+readback ms/frame   result
-` +
-results.map((r) => `  ${r.name.padEnd(10)} ${(r.err ? "—" : r.compileMs.toFixed(1)).padEnd(11)} ${(r.err ? "—" : r.perFrameMs.toFixed(3)).padEnd(24)} ${r.err ? "ERROR" : r.ok ? "PASS" : "FAIL"}`).join("\n") +
-`\n\n${allOk ? "✅ DONE — 3/3 PASS" : "❌ DONE — FAIL"}`);
+  // each algorithm's SEPARATE full result, then the summary table
+  out(`renderer: ${renderer} (${hw})\n⏳ RUNNING all 3 algorithms (${W} items, N=${N} frames each)…`);
+  for (const r of results) {
+    outEl.textContent += "\n\n" + detail(r, renderer, hw, W, N);
+  }
+  outEl.textContent += "\n\n=== SUMMARY ===\n" +
+    "  algorithm   compile ms   draw+readback ms/frame   result\n" +
+    results.map((r) => `  ${r.name.padEnd(10)} ${(r.err ? "—" : r.compileMs.toFixed(1)).padEnd(11)} ${(r.err ? "—" : r.perFrameMs.toFixed(3)).padEnd(24)} ${r.err ? "ERROR" : r.ok ? "PASS" : "FAIL"}`).join("\n") +
+    `\n\n${allOk ? "✅ DONE — 3/3 PASS" : "❌ DONE — FAIL"}`;
   outEl.classList.remove("running");
 }
 $("run").addEventListener("click", main);
