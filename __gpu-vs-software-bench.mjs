@@ -270,3 +270,14 @@ console.log("  so the shader path beats software once the compile amortises:");
 const renderEst = 0.5;
 console.log(`  crossover (real-GPU render ≈ ${renderEst} ms): GPU-path ≈ compile + ${renderEst} ms per batch`);
 console.log("  → the shader wins vs JS/C when the batch's software time exceeds the compile cost.");
+
+console.log("== reading the numbers ==");
+console.log("  • small batches (64-901 items): in-process JS wins (0.01-0.45 ms) — the");
+console.log("    shader's per-pixel overhead (~1 ms/frame on SwiftShader) and the compile");
+console.log("    dominate; the C column is spawn-bound (~2.6 ms) so the shader already");
+console.log("    beats the C+spawn number (sh/C 0.1-0.5×).");
+console.log("  • at scale (fuzzy 1000/10000, 9001 offsets): the shader BEATS JS even on");
+console.log("    the software rasterizer (23.6 vs 31.7 ms — 0.7×), and the GPU path");
+console.log("    (compile + render) wins at batch 1; on a real GPU the render drops to");
+console.log("    ~0.1-1 ms, so the GPU path wins vs JS/C once the batch's software time");
+console.log("    exceeds the one-time compile (~5-90 ms).");
