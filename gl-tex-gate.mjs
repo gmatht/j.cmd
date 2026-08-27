@@ -78,6 +78,7 @@ export async function run(deps) {
     lib, digits,
     fuzzyTextureChunkShaders, packTextureChunkGLSL, haystackTexelData,
     fuzzyTemplateShader, compileTemplateGLSL, needleTexelData, templateChunkWindows,
+    fuzzyTemplateStrictShader, compileStrictTemplateGLSL, chunkMaskTexture, templateStrictChunks,
     tileLayout, decodeRGBA, reducePartials, cpuFuzzy,
   } = deps;
 
@@ -186,6 +187,46 @@ export async function run(deps) {
       (useTiles ? `tiles=${layout.n} ` : "") + `best=${reduced.best}@${reduced.bestX} ==cpuFuzzy ${ok ? "PASS" : "FAIL"} sentinels ${sentinels}`);
     if (!ok) return { template: `${nl}/${hl}: ${reduced.best}@${reduced.bestX} vs ${ref.best}@${ref.bestX}` };
   }
+  // ── C. the STRICT template with the offset axis TILED (the exact
+  // regression: the strict fallback must apply the tile uniform too) ──
+  {
+    const MAXC = 1024, TEX_W = 4096, TILE = 16384;
+    const nl = 2000, hl = 50000;
+    const needle = [...digits(nl)].map(Number), hay = [...digits(hl)].map(Number);
+    const offsets = hl - nl + 1;
+    const { m, chunks } = deps.templateStrictChunks(needle, MAXC);
+    const hayTex = deps.haystackTexelData(hay, TEX_W);
+    const layout = deps.tileLayout(offsets, TILE);
+    const gl = createGL(TILE, 1, { preserveDrawingBuffer: true });
+    uploadTex(gl, 0, hayTex.data, hayTex.width, hayTex.height);
+    const raw = lib.raw("otranspilerl_glsl", [deps.fuzzyTemplateStrictShader(MAXC)], [800]).output;
+    const { glsl, fired } = deps.compileStrictTemplateGLSL(raw, { width: TEX_W, height: hayTex.height, crackWidth: MAXC, crackHeight: 1, tile: true });
+    if (!fired) throw new Error("strict template did not fire");
+    const pr = makeProgram(gl, glsl);
+    if (pr.err) throw new Error("strict template: " + pr.err);
+    if (pr.uCrack) gl.uniform1i(pr.uCrack, 1);
+    const partials = [];
+    let sentinels = 0;
+    for (const ch of chunks) {
+      uploadTex(gl, 1, deps.chunkMaskTexture(ch, MAXC, MAXC), MAXC, 1);
+      const p = new Int32Array(offsets);
+      for (const tile of layout.tiles) {
+        gl.viewport(0, 0, tile.w, 1);
+        if (pr.tile) gl.uniform1i(pr.tile, tile.start);
+        gl.uniform1i(pr.start, ch.start);
+        const dec = decodeRGBA(renderRead(gl, pr.prog, tile.w), tile.w);
+        sentinels += dec.sentinels;
+        for (let x = 0; x < tile.w; x++) p[tile.start + x] = dec.scores[x];
+      }
+      partials.push(p);
+    }
+    const reduced = deps.reducePartials(partials, offsets);
+    const ref = deps.cpuFuzzy(needle, hay);
+    const ok = reduced.best === ref.best && reduced.bestX === ref.bestX &&
+      reduced.total.every((v, i) => v === ref.scores[i]) && sentinels === 0;
+    console.log(`  (C) strict template TILED nl=2000 hl=50000: m=${m} tiles=${layout.n} best=${reduced.best}@${reduced.bestX} ==cpuFuzzy ${ok ? "PASS" : "FAIL"} sentinels ${sentinels}`);
+    if (!ok) return "strict-tiled";
+  }
   return true;
 }
 
@@ -201,6 +242,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const f = await import("./src/fuzzygpu.js");
   for (const k of ["fuzzyTextureChunkShaders", "packTextureChunkGLSL", "haystackTexelData",
                    "fuzzyTemplateShader", "compileTemplateGLSL", "needleTexelData", "templateChunkWindows",
+                   "fuzzyTemplateStrictShader", "compileStrictTemplateGLSL", "chunkMaskTexture", "templateStrictChunks",
                    "tileLayout", "decodeRGBA", "reducePartials", "cpuFuzzy"]) deps[k] = f[k];
   deps.digits = digits;
   const res = await run(deps);

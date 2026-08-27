@@ -324,11 +324,13 @@ export function fuzzyTemplateStrictShader(maxC = ARR_CAP) {
 }
 
 // the strict template GLSL pipeline: window lift (tex_r + cr_r + cr_g)
-// → the chunk-start uniform → the pack.
+// → the chunk-start uniform → (optional) the offset tile uniform → the
+// pack.
 export function compileStrictTemplateGLSL(rawGlsl, opts = {}) {
-  const { width = 4096, height = 1, crackWidth = width, crackHeight = height } = opts;
+  const { width = 4096, height = 1, crackWidth = width, crackHeight = height, tile = false } = opts;
   let g = liftTextureWindowSample(rawGlsl, { width, height, crackWidth, crackHeight, highp: true });
   g = chunkStartUniform(g);
+  if (tile) g = tileOffsetUniform(g);
   const fired = g !== String(rawGlsl);
   return { glsl: packFragmentResultToRGBA(g), fired };
 }

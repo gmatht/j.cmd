@@ -188,7 +188,7 @@ async function main() {
     if (pr.err) {
       strict = true;
       raw = lib.raw("otranspilerl_glsl", [fuzzyTemplateStrictShader(ARR_CAP)], [800]).output;
-      packed = compileStrictTemplateGLSL(raw, { width: TEX_W, height: hayTex.height, crackWidth: ARR_CAP, crackHeight: 1 });
+      packed = compileStrictTemplateGLSL(raw, { width: TEX_W, height: hayTex.height, crackWidth: ARR_CAP, crackHeight: 1, tile: useTiles });
       pr = makeProgram(packed.glsl);
     }
     let t1 = performance.now();
