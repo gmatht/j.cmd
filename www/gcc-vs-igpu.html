@@ -1,0 +1,243 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>GCC C vs iGPU comparison (collatz · ca1d · recordhash)</title>
+<style>
+  body { font-family: ui-monospace, monospace; margin: 1.5rem; background: #111; color: #ddd; }
+  h1 { font-size: 1.1rem; }
+  p, li { font-size: 0.85rem; line-height: 1.5; }
+  #out { white-space: pre; font-size: 0.8rem; color: #8df; }
+  table { border-collapse: collapse; margin: 0.5rem 0; }
+  th, td { border: 1px solid #444; padding: 0.3rem 0.7rem; text-align: right; font-size: 0.8rem; }
+  th { background: #222; color: #8f8; }
+  td:first-child, th:first-child { text-align: left; }
+  .ok { color: #8f8; } .bad { color: #f88; }
+</style>
+</head>
+<body>
+<h1>GCC-compiled C vs the browser iGPU (WebGL shader path)</h1>
+<p>Each problem is a HANDWRITTEN C reference compiled with <b>gcc -O2</b> and run at a
+<b>fixed size</b> per problem (collatz 100M, ca1d 1B, hash 1B — reproducible, not
+calibrated to a wall time). The browser then runs the <b>same problem at the same size</b>
+through the sh2runtime WebGL path — a <b>block reduction</b>: each shader invocation
+processes BLOCK items and outputs a partial checksum, so the readback is N/BLOCK values
+instead of N (that is what keeps the GPU side fast). This page compares the two: wall
+time, speedup, and a mod-2<sup>32</sup> checksum that must match the C binary's output.</p>
+<div id="out">…</div>
+<canvas id="c" width="4096" height="4096"></canvas>
+
+<script type="module">
+import { getOtranspilerl } from "../src/otranspilerl.js";
+import { packFragmentResultToRGBA, collapseConsecutiveListLoop } from "../src/shglsl-opt.js";
+import {
+  collatzBlockShader, ca1dBlockShader, hashBlockFragmentShader,
+  lowerWhileLoops, lowerBitOps, lowerBranchless,
+  checksumAdd, RULE_118,
+} from "../bench/gcc-vs-igpu/c-programs.mjs";
+
+const $ = (id) => document.getElementById(id);
+const outEl = $("out");
+const out = (t) => { outEl.textContent = t; };
+const progress = (line) => { outEl.textContent += "\n" + line; };
+
+const VERT = `
+attribute vec2 aPos;
+varying highp vec2 vUv;
+void main(){ gl_Position = vec4(aPos, 0.0, 1.0); vUv = aPos * 0.5 + 0.5; }`;
+
+function fragProgram(gl, glsl, w, h) {
+  const vs = gl.createShader(gl.VERTEX_SHADER); gl.shaderSource(vs, VERT); gl.compileShader(vs);
+  const fs = gl.createShader(gl.FRAGMENT_SHADER); gl.shaderSource(fs, glsl); gl.compileShader(fs);
+  if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) return { err: gl.getShaderInfoLog(fs) };
+  const p = gl.createProgram(); gl.attachShader(p, vs); gl.attachShader(p, fs); gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) return { err: gl.getProgramInfoLog(p) };
+  gl.useProgram(p);
+  const l = gl.getUniformLocation(p, "uTex"); if (l) gl.uniform1i(l, 0);
+  const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+  const a = gl.getAttribLocation(p, "aPos"); gl.enableVertexAttribArray(a); gl.vertexAttribPointer(a, 2, gl.FLOAT, false, 0, 0);
+  gl.viewport(0, 0, w, h);
+  return { p };
+}
+// decode a 32-bit RGBA-packed partial sum (fragment path: A ≤ 127, no sentinel)
+function decode32(px, i) {
+  return px[i * 4] + 256 * px[i * 4 + 1] + 65536 * px[i * 4 + 2] + 16777216 * px[i * 4 + 3];
+}
+// the grid: TW×TH ≥ P output slots, laid out square-ish
+function grid(P) {
+  const TW = Math.ceil(Math.sqrt(P)), TH = Math.ceil(P / TW);
+  return { TW, TH };
+}
+
+// ── the three GPU runners (block reduction: one draw, N/BLOCK readback) ──
+// N is rounded UP to a multiple of BLOCK so every pixel's items are valid
+// (no partial last block) and the only guard needed is the single `p < P`
+// pixel check — a nested `g >= 0 && g < N` guard mis-lowers on ANGLE-D3D11.
+//
+// Chunked draws: a single draw of the whole N (1B items for ca1d/hash) can
+// exceed the D3D11 TDR budget (~2 s) on a weak iGPU and lose the WebGL context
+// (CONTEXT_LOST_WEBGL → every later draw is a no-op). So each runner splits N
+// into CHUNK_PX-pixel sub-draws (≈51M items each — the collatz 100M draw ran
+// in ~0.5 s, so this is safely under the budget) and sums the partial
+// checksums mod 2^32. The shader takes a `basePixels` offset and guards on the
+// TOTAL pixel count, so chunk boundaries are exact (no partial items).
+const CHUNK_PX = 50000;
+
+function runCollatz(gl, lib, N, BLOCK) {
+  N = Math.ceil(N / BLOCK) * BLOCK;
+  const totalP = N / BLOCK;
+  let checksum = 0, totalMs = 0;
+  for (let basePx = 0; basePx < totalP; basePx += CHUNK_PX) {
+    const chunkP = Math.min(CHUNK_PX, totalP - basePx);
+    const { TW, TH } = grid(chunkP);
+    const raw = lib.raw("otranspilerl_glsl", [lowerBitOps(lowerWhileLoops(lowerBranchless(collatzBlockShader(TW, basePx + chunkP, BLOCK, basePx))))], [800]).output;
+    let g = collapseConsecutiveListLoop(raw); // outer b-loop
+    g = collapseConsecutiveListLoop(g);       // inner s-loop
+    const glsl = packFragmentResultToRGBA(g);
+    const pr = fragProgram(gl, glsl, TW, TH);
+    if (pr.err) return { err: pr.err };
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    // warmup draw: on D3D11 the FIRST draw after compile triggers the HLSL
+    // compilation (a one-time ~100-500 ms cost) — exclude it from the
+    // measured steady-state draw+readback.
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.readPixels(0, 0, TW, TH, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(TW * TH * 4));
+    const t0 = performance.now();
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    const px = new Uint8Array(TW * TH * 4);
+    gl.readPixels(0, 0, TW, TH, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    totalMs += performance.now() - t0;
+    let part = 0;
+    for (let i = 0; i < TW * TH; i++) part = checksumAdd("collatz", part, decode32(px, i));
+    checksum = (checksum + part) >>> 0;
+  }
+  return { ms: totalMs, checksum };
+}
+
+function runCa1d(gl, lib, N, BLOCK) {
+  N = Math.ceil(N / BLOCK) * BLOCK;
+  const totalP = N / BLOCK;
+  let checksum = 0, totalMs = 0;
+  for (let basePx = 0; basePx < totalP; basePx += CHUNK_PX) {
+    const chunkP = Math.min(CHUNK_PX, totalP - basePx);
+    const { TW, TH } = grid(chunkP);
+    const raw = lib.raw("otranspilerl_glsl", [lowerBitOps(lowerWhileLoops(lowerBranchless(ca1dBlockShader(TW, basePx + chunkP, N, BLOCK, RULE_118, basePx))))], [800]).output;
+    const g = collapseConsecutiveListLoop(raw);
+    const glsl = packFragmentResultToRGBA(g);
+    const pr = fragProgram(gl, glsl, TW, TH);
+    if (pr.err) return { err: pr.err };
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.drawArrays(gl.TRIANGLES, 0, 3); // warmup (HLSL compile on first draw)
+    gl.readPixels(0, 0, TW, TH, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(TW * TH * 4));
+    const t0 = performance.now();
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    const px = new Uint8Array(TW * TH * 4);
+    gl.readPixels(0, 0, TW, TH, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    totalMs += performance.now() - t0;
+    let part = 0;
+    for (let i = 0; i < TW * TH; i++) part = checksumAdd("ca1d", part, decode32(px, i));
+    checksum = (checksum + part) >>> 0;
+  }
+  return { ms: totalMs, checksum };
+}
+
+function runHash(gl, lib, N, BLOCK) {
+  N = Math.ceil(N / BLOCK) * BLOCK;
+  const totalP = N / BLOCK;
+  let checksum = 0, totalMs = 0;
+  for (let basePx = 0; basePx < totalP; basePx += CHUNK_PX) {
+    const chunkP = Math.min(CHUNK_PX, totalP - basePx);
+    const { TW, TH } = grid(chunkP);
+    const raw = lib.raw("otranspilerl_glsl", [lowerBitOps(lowerWhileLoops(lowerBranchless(hashBlockFragmentShader(TW, basePx + chunkP, BLOCK, basePx))))], [800]).output;
+    const g = collapseConsecutiveListLoop(raw);
+    const glsl = packFragmentResultToRGBA(g);
+    const pr = fragProgram(gl, glsl, TW, TH);
+    if (pr.err) return { err: pr.err };
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.drawArrays(gl.TRIANGLES, 0, 3); // warmup (HLSL compile on first draw)
+    gl.readPixels(0, 0, TW, TH, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(TW * TH * 4));
+    const t0 = performance.now();
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+    const px = new Uint8Array(TW * TH * 4);
+    gl.readPixels(0, 0, TW, TH, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    totalMs += performance.now() - t0;
+    let part = 0;
+    for (let i = 0; i < TW * TH; i++) part = checksumAdd("hash", part, decode32(px, i));
+    checksum = (checksum + part) >>> 0;
+  }
+  return { ms: totalMs, checksum };
+}
+
+// ── main ────────────────────────────────────────────────────────
+async function main() {
+  const lib = await getOtranspilerl();
+  const q = new URLSearchParams(location.search);
+  const sizeOf = (name, def) => Math.max(1, Number(q.get(name)) || def);
+  const BLOCK = sizeOf("block", 1024);
+  const sizes = {
+    collatz: sizeOf("collatz", 100000000),
+    ca1d: sizeOf("ca1d", 1000000000),
+    hash: sizeOf("hash", 1000000000),
+  };
+  const cv = $("c");
+  const gl = cv.getContext("webgl", { antialias: false, preserveDrawingBuffer: true });
+  if (!gl) { out("no webgl"); return; }
+  const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+  const renderer = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : String(gl.getParameter(gl.RENDERER));
+  const hw = /swiftshader|llvmpipe|software|basic render|microsoft basic/i.test(renderer) ? "SOFTWARE" : "HARDWARE";
+
+  // the C side (measured by bench/gcc-vs-igpu/run.mjs, written before this page opened)
+  let cData = {};
+  try { cData = await (await fetch("gcc-vs-igpu-results.json")).json(); } catch { /* page opened standalone */ }
+  const cBy = {};
+  for (const p of (cData.problems || [])) cBy[p.name] = p;
+  // use the C side's sizes when available — the URL may be stale (a
+  // manually re-opened page with old ?collatz=… params), and the GPU must
+  // run at the SAME size the C checksum was computed for.
+  for (const name of ["collatz", "ca1d", "hash"]) {
+    if (cBy[name] && cBy[name].size) sizes[name] = cBy[name].size;
+  }
+
+  out(`renderer: ${renderer} (${hw})\n⏳ running the GPU side (block=${BLOCK}; sizes: collatz ${sizes.collatz}, ca1d ${sizes.ca1d}, hash ${sizes.hash})…`);
+
+  const runners = {
+    collatz: (gl, lib, N) => runCollatz(gl, lib, N, BLOCK),
+    ca1d: (gl, lib, N) => runCa1d(gl, lib, N, BLOCK),
+    hash: (gl, lib, N) => runHash(gl, lib, N, BLOCK),
+  };
+  const results = [];
+  for (const name of ["collatz", "ca1d", "hash"]) {
+    progress("  … " + name + " (N=" + sizes[name] + ")");
+    const r = runners[name](gl, lib, sizes[name]);
+    if (r.err) { results.push({ name, err: r.err }); progress("  " + name + ": ERROR " + r.err); continue; }
+    const c = cBy[name];
+    const checksumOk = c && c.checksum !== null ? (r.checksum === c.checksum) : null; // null = no C side to compare (--gpu-only)
+    results.push({ name, size: sizes[name], gpuMs: r.ms, checksum: r.checksum, checksumOk, cMs: c ? c.cMs : null, cChecksum: c ? c.checksum : null });
+    progress(`  ${name}: ${r.ms.toFixed(1)} ms GPU · checksum ${r.checksum}${c ? (checksumOk ? " ✓" : " ✗ (C says " + c.checksum + ")") : ""}`);
+  }
+
+  // ── the comparison table ──
+  let t = `renderer: ${renderer} (${hw})\n\n`;
+  t += "problem   size          C ms     C ns/it   iGPU ms   iGPU ns/it   speedup   checksum\n";
+  for (const r of results) {
+    if (r.err) { t += `${r.name.padEnd(10)} ERROR ${r.err}\n`; continue; }
+    const N = Math.ceil(r.size / BLOCK) * BLOCK;
+    const cNsp = r.cMs ? (r.cMs * 1e6 / N).toFixed(1) : "—";
+    const gNsp = (r.gpuMs * 1e6 / N).toFixed(2);
+    const sp = r.cMs ? (r.cMs / r.gpuMs).toFixed(2) + "×" : "—";
+    const ck = r.checksumOk === null ? "—" : r.checksumOk ? "✓" : "✗";
+    t += `${r.name.padEnd(10)} ${String(r.size).padEnd(13)} ${(r.cMs ? r.cMs.toFixed(0) : "—").padEnd(8)} ${cNsp.padEnd(9)} ${r.gpuMs.toFixed(1).padEnd(9)} ${gNsp.padEnd(12)} ${sp.padEnd(9)} ${ck}\n`;
+  }
+  t += "\nC ms / iGPU ms = wall time for the handwritten C reference (gcc -O2) and the WebGL block-reduction (one draw, N/BLOCK readback) in THIS browser, best of 2.\n";
+  t += "ns/it = per-item cost (ms × 1e6 / N). The per-item speedup (C ns/it ÷ iGPU ns/it) is the size-independent efficiency — it equals the wall speedup because both run at the SAME fixed N.\n";
+  t += "N is FIXED per problem (collatz 100M, ca1d 1B, hash 1B), not calibrated to a wall time, so the comparison is reproducible and not inflated at small N / deflated at large N.\n";
+  t += "checksum = mod-2^32 sum of results; must match the C binary's output.\n";
+  out(t + "\n✅ DONE");
+
+  window.__gccVsIgpuResults = { renderer, hw, problems: results };
+  // POST the results to the logging server (bench/remote/launch.mjs collects them)
+  try { await fetch("/log", { method: "POST", body: JSON.stringify({ page: "gcc-vs-igpu", renderer, hw, problems: results }) }); } catch { /* page opened standalone */ }
+}
+main();
+</script>
+</body>
+</html>
