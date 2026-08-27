@@ -52,7 +52,7 @@ function compile(gl, src, w, h, branchless, maxIter) {
   const glsl = packFragmentResultToRGBA(g);
   const pr = fragProgram(gl, glsl, w, h);
   if (pr.err) return { err: pr.err };
-  return { p: pr.p };
+  return { p: pr.p, lowered: s };
 }
 function run(gl, pr, w, h) {
   gl.useProgram(pr.p);
@@ -99,7 +99,11 @@ for (const [key, alg] of Object.entries(ALGORITHMS)) {
   const tb = timeRun(gl, cb, TW, TH);
   const tl = timeRun(gl, cl, TW, TH);
   const nspB = (tb * 1e6 / Nc).toFixed(2), nspL = (tl * 1e6 / Nc).toFixed(2);
-  const sp = (tb / tl).toFixed(2) + "×";
+  // degenerate-case detection: if the branchless form still contains a
+  // selectable `if [` (beyond the outer `p < P` guard), the transformation was
+  // skipped as trivial (e.g. the clamp's constant assignments) — report it.
+  const skipped = (cl.lowered.match(/if \[/g) || []).length > 1;
+  const sp = skipped ? "skipped" : (tb / tl).toFixed(2) + "×";
   console.log(
     key.padEnd(9),
     alg.name.padEnd(34),

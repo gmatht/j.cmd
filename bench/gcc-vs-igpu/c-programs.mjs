@@ -318,7 +318,7 @@ export function lowerBranchless(src, opts = {}) {
     while ((mt = tokRe.exec(s))) { depth += (mt[1] === "do") ? 1 : -1; if (depth === 0) { bodyEnd = mt.index; break; } }
     if (bodyEnd < 0) break;
     let body = s.slice(doPos, bodyEnd);
-    body = selectIfElse(body); // transform if/else inside the body first
+    body = selectIfElse(body, opts); // transform if/else inside the body first
     const a = "a" + guard;
     const maskVal = testToValue(cond, kw === "until");
     if (!maskVal) break; // can't convert the while condition -> leave for lowerWhileLoops
@@ -359,9 +359,18 @@ function testToValue(cond, negate = false) {
 // guard) are handled. Variables assigned in both branches → select; in one
 // branch → masked by the condition. The select goes through a temp because the
 // backend can't parse deeply-nested expressions.
-export function selectIfElse(src) {
+//
+// opts.skipTrivial (default true): skip TRIVIAL branches — a body assignment
+// to a CONSTANT literal (e.g. `v=0`, `v=255` — a clamp/saturate). The select
+// `e*0 + (1-e)*v` is provably wasteful (the `e*0` is always 0) and the branchy
+// form is a single cheap op, so the transformation adds more arithmetic than
+// it saves on a scalar renderer. Variable-assignment branches (max=v,
+// count+1) are genuine selects and are still transformed.
+export function selectIfElse(src, opts = {}) {
+  const skipTrivial = opts.skipTrivial !== false;
   let out = "\n" + src + "\n";
-  let k = 0;
+  const trivial = new Map(); // placeholder -> original if/else text (restored at the end)
+  let k = 0, t = 0;
   for (let i = 0; i < 300; i++) {
     const m = /if\s+\[\s*([^\]]+?)\s*\]\s*;\s*then((?:(?!\bif\b)[\s\S])*?)(?:else((?:(?!\bif\b)[\s\S])*?))?fi/.exec(out);
     if (!m) break;
@@ -373,9 +382,19 @@ export function selectIfElse(src) {
     if (/(for|while|until|if)\b/.test(thenBody) || /(for|while|until|if)\b/.test(elseBody)) break;
     const val = testToValue(cond);
     if (!val) break;
-    const assignRe = /(\w+)=\$\(\( ?(.*?) ?\)\)|(\w+)=(\d+|\w+)/g;
-    const thenAssigns = [...thenBody.matchAll(assignRe)].map((a) => [a[1] || a[3], a[2] ?? a[4]]);
-    const elseAssigns = [...elseBody.matchAll(assignRe)].map((a) => [a[1] || a[3], a[2] ?? a[4]]);
+    const assignRe = /(\w+)=\$\(\( ?(.*?) ?\)\)|(\w+)=(\d+|\w+|\$\w+)/g;
+    const thenAssigns = [...thenBody.matchAll(assignRe)].map((a) => [a[1] || a[3], (a[2] ?? a[4]).replace(/^\$/, "")]);
+    const elseAssigns = [...elseBody.matchAll(assignRe)].map((a) => [a[1] || a[3], (a[2] ?? a[4]).replace(/^\$/, "")]);
+    // degenerate-case detection: a body assignment to a constant literal is a
+    // trivial clamp/saturate — the select would be `e*const + (1-e)*v` (the
+    // `e*0` is always 0), so the transformation adds arithmetic without saving
+    // anything. Leave it branchy (restore it at the end).
+    if (skipTrivial && [...thenAssigns, ...elseAssigns].some(([, expr]) => /^\d+$/.test(expr))) {
+      const ph = `__TRIVIAL_${t++}__`;
+      trivial.set(ph, m[0]);
+      out = out.replace(m[0], ph);
+      continue;
+    }
     const thenMap = new Map(thenAssigns);
     const elseMap = new Map(elseAssigns);
     const vars = [...new Set([...thenMap.keys(), ...elseMap.keys()])];
@@ -416,6 +435,7 @@ export function selectIfElse(src) {
     out = out.replace(m[0], lines.join("\n"));
     k++;
   }
+  for (const [ph, orig] of trivial) out = out.replace(ph, orig); // restore skipped trivial ifs
   return out.trim();
 }
 

@@ -9,12 +9,24 @@ Each algorithm is written in the naive form (data-dependent `while`/`if`
 conditions — the kind that cause warp divergence on a GPU) and covers a
 different branch pattern:
 
-| algorithm | branch pattern | pre-pass that fires |
-|---|---|---|
-| mandelbrot | `while \|z\|² ≤ 4` escape test (data-dependent termination) | `lowerBranchless` |
-| maxreduce | `if v > max` per element (single-branch if in a for loop) | `selectIfElse` |
-| threshold | `if v > 500` conditional count | `selectIfElse` |
-| clamp | `if v < 0` / `if v > 255` (two single-branch clamps) | `selectIfElse` |
+| algorithm | branch pattern | pre-pass that fires | result |
+|---|---|---|---|
+| mandelbrot | `while \|z\|² ≤ 4` escape test (data-dependent termination) | `lowerBranchless` | transformed |
+| maxreduce | `if v > max` per element (single-branch if in a for loop) | `selectIfElse` | transformed |
+| threshold | `if v > 500` conditional count | `selectIfElse` | transformed |
+| clamp | `if v < 0` / `if v > 255` (two single-branch clamps) | `selectIfElse` | **skipped (trivial)** |
+
+## Degenerate-case detection (`skipTrivial`)
+
+The clamp is the degenerate case: its branches are **constant assignments**
+(`v=0`, `v=255`). The select `e*0 + (1-e)*v` is provably wasteful (the `e*0`
+is always 0) and the branchy form is a single cheap op, so the transformation
+would add more arithmetic than it saves on a scalar renderer. `selectIfElse`
+detects this statically (a body assignment to a constant literal) and leaves
+such branches branchy — the benchmark reports them as `skipped`. Variable-
+assignment branches (`max=v`, `count+1`) are genuine selects and are still
+transformed. Pass `{ skipTrivial: false }` to force the transformation anyway
+(e.g. if you know the target GPU's divergence cost makes it worthwhile).
 
 ## What it checks
 
