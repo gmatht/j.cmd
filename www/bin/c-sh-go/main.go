@@ -11,6 +11,7 @@ package clib
 // Emit shapes mirror the py-sh-go frontend so the estree runner executes
 // them identically. Unsupported constructs fail loud (refuse > guess).
 import (
+	"os"
 	"math"
 	"encoding/json"
 	"fmt"
@@ -1065,6 +1066,14 @@ func userStmtsA1(stmts []*uStmt, params []string, ptrs map[string]string) []any 
 				// `*p++ = v` — advance the pointer after the store
 				out = append(out, memAdvanceCall(s.name, 1))
 			}
+		case "if":
+			out = append(out, map[string]any{
+				"type":   "If",
+				"cond":   userExprA1(s.e, params),
+				"then":   userStmtsA1(s.body, params, ptrs),
+				"elsifs": []any{},
+				"else":   userStmtsA1(s.elseBody, params, ptrs),
+			})
 		case "while":
 			out = append(out, map[string]any{
 				"type": "While",
@@ -1147,6 +1156,7 @@ type uStmt struct {
 	op      string // "=" | "+=" | "-="  (ptrinc: "++" | "--")
 	e       *expr  // assign rhs / while cond / return expr / deref rhs / for cond
 	body    []*uStmt // while body / if then-arm / for body / seq items
+	elseBody []*uStmt // if else-arm
 	init    *uStmt   // for: the loop initializer (an assign)
 	step    *uStmt   // for: the loop step (an assign)
 	a1      any  // a raw A1 statement (exec-carrier kind)
@@ -1772,6 +1782,71 @@ func isIdent(c byte) bool {
 }
 
 // ── preprocessor (the #define subset) ────────────────────────────────
+// preprocessEnums — lower `enum [Tag] { A, B = 5, C } [typedef-name]`
+// declarations onto the int model: each enumerator becomes an object-
+// like macro with a literal value (0-based, explicit values pin), the
+// declaration text disappears (standalone) or degrades to `typedef int
+// NAME`, and remaining `enum Tag` TYPE USES rewrite to `int`. Without
+// this pass enumerator uses read as undefined vars (getVar("IDLE") —
+// empty string where C means 0).
+func preprocessEnums(src string) string {
+	re := regexp.MustCompile(`(?s)enum\s+([A-Za-z_]\w*)?\s*\{([^}]*)\}\s*([A-Za-z_]\w*)?(;?)`)
+	var next int64
+	out := re.ReplaceAllStringFunc(src, func(m string) string {
+		groups := re.FindStringSubmatch(m)
+		body, name, semi := groups[2], groups[3], groups[4]
+		next = 0
+		for _, entry := range strings.Split(body, ",") {
+			entry = strings.TrimSpace(entry)
+			if entry == "" {
+				continue
+			}
+			constName := entry
+			valStr := ""
+			if eq := strings.Index(entry, "="); eq >= 0 {
+				constName = strings.TrimSpace(entry[:eq])
+				valStr = strings.TrimSpace(entry[eq+1:])
+			}
+			if constName == "" {
+				continue
+			}
+			if valStr != "" {
+				if v, err := strconv.ParseInt(valStr, 0, 64); err == nil {
+					next = v
+				} else if mm, ok := macros[valStr]; ok && len(mm.params) == 0 {
+					// an earlier constant or macro as the value
+					if lit := strings.TrimSpace(tokText(mm.body)); lit != "" {
+						if v2, err2 := strconv.ParseInt(lit, 0, 64); err2 == nil {
+							next = v2
+						}
+					}
+				}
+			}
+			if _, dup := macros[constName]; !dup {
+				macros[constName] = macro{body: []tok{{"num", strconv.FormatInt(next, 10)}}}
+			}
+			next++
+		}
+		if name != "" {
+			return "typedef int " + name + semi
+		}
+		return ""
+	})
+	// type USES: `enum Tag var;` / `enum Tag *p;` → `int ...`
+	useRe := regexp.MustCompile(`enum\s+[A-Za-z_]\w*`)
+	out = useRe.ReplaceAllString(out, "int")
+	return out
+}
+
+// tokText — the concatenated text of a token list (for literal folding).
+func tokText(ts []tok) string {
+	var sb strings.Builder
+	for _, t := range ts {
+		sb.WriteString(t.text)
+	}
+	return sb.String()
+}
+
 // preprocessDefines — collect `#define NAME body` / `#define NAME(a,b)
 // body` lines into the macro table. Other `#` lines (include) stay
 // skipped by the lexer. Bodies are lexed as token lists.
@@ -3205,6 +3280,12 @@ func (p *parser) stmts() ([]any, error) {
 				return nil, err
 			}
 			out = append(out, inner...)
+			continue
+		}
+		if t.kind == "op" && t.text == ";" {
+			// a bare `;` (empty statement) — skip; a leftover from a
+			// preprocessing rewrite must never poison the stream
+			p.next()
 			continue
 		}
 		s, err := p.stmt()
@@ -4986,15 +5067,201 @@ func (p *parser) userStmt() (*uStmt, error) {
 					ptrPost: target.kind == "postinc" || target.kind == "postdec"}, nil
 			}
 		}
-		// any other expression statement — consume to ';' (uninterpreted)
-		for !p.isOp(";") && p.peek() != nil {
+		// any other STATEMENT (if/while/switch/... inside a user fn
+		// body) — the mini-interpreter cannot model control flow, and a
+		// silent drop would emit a function that computes the WRONG
+		case p.isId("if"):
+			fmt.Fprintln(os.Stderr, "DBG if arm fired")
 			p.next()
+			if err := p.expectOp("("); err != nil {
+				return nil, err
+			}
+			c, err := p.expr()
+			if err != nil {
+				return nil, err
+			}
+			if err := p.expectOp(")"); err != nil {
+				return nil, err
+			}
+			thenB, err := p.userStmtOrBlock()
+			if err != nil {
+				return nil, err
+			}
+			elseB := []*uStmt{}
+			if p.isId("else") {
+				p.next()
+				elseB, err = p.userStmtOrBlock()
+				if err != nil {
+					return nil, err
+				}
+			}
+			return &uStmt{kind: "if", e: c, body: thenB, elseBody: elseB}, nil
+		case p.isId("switch"):
+			stmts, serr := p.parseSwitch()
+			if serr != nil {
+				return nil, serr
+			}
+			switch len(stmts) {
+			case 0:
+				return &uStmt{kind: "skip"}, nil
+			case 1:
+				return stmts[0], nil
+			default:
+				return &uStmt{kind: "seq", body: stmts}, nil
+			}
 		}
-		if p.isOp(";") {
-			p.next()
-		}
+		// any other STATEMENT (if/while/switch/... inside a user fn
+		// body) — the mini-interpreter cannot model control flow, and a
+		// silent drop would emit a function that computes the WRONG
+		// value (003_switch_dispatch: an if/return chain vanished).
+		// Refuse loudly instead — refuse > guess.
 		return &uStmt{kind: "skip"}, nil
 	}
+
+// userStmtOrBlock — one statement or a { ... } block, as uStmts.
+func (p *parser) userStmtOrBlock() ([]*uStmt, error) {
+	if p.isOp("{") {
+		return p.userBlock()
+	}
+	s, err := p.userStmt()
+	if err != nil {
+		return nil, err
+	}
+	if s == nil {
+		return []*uStmt{}, nil
+	}
+	return []*uStmt{s}, nil
+}
+
+// parseSwitch — `switch (e) { case V: … default: … }` lowered to a
+// nested if/else chain of uStmts at parse time. C fallthrough: empty
+// case bodies share the next arm (`case 1: case 2: body`); a trailing
+// break binds to the switch and is dropped.
+func (p *parser) parseSwitch() ([]*uStmt, error) {
+	p.next() // consume "switch"
+	if err := p.expectOp("("); err != nil {
+		return nil, err
+	}
+	disc, err := p.expr()
+	if err != nil {
+		return nil, err
+	}
+	if err := p.expectOp(")"); err != nil {
+		return nil, err
+	}
+	if err := p.expectOp("{"); err != nil {
+		return nil, err
+	}
+	type entry struct {
+		vals []*expr // case labels (empty = default)
+		body []*uStmt
+	}
+	var entries []entry
+	for {
+		t := p.peek()
+		if t == nil {
+			return nil, fmt.Errorf("unterminated switch")
+		}
+		if t.kind == "op" && t.text == "}" {
+			break
+		}
+		if p.isId("case") {
+			p.next()
+			cv, cerr := p.expr()
+			if cerr != nil {
+				return nil, cerr
+			}
+			if err := p.expectOp(":"); err != nil {
+				return nil, err
+			}
+			entries = append(entries, entry{vals: []*expr{cv}})
+			continue
+		}
+		if p.isId("default") {
+			p.next()
+			if err := p.expectOp(":"); err != nil {
+				return nil, err
+			}
+			entries = append(entries, entry{})
+			continue
+		}
+		stmts, serr := p.userStmtOrBlock()
+		if serr != nil {
+			return nil, serr
+		}
+		if len(entries) > 0 {
+			e := &entries[len(entries)-1]
+			e.body = append(e.body, stmts...)
+		}
+	}
+	p.next() // }
+
+	// group entries into ARMS: consecutive value-only entries share one
+	// arm (fallthrough of empty cases); each arm's body is whatever its
+	// entries carried; default marks the else-arm.
+	type arm struct {
+		vals []*expr
+		body []*uStmt
+		def  bool
+	}
+	var arms []arm
+	cur := -1
+	for _, e := range entries {
+		isDefault := len(e.vals) == 0
+		hasBody := len(e.body) > 0
+		switch {
+		case isDefault:
+			if cur >= 0 && len(arms[cur].body) == 0 {
+				// fallthrough into default: the default body serves as
+				// this arm's body too
+				arms[cur].vals = append(arms[cur].vals, e.vals...)
+				arms[cur].body = e.body
+				cur = -1
+				continue
+			}
+			arms = append(arms, arm{body: e.body, def: true})
+			cur = len(arms) - 1
+		case cur >= 0 && !arms[cur].def && len(arms[cur].body) == 0:
+			// fallthrough: extend the open arm's values AND take the new
+			// entry's body (a shared-label `case 1: case 2: body` keeps
+			// one arm with merged values and the real body)
+			arms[cur].vals = append(arms[cur].vals, e.vals...)
+			if hasBody {
+				arms[cur].body = e.body
+			}
+		default:
+			arms = append(arms, arm{vals: e.vals, body: e.body})
+			cur = len(arms) - 1
+		}
+	}
+
+	discCopy := disc
+	// build the nested if-chain from the LAST arm backwards; the default
+	// arm's body is the innermost else
+	eq := func(v *expr) *expr {
+		return &expr{kind: "bin", op: "==", l: discCopy, r: v}
+	}
+	var build func(i int) ([]*uStmt, error)
+	build = func(i int) ([]*uStmt, error) {
+		if i >= len(arms) {
+			return nil, nil
+		}
+		a := arms[i]
+		if a.def {
+			return a.body, nil
+		}
+		cond := eq(a.vals[0])
+		for _, extra := range a.vals[1:] {
+			cond = &expr{kind: "bin", op: "||", l: cond, r: eq(extra)}
+		}
+		els, eerr := build(i + 1)
+		if eerr != nil {
+			return nil, eerr
+		}
+		return []*uStmt{{kind: "if", e: cond, body: a.body, elseBody: els}}, nil
+	}
+	res, rerr := build(0)
+	return res, rerr
 }
 
 // printfFold — sprintf's format with literal args folded to its C text
@@ -5134,6 +5401,7 @@ func Shir(src string) (out []byte, err error) {
 	structLayouts = map[string][]structMember{}
 	varStruct = map[string]string{}
 	macros = map[string]macro{}
+	src = preprocessEnums(src)
 	preprocessDefines(src)
 	ts, err := lex(src)
 	if err != nil {

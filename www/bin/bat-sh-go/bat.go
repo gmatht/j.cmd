@@ -424,7 +424,7 @@ func (p *parser) parseAtomic(rest string) ([]map[string]any, string, string, err
 
 // pipelineStmt — the A1 pipeline Call over per-stage statement lists;
 // each stage must be exactly one plain Expr(exec) statement (the core's
-// `a | b` shape — probed with `debashc --shir`).
+// `a | b` shape — probed with `otranspilerl-cli --shir`).
 func pipelineStmt(perStage [][]map[string]any) (map[string]any, error) {
 	var arrows []map[string]any
 	for _, st := range perStage {
@@ -510,7 +510,7 @@ func (p *parser) parseCommand(s string) ([]map[string]any, string, error) {
 	case "shift":
 	// shift — move the positional args along (%1 becomes %2, ...; %* is
 	// unaffected). The core's own bash `shift` lowers to exactly this
-	// exec Call (probed: `debashc --shir` emits exec "shift"), and the
+	// exec Call (probed: `otranspilerl-cli --shir` emits exec "shift"), and the
 	// estree runner's shift builtin shifts the CALL-scoped positional
 	// array (a call :label pushes a fresh scope), matching cmd.
 	return []map[string]any{execStmt([]map[string]any{str("shift")}, "Emulable")}, "", nil
@@ -1161,7 +1161,7 @@ func splitPipes(s string) []string {
 
 // andOrStmt — build the A1 conjunction (the core's `a && b` / `a || b`
 // shape: Expr(BinOp And/Or(exec, exec))). Both operands must be plain
-// exec Exprs (probed with `debashc --shir` — the estree renderer lowers
+// exec Exprs (probed with `otranspilerl-cli --shir` — the estree renderer lowers
 // the And/Or to a lastExit check, the sh renderer to `&&`/`||`).
 func andOrStmt(op string, lhs, rhs map[string]any) (map[string]any, bool) {
 	l, ok1 := plainExec(lhs)

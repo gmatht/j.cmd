@@ -3,7 +3,7 @@
 // WORKER REWRITE (2026-08-06): the hand-rolled stub parser is replaced by a
 // faithful port of the core's shell frontend (sh2perl/src/parser/* +
 // src/shir.rs lowering + src/ir.rs optimize_stmts + A2 var-type analysis).
-// The emitted JSON must be BYTE-IDENTICAL to `debashc --shir FILE --raw`
+// The emitted JSON must be BYTE-IDENTICAL to `otranspilerl-cli FILE --shir --raw`
 // (optimized lowering + A2 annotations, no trailing newline). The core is
 // the source of truth: every rule below mirrors a specific core function.
 package zshlib

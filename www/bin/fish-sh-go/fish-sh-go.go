@@ -11,7 +11,7 @@
 //
 // EMISSION CONSTRAINT: emit only the renderer-safe A1 subset — the exact
 // node shapes the core itself emits for the bash analogs (verified shape-
-// by-shape against `debashc --shir`): Expr(Call("exec"|"getVar"|...)),
+// by-shape against `otranspilerl-cli --shir`): Expr(Call("exec"|"getVar"|...)),
 // Assign (Str/Interpolate/setArray/capture/Arith sources), If/While/For/
 // Function/Case/Redirect/Background, Interpolate parts, Arrow capture
 // bodies, BinOp And/Or/Not conditions, pipeline calls. The ESTree
@@ -1105,7 +1105,7 @@ func (p *parser) setStmts(args []token) ([]map[string]any, error) {
 	if localMode && !appendMode {
 		// fish `set -l NAME VALUE` — a function-local variable, lowered
 		// to the core's own `local NAME=VALUE` exec shape (the exact
-		// node debashc emits for the bash analog): the core's
+		// node otranspilerl-cli emits for the bash analog): the core's
 		// per-function local lift (LOCAL_LIFT) turns it into a native
 		// `let` — the scope shadow. That is the ONLY path with real
 		// function scoping (the runtime's local builtin is a flat store
@@ -1222,7 +1222,7 @@ func mathASTJSON(a *mathAST) map[string]any {
 }
 
 // arithExpr is the A1 Arith node carrying a parsed math AST (the exact
-// shape debashc emits for bash `$((...))`).
+// shape otranspilerl-cli emits for bash `$((...))`).
 func arithExpr(a *mathAST) map[string]any {
 	return map[string]any{"type": "Arith", "ast": mathASTJSON(a)}
 }
@@ -2339,7 +2339,7 @@ func braceParts(text string) (prefix string, groups [][]string, middles []string
 
 // braceValueExpr emits the core's sh2.brace shape — the exact
 // `Call("brace", [prefix, Json(groups), Json(middles), suffix])` form
-// debashc emits for bash `echo pre{a,b}post` (the ESTree backend
+// otranspilerl-cli emits for bash `echo pre{a,b}post` (the ESTree backend
 // expands it at emit time).
 func braceValueExpr(prefix string, groups [][]string, middles []string, suffix string) map[string]any {
 	gj := make([]any, 0, len(groups))

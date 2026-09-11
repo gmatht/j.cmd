@@ -17,7 +17,7 @@
 //	prog := &shiremit.Program{...}
 //	b, err := shiremit.Emit(prog)
 //	// b is the A1 JSON, ready to write to stdout or feed to
-//	// debashc --shir-in-estree for the round-trip / ingress test.
+//	// otranspilerl-cli --shir-in-estree for the round-trip / ingress test.
 package shiremit
 
 import (
