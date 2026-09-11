@@ -818,10 +818,7 @@ func callNode(e *expr) any {
 		if fn.varargs {
 			refuse("unsupported function call " + e.name + " (varargs need literal args in v1)")
 		}
-		args := make([]any, 0, len(e.args))
-		for _, a := range e.args {
-			args = append(args, valueNode(a))
-		}
+		args := callArgsA1(e.args)
 		// fnValue — the VALUE-returning dispatch (a C function call in a
 		// value position carries its return value back; sh2.fnCall is the
 		// shell STATUS channel and would silently drop it — see the
@@ -855,10 +852,105 @@ func userExprA1(e *expr, params []string) any {
 		return map[string]any{"type": "Arith", "ast": arithNode(e)}
 	case "call":
 		return callNode(e)
-	case "index", "deref", "addr":
+	case "fpcall":
+		return userFpcallValue(e, params)
+	case "index":
+		// `p[k]` where p is a PARAM — the array NAME travels as the
+		// param's value; read the element through the runtime
+		// arrayIndex (dynamic names work: vars.get resolves them)
+		if e.l != nil && e.l.kind == "id" {
+			for i, pn := range params {
+				if pn == e.l.name {
+					var idx any
+					if k, ok := foldIndex(e.r); ok {
+						idx = st(strconv.Itoa(k))
+					} else {
+						idx = indexArith(e.r, 0)
+					}
+					return call("arrayIndex", []any{call("getVar", []any{st(strconv.Itoa(i + 1))}), idx})
+				}
+			}
+		}
+		return valueNode(e)
+	case "deref", "addr":
 		return valueNode(e)
 	}
 	return st("")
+}
+
+// userFpcallValue — `(*f)(args)` in a user-function body value position:
+// the NAME is a param holding a function name (positional getVar), so
+// the call dispatches dynamically; the callee's echoed stdout is the
+// value (Capture, exactly the shell `$(...)` shape). A funcPtrs-known
+// name folds to a plain call (same looseness as foldCallConst).
+func userFpcallValue(e *expr, params []string) any {
+	if tgt, ok := funcPtrs[e.name]; ok {
+		return userExprA1(&expr{kind: "call", name: tgt, args: e.args}, params)
+	}
+	for i, pn := range params {
+		if pn == e.name {
+			argsA1 := make([]any, 0, len(e.args))
+			for _, a := range e.args {
+				argsA1 = append(argsA1, userExprA1(a, params))
+			}
+			nameNode := call("getVar", []any{st(strconv.Itoa(i + 1))})
+			// fnCall (NOT exec): the VALUE channel — fnCall returns the
+			// callee's value (echo-return-optimized bodies return the
+			// string), which the Capture prefers over the buffer; exec
+			// would coerce to boolean status and drop it
+			return map[string]any{
+				"type":   "Capture",
+				"native": false,
+				"expr": map[string]any{
+					"type": "Arrow",
+					"body": []any{
+						map[string]any{
+							"type": "Expr",
+							"expr": call("fnCall", []any{nameNode, map[string]any{"type": "Array", "elements": argsA1}}),
+						},
+					},
+				},
+			}
+		}
+	}
+	refuse("function-pointer call to unknown " + e.name)
+	return nil
+}
+
+// lowerFoldedCallStmt — a parse-folded static-target call used as a
+// statement (the `(*fp)(args);` main-scope form): same A1 as the plain
+// `tgt(args);` statement
+func (p *parser) lowerFoldedCallStmt(e *expr) (any, error) {
+	if _, ok := userFuncs[e.name]; ok {
+		// rebuild valueNodes from the folded args
+		argsA1 := make([]any, 0, len(e.args))
+		for _, a := range e.args {
+			argsA1 = append(argsA1, valueNode(a))
+		}
+		return map[string]any{"type": "Expr", "expr": call("fnCall", []any{st(e.name), map[string]any{"elements": argsA1, "type": "Array"}})}, nil
+	}
+	return nil, nil
+}
+
+// userCallStmt — `name(args);` where name is a known user function:
+// the fnCall status-channel statement
+func userCallStmt(name string, args []*expr) any {
+	return map[string]any{"type": "Expr", "expr": call("fnCall", []any{st(name), map[string]any{"elements": callArgsA1(args), "type": "Array"}})}
+}
+
+// callArgsA1 — user-call argument list: a KNOWN array variable travels
+// by NAME (the callee's arrayIndex/arrayStore resolve it, and in-place
+// writes land in the caller's array); everything else by value
+func callArgsA1(args []*expr) []any {
+	argsA1 := make([]any, 0, len(args))
+	for _, a := range args {
+		if a != nil && a.kind == "id" && arrayVars[a.name] {
+			argsA1 = append(argsA1, st(a.name))
+			continue
+		}
+		argsA1 = append(argsA1, valueNode(a))
+	}
+	return argsA1
 }
 
 // ptrAdvanceDelta — is this assignment a POINTER advance (`p = p + 1`,
@@ -920,7 +1012,7 @@ func exprNeedsTemp(e *expr) bool {
 		return false
 	}
 	switch e.kind {
-	case "deref", "index", "addr", "call":
+	case "deref", "index", "addr", "call", "fpcall":
 		return true
 	case "bin":
 		return exprNeedsTemp(e.l) || exprNeedsTemp(e.r)
@@ -1069,7 +1161,7 @@ func userStmtsA1(stmts []*uStmt, params []string, ptrs map[string]string) []any 
 		case "if":
 			out = append(out, map[string]any{
 				"type":   "If",
-				"cond":   userExprA1(s.e, params),
+				"cond":   userExprA1(hoistFpConds(s.e, params, &out), params),
 				"then":   userStmtsA1(s.body, params, ptrs),
 				"elsifs": []any{},
 				"else":   userStmtsA1(s.elseBody, params, ptrs),
@@ -1077,7 +1169,7 @@ func userStmtsA1(stmts []*uStmt, params []string, ptrs map[string]string) []any 
 		case "while":
 			out = append(out, map[string]any{
 				"type": "While",
-				"cond": userExprA1(s.e, params),
+				"cond": userExprA1(hoistFpConds(s.e, params, &out), params),
 				"body": userStmtsA1(s.body, params, ptrs),
 			})
 		case "seq":
@@ -1095,7 +1187,7 @@ func userStmtsA1(stmts []*uStmt, params []string, ptrs map[string]string) []any 
 			}
 			out = append(out, map[string]any{
 				"type": "While",
-				"cond": userExprA1(s.e, params),
+				"cond": userExprA1(hoistFpConds(s.e, params, &out), params),
 				"body": userStmtsA1(body, params, ptrs),
 			})
 		case "ret":
@@ -1103,13 +1195,112 @@ func userStmtsA1(stmts []*uStmt, params []string, ptrs map[string]string) []any 
 				"type":  "Return",
 				"value": userExprA1(s.e, params),
 			})
+		case "idxassign":
+			// `arr[j] = v` where arr is a PARAM — the array NAME travels
+			// as the param's value; write through the runtime arrayStore
+			// (dynamic names work: vars.get resolves them). Compound
+			// assigns (+=/-=) read-modify-write via a temp.
+			idx := -1
+			for i, pn := range params {
+				if pn == s.name {
+					idx = i
+					break
+				}
+			}
+			if idx < 0 {
+				refuse("indexed write to non-param " + s.name + " in user body")
+			}
+			arrNode := call("getVar", []any{st(strconv.Itoa(idx + 1))})
+			var sub any
+			if k, ok := foldIndex(s.idx); ok {
+				sub = st(strconv.Itoa(k))
+			} else {
+				sub = indexArith(s.idx, 0)
+			}
+			val := userExprA1(s.e, params)
+			if s.op != "=" {
+				// read-modify-write: temp the current element first
+				// (the Arith AST has no Call node)
+				arithOp := strings.TrimSuffix(s.op, "=")
+				userTempSeq++
+				tmp := "___t" + strconv.Itoa(userTempSeq)
+				out = append(out, map[string]any{
+					"type":    "Assign",
+					"targets": []any{map[string]any{"var": tmp, "indices": []any{}, "sigil": nil}},
+					"expr":    call("arrayIndex", []any{arrNode, sub}),
+				})
+				val = map[string]any{"type": "Arith", "ast": map[string]any{
+					"type": "Bin", "op": arithOp,
+					"lhs":  map[string]any{"type": "Var", "name": tmp},
+					"rhs":  val,
+				}}
+			}
+			out = append(out, map[string]any{
+				"type": "Expr",
+				"expr": call("arrayStore", []any{arrNode, sub, val}),
+			})
 		case "exec":
 			if s.a1 != nil {
 				out = append(out, s.a1)
 			}
+		case "fpcall":
+			// `(*f)(args);` as a statement: dynamic dispatch, value
+			// discarded (the fnCall status channel)
+			ce := s.e
+			if ce == nil || ce.kind != "fpcall" {
+				refuse("malformed function-pointer call statement")
+			}
+			if tgt, ok := funcPtrs[ce.name]; ok {
+				out = append(out, map[string]any{"type": "Expr", "expr": call("fnCall", []any{st(tgt), map[string]any{"elements": fpcallArgsA1(ce, params), "type": "Array"}})})
+				continue
+			}
+			idx := -1
+			for i, pn := range params {
+				if pn == ce.name {
+					idx = i
+					break
+				}
+			}
+			if idx < 0 {
+				refuse("function-pointer call to unknown " + ce.name)
+			}
+			nameNode := call("getVar", []any{st(strconv.Itoa(idx + 1))})
+			out = append(out, map[string]any{"type": "Expr", "expr": call("fnCall", []any{nameNode, map[string]any{"elements": fpcallArgsA1(ce, params), "type": "Array"}})})
 		}
 	}
 	return out
+}
+
+// fpcallArgsA1 — lower an fpcall's argument list in a user body
+func fpcallArgsA1(ce *expr, params []string) []any {
+	argsA1 := make([]any, 0, len(ce.args))
+	for _, a := range ce.args {
+		argsA1 = append(argsA1, userExprA1(a, params))
+	}
+	return argsA1
+}
+
+// hoistFpConds — replace fpcall nodes in a user-body condition with temp
+// vars (`___tN = <capture>` prepended), since the Arith AST has no Call
+func hoistFpConds(e *expr, params []string, out *[]any) *expr {
+	if e == nil {
+		return e
+	}
+	if e.kind == "fpcall" {
+		userTempSeq++
+		tmp := "___t" + strconv.Itoa(userTempSeq)
+		*out = append(*out, map[string]any{
+			"type":    "Assign",
+			"targets": []any{map[string]any{"var": tmp, "indices": []any{}, "sigil": nil}},
+			"expr":    userExprA1(e, params),
+		})
+		return &expr{kind: "id", name: tmp}
+	}
+	if e.kind == "bin" || e.kind == "un" {
+		e.l = hoistFpConds(e.l, params, out)
+		e.r = hoistFpConds(e.r, params, out)
+	}
+	return e
 }
 
 // buildUserFnA1 — a user function definition → the A1 `Function` stmt
@@ -1151,10 +1342,11 @@ var userFuncs = map[string]*userFunc{}
 // uStmt — a user-function body statement (the mini-AST the literal-arg
 // fold interprets; see foldUserBody).
 type uStmt struct {
-	kind    string // assign | while | if | ret | skip | exec | derefstore | ptrinc | seq | for
+	kind    string // assign | while | if | ret | skip | exec | derefstore | ptrinc | seq | for | idxassign | fpcall
 	name    string // assign target / deref pointer / ptrinc var
 	op      string // "=" | "+=" | "-="  (ptrinc: "++" | "--")
 	e       *expr  // assign rhs / while cond / return expr / deref rhs / for cond
+	idx     *expr  // idxassign: the subscript expression
 	body    []*uStmt // while body / if then-arm / for body / seq items
 	elseBody []*uStmt // if else-arm
 	init    *uStmt   // for: the loop initializer (an assign)
@@ -2418,6 +2610,42 @@ func (p *parser) primary() (*expr, error) {
 				}
 				p.p = save // not a cast (e.g. `(x)` paren expr) — rewind
 			}
+			// function-pointer call `(*f)(args)` — the transpiler bridge
+			// for qsort-style comparators (the NAME holds the callee's
+			// name; `int (*f)(int) = twice;` locals fold to their target
+			// here, params stay dynamic for the lowerers)
+			if p.p+4 < len(p.ts) &&
+				p.ts[p.p+1].kind == "op" && p.ts[p.p+1].text == "*" &&
+				p.ts[p.p+2].kind == "id" &&
+				p.ts[p.p+3].kind == "op" && p.ts[p.p+3].text == ")" &&
+				p.ts[p.p+4].kind == "op" && p.ts[p.p+4].text == "(" {
+				p.next() // (
+				p.next() // *
+				fname := p.next().text
+				p.next() // )
+				p.next() // (
+				var fargs []*expr
+				if !p.isOp(")") {
+					for {
+						a, err := p.expr()
+						if err != nil {
+							return nil, err
+						}
+						fargs = append(fargs, a)
+						if p.isOp(")") {
+							break
+						}
+						if err := p.expectOp(","); err != nil {
+							return nil, err
+						}
+					}
+				}
+				p.next() // )
+				if tgt, ok := funcPtrs[fname]; ok {
+					return &expr{kind: "call", name: tgt, args: fargs}, nil
+				}
+				return &expr{kind: "fpcall", name: fname, args: fargs}, nil
+			}
 			p.next()
 			e, err := p.expr()
 			if err != nil {
@@ -2656,6 +2884,11 @@ func valueNode(e *expr) any {
 		return call("ternary", []any{condArg, valueNode(e.r), st("")})
 	case "call":
 		return callNode(e)
+	case "fpcall":
+		// main-scope value position: static targets folded at parse
+		// time, so anything left is unresolvable (REFUSE > GUESS)
+		refuse("function-pointer call to unknown " + e.name)
+		return nil
 	case "addr":
 		// &x — a handle to x's storage (allocation_id + offset; offset 0)
 		if e.l != nil && e.l.kind == "id" {
@@ -3195,7 +3428,7 @@ func (p *parser) hoistCondReads(e *expr, out *[]any) *expr {
 		inc := &expr{kind: "bin", op: op, l: &expr{kind: "id", name: e.name}, r: &expr{kind: "num", num: "1"}}
 		*out = append(*out, assignStmt(e.name, valueNode(inc)))
 		return &expr{kind: "id", name: e.name}
-	case "call":
+	case "call", "fpcall":
 		return p.hoistToTemp(e, out)
 	case "cond":
 		e.l = p.hoistCondReads(e.l, out)
@@ -3335,6 +3568,26 @@ func (p *parser) stmt() (any, error) {
 		// level as the surrounding stmts (it scans top-level labels
 		// only). `stmts()` / `stmtOrBlock()` flatten list returns.
 		return []any{label, inner}, nil
+	}
+	if p.isOp("(") && p.p+4 < len(p.ts) &&
+		p.ts[p.p+1].kind == "op" && p.ts[p.p+1].text == "*" &&
+		p.ts[p.p+2].kind == "id" &&
+		p.ts[p.p+3].kind == "op" && p.ts[p.p+3].text == ")" &&
+		p.ts[p.p+4].kind == "op" && p.ts[p.p+4].text == "(" {
+		// `(*f)(args);` at main scope: only a funcPtrs-known target can
+		// resolve here (main has no params) — the parse folds it to a
+		// plain call, lowered exactly like `tgt(args);`
+		e, err := p.expr()
+		if err != nil {
+			return nil, err
+		}
+		if err := p.expectOp(";"); err != nil {
+			return nil, err
+		}
+		if e == nil || e.kind != "call" {
+			return nil, fmt.Errorf("function-pointer call to unknown target (main scope has no params)")
+		}
+		return p.lowerFoldedCallStmt(e)
 	}
 	switch {
 	case p.isId("static"):
@@ -3512,8 +3765,8 @@ func (p *parser) stmt() (any, error) {
 			var ptrParams map[string]string
 			isVarargs := false
 			if !p.isOp(")") {
-				if p.isId("void") {
-					p.next() // main(void)
+				if p.isId("void") && p.p+1 < len(p.ts) && p.ts[p.p+1].kind == "op" && p.ts[p.p+1].text == ")" {
+					p.next() // main(void) — bare void means an EMPTY list, not a param
 				} else {
 					for {
 						if p.isOp("...") {
@@ -3523,15 +3776,59 @@ func (p *parser) stmt() (any, error) {
 							break
 						}
 						t := p.peek()
-						if t == nil || t.kind != "id" || (t.text != "int" && t.text != "char") {
-							return nil, fmt.Errorf("expected parameter type (int|char) at token %v", t)
+						if t == nil || t.kind != "id" || (t.text != "int" && t.text != "char" && t.text != "void") {
+							return nil, fmt.Errorf("expected parameter type (int|char|void) at token %v", t)
 						}
 						ptype := t.text
-						p.next() // int | char
+						p.next() // int | char | void
 						isPtr := false
 						for p.isOp("*") {
 							p.next()
 							isPtr = true
+						}
+						if ptype == "void" && !isPtr {
+							refuse("void parameter (only void* in the v1 subset)")
+						}
+						if p.isOp("(") {
+							// function-pointer parameter `int (*cmp)(...)` —
+							// the NAME holds a function name (string); the
+							// pointer's own plist is unchecked in v1
+							p.next() // (
+							if err := p.expectOp("*"); err != nil {
+								return nil, err
+							}
+							pn := p.next()
+							if pn == nil || pn.kind != "id" {
+								return nil, fmt.Errorf("expected function-pointer parameter name")
+							}
+							if err := p.expectOp(")"); err != nil {
+								return nil, err
+							}
+							if err := p.expectOp("("); err != nil {
+								return nil, err
+							}
+							depth := 1
+							for depth > 0 {
+								tt := p.next()
+								if tt == nil {
+									return nil, fmt.Errorf("unterminated function-pointer parameter list")
+								}
+								if tt.kind == "op" && tt.text == "(" {
+									depth++
+								}
+								if tt.kind == "op" && tt.text == ")" {
+									depth--
+								}
+							}
+							params = append(params, pn.text)
+							paramTypes = append(paramTypes, "fnptr")
+							if p.isOp(")") {
+								break
+							}
+							if err := p.expectOp(","); err != nil {
+								return nil, err
+							}
+							continue
 						}
 						if p.isOp("...") {
 							// GNU `int ...` — the typed variadic marker (the form
@@ -4545,11 +4842,7 @@ func (p *parser) simpleAssign() (any, error) {
 		// out-parameter functions — before that landed, such calls were
 		// silently DROPPED (getdim(&w, &h) emitted nothing, w/h stayed 0).
 		if _, ok := userFuncs[name]; ok {
-			argsA1 := make([]any, 0, len(args))
-			for _, a := range args {
-				argsA1 = append(argsA1, valueNode(a))
-			}
-			return map[string]any{"type": "Expr", "expr": call("fnCall", []any{st(name), map[string]any{"elements": argsA1, "type": "Array"}})}, nil
+			return userCallStmt(name, args), nil
 		}
 		return nil, nil
 	}
@@ -5044,6 +5337,29 @@ func (p *parser) userStmt() (*uStmt, error) {
 				}
 				return &uStmt{kind: "assign", name: nm.text, op: op, e: e}, nil
 			}
+			if p.isOp("[") {
+				// `arr[j] = v` — indexed write (the qsort swap idiom)
+				p.next() // [
+				idx, err := p.expr()
+				if err != nil {
+					return nil, err
+				}
+				if err := p.expectOp("]"); err != nil {
+					return nil, err
+				}
+				if !p.isAssignOp() {
+					return nil, fmt.Errorf("expected assignment after index")
+				}
+				op := p.next().text
+				e, err := p.expr()
+				if err != nil {
+					return nil, err
+				}
+				if err := p.expectOp(";"); err != nil {
+					return nil, err
+				}
+				return &uStmt{kind: "idxassign", name: nm.text, op: op, e: e, idx: idx}, nil
+			}
 		}
 		if t.kind == "op" && t.text == "*" {
 			// *p = expr — a deref STORE (also *p++ = expr / *p-- = expr:
@@ -5066,6 +5382,25 @@ func (p *parser) userStmt() (*uStmt, error) {
 				return &uStmt{kind: "derefstore", name: target.name, op: op, e: e,
 					ptrPost: target.kind == "postinc" || target.kind == "postdec"}, nil
 			}
+		}
+		if p.isOp("(") && p.p+4 < len(p.ts) &&
+			p.ts[p.p+1].kind == "op" && p.ts[p.p+1].text == "*" &&
+			p.ts[p.p+2].kind == "id" &&
+			p.ts[p.p+3].kind == "op" && p.ts[p.p+3].text == ")" &&
+			p.ts[p.p+4].kind == "op" && p.ts[p.p+4].text == "(" {
+			// `(*f)(args);` — function-pointer call statement (the
+			// qsort-comparator bridge); resolved at emission
+			e, err := p.expr()
+			if err != nil {
+				return nil, err
+			}
+			if err := p.expectOp(";"); err != nil {
+				return nil, err
+			}
+			if e == nil || e.kind != "fpcall" {
+				return nil, fmt.Errorf("malformed function-pointer call statement")
+			}
+			return &uStmt{kind: "fpcall", e: e}, nil
 		}
 		// any other STATEMENT (if/while/switch/... inside a user fn
 		// body) — the mini-interpreter cannot model control flow, and a

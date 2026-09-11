@@ -27,3 +27,8 @@
 alphanumeric_compare() { if [[ "$1" < "$2" ]]; then echo -1;
                          elif [[ "$1" > "$2" ]]; then echo 1;
                          else echo 0; fi }
+# declare the cross-program linkage: qsort-style callers in OTHER
+# compilation units (C comparators via c-sh-go's (*cmp) bridge) invoke
+# this by name, so no literal in any single unit references it — without
+# export -f the dead-fn-elim transform strips the definition as uncalled.
+export -f alphanumeric_compare

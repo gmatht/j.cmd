@@ -37,10 +37,16 @@ keepVariables(program, []);
 const cJs = await estreeToJs(program);
 
 // the bash comparator, transpiled the same way the shell would
+// export -f declares the cross-program linkage: the comparator is
+// invoked BY NAME from the separately-compiled C program, so no
+// literal in this unit references it — without the export marker the
+// dead-fn-elim transform (correctly, by its contract) strips the
+// definition as uncalled.
 const bashFn = `
 alphanumeric_compare() { if [[ "$1" < "$2" ]]; then echo -1;
                          elif [[ "$1" > "$2" ]]; then echo 1;
                          else echo 0; fi }
+export -f alphanumeric_compare
 `;
 const { js: bashJs } = await bashToJS(fs, bashFn);
 

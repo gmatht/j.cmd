@@ -420,17 +420,36 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     const prev = mode;
     const buf = { out: "", stdin: "", stdinPos: 0 };
     mode = { type: "pipe", buf };
+    // Route stdout writes into the pipe buffer too: a sync builtin stage
+    // (sh2.builtin ls — writes to stdout directly, returns "") must land
+    // in the pipe, not leak to the terminal. The write-stack keeps nested
+    // captures/redirects working while the pipe is active.
+    const stdoutObj = stdout;
+    let st = null;
+    let capFn = null;
+    if (stdoutObj && typeof stdoutObj.write === "function") {
+      capFn = (s) => { buf.out += String(s); return true; };
+      st = pushWrite(stdoutObj, capFn);
+    }
     try {
       for (const fn of fns) {
         buf.stdin = buf.out;  // previous stage's output becomes this stdin
         buf.out = "";
-        const r = await fn();
-        // a sync builtin stage (sh2.builtin — echo/printf) RETURNS its
-        // output rather than writing the mode buffer — feed it through,
-        // the same as pipelineSync does
-        if (typeof r === "string" && r) buf.out += r;
+        if (typeof fn === "function") {
+          const r = await fn();
+          // a sync builtin stage (sh2.builtin — echo/printf) RETURNS its
+          // output rather than writing the mode buffer — feed it through,
+          // the same as pipelineSync does
+          if (typeof r === "string" && r) buf.out += r;
+        } else {
+          // a literal stage (e.g. `(sh2.lastExit = 0, "test output" + "\n")`)
+          // — the data flowing through the pipeline (the wasm emits this
+          // for `echo X | cmd` pipelines)
+          buf.out = String(fn ?? "");
+        }
       }
     } finally {
+      if (st) popWrite(stdoutObj, st, capFn);
       mode = prev;
     }
     const finalOut = buf.out;
@@ -533,6 +552,16 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     const prev = mode;
     const buf = { out: "", stdin: "" };
     mode = { type: "pipe", buf };
+    // Route stdout writes into the pipe buffer (same as the async
+    // pipeline): a sync builtin stage that writes to stdout directly
+    // (sh2.builtin ls) must land in the pipe, not leak to the terminal.
+    const stdoutObj = stdout;
+    let st = null;
+    let capFn = null;
+    if (stdoutObj && typeof stdoutObj.write === "function") {
+      capFn = (s) => { buf.out += String(s); return true; };
+      st = pushWrite(stdoutObj, capFn);
+    }
     let finalOut;
     try {
       for (const fn of fns) {
@@ -554,6 +583,7 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
         }
       }
     } finally {
+      if (st) popWrite(stdoutObj, st, capFn);
       mode = prev;
     }
     finalOut = buf.out;
@@ -920,6 +950,32 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       : Number(expandOperand(typeof idx === "string" ? idx : String(idx)));   // "$i" → value
     if (Array.isArray(v)) return String(v[i] ?? "");
     if (vars.has(name)) return i === 0 ? String(v) : "";
+    return "";
+  }
+  // arr[j]=v — element write (the c frontend's arrayStore for dynamic
+  // indices; mirrors arrayIndex's name resolution so bare names and
+  // mem-handle aliases both work). Bash auto-extends with "" gaps and
+  // converts scalars to arrays on indexed write.
+  function arrayStore(name, idx, value) {
+    const key = String(name ?? "");
+    const isMem = /^\u0001mem:/.test(key);
+    const i = typeof idx === "number" ? idx : Number(String(idx ?? "").trim());
+    const v = String(value ?? "");
+    if (isMem) {
+      // mem-handle write path mirrors memLoad1/memStore1's slice
+      // convention via the generic store (memStore is the c-frontend's
+      // checked path; arrayStore on a handle degrades to it)
+      memStore1(key, v);
+      return "";
+    }
+    const cur = vars.get(key);
+    const list = Array.isArray(cur)
+      ? cur.map(String)
+      : (cur !== undefined && cur !== "" ? [String(cur)] : []);
+    const n = Number.isFinite(i) ? Math.max(0, Math.floor(i)) : 0;
+    while (list.length <= n) list.push("");
+    list[n] = v;
+    vars.set(key, list);
     return "";
   }
   function arrayLen(name) {
@@ -1512,7 +1568,7 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       exec, pipeline, capture, captureSync, pipelineSync, captureWords, redirect, test,
       forLoop, forLoopSync, whileLoop, whileLoopSync, caseMatch, define, brace, param, arith, fparith,
       guard, and, or, arithEval, background,
-      setArray, setArrayAppend, arrayIndex, arrayLen, arrayItems, join,
+      setArray, setArrayAppend, arrayIndex, arrayStore, arrayLen, arrayItems, join,
       strcmp,
       readLine,
       // sh2.stdin — the shell seeds the current pipe input before each
@@ -1658,6 +1714,44 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
         if (flag === "-f") return !!(st && st.type === "file");
         if (flag === "-d") return !!(st && st.type === "dir");
         return !!st;   // -e and anything else: exists
+      },
+      // seq(a, b) / seq(a, inc, b) — `$(seq …)` inline: the array of
+      // values (bash seq semantics: seq LAST | seq FIRST LAST | seq
+      // FIRST INCREMENT LAST). The estree idiom lift emits
+      // sh2.seq(a,b).join("\n") for the string form and sh2.seq(a,b)
+      // for the word-split form — no spawn, no command substitution.
+      seq(a, b, c) {
+        let from = 1, inc = 1, to;
+        if (c !== undefined) { from = Number(a); inc = Number(b); to = Number(c); }
+        else if (b !== undefined) { from = Number(a); to = Number(b); }
+        else { to = Number(a); }
+        if (!Number.isFinite(from) || !Number.isFinite(to) || !Number.isFinite(inc) || inc === 0) return [];
+        const out = [];
+        if (inc > 0) { for (let i = from; i <= to; i += inc) out.push(String(i)); }
+        else { for (let i = from; i >= to; i += inc) out.push(String(i)); }
+        return out;
+      },
+      // lineCount(file) / wordCount(file) / byteCount(file) — `wc -l/-w/-c
+      // FILE` inline: read the file (sync bridge, local mounts) and count.
+      // The estree idiom lift emits these instead of the command round-trip.
+      _readSyncText(file) {
+        const r = fs.readSync ? fs.readSync(String(file)) : null;
+        if (r === null || r === undefined) return "";
+        return typeof r === "string" ? r : new TextDecoder().decode(r);
+      },
+      lineCount(file) {
+        try { return String(this._readSyncText(file).split("\n").length - 1); }
+        catch { return "0"; }
+      },
+      wordCount(file) {
+        try {
+          const s = this._readSyncText(file).trim();
+          return String(s ? s.split(/\s+/).length : 0);
+        } catch { return "0"; }
+      },
+      byteCount(file) {
+        try { return String(new TextEncoder().encode(this._readSyncText(file)).length); }
+        catch { return "0"; }
       },
       // `grepMatches(text, pattern, flags)` — the `grep -o` lift: the
       // array of matched substrings (grep -o prints each match on its
@@ -1858,6 +1952,174 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
             }
             lastStatus = r ? 0 : 1;
             return "";
+          }
+          case "hostname": {
+            // hostname — the system hostname (env.HOSTNAME, default jtsh)
+            return (env && env.HOSTNAME ? env.HOSTNAME : "jtsh") + "\n";
+          }
+          case "id": {
+            // id — user/group identity (uid/gid flags; the shell's user)
+            const user = (env && env.USER) || "jtsh";
+            const uid = user === "root" ? 0 : 1000;
+            const gid = uid;
+            let name = false, uidOnly = false, gidOnly = false;
+            for (const x of a) {
+              if (x === "-n" || x === "--name") name = true;
+              else if (x === "-u" || x === "--user") uidOnly = true;
+              else if (x === "-g" || x === "--group") gidOnly = true;
+              else if (x === "-un" || x === "-nu") { uidOnly = true; name = true; }
+              else if (x === "-gn" || x === "-ng") { gidOnly = true; name = true; }
+            }
+            if (uidOnly) return (name ? user : String(uid)) + "\n";
+            if (gidOnly) return (name ? user : String(gid)) + "\n";
+            return `uid=${uid}(${user}) gid=${gid}(${user}) groups=${gid}(${user})\n`;
+          }
+          case "env": {
+            // env — print the environment (NAME=value, one per line)
+            let out = "";
+            for (const k of Object.keys(env || {})) out += `${k}=${env[k]}\n`;
+            return out;
+          }
+          case "stat": {
+            // stat FILE... — file metadata (size, type, mtime, owner)
+            let out = "";
+            for (const f of a) {
+              let st = null;
+              try { st = fs.statSync ? fs.statSync(String(f)) : null; } catch { st = null; }
+              if (!st) { out += `stat: ${f}: No such file or directory\n`; lastStatus = 1; continue; }
+              const type = st.type === "dir" ? "directory" : "regular file";
+              const size = st.size !== undefined ? st.size : 0;
+              const mtime = st.mtime ? new Date(st.mtime).toString() : "-";
+              out += `  File: ${f}\n  Size: ${size}\t  Type: ${type}\n  Modify: ${mtime}\n`;
+            }
+            return out;
+          }
+          case "du": {
+            // du [-s] [-h] [path...] — VFS-aware disk usage (recursive)
+            let summary = false, human = false;
+            const paths = [];
+            for (const x of a) {
+              if (x === "-s" || x === "--summarize") summary = true;
+              else if (x === "-h" || x === "--human-readable") human = true;
+              else if (!x.startsWith("-")) paths.push(x);
+            }
+            if (!paths.length) paths.push((fs.cwd !== undefined ? fs.cwd : "/") || "/");
+            const humanize = (n) => {
+              if (!human) return String(n);
+              const units = ["B", "K", "M", "G", "T"];
+              let i = 0;
+              while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+              return (i === 0 ? String(n) : n.toFixed(1)) + units[i];
+            };
+            const walk = (p) => {
+              let st = null;
+              try { st = fs.statSync ? fs.statSync(p) : null; } catch { st = null; }
+              if (st && st.type === "file") return st.size || 0;
+              let total = 0;
+              let entries = [];
+              try { entries = fs.listSync ? fs.listSync(p) : []; } catch { entries = []; }
+              for (const e of entries) {
+                total += walk((p === "/" ? "" : p) + "/" + e.replace(/\/$/, ""));
+              }
+              return total;
+            };
+            let out = "";
+            for (const p of paths) {
+              const total = walk(p);
+              if (summary) { out += `${humanize(total)}\t${p}\n`; continue; }
+              let entries = [];
+              try { entries = fs.listSync ? fs.listSync(p) : []; } catch { entries = []; }
+              out += `${humanize(total)}\t${p}\n`;
+              for (const e of entries) {
+                const full = (p === "/" ? "" : p) + "/" + e.replace(/\/$/, "");
+                out += `${humanize(walk(full))}\t${full}\n`;
+              }
+            }
+            return out;
+          }
+          case "df": {
+            // df [-h] — per-mount listing. The VFS has no real quota/index
+            // info, so report the mount prefixes with n/a sizes (df is a
+            // filesystem-level view, NOT a recursive directory size — that's
+            // du's job). Walking mounts would be slow and semantically wrong.
+            let human = false;
+            for (const x of a) if (x === "-h" || x === "--human-readable") human = true;
+            let out = "Filesystem      Size  Used  Avail  Use%\n";
+            const mounts = (fs.mounts || []).filter((x) => x.prefix);
+            if (!mounts.length) out += "none            -     -     -     -\n";
+            for (const m of mounts) {
+              const na = human ? "n/a" : "-";
+              out += `${m.prefix.padEnd(15)} ${na.padStart(6)} ${na.padStart(6)}  n/a   n/a\n`;
+            }
+            return out;
+          }
+          case "xxd": {
+            // xxd [opts] [file] — hex dump (-p plain, -r reverse, -l/-s/-c)
+            let plain = false, reverse = false, limit = Infinity, skip = 0, cols = 16;
+            const files = [];
+            for (let i = 0; i < a.length; i++) {
+              const x = a[i];
+              if (x === "-p" || x === "--plain") plain = true;
+              else if (x === "-r" || x === "--reverse") reverse = true;
+              else if (x === "-l" && a[i + 1]) { limit = parseInt(a[++i], 10); if (isNaN(limit)) limit = Infinity; }
+              else if (x === "-s" && a[i + 1]) { skip = parseInt(a[++i], 10); if (isNaN(skip)) skip = 0; }
+              else if (x === "-c" && a[i + 1]) { cols = parseInt(a[++i], 10); if (isNaN(cols) || cols < 1) cols = 16; }
+              else if (!x.startsWith("-")) files.push(x);
+            }
+            let data = "";
+            if (files.length) {
+              try { data = this._readSyncText(files[0]); } catch { data = ""; }
+            } else {
+              data = stdinData;
+            }
+            if (reverse) {
+              const hex = data.replace(/\s+/g, "");
+              const out = [];
+              for (let i = 0; i + 1 < hex.length; i += 2) {
+                const b = parseInt(hex.slice(i, i + 2), 16);
+                if (!isNaN(b)) out.push(b);
+              }
+              return new TextDecoder().decode(new Uint8Array(out));
+            }
+            const bytes = new TextEncoder().encode(data).slice(skip, skip + limit);
+            let out = "";
+            if (plain) {
+              for (let i = 0; i < bytes.length; i += cols) {
+                out += [...bytes.slice(i, i + cols)].map((b) => b.toString(16).padStart(2, "0")).join("") + "\n";
+              }
+              return out;
+            }
+            for (let i = 0; i < bytes.length; i += cols) {
+              const chunk = bytes.slice(i, i + cols);
+              const hex = [...chunk].map((b) => b.toString(16).padStart(2, "0")).join(" ");
+              const ascii = [...chunk].map((b) => (b >= 32 && b < 127 ? String.fromCharCode(b) : ".")).join("");
+              out += `${(skip + i).toString(16).padStart(8, "0")}: ${hex.padEnd(cols * 3 - 1)}  ${ascii}\n`;
+            }
+            return out;
+          }
+          case "mktemp": {
+            // mktemp [-u] [-d] [TEMPLATE] — generate a temp name (and
+            // create it unless -u); mirrors the shell builtin.
+            let dry = false, wantDir = false;
+            let template = "/tmp/tmp.XXXXXXXXXX";
+            for (const x of a) {
+              if (x === "-u" || x === "--dry-run") dry = true;
+              else if (x === "-d" || x === "--directory") wantDir = true;
+              else if (!x.startsWith("-")) template = x;
+            }
+            if (/X{3,}$/.test(template)) wantDir = true;
+            const cs = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+            const buf = new Uint8Array(64);
+            if (globalThis.crypto && globalThis.crypto.getRandomValues) globalThis.crypto.getRandomValues(buf);
+            else for (let i = 0; i < 64; i++) buf[i] = (i * 31 + 7) & 0xff;
+            let bi = 0;
+            const name = template.replace(/X{3,}/g, (m) => {
+              let s = "";
+              for (let i = 0; i < m.length; i++) s += cs[buf[bi++ % buf.length] % cs.length];
+              return s;
+            });
+            if (!dry) { try { if (wantDir) { const sentinel = (name === "/" ? "" : name) + "/.mktemp" + cs[buf[0] % cs.length]; if (fs.write) { fs.write(sentinel, ""); if (fs.remove) fs.remove(sentinel); } } else fs.write(name, ""); } catch {} }
+            return name + "\n";
           }
           default:
             // bash semantics for an unknown sync command: report it,
