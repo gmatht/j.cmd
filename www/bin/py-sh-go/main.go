@@ -2910,6 +2910,19 @@ func functionStmt(name string, body []map[string]any) map[string]any {
 	return map[string]any{"type": "Function", "name": name, "body": toAnyStmts(body)}
 }
 
+// functionParamsStmt — a Function with source-level parameter names
+// (Python `def f(n, m)` → params ["n","m"]). Backends with named
+// parameters declare these and skip the positional materialization
+// assigns (`n = $1`, still emitted for positional-only backends);
+// others ignore the list. Calls stay positional.
+func functionParamsStmt(name string, params []string, body []map[string]any) map[string]any {
+	par := make([]any, len(params))
+	for i, p := range params {
+		par[i] = p
+	}
+	return map[string]any{"type": "Function", "name": name, "params": par, "body": toAnyStmts(body)}
+}
+
 func returnStmt(v map[string]any) map[string]any {
 	return map[string]any{"type": "Return", "value": v}
 }
@@ -4106,7 +4119,7 @@ func (l *lowerer) stmtIR(s Stmt) ([]map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return []map[string]any{functionStmt(t.Name, append(pre, body...))}, nil
+		return []map[string]any{functionParamsStmt(t.Name, t.Params, append(pre, body...))}, nil
 	case *ReturnS:
 		if t.Value == nil {
 			return []map[string]any{map[string]any{"type": "Return", "value": nil}}, nil
