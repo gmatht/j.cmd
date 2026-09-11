@@ -978,6 +978,22 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     vars.set(key, list);
     return "";
   }
+  // str[i] — character i of a string VALUE (the c frontend's nested
+  // index `argv[1][i]`: the inner index yields a string, the outer
+  // takes one character; "" when out of range)
+  function charAt(str, idx) {
+    const s = String(str ?? "");
+    const i = Number(String(idx ?? "").trim());
+    if (!Number.isFinite(i)) return "";
+    return s.charAt(Math.floor(i)) || "";
+  }
+  // isdigit(c) — the c frontend's ctype bridge: 1 if the first
+  // character is an ASCII digit, else 0 (C's isdigit semantics for
+  // the validated corpus; locale/EOF subtleties out of scope)
+  function isdigit(c) {
+    const ch = String(c ?? "").charAt(0);
+    return ch >= "0" && ch <= "9" ? 1 : 0;
+  }
   function arrayLen(name) {
     const v = vars.get(name);
     if (Array.isArray(v)) return String(v.length);
@@ -1412,11 +1428,14 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
   function memLoad1(h) {
     const m = /^\u0001mem:([^:]*):(-?\d+)$/.exec(String(h));
     if (!m) return "";
-    // slice-1 handle: the offset is an ELEMENT index — 0 is the var
-    // itself (or its first element), n reads the n-th element of a
-    // shell array (`name[n]` — the runtime's array-key convention).
+    // slice-1 handle: the offset is an ELEMENT index — 0 reads the
+    // FIRST element (`*p` on an array name, `p[0]`), n reads the n-th
+    // element of a shell array (`name[n]` — the array-key convention).
+    // A scalar var still reads itself (there is no element 0 to take).
     const idx = Number(m[2]);
-    return idx === 0 ? getVar(m[1]) : getVar(m[1] + "[" + idx + "]");
+    const v = idx === 0 ? getVar(m[1]) : getVar(m[1] + "[" + idx + "]");
+    if (idx === 0 && Array.isArray(v)) return String(v[0] ?? "");
+    return v;
   }
   function memStore1(h, v) {
     const m = /^\u0001mem:([^:]*):(-?\d+)$/.exec(String(h));
@@ -1568,8 +1587,8 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       exec, pipeline, capture, captureSync, pipelineSync, captureWords, redirect, test,
       forLoop, forLoopSync, whileLoop, whileLoopSync, caseMatch, define, brace, param, arith, fparith,
       guard, and, or, arithEval, background,
-      setArray, setArrayAppend, arrayIndex, arrayStore, arrayLen, arrayItems, join,
-      strcmp,
+      setArray, setArrayAppend, arrayIndex, arrayStore, charAt, arrayLen, arrayItems, join,
+      strcmp, isdigit,
       readLine,
       // sh2.stdin — the shell seeds the current pipe input before each
       // transpiled program; the c frontend's read_line() consumes it.
@@ -2262,6 +2281,12 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
         // the exec dispatch does; booleans are the status verdicts.
         lastStatus = (typeof r === "string" || typeof r === "number") ? Number(r) : (r === false ? 1 : 0);
         return r;
+      },
+      // fnValue — the VALUE channel twin of fnCall (the C frontend's
+      // value-position user calls): identical dispatch, the caller
+      // consumes the return instead of the status.
+      fnValue(name, argsArr) {
+        return this.fnCall(name, argsArr);
       },
       // `f …` — invoke a DIRECT-registered function body (the estree's
       // native-direct subset); same sync-capable contract as fnCall.

@@ -76,6 +76,10 @@ async function loadWasmBytes() {
 // preopens are ever touched). Output (fd 1/2) is captured.
 const ENOSYS = 52, EBADF = 8;
 
+// per-call environment for the wasm (Rust std::env reads WASI
+// environ synchronously inside each export call, so stashing the
+// record here is race-free in single-threaded JS)
+const envState = { current: null, buf: 0, bufLen: 0 };
 function makeWasiImports(mem, out) {
   const dec = new TextDecoder();
   return {
@@ -89,11 +93,25 @@ function makeWasiImports(mem, out) {
         }
         return 0;
       },
-      environ_get() { return 0; },
+      environ_get(envp, buf) {
+        const pairs = Object.entries(envState.current || {});
+        if (!pairs.length) return 0;
+        const view = new DataView(mem.memory.buffer);
+        let off = 0;
+        pairs.forEach(([k, v], i) => {
+          const bytes = new TextEncoder().encode(k + "=" + v + "\0");
+          new Uint8Array(mem.memory.buffer, buf + off, bytes.length).set(bytes);
+          view.setUint32(envp + i * 4, buf + off, true);
+          off += bytes.length;
+        });
+        return 0;
+      },
       environ_sizes_get(countPtr, sizePtr) {
+        const pairs = Object.entries(envState.current || {});
+
         const v = new DataView(mem.memory.buffer);
-        v.setUint32(countPtr, 0, true);
-        v.setUint32(sizePtr, 0, true);
+        v.setUint32(countPtr, pairs.length, true);
+        v.setUint32(sizePtr, pairs.reduce((n, [k, val]) => n + k.length + 1 + String(val).length + 1, 0), true);
         return 0;
       },
       clock_time_get(_id, _precision, ptr) {
@@ -168,7 +186,10 @@ function wrapLibrary(instance, mem, out) {
 
   // Call an export taking N string args (optionally followed by scalar
   // i32 args — the glsl/glslv view size); returns the parsed envelope.
-  function call(fn, args, scalars = []) {
+  function call(fn, args, scalars = [], opts = {}) {
+    // per-call environment (e.g. { KEEP_VARIABLES: "1" } for library
+    // compiles): stashed where the environ shim serves it
+    envState.current = opts.env && typeof opts.env === "object" ? { ...opts.env } : null;
     const ins = args.map(allocInput);
     const res = ex[fn](...ins.flatMap((x) => [x.p, x.len]), ...scalars);
     ins.forEach((x) => ex.otranspilerl_free(x.p));
@@ -179,6 +200,8 @@ function wrapLibrary(instance, mem, out) {
 
   return {
     version: () => call("otranspilerl_version", []).output,
+    // TEMP DEBUG: expose the captured wasm stderr
+    stderr: () => out.stderr,
     // shell source → target source (in-process: sh and shir only)
     transpile: (src, srcLang, tgtLang) =>
       call("otranspilerl_transpile", [String(src), srcLang || "sh", tgtLang || "js"]).output,
@@ -187,12 +210,17 @@ function wrapLibrary(instance, mem, out) {
     // continues at pass #5 (see PLAN-wasm-estree-pipeline.md)
     compile: (src, opts = "") => call("otranspilerl_compile", [String(src), String(opts)]).output,
     // shell source → A1 shIR JSON (the neutral contract)
-    shir: (src) => call("otranspilerl_shir", [String(src)]).output,
+    // opts.env — same per-call environment as render (library compiles
+    // pass { KEEP_VARIABLES: "1" } so definitions survive for later use)
+    shir: (src, opts) => call("otranspilerl_shir", [String(src)], [], opts || {}).output,
     // shell source → token dump (the CLI `lex` output — same helper the
     // legacy debashc reactor exposed, now in the unified binary)
     lex: (src) => call("otranspilerl_lex", [String(src)]).output,
     // A1 shIR JSON → target source (lang: c|go|java|js|perl|python|rs|sh|zig)
-    render: (a1, lang) => call("otranspilerl_render", [String(a1), lang]).output,
+    // opts.env — per-call WASI environment (library compiles pass
+    // { KEEP_VARIABLES: "1" } so uncalled definitions survive for
+    // later interactive use)
+    render: (a1, lang, opts) => call("otranspilerl_render", [String(a1), lang], [], opts || {}).output,
     // A1 shIR JSON → the OPTIMIZED A1 the backends actually receive (the
     // same ingress render() runs: transforms::apply + restructure_goto_only
     // + strip_cfor; estree skips the latter two)

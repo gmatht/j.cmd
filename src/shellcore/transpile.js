@@ -117,7 +117,7 @@ export async function runSourceContent(content, lang, srcArgs, ctx) {
         ? `${k}=(${v.map((x) => JSON.stringify(String(x))).join(" ")});`
         : `${k}=${JSON.stringify(String(v))};`
     ).join("");
-    a1 = JSON.parse(lib.shir(seed + String(content)));
+    a1 = JSON.parse(lib.shir(seed + String(content), { env: { KEEP_VARIABLES: "1" } }));
   } else {
     if (lang === "cpp" || lang === "powershell" || lang === "rust" || lang === "zig") {
       // These frontends exist in the sh2loop fleet (cpp-sh-go /
@@ -141,7 +141,12 @@ export async function runSourceContent(content, lang, srcArgs, ctx) {
       }
     }
   }
-  const program = JSON.parse(lib.render(JSON.stringify(a1), "js"));
+  // library mode: `source` compiles an OPEN program (later commands
+  // may call anything defined here by name), so keep every definition
+  // for interactive use — the dead-fn-elim transform would otherwise
+  // strip functions only referenced cross-program (e.g. C comparators
+  // invoked by name from another compilation unit)
+  const program = JSON.parse(lib.render(JSON.stringify(a1), "js", { env: { KEEP_VARIABLES: "1" } }));
   // A1 literal harvest: deterministic assignment values (Str/Num/Bool/
   // all-lit Interpolate/setArray) — pre-seeds otVars so a sourced
   // `int counter = 42` shows up as $counter even though the generated
