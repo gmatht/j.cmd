@@ -262,7 +262,10 @@ export async function runTranspiled(fs, js, { args = [], argv0 = "bash", stdout,
     if (arrayVals) { for (const [n, v] of arrayVals) { try { rt.sh2.setArray(n, v); } catch {} } }
     const finalJs = asEval ? evalToStore(subJs) : subJs;
     const fn = new Function("args", "fs", "env", "stdout", "stderr", "__runCmd", "sh2", "process", `return (async () => { ${finalJs} })();`);
-    await fn([], fs, env, out, err, shellExec, rt.sh2, proc);
+    // inherit the CALLER's positionals (parse_sound_args's eval "pa_a=\${\$pa_i}"
+    // reads the function's $1.. — an empty argv would parse no flags and
+    // the generator would emit WAV instead of --tsv)
+    await fn([...(rt.sh2.positional || [])], fs, env, out, err, shellExec, rt.sh2, proc);
   };
   const shellExec = async (cmdline, stdin2, modeType) => {
     const c = String(cmdline || "").trim();

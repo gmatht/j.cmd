@@ -153,26 +153,26 @@ env_fade() {
 #     DO_NOTES / SEED; leaves unknown args in ARG_EXTRA for the script
 #     (per-sound flags like --material) ──────────────────────────────
 parse_sound_args() {
+  # shift-based (no eval/indirect \${\$i}: the transpiler drops
+  # indirect positional expansion, silently parsing zero flags)
   ARG_EXTRA=""
-  pa_i=1
-  while [ "$pa_i" -le "$#" ]; do
-    eval "pa_a=\${$pa_i}"
+  while [ "$#" -gt 0 ]; do
+    pa_a="$1"
+    shift
     if [ "$pa_a" = "--tsv" ]; then DO_TSV=1
     elif [ "$pa_a" = "--pcm" ]; then DO_PCM=1
     elif [ "$pa_a" = "--preview" ]; then DO_PREVIEW=1
     elif [ "$pa_a" = "--notes" ]; then DO_NOTES=1
     elif [ "$pa_a" = "--seed" ]; then
-      pa_j=$(( pa_i + 1 ))
-      eval "pa_s=\${$pa_j}"
+      pa_s="$1"
       if [ "$pa_s" != "" ]; then
+        shift
         SEED=$pa_s
         seed=$pa_s   # re-seed the LCG: the lib already sourced with the default
       fi
-      pa_i=$pa_j
     else
       ARG_EXTRA="$ARG_EXTRA $pa_a"
     fi
-    pa_i=$(( pa_i + 1 ))
   done
 }
 
