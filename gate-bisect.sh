@@ -37,6 +37,7 @@ case "$LANG" in
   bat)  FE="bat-sh-go";      CLI="cmd/bat-sh-go/main.go" ;;
   c)    FE="c-sh-go";        CLI="cmd/c-sh-go/main.go" ;;
   cpp)  FE="cpp-sh-go";      CLI="" ;;
+  cpp)  FE="cpp-sh-go";      CLI="" ;;
   fish) FE="fish-sh-go";     CLI="cmd/fish-sh-go/main.go" ;;
   go)   FE="go-sh";          CLI="cmd/go-sh/main.go" ;;
   pl|perl) FE="perl-sh-go";  CLI="cmd/perl-sh-go/main.go" ;;
@@ -51,6 +52,15 @@ FAIL=0
 say() { printf '%-16s: %s\n' "$1" "$2"; }
 
 # ── 0. sync check ────────────────────────────────────────────────
+# (cpp-sh-go is hand-managed — upstream is cgo, only main.go is vendored
+# and parser.go is deliberately absent; skip it here)
+if [ "$FE" = "cpp-sh-go" ]; then
+  if diff -q "$REPO/www/bin/cpp-sh-go/main.go" "$SH2LOOP/frontends/cpp-sh-go/main.go" >/dev/null 2>&1; then
+    say "0 SYNC-CHECK" "pure-Go tokenizer matches upstream"
+  else
+    say "0 SYNC-CHECK" "differs by policy (vendored pure-Go tokenizer vs upstream cgo — see sync-frontends.sh)"
+  fi
+else
 STALE=0
 while IFS= read -r f; do
   [ -f "$SH2LOOP/frontends/$FE/$f" ] || continue
@@ -60,6 +70,7 @@ while IFS= read -r f; do
   }
 done < <(cd "$REPO/www/bin/$FE" && find . -name '*.go' -not -path './testdata/*' | sed 's|^\./||')
 [ "$STALE" = 0 ] && say "0 SYNC-CHECK" "vendored matches upstream" || { say "0 SYNC-CHECK" "STALE — run ./sync-frontends.sh"; FAIL=1; }
+fi
 
 # ── 1. upstream native ───────────────────────────────────────────
 if command -v go >/dev/null 2>&1; then

@@ -50,7 +50,7 @@ for the staged VFS copy) and smoke-test every frontend through
 `py|go|c|cpp|pl|sh|bat|fish|zsh|zig` — copies new upstream testdata
 files into `www/examples/<lang>/` (never deletes; hand-written demos
 live alongside) and regenerates `index.json` in canonical form
-(single-line array, `", "` separators, no trailing newline).
+(single-line array, preserving each file's existing item-separator style, no trailing newline).
 Verify newcomers parse: `gate-bisect.sh www/examples/<lang>/<file> <lang>`.
 
 ## 4. gate-bisect.sh <file> <srclang>

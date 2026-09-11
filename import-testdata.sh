@@ -56,13 +56,23 @@ for ext in $EXTS; do
   done
 done
 
-# regenerate the manifest from the destination listing (sorted)
+# regenerate the manifest from the destination listing (sorted), preserving
+# the file's existing separator style (py uses ",", go uses ", " — both
+# parse identically; minimal diffs beat normalization)
 python3 - "$DST" <<'EOF'
 import json, os, sys
 d = sys.argv[1]
 files = sorted(f for f in os.listdir(d) if os.path.isfile(os.path.join(d, f)) and f != "index.json")
-with open(os.path.join(d, "index.json"), "w") as fh:
-    fh.write(json.dumps(files, separators=(",", ": ")))
+idx = os.path.join(d, "index.json")
+sep = ", "
+try:
+    old = open(idx).read()
+    if '","' in old and '", "' not in old:
+        sep = ","
+except FileNotFoundError:
+    pass
+with open(idx, "w") as fh:
+    fh.write(json.dumps(files, separators=(sep, ": ")))
 print(f"  index.json: {len(files)} entries")
 EOF
 echo "imported $ADDED new file(s) into www/examples/$DEST/"
