@@ -317,7 +317,7 @@
         <div class="panel-body"><div class="diff-summary" id="diff-summary"></div><div id="diff-lines"></div></div>
       </div>
       <div class="panel collapsed" id="sec-shir" data-persist="otp:sec-shir">
-        <div class="panel-head"><span class="arrow">▾</span><span class="panel-title">A1 shIR</span><span class="panel-tag" id="tag-shir"></span></div>
+        <div class="panel-head"><span class="arrow">▾</span><span class="panel-title">A1 shIR</span><span class="panel-tag" id="tag-shir"></span><span class="panel-tag" id="tag-shir-opt"></span></div>
         <div class="panel-body">
           <div class="map-hint"><b>raw</b> — the neutral contract the frontend emitted (bash AST → shIR, or the Go/rust frontend's A1). Source-side, target-independent.</div>
           <div class="ta-wrap"><textarea id="out-shir" class="out-ta" readonly spellcheck="false" aria-label="A1 shIR (raw)">—</textarea><button type="button" class="copy-btn ta-copy" data-copy="shir">Copy</button></div>
@@ -698,7 +698,7 @@ function initPanels() {
     });
   });
 }
-function setTag(id, text) { $("tag-" + id).textContent = text || ""; }
+function setTag(id, text) { const el = $("tag-" + id); if (el) el.textContent = text || ""; }
 // stage timings — reported as whole ms above 100, one decimal below
 function fmtMs(ms) { return (ms >= 100 ? Math.round(ms) : ms.toFixed(1)) + " ms"; }
 
