@@ -1541,9 +1541,14 @@ load_tex_payload() { ltp_name=$1; ltp_idx=$2
   done
   # session cache only (/tmp — RamFS, wiped on reload): a persistent
   # /home copy could replay a stale payload from an older generator.
-  # Never cache an empty payload — a failed parse would poison every
-  # later run (the cache-hit path replays blindly).
-  if [ "$lt_payload" != "" ] && [ "$lt_payload" != "$lt_size" ]; then
+  # Never cache an empty OR SHORT payload — a failed/partial parse would
+  # poison every later run (the cache-hit path replays blindly). Expect
+  # 1 + pixels×channels numbers (a short payload means the generator or
+  # harvest was cut off mid-stream).
+  lt_expect=$(( 1 + lt_pxmax * lt_chan ))
+  lt_got=0
+  for lt_w in $lt_payload; do lt_got=$(( lt_got + 1 )); done
+  if [ "$lt_got" -ge "$lt_expect" ]; then
     echo "$lt_payload" > /tmp/mimecroft-tex-$ltp_name-$lt_ts-$tex_seed-$tex_ver
   fi
   echo "$lt_payload" > /dev/webgl/texture/$ltp_idx
@@ -1630,11 +1635,13 @@ tex_bg_submit() { tbn_name=$1
   tex_bg_n=$((tex_bg_n + 1))
 }
 
-# is the n-th submitted job done? (tbg=1 when its /tmp TSV landed)
+# is the n-th submitted job done? (tbg=1 when its /tmp TSV landed
+# AND is non-empty — `-f` alone fires on a just-created (still-writing)
+# file, and harvesting that stages an empty payload)
 tex_bg_done() { tbd_n=$1
   tbd_name=${tex_bg_jobs[$tbd_n]}
   tbd_f=/tmp/mimecroft-bg-$tbd_name.tsv
-  if [ -f "$tbd_f" ]; then tbg=1; else tbg=0; fi
+  if [ -f "$tbd_f" ] && [ -s "$tbd_f" ]; then tbg=1; else tbg=0; fi
 }
 
 # harvest the n-th submitted texture: take the worker's TSV and
