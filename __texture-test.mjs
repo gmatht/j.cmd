@@ -63,6 +63,55 @@ for (const t of ["stone", "wood"]) {
   }
 }
 
+// ─── 1c) GAME upload path (load_tex → harvest → parse → device).
+//        The generator passing (1b) does not prove the game displays:
+//        load_tex nests `bash texture-x.sh`, harvests the TSV via
+//        `lt_s=$(cat …)`, parses fields with the `#?`/`%%` probe loop and
+//        writes /dev/webgl/texture/N. A break anywhere (capture, strip,
+//        lift agreement) uploads empty ("bad data") while every check
+//        above stays green — the "missing textures" outage. Runs the
+//        REAL game functions (extracted from www/bin/mimecroft.sh) with
+//        the nested generator served by host bash (fast, deterministic;
+//        the transpiled generator itself is covered in 1b).
+console.log("game upload path (load_tex stone)…");
+try {
+  const { runBash } = await import("./src/bash2js.js");
+  const { execFileSync } = await import("node:child_process");
+  const game = readFileSync("www/bin/mimecroft.sh", "utf8");
+  const grab = (name) => {
+    const m = game.match(new RegExp("^" + name + "\\(\\) \\{[\\s\\S]*?^\\}", "m"));
+    if (!m) throw new Error("game fn missing: " + name);
+    return m[0];
+  };
+  const driver = ["strip_tex_field", "read_tex_field", "load_tex_payload", "load_tex", "lt_size_of", "fmt_ndc", "fmt_c", "fmt_pos"]
+    .map(grab).join("\n") + "\nlt_menu=0\ntex_seed=20240812\ntex_ver=10\ntex_size=16\nload_tex stone 1\n";
+  let out = "";
+  await runBash(fs, driver, {
+    stdout: { write: (s) => { out += s; } },
+    stderr: { write: () => {} },
+    runCmd: async (c) => {
+      const parts = String(c).trim().split(/\s+/);
+      if (parts[0] === "bash" && /texture-.*\.sh$/.test(parts[1] || "")) {
+        try {
+          const file = /^\/examples\//.test(parts[1]) ? parts[1].replace(/^\//, "www/") : parts[1];
+          const data = execFileSync("bash", [file, ...parts.slice(2)], { encoding: "utf8" });
+          return { out: data, err: "", code: 0 };
+        } catch { return { out: "", err: "", code: 1 }; }
+      }
+      return { out: "", err: "", code: 127 };
+    },
+    args: [], argv0: "load_tex_test",
+  });
+  const log = String(await fs.read("/dev/webgl/log"));
+  const up = log.split("\n").filter((l) => /\[texture\/1\]/.test(l));
+  if (!up.some((l) => /16x16 uploaded/.test(l))) {
+    throw new Error("no stone upload (log: " + JSON.stringify(up.slice(0, 2)) + ")");
+  }
+  ok("load_tex stone → [texture/1] 16x16 uploaded (harvest+parse+device)");
+} catch (e) {
+  bad(`game upload path: ${e.message}`);
+}
+
 // ─── 2) embedded-core consistency (self-contained scripts stay in
 //        sync with texture-lib.sh) ─────────────────────────────────
 console.log("texture-lib.sh core embedded…");

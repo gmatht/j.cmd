@@ -1,0 +1,111 @@
+// ─── __3d-colour-test.mjs — the 3D view renders in more than one colour ─
+// Drives the REAL game pipeline headlessly: the bash-authored shaders
+// compiled by sh2glsl (vertex + the exact fragment lines
+// emit_fragment_shader writes with CRT/CORRUPT off), three solid-colour
+// textures uploaded, three cubes drawn through the game's batched
+// /dev/webgl/blocks payload, then readPixels.
+//
+// Catches the outage family that log-grepping cannot:
+//   • black 3D (failed link/draws — every blocks write rejected);
+//   • mono-colour 3D (lighting/tint/texture broken — pixels render but
+//     a single shade; the HUD still works, so menu-level checks pass);
+//   • fragment regression (the `$b` frag corruption changed putb lines
+//     → different bytes → link or tint failure here).
+//
+//   node __3d-colour-test.mjs   → "ALL 3D COLOUR CHECKS PASSED"
+import { readFileSync } from "node:fs";
+import gl0 from "gl";
+import { WebGLDevice } from "./src/fs/webgldev.js";
+import { getOtranspilerl } from "./src/otranspilerl.js";
+
+let fails = 0;
+const check = (n, c, x = "") => { console.log(`${c ? "PASS" : "FAIL"}: ${n}${x ? " — " + x : ""}`); if (!c) fails++; };
+
+WebGLDevice.prototype._ensureGL = function () {
+  if (this._gl) return this._gl;
+  this._canvas = { width: 800, height: 600, style: {}, toDataURL: () => "data:," };
+  const gl = gl0(800, 600);
+  this._gl = gl;
+  this._null = false;
+  this._contextName = "headless-gl";
+  try { gl.viewport(0, 0, 800, 600); gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL); } catch {}
+  return gl;
+};
+const dev = new WebGLDevice();
+const w = async (path, data) => { await dev.write(path, data); };
+
+const lib = await getOtranspilerl();
+// the shaders the game ACTUALLY uses (same sources, same compiler)
+await w("/shader/vertex", lib.glslv(readFileSync("www/examples/mimecroft-vertex.sh", "utf8")));
+const cleanFrag = [
+  "r=$((vcolor_r))", "g=$((vcolor_g))", "b=$((vcolor_b))",
+  "r=$((r * tex_r / 128))", "g=$((g * tex_g / 128))", "b=$((b * tex_b / 128))",
+  "if [ \"$r\" -lt 0 ]; then r=0; fi", "if [ \"$g\" -lt 0 ]; then g=0; fi", "if [ \"$b\" -lt 0 ]; then b=0; fi",
+  "putb $r", "putb $g", "putb $b", "putb 255",
+].join("\n") + "\n";
+const fragSrc = lib.glsl(cleanFrag);
+await w("/shader/fragment", fragSrc);
+await w("/program", "link");
+check("shaders link (vertex + game fragment)", dev._programLinked, "linked=" + !!dev._programLinked);
+
+// cube geometry: the EXACT buffers setup_webgl writes (read from the
+// game source so the test tracks it — a hand-truncated 8-vert copy
+// drew nothing under headless-gl, 0x502)
+const gameSrc = readFileSync("www/bin/mimecroft.sh", "utf8");
+const bufLine = (name) => {
+  const m = gameSrc.match(new RegExp("echo \"(f32 [0-9.\\- ]+|u16 [0-9 ]+)\" > /dev/webgl/buffer/" + name));
+  if (!m) throw new Error("game buffer missing: " + name);
+  return m[1];
+};
+await w("/buffer/aPosition", bufLine("aPosition"));
+await w("/buffer/aShade", bufLine("aShade"));
+await w("/buffer/aUv", bufLine("aUv"));
+await w("/buffer/cube", bufLine("cube"));
+
+// three SOLID textures (red / green / blue 16x16) — a missing-texture
+// fault renders flat block colour instead; both faults are coloured,
+// so the test counts clusters, not exact texels
+for (const [slot, r, g, b] of [[1, 255, 0, 0], [2, 0, 255, 0], [3, 0, 0, 255]]) {
+  const bytes = new Uint8Array(16 * 16 * 3);
+  for (let i = 0; i < 16 * 16; i++) { bytes[i * 3] = r; bytes[i * 3 + 1] = g; bytes[i * 3 + 2] = b; }
+  await w("/texture/" + slot, "16 " + Array.from(bytes).join(" "));
+}
+
+// camera looking down -z at three cubes side by side (x=-2,0,2)
+await w("/uniform/3f/uCamPos", "0 0.9 6");
+await w("/uniform/1f/uCamYaw", "0");
+await w("/uniform/1f/uCamShift", "0");
+await w("/uniform/1f/uOverlay", "0");
+await w("/uniform/1i/uDamage", "0");
+await w("/clearcolor", "0 0 0 1");
+await w("/call", "clear");
+// x y z sx sy sz r g b tx dam — white tint so the texture colour shows
+await w("/blocks", "-2 0 0 1 1 1 255 255 255 1 0\n0 0 0 1 1 1 255 255 255 2 0\n2 0 0 1 1 1 255 255 255 3 0\n");
+await w("/call", "swap");
+
+const gl = dev._gl;
+const px = Buffer.alloc(800 * 600 * 4);
+gl.readPixels(0, 0, 800, 600, gl.RGBA, gl.UNSIGNED_BYTE, px);
+const sample = (x, y) => { const i = ((600 - 1 - y) * 800 + x) * 4; return [px[i], px[i + 1], px[i + 2]]; };
+const errs = [];
+while (true) { const e = gl.getError(); if (e === 0) break; errs.push(e); }
+
+let nz = 0;
+for (let i = 0; i < px.length; i += 4) if (px[i] > 8 || px[i + 1] > 8 || px[i + 2] > 8) nz++;
+check("cubes rendered (non-black pixels)", nz > 500, nz + " lit pixels");
+
+// colour clusters across the frame (quantized to /64 — lighting shades
+// one cube across 2 buckets max, so 3 cubes need >= 3 clusters; a
+// mono-colour fault — flat black, flat grey, single tint — gives 1)
+const buckets = new Set();
+for (let y = 0; y < 600; y += 6) {
+  for (let x = 0; x < 800; x += 6) {
+    const p = sample(x, y);
+    if (p[0] < 8 && p[1] < 8 && p[2] < 8) continue;
+    buckets.add(Math.floor(p[0] / 64) + "," + Math.floor(p[1] / 64) + "," + Math.floor(p[2] / 64));
+  }
+}
+check("3D is not mono-colour (distinct colour clusters)", buckets.size >= 3, buckets.size + " clusters: " + [...buckets].slice(0, 6).join(" "));
+check("no GL errors", errs.length === 0, errs.map((e) => e.toString(16)).join(","));
+console.log(fails === 0 ? "ALL 3D COLOUR CHECKS PASSED" : `${fails} 3D COLOUR CHECKS FAILED`);
+process.exit(fails ? 1 : 0);
