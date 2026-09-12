@@ -10,7 +10,7 @@
 import { readFileSync, rmSync, readdirSync } from "fs";
 import { execFileSync } from "node:child_process";
 import { fs } from "./src/fs/index.js";
-import { bashToJS } from "./src/bash2js.js";
+import { bashToJS, runBash } from "./src/bash2js.js";
 
 const DIR = "www/examples/textures";
 const SCRIPTS = readdirSync(DIR)
@@ -30,6 +30,36 @@ for (const s of SCRIPTS) {
     ok(`${s} → ${js.length} chars of JS`);
   } catch (e) {
     bad(`${s} transpile: ${e.message}`);
+  }
+}
+
+// ─── 1b) TRANSPILED run (the game's path — runBash, not host bash).
+//        Host-bash success does not prove the game can generate: the game
+//        transpiles these scripts and runs the JS (background worker for
+//        menu textures, main thread in play). A transpile-path regression
+//        (fold/interpolation/lift) breaks generation while every host-bash
+//        check stays green — exactly the "textures don't generate" outage.
+//        Stone + wood cover the 16×16 generator core (the 64×64 MIME-name
+//        textures share it; host bash covers their pixels above).
+console.log("transpiled run (runBash --tsv)…");
+for (const t of ["stone", "wood"]) {
+  const src = readFileSync(`${DIR}/texture-${t}.sh`, "utf8");
+  let out = "";
+  try {
+    await runBash(fs, src, {
+      stdout: { write: (s) => { out += s; } },
+      stderr: { write: () => {} },
+      runCmd: async () => ({ out: "", err: "", code: 127 }),
+      args: ["--tsv", "--size", "16", "--seed", "20240812"], argv0: `texture-${t}.sh`,
+    });
+    const lines = out.split("\n");
+    if (!lines[0].startsWith(`#texture\t${t}\t16x16\tseed\t20240812\t`)) throw new Error(`bad header: ${JSON.stringify(lines[0].slice(0, 60))}`);
+    const rows = lines.filter((l) => l && !l.startsWith("#texture"));
+    if (rows.length !== 16) throw new Error(`expected 16 data rows, got ${rows.length}`);
+    if (rows.some((r) => r.split("\t").filter(Boolean).length !== 48 || /[^0-9\t\-]/.test(r))) throw new Error("row shape/charset");
+    ok(`${t}: transpiled --tsv → valid 16×16 TSV (${out.length} bytes)`);
+  } catch (e) {
+    bad(`${t} transpiled run: ${e.message}`);
   }
 }
 

@@ -592,9 +592,38 @@ export function safeWordListCoercion(program) {
 // Identifier — only the literal ops are the strip forms.
 export function paramLiveValue(program) {
   const STRIP_OPS = new Set(["#", "##", "%", "%%"]);
-  const walk = (n) => {
+  // module-level native bindings (nativeSharedScalars' `let v`) are
+  // visible everywhere; function params/locals only inside their own
+  // body. A live Identifier is only valid where its binding is in scope
+  // — appending an unbound native ref throws ReferenceError (the
+  // texture payload's `lt_s=\${lt_s#?}` in a function with no `let lt_s`).
+  const moduleLets = new Set();
+  for (const st of (program && program.body) || []) {
+    if (st && st.type === "VariableDeclaration" && st.declarations) {
+      for (const d of st.declarations) if (d && d.id && d.id.type === "Identifier") moduleLets.add(d.id.name);
+    }
+  }
+  const walk = (n, locals) => {
     if (!n || typeof n !== "object") return;
-    if (Array.isArray(n)) { for (const x of n) walk(x); return; }
+    if (Array.isArray(n)) { for (const x of n) walk(x, locals); return; }
+    // entering a function body: params + local lets join the scope
+    let inner = locals;
+    if ((n.type === "FunctionDeclaration" || n.type === "FunctionExpression" || n.type === "ArrowFunctionExpression") && n.body) {
+      inner = new Set(locals);
+      for (const p of n.params || []) {
+        if (p && p.type === "Identifier") inner.add(p.name);
+        else if (p && p.type === "AssignmentPattern" && p.left && p.left.type === "Identifier") inner.add(p.left.name);
+      }
+      const collectLets = (b) => {
+        if (!b || typeof b !== "object") return;
+        if (Array.isArray(b)) { for (const x of b) collectLets(x); return; }
+        if (b.type === "VariableDeclaration" && (b.kind === "let" || b.kind === "var" || b.kind === "const") && b.declarations) {
+          for (const d of b.declarations) if (d && d.id && d.id.type === "Identifier") inner.add(d.id.name);
+        }
+        for (const k of Object.keys(b)) if (k !== "loc" && k !== "parent") collectLets(b[k]);
+      };
+      collectLets(n.body);
+    }
     if (n.type === "CallExpression" && n.callee && n.callee.type === "MemberExpression" &&
         n.callee.object && n.callee.object.type === "Identifier" && n.callee.object.name === "sh2" &&
         n.callee.property && n.callee.property.type === "Identifier" && n.callee.property.name === "param" &&
@@ -602,15 +631,19 @@ export function paramLiveValue(program) {
         STRIP_OPS.has(n.arguments[0].value)) {
       const name = n.arguments[1];
       let live = null;
-      if (name && name.type === "Identifier") live = name;
-      else if (name && name.type === "Literal" && typeof name.value === "string") live = { type: "Identifier", name: name.value };
-      if (live && n.arguments.length < 4 && !n.arguments.some((a) => a.type === "Identifier" && a.name === live.name)) {
-        n.arguments.push(live);
+      if (name && name.type === "Identifier") live = name.name;
+      else if (name && name.type === "Literal" && typeof name.value === "string") live = name.value;
+      // only append when the native binding is actually in scope here;
+      // otherwise the 3-arg form reads the store (correct when writes
+      // go to the store, which they do for unlifted vars)
+      if (live && (moduleLets.has(live) || inner.has(live)) &&
+          n.arguments.length < 4 && !n.arguments.some((a) => a.type === "Identifier" && a.name === live)) {
+        n.arguments.push({ type: "Identifier", name: live });
       }
     }
-    for (const k of Object.keys(n)) if (k !== "loc") walk(n[k]);
+    for (const k of Object.keys(n)) if (k !== "loc") walk(n[k], inner);
   };
-  walk(program);
+  walk(program, new Set());
   return program;
 }
 
