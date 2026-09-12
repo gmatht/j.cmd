@@ -4018,6 +4018,13 @@ export function backgroundDecide(program) {
 // never re-arms for unchanged scores). Only fires inside async functions
 // (sync callers can't await — those need async cascade, a separate fix);
 // already-awaited calls and sh2.background (true fire-and-forget) are left.
+// SCOPE: straight-line code only, NOT inside loops — hot DSP loops (the
+// sound generators' per-sample render_sample/noise16 chain) depend on
+// synchronous fire-and-forget ordering; awaiting there empties output
+// (root cause under investigation — likely shared-var microtask
+// interleaving the original sync emission accidentally gets right).
+// Loops keep status-quo behavior (no regression possible); straight-line
+// missing awaits (the digits case) get fixed.
 export function awaitAsyncCalls(program) {
   if (!program || program.type !== "Program" || !Array.isArray(program.body)) return program;
   const isShCall = (n) =>
@@ -4025,32 +4032,33 @@ export function awaitAsyncCalls(program) {
     n.callee.object && n.callee.object.type === "Identifier" && n.callee.object.name === "sh2" &&
     n.callee.property && n.callee.property.type === "Identifier" &&
     (n.callee.property.name === "fnCall" || n.callee.property.name === "callDirect" || n.callee.property.name === "exec");
-  const fixBody = (stmts) => {
+  const fixBody = (stmts, inLoop) => {
     if (!Array.isArray(stmts)) return;
     for (let i = 0; i < stmts.length; i++) {
       const st = stmts[i];
       if (!st || typeof st !== "object") continue;
-      // ExpressionStatement wrapping a bare sh2 call → await it
-      if (st.type === "ExpressionStatement" && isShCall(st.expression)) {
+      // ExpressionStatement wrapping a bare sh2 call → await it, unless
+      // inside a loop (see header: loop awaits break DSP ordering)
+      if (!inLoop && st.type === "ExpressionStatement" && isShCall(st.expression)) {
         st.expression = { type: "AwaitExpression", argument: st.expression };
         continue;
       }
       // recurse into blocks/if/loops/try (but not nested functions — they
       // have their own async context; handled when visited separately)
-      if (st.type === "BlockStatement") fixBody(st.body);
+      if (st.type === "BlockStatement") fixBody(st.body, inLoop);
       else if (st.type === "IfStatement") {
         if (st.consequent) {
-          if (st.consequent.type === "BlockStatement") fixBody(st.consequent.body);
+          if (st.consequent.type === "BlockStatement") fixBody(st.consequent.body, inLoop);
         }
         if (st.alternate) {
-          if (st.alternate.type === "BlockStatement") fixBody(st.alternate.body);
-          else if (st.alternate.type === "IfStatement") fixBody([st.alternate]);
+          if (st.alternate.type === "BlockStatement") fixBody(st.alternate.body, inLoop);
+          else if (st.alternate.type === "IfStatement") fixBody([st.alternate], inLoop);
         }
       } else if ((st.type === "WhileStatement" || st.type === "ForStatement") && st.body) {
-        if (st.body.type === "BlockStatement") fixBody(st.body.body);
+        if (st.body.type === "BlockStatement") fixBody(st.body.body, true);
       } else if (st.type === "TryStatement") {
-        if (st.block && st.block.type === "BlockStatement") fixBody(st.block.body);
-        if (st.handler && st.handler.body && st.handler.body.type === "BlockStatement") fixBody(st.handler.body.body);
+        if (st.block && st.block.type === "BlockStatement") fixBody(st.block.body, inLoop);
+        if (st.handler && st.handler.body && st.handler.body.type === "BlockStatement") fixBody(st.handler.body.body, inLoop);
       }
     }
   };
@@ -4058,7 +4066,7 @@ export function awaitAsyncCalls(program) {
     if (!n || typeof n !== "object") return;
     if (Array.isArray(n)) { for (const x of n) walkFns(x); return; }
     const isAsyncFn = (n.type === "FunctionDeclaration" || n.type === "FunctionExpression" || n.type === "ArrowFunctionExpression") && n.async;
-    if (isAsyncFn && n.body && n.body.type === "BlockStatement") fixBody(n.body.body);
+    if (isAsyncFn && n.body && n.body.type === "BlockStatement") fixBody(n.body.body, false);
     for (const k of Object.keys(n)) if (k !== "loc") walkFns(n[k]);
   };
   walkFns(program);
