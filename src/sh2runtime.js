@@ -1342,6 +1342,10 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
   // SPLICED into the callee's positionals by exec's arg flattener (bash
   // expands `"$@"` to separate args). `"*"` is the space-joined single
   // arg, `"#"` the count, `"0"` the script name.
+  // sh2.lit — the verbatim single-quoted literal (the ESTree render
+  // wraps SingleQuoted strings so lowering passes treat them as opaque
+  // and never interpolate `$v` text into templates). Identity at runtime.
+  function lit(s) { return String(s ?? ""); }
   function listVar(spec) {
     if (spec === "@") return scriptArgs.slice();
     if (spec === "*") return [scriptArgs.join(" ")];
@@ -1602,7 +1606,7 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       "break": breakLoop, "continue": continueLoop, "return": returnSignal,
       ReturnSignal,
       idiv, imod, not, setLastExit,
-      getVar, setVar, listVar,
+      getVar, setVar, listVar, lit,
       // the otranspilerl estree backend reads/writes sh2.lastExit
       get lastExit() { return lastStatus; },
       set lastExit(v) { lastStatus = Number(v); },
