@@ -347,14 +347,7 @@
   </div>
 
 <script type="module">
-import { fs } from "../src/fs/index.js";
-import { env } from "../src/env.js";
-import { getOtranspilerl } from "../src/otranspilerl.js";
-import { estreeToJs } from "../src/estree.js";
-import { GoRunner } from "../src/go.js";
-import { WasmRunner } from "../src/wasm.js";
-import { ensureBusyboxWasm, busyboxA1, BUSYBOX_VERSION } from "../src/busybox.js";
-import { pyExec } from "../src/py.js";
+import { RUNNABLE, RUNTIME_LABEL, BUSYBOX_VERSION } from "../src/otranspile-jobs.js";
 import { LANGS, getExamples } from "./otranspiler-examples.js?v=13";  // v=12: added cpp/powershell/rust/zig frontends (bump on example changes)
 
 // ─── state ──────────────────────────────────────────────────────
@@ -364,10 +357,8 @@ let currentExample = null;
 let autoUpdate = true;
 let autoTimer = null;
 let busy = false;
-const libPromise = getOtranspilerl();
 
 const TARGETS = ["js", "pl", "c", "go", "py", "java", "rs", "zig", "glsl", "glslv", "sh", "shir"];
-const TARGETS_TEXT = ["sh", "pl", "c", "go", "py", "java", "rs", "zig"];
 
 // ── backend gate status ─────────────────────────────────────────
 // pass/total on the shared sh corpus (sh2perl/examples/*.sh + frontend
@@ -634,29 +625,9 @@ function corpusCountText(dir) {
   return null;
 }
 
-// Which languages have a browser runtime we can execute for the stdout diff.
-// (java/rs/zig render code but have no browser runtime — the diff notes it.)
-const RUNNABLE = { sh: 1, zsh: 1, fish: 1, go: 1, py: 1, c: 1, pl: 1, js: 1, zig: 1 };
-// Frontends merged into the browser busybox (www/bin + otranspiler-busybox.wasm).
-// cpp/zig joined the merge (2026-08-14): their frontends lower onto the shared
-// clib (c-sh-go) with a pure-Go tokenizer — no cgo, so they build to wasm like
-// the other eight. rust runs the REAL fleet binary (syn + serde_json, no cgo)
-// built to wasm32-wasip1 via src/rustfrontend.js. powershell stays out (a
-// tree-sitter CST walker via cgo); its corpus is browsable, transpile throws
-// the message below.
-const FRONTEND_PORTED = { sh: 1, zsh: 1, fish: 1, go: 1, py: 1, c: 1, pl: 1, bat: 1, cpp: 1, zig: 1, rust: 1, js: 1 };
-const RUNTIME_LABEL = {
-  sh: "bash.wasm", zsh: "zsh.wasm", fish: "fish.wasm",
-  go: "go.wasm (toolchain)", py: "micropython.wasm", c: "tcc.wasm",
-  pl: "zeroperl.wasm (Perl 5.42)", js: "browser JS (sh2 runtime)",
-  bat: "none (no cmd.exe in the browser)",
-  glsl: "sh2glsl — in-process GLSL ES 1.00 compiler (fragment shader, not runnable)",
-  glslv: "sh2glsl --vertex — in-process GLSL ES 1.00 vertex shader compiler (not runnable)",
-  cpp: "none (no browser C++ runtime — the cpp frontend parses in-browser, executing the generated target needs g++)",
-  powershell: "none (no browser pwsh/frontend wasm yet)",
-  rust: "none (no browser Rust runtime — the rust frontend parses in-browser, executing the generated target needs rustc)",
-  zig: "zig.wasm (toolchain — compiles AND runs)",
-};
+// Engine / label tables live in src/otranspile-jobs.js (imported above —
+// the single source of truth shared with the worker stages). Display-only
+// caveats stay here.
 const CAVEAT = {
   py: "micropython is an older build — f-strings / some imports in generated code may fail (syntax error shows below)",
   pl: "zeroperl is a subset — some core modules (IPC::Open3 …) may be missing from generated code",
@@ -702,401 +673,142 @@ function setTag(id, text) { const el = $("tag-" + id); if (el) el.textContent = 
 // stage timings — reported as whole ms above 100, one decimal below
 function fmtMs(ms) { return (ms >= 100 ? Math.round(ms) : ms.toFixed(1)) + " ms"; }
 
-// ─── transpile: source → A1 (busybox for non-sh) → target ───────
-// Build a source↔generated line map for TEXT targets.
-//  • sh: fixed prologue (`#!/bin/sh` + `exec 2>/dev/null` + blanks +
-//    `_num(){…}`), then the A1 top-level statements in order with
-//    known per-statement line counts (blocks recurse).
-//  • pl: EXACT — the perl backend emits ` # line N` on each top-level
-//    statement (the shIR source-mapping convention); a statement spans
-//    from its comment line to the next comment.
-//  • py / c / go / rs / zig / java: best-effort — find the body
-//    (inside `main()` or after the py prologue) and walk the A1
-//    statements with per-language block rules. Simple statements map
-//    exactly; backend-transformed loops (for→range/while + setup +
-//    TODO comments) can drift.
-function buildTextMap(text, tgt, a1Stmts, stmtLines) {
-  const lines = String(text).split("\n");
-  const srcLineOf = new Map();
-  for (const e of stmtLines || []) srcLineOf.set(e.stmt, e.line);
+// ─── worker stages: transpile + each run in its own Web Worker ───
+// The page used to transpile AND run both sides on the MAIN thread, so
+// one long output (a minutes-long factor loop in micropython, or the
+// transpiled JS itself) froze the entire UI. Now each stage runs in its
+// own persistent module worker (www/otranspile-job.js → the DOM-free
+// src/otranspile-jobs.js), each with its own VFS + runtimes — a slow
+// stage blocks only its own panel, and the transpile + original run
+// fire CONCURRENTLY (the original never needed the generated code,
+// but the old page serialized them).
+//
+// Protocol: one job at a time per worker. A new execute() bumps execGen
+// and terminates superseded workers (terminate() kills even a wedged
+// wasm loop, which no cooperative flag could); stale replies carry an
+// old jobId on a dead worker and never resolve. Callers check
+// alive() after every await and drop superseded results.
+// (Plain postMessage throughout — no SharedArrayBuffer, so no
+// cross-origin-isolation requirement.)
+let execGen = 0;
+let jobSeq = 1;
+const stageWorkers = { transpile: null, orig: null, tgt: null };   // slot → { worker, ready }
+const HAVE_WORKERS = typeof Worker !== "undefined";
 
-  // ── backends that emit `line N` comments (pl/py/c/go/rs/zig/java):
-  //     EXACT — a statement spans from its ` # line N` / ` // line N` /
-  //     ` /* line N */` line to the next one. (The shIR source-mapping
-  //     convention, emitted by every backend.)
-  if (tgt !== "sh") {
-    const map = [];
-    let cur = null;
-    for (let j = 0; j < lines.length; j++) {
-      const m = /(?:#|\/\/|\/\*)\s*line (\d+)/.exec(lines[j]);
-      if (m) {
-        const line = Number(m[1]);
-        let a1Idx = null;
-        for (const [k, v] of srcLineOf) if (v === line) { a1Idx = k; break; }
-        if (a1Idx != null) {
-          if (cur) cur.jsEnd = j;               // previous ends before this line
-          cur = { jsStart: j + 1, jsEnd: j + 1, sourceLine: line };
-          map.push(cur);
-        } else if (cur) {
-          cur.jsEnd = j + 1;                    // unmatched comment → extend current
+function terminateStage(slot) {
+  const s = stageWorkers[slot];
+  if (s) { try { s.worker.terminate(); } catch {} stageWorkers[slot] = null; }
+  slotBusy[slot] = false;
+}
+// Only busy stages are terminated: an idle worker is warm (wasm already
+// instantiated, toolchain staged) and safe to reuse — the done message
+// that marked it idle arrived before this execute started, so the
+// worker is genuinely between jobs and postMessage order keeps the
+// one-job-at-a-time protocol intact.
+const slotBusy = { transpile: false, orig: false, tgt: false };
+function terminateBusyStages() {
+  for (const slot of Object.keys(slotBusy)) if (slotBusy[slot]) terminateStage(slot);
+}
+
+async function ensureStageWorker(slot) {
+  const s = stageWorkers[slot];
+  if (s) return s.ready;
+  const worker = new Worker(new URL("otranspile-job.js", import.meta.url), { type: "module" });
+  const entry = { worker, ready: null };
+  stageWorkers[slot] = entry;
+  entry.ready = new Promise((resolve, reject) => {
+    const to = setTimeout(() => reject(new Error("worker " + slot + " init timeout")), 30000);
+    const onMsg = (e) => {
+      if (e.data && e.data.type === "ready") {
+        clearTimeout(to);
+        worker.removeEventListener("message", onMsg);
+        resolve(worker);
+      }
+    };
+    worker.addEventListener("message", onMsg);
+    worker.postMessage({ type: "init" });
+  });
+  try { await entry.ready; } catch (e) { terminateStage(slot); throw e; }
+  return entry.ready;
+}
+
+// No-Worker fallback: run the same job functions inline on the main
+// thread (the old behavior — the UI blocks, but the page still works).
+// Cancel still drops stale results via execGen.
+let inlineMod = null;
+async function runInline(kind, payload, onStatus) {
+  if (!inlineMod) {
+    const [jobs, fsMod, envMod] = await Promise.all([
+      import("../src/otranspile-jobs.js"),
+      import("../src/fs/index.js"),
+      import("../src/env.js"),
+    ]);
+    inlineMod = { jobs, fs: fsMod.fs, env: envMod.env };
+  }
+  const ctx = { fs: inlineMod.fs, env: inlineMod.env, onStatus };
+  if (kind === "transpile") return inlineMod.jobs.transpileJob(payload.source, payload.srcLang, payload.tgt, ctx);
+  if (kind === "run") return inlineMod.jobs.runJob(payload.lang, payload.code, ctx);
+  if (kind === "version") return { version: await inlineMod.jobs.otranspilerVersion() };
+  throw new Error("unknown job kind: " + kind);
+}
+
+// Run one stage; never rejects — resolves { ok, result } or { ok, error }.
+// Status notes from the worker (toolchain downloads etc.) surface via onStatus.
+function callStage(slot, kind, payload, onStatus) {
+  if (!HAVE_WORKERS) {
+    return (async () => {
+      try { return { ok: true, result: await runInline(kind, payload, onStatus) }; }
+      catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+    })();
+  }
+  return (async () => {
+    let worker;
+    slotBusy[slot] = true;
+    try { worker = await ensureStageWorker(slot); }
+    catch (e) { slotBusy[slot] = false; return { ok: false, error: String((e && e.message) || e) }; }
+    const jobId = jobSeq++;
+    return new Promise((resolve) => {
+      const onMsg = (e) => {
+        const m = e.data || {};
+        if (m.jobId !== jobId) return;
+        if (m.type === "status") { try { onStatus && onStatus(m.text); } catch {} return; }
+        if (m.type === "done") {
+          worker.removeEventListener("message", onMsg);
+          slotBusy[slot] = false;
+          resolve(m.ok ? { ok: true, result: m.result } : { ok: false, error: m.error });
         }
-      } else if (cur) {
-        cur.jsEnd = j + 1;
-      }
-    }
-    return map;
-  }
-
-  // ── other targets: per-target body start + recursive counter ──
-  const count = (st, t) => {
-    switch (st && st.type) {
-      case "If": {
-        let n = 1;                                // if … { / if …:
-        n += (st.then || []).reduce((s, x) => s + count(x, t), 0);
-        for (const [, b] of st.elsifs || []) n += 1 + b.reduce((s, x) => s + count(x, t), 0);
-        if (st.else && st.else.length) n += 1 + st.else.reduce((s, x) => s + count(x, t), 0);
-        return t === "py" ? n : n + 1;            // py: no closing brace
-      }
-      case "For":
-      case "While":
-      case "DoWhile":
-        return (t === "py" ? 1 : 2) + (st.body || []).reduce((s, x) => s + count(x, t), 0);
-      case "Case": {
-        let n = 1;
-        for (const c of st.clauses || []) n += 1 + (c.body || []).reduce((s, x) => s + count(x, t), 0) + 1;
-        return n + 1;
-      }
-      case "Function":
-        return (t === "py" ? 1 : 2) + (st.body || []).reduce((s, x) => s + count(x, t), 0);
-      default:
-        return 1;
-    }
-  };
-
-  // sh target: a FLAT script (no main() wrapper, no line comments).
-  // The leading polyfill prologue (shebang, comments, and the
-  // grep_p/_num/_readlink/_cmp helper functions) is NOT part of the
-  // A1 statement body — the body is the LAST `total` lines (trailing
-  // blanks and main()-style bookkeeping excluded). The old closeIdx
-  // search stopped at the polyfill's closing `}`, mapping every click
-  // into the polyfill instead of the program.
-  const total = (a1Stmts || []).reduce((s, x) => s + count(x, tgt), 0);
-  let last = lines.length - 1;
-  while (last >= 0 && (
-    lines[last].trim() === "" ||
-    /^_\s*=\s*\w+;?$|^return(\s+\d+)?;?$/.test(lines[last].trim())
-  )) last--;
-  const bodyEnd = last;                          // 0-based last body line
-  const bodyStart = Math.max(0, bodyEnd - total + 1);
-
-  const map = [];
-  let line = bodyStart + 1;
-  (a1Stmts || []).forEach((st, idx) => {
-    const n = count(st, tgt);
-    const sl = srcLineOf.get(idx);
-    if (sl) map.push({ jsStart: line, jsEnd: line + n - 1, sourceLine: sl });
-    line += n;
-  });
-  return map;
+      };
+      worker.addEventListener("message", onMsg);
+      worker.postMessage({ type: "job", jobId, kind, ...payload });
+    });
+  })();
 }
 
-async function transpile(source, srcLang, tgt) {
-  const lib = await libPromise;
-  let text, a1 = null, map = null;
-  if (srcLang === "sh") {
-    // the debashl core — full bash, in-process (fast path)
-    if (tgt === "glsl") {
-      // the dedicated shell→shader entry (otranspilerl_glsl, the
-      // sh2glsl pipeline) — parse + bridge in one call.
-      text = lib.glsl(String(source));
-    } else if (tgt === "glslv") {
-      // the VERTEX variant (otranspilerl_glslv, `sh2glsl --vertex`) —
-      // the ap_*/ucp_*/ucy_*/… bridges and the vp_*/vc_*/vu_* outputs.
-      text = lib.glslv(String(source));
-    } else {
-      text = lib.transpile(String(source), "sh", tgt);
-      try { a1 = JSON.parse(lib.shir(String(source))); } catch {}
-    }
-  } else if (srcLang === "rust") {
-    // the REAL fleet frontend (syn-based Rust binary) built to
-    // wasm32-wasip1 — run it through the shared WASI runner with the
-    // source staged into the VFS (the busybox merge is Go-only)
-    const { rustfrontendA1 } = await import("../src/rustfrontend.js");
-    a1 = await rustfrontendA1(String(source), fs, (m) => showStatus(m, "info"));
-    text = lib.render(JSON.stringify(a1), tgt);
-  } else if (!FRONTEND_PORTED[srcLang]) {
-    // powershell is not in the browser yet (tree-sitter CST walker via
-    // cgo — no wasm target) — the corpus is browsable, but the A1
-    // pipeline needs the sh2loop fleet.
-    throw new Error(srcLang + " frontend not ported to the browser wasm yet — " +
-      "load it in the sh2loop fleet (" + (FRONTEND_STATUS[srcLang] || {}).name + ") to transpile");
-  } else {
-    // zsh/fish/go/py/c/pl → A1 via the merged frontend (prebuilt busybox)
-    const goRunner = new GoRunner(fs);
-    const { BUSYBOX_VERSION } = await import("../src/busybox.js");
-    const fetchBytes = async () => new Uint8Array(
-      await (await fetch(new URL("wasm-bin/otranspiler-busybox.wasm?v=" + BUSYBOX_VERSION, import.meta.url))).arrayBuffer());
-    const wasmPath = await ensureBusyboxWasm(fs, { fetchBytes, onLog: (m) => showStatus(m, "info") });
-    a1 = await busyboxA1(String(source), srcLang, { fs, wasmPath, goRunner });
-    text = lib.render(JSON.stringify(a1), tgt);
-  }
-  // the OPTIMIZED A1 — exactly the contract lib.render just consumed
-  // (the wasm's otranspilerl_shir_opt runs render()'s own ingress, so
-  // this cannot drift from what the backend received)
-  let optShir = null;
-  if (a1) {
-    try {
-      const libO = await libPromise;
-      optShir = libO.shirOpt(JSON.stringify(a1), tgt);
-    } catch (e) { optShir = "shir_opt failed: " + e.message; }
-  }
-  if (tgt === "js") {
-    // the js backend emits an ESTree AST — render it through astring,
-    // and build the source↔generated line map from the A1's stmt_lines.
-    // keepVariables (same pass the shell's runEstreeProgram applies):
-    // self-collects the program's setArray calls and emits a STORE SYNC
-    // (`a = [...]; sh2.setArray("a", a)`), so array reads (arrayIndex /
-    // the c frontend's void* base) see the values — without it the
-    // read-only-array native-lift leaves the store empty and output is
-    // blank.
-    const { estreeToJsMapped, keepVariables } = await import("../src/estree.js");
-    const estree = JSON.parse(text);
-    // whole-program transpile + fresh-runtime run (runJs creates a NEW
-    // sh2 runtime per execute) — no REPL cross-line persistence needed, so
-    // use the whole-script path (repl: false) and get the native-array /
-    // scalar-lift optimisations the game runs (the GUI's displayed JS is
-    // then the same code the shell actually executes, not the slow
-    // store-routed form).
-    keepVariables(estree, [], { repl: false });
-    const r = await estreeToJsMapped(estree, (a1 && a1.stmt_lines) || [], (a1 && a1.stmts) || [], { repl: false });
-    return { text: r.js, map: r.map, a1, optShir };
-  }
-  if (a1 && a1.stmt_lines && a1.stmt_lines.length && TARGETS_TEXT.indexOf(tgt) >= 0) {
-    // text targets: build the line map from the A1 statements
-    map = buildTextMap(text, tgt, a1.stmts, a1.stmt_lines);
-  }
-  return { text, map, a1, optShir };
+function paintRunButton() {
+  const b = $("run-btn");
+  b.textContent = busy ? "Cancel" : "Transpile";
+  b.disabled = false;
 }
 
-// ─── runtimes (stdout capture) ──────────────────────────────────
-const shellCache = {};
-async function runShell(lang, script) {
-  const glue = { sh: "bash.js", zsh: "zsh.js", fish: "fish.js" }[lang];
-  if (!shellCache[lang]) {
-    shellCache[lang] = (await import(new URL("vendor/" + glue, import.meta.url).href)).default;
+function onRunButton() {
+  if (busy) {
+    // Cancel: terminate even wedged wasm; in-flight replies are dropped
+    // by the execGen check (and dead workers never reply at all).
+    cancelExecute();
+    showStatus("cancelled", "warn");
+    return;
   }
-  const factory = shellCache[lang];
-  let out = "", err = "";
-  let inFlight = 0;   // asyncify-suspended host runs still pending
-  let code = 0;
-  const ext = { sh: ".sh", zsh: ".zsh", fish: ".fish" }[lang];
-  const path = "/script" + ext;
-  const src = String(script).endsWith("\n") ? String(script) : String(script) + "\n";
-  // ── virtual-process hooks (bash only): bash.wasm can't fork —
-  // top-level external commands, whole pipelines, ( ) subshells, $( )
-  // and `&` all run in the HOST (the transpiled shell, which has real
-  // pipes), so a script never falls through to the "fork: Function not
-  // implemented" path. The hooks mirror runRealBash's; the host output
-  // joins bash's own TTY stream in execution order (asyncify suspends
-  // bash for the whole host run).
-  const hostRun = async (cmdline, stdinIn, appendOut = true) => {
-    inFlight++;
-    const { runBash } = await import("../src/bash2js.js");
-    let ho = "", he = "", hcode = 0;
-    try {
-      hcode = await runBash(fs, cmdline, {
-        stdout: { write: (s) => { ho += s; } },
-        stderr: { write: (s) => { he += s; } },
-        runCmd: async () => ({ out: "", err: "command not found\n", code: 127 }),
-        args: [], argv0: "bash",
-        stdin: stdinIn || "",
-      });
-    } catch { hcode = 127; }
-    if (ho && appendOut) out += ho;
-    if (he && appendOut) err += he;
-    inFlight--;
-    return { out: ho, err: he, code: hcode };
-  };
-  const cfg = {
-    // bash: the runtime's own auto-run (a manual callMain breaks the
-    // asyncify unwind/rewind of the host-run hooks — main re-runs).
-    // zsh/fish keep the old callMain flow (no virtual-process hooks).
-    noInitialRun: lang !== "sh",
-    arguments: lang === "sh" ? [path] : [],
-    locateFile: (p) => new URL("wasm-bin/" + p, import.meta.url).href,
-    print: (t) => (out += t + "\n"),
-    printErr: (t) => {
-      err += t + "\n";
-      // the auto-run's exit status arrives as the runtime's exit notice
-      // (keepRuntimeAlive suppresses onExit) — capture it for `code`
-      const em = /program exited \(with status: (\d+)\)/.exec(t);
-      if (em) code = Number(em[1]);
-    },
-    preRun: [() => {
-      if (lang === "sh") {
-        globalThis.__bash_spawn = async (args, stdin) => {
-          if (!args || !args.length) return 127;
-          const h = await hostRun(args.join(" "), stdin || "");
-          return h.code;
-        };
-        globalThis.__bash_spawn_capture = async (cmd) => {
-          // captured output feeds back into the $( ) substitution — do
-          // NOT also append it to the transcript (that would double it)
-          const h = await hostRun(cmd, "", false);
-          return { out: h.out, code: h.code };
-        };
-        globalThis.__bash_web_internal = (args) => {
-          if (args && args.length) hostRun(args.join(" "), "");
-          return 0;
-        };
-      }
-      cfg.FS.writeFile(path, src);
-    }],
-  };
-  const m = await factory(cfg);
-  if (lang !== "sh") {
-    try { m.callMain(lang === "zsh" ? ["-f", path] : [path]); } catch (e) { code = (e && e.exitStatus) || (e && e.status) || 1; }
-  } else {
-    // the factory (auto-run) resolves when main's SYNCHRONOUS part
-    // exits — the asyncify-suspended host runs finish after — wait for
-    // the in-flight hooks so their output lands in the transcript.
-    const deadline = Date.now() + 30000;
-    while (inFlight > 0 && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 10));
-    }
-  }
-  // the emscripten runtime's own notices are noise — drop them (the
-  // same filter runRealBash applies; the syscall warnings are gone too
-  // since the shim provides getresgid/wait family)
-  err = err.split("\n").filter((l) =>
-    !/^program exited \(with status/.test(l) &&
-    !/^warning: unsupported syscall/.test(l) &&
-    !/^warning: stdio streams had content/.test(l) &&
-    !/^warning: Invalid UTF-8/.test(l)
-  ).join("\n");
-  return { out, err, code };
+  execute();
 }
 
-async function runJs(jsCode) {
-  let out = "", err = "";
-  const outS = { write: (s) => { if (s) out += String(s); } };
-  const { createSh2Runtime } = await import("../src/sh2runtime.js");
-  const rt = createSh2Runtime({ fs, env, shellExec: async () => ({ out: "", err: "", code: 0 }), stdout: outS, stderr: outS, args: [], argv0: "sh" });
-  const proc = {
-    stdout: outS, stderr: outS, pid: 1, argv: ["otranspiler"], env: env || {},
-    cwd: () => (fs.cwd !== undefined ? fs.cwd : "/") || "/",
-    chdir(p) { try { if (fs.cwd !== undefined) fs.cwd = String(p).replace(/\/+$/, "") || "/"; } catch {} },
-    exit(code) { const e = new Error("__otranspiler_exit__" + code); e.exitCode = Number(code) || 0; throw e; },
-  };
-  const fn = new Function("fs", "env", "process", "sh2", `return (async () => { ${jsCode} })();`);
-  let code = 0;
-  try { await fn(fs, env, proc, rt.sh2); } catch (e) { if (e.exitCode !== undefined) code = e.exitCode; else throw e; }
-  return { out, err, code };
-}
-
-async function runPy(src) {
-  let out = "", err = "";
-  const code = await pyExec(String(src), {
-    stdout: { write: (s) => { out += s; } },
-    stderr: { write: (s) => { err += s; } },
-  });
-  return { out, err, code };
-}
-
-async function runPl(src) {
-  const { ZeroPerl } = await import(new URL("vendor/zeroperl.mjs", import.meta.url).href);
-  let out = "", err = "";
-  const dec = new TextDecoder();
-  const perl = await ZeroPerl.create({
-    fetch: () => fetch(new URL("vendor/zeroperl.wasm", import.meta.url).href),
-    stdout: (s) => { out += typeof s === "string" ? s : dec.decode(s); },
-    stderr: (s) => { err += typeof s === "string" ? s : dec.decode(s); },
-    args: ["zeroperl"],
-  });
-  const r = await perl.eval(String(src));
-  try { await perl.flush(); } catch {}
-  return { out, err, code: r.success ? (r.exitCode || 0) : 1, note: r.success ? "" : (r.error || "") };
-}
-
-async function runGo(src) {
-  const { createGoCommand } = await import("../src/go.js");
-  const goRunner = new GoRunner(fs);
-  let out = "", err = "";
-  const goCmd = createGoCommand(goRunner, (s) => { out += s; }, (s) => { err += s; });
-  try { await fs.write("/tmp/go-webgui/.directory", ""); } catch {}
-  await fs.write("/tmp/go-webgui/main.go", String(src));
-  const prevCwd = fs.cwd;
-  try { fs.cwd = "/tmp/go-webgui"; } catch {}
-  let code = 1;
-  try { code = await goCmd(["run", "main.go"]); } finally { fs.cwd = prevCwd; }
-  // strip the toolchain's progress lines, keep the program's output
-  out = out.split("\n").filter((l) => !/^go (run|build): /.test(l)).join("\n");
-  return { out, err, code };
-}
-
-async function runZig(src) {
-  // the real zig compiler (wasm32-wasi) + its std/compiler_rt lib
-  // bundle.  `wasmer install zig` stages both; the compiled program
-  // then runs through the same WASI runner.
-  const { WasmerRegistry } = await import("../src/wasmer.js");
-  const reg = new WasmerRegistry(fs);
-  let inst;
-  try { inst = await reg.install("zig"); } catch (e) {
-    return { out: "", err: "zig toolchain unavailable: " + (e && e.message || e), code: 1 };
-  }
-  const wasmRunner = new WasmRunner(fs);
-  try { await fs.write("/tmp/zig-webgui/.directory", ""); } catch {}
-  await fs.write("/tmp/zig-webgui/main.zig", String(src));
-  const prevCwd = fs.cwd;
-  try { fs.cwd = "/tmp/zig-webgui"; } catch {}
-  try {
-    // absolute input path reads fine; the relative -femit-bin lands in
-    // the sandbox root (/main.wasm) - wasmer-wasi rejects absolute
-    // output paths with O_CREAT.
-    await wasmRunner.run("/usr/bin/zig.wasm", ["zig", "build-exe", "/tmp/zig-webgui/main.zig", "-femit-bin=main.wasm"]);
-    const ccode = wasmRunner.getExitCode();
-    const cerr = wasmRunner.getStderr();
-    if (ccode !== 0) return { out: wasmRunner.getStdout(), err: cerr, code: ccode };
-    wasmRunner.invalidate("/main.wasm");
-    await wasmRunner.run("/main.wasm", ["main"]);
-    return { out: wasmRunner.getStdout(), err: wasmRunner.getStderr(), code: wasmRunner.getExitCode() };
-  } finally { fs.cwd = prevCwd; }
-}
-
-async function runC(src) {
-  const { runTcc } = await import("../src/tcc.js");
-  const wasmRunner = new WasmRunner(fs);
-  const fetchBundle = async (rel) => new Uint8Array(
-    await (await fetch(new URL("../www/" + rel, import.meta.url))).arrayBuffer());
-  try { await fs.write("/tmp/c-webgui/.directory", ""); } catch {}
-  await fs.write("/tmp/c-webgui/main.c", String(src));
-  const outWasm = "/tmp/c-webgui/a.wasm";
-  const r = await runTcc({ vfs: fs, runner: wasmRunner, args: ["/tmp/c-webgui/main.c", "-o", outWasm], fetchBundle });
-  const ccode = wasmRunner.getExitCode();
-  const cerr = wasmRunner.getStderr();
-  if (ccode !== 0) return { out: wasmRunner.getStdout(), err: cerr, code: ccode };
-  wasmRunner.invalidate(outWasm);   // recompiled in place — drop the stale module
-  await wasmRunner.run(outWasm, []);
-  return { out: wasmRunner.getStdout(), err: wasmRunner.getStderr(), code: wasmRunner.getExitCode() };
-}
-
-async function runLanguage(lang, source) {
-  const label = RUNTIME_LABEL[lang] || lang;
-  showStatus("running " + lang + " (" + label + ")…", "info");
-  try {
-    switch (lang) {
-      case "sh": case "zsh": case "fish": return await runShell(lang, source);
-      case "js": return await runJs(source);
-      case "py": return await runPy(source);
-      case "pl": return await runPl(source);
-      case "go": return await runGo(source);
-      case "c": return await runC(source);
-      case "zig": return await runZig(source);
-      default: return null; // java/rs: no runtime
-    }
-  } catch (e) {
-    return { out: "", err: String((e && e.message) || e), code: 1 };
-  }
+// Cancel everything in flight (busy stages are terminated — even wedged
+// wasm dies; idle workers are left warm). In-flight replies are dropped
+// by the execGen check (and dead workers never reply at all).
+function cancelExecute() {
+  execGen++;
+  terminateBusyStages();
+  busy = false;
+  paintRunButton();
 }
 
 // ─── line diff (LCS) ────────────────────────────────────────────
@@ -1292,26 +1004,73 @@ async function execute() {
   if (!source.trim()) { showStatus("Enter source first.", "error"); return; }
   if (busy) return;
   busy = true;
-  $("run-btn").disabled = true;
+  paintRunButton();
+  // a new execute supersedes anything in flight (fast typing with
+  // auto-update): terminate BUSY stages so a stale long run can't
+  // deliver late (idle workers stay warm and are reused).
+  terminateBusyStages();
+  const gen = ++execGen;
+  const alive = () => gen === execGen;
+  let tick = null;
   try {
+    const t0 = performance.now();
+    const stageMs = {};
+    const started = { transpile: t0, orig: t0, tgt: null };
+    const done = { transpile: false, orig: false, tgt: false };
+    // per-stage elapsed ticker — the page stays responsive (and honest
+    // about what is still running) while the workers grind.
+    tick = setInterval(() => {
+      if (!alive() || !busy) { clearInterval(tick); return; }
+      const el = (k) => ((performance.now() - started[k]) / 1000).toFixed(0) + "s";
+      const parts = [];
+      if (!done.transpile) parts.push("transpiling " + srcLang + " → " + tgtLang + "… " + el("transpile"));
+      if (RUNNABLE[srcLang] && !done.orig) parts.push("original (" + srcLang + ")… " + el("orig"));
+      if (started.tgt !== null && !done.tgt) parts.push("target (" + tgtLang + ")… " + el("tgt"));
+      if (parts.length) showStatus(parts.join(" · "), "info");
+    }, 500);
+
     showStatus("transpiling " + srcLang + " → " + tgtLang + "…", "info");
     setOut("code", "…"); setOut("orig", "…"); setOut("tgt", "…");
     $("diff-lines").innerHTML = ""; $("diff-summary").textContent = "";
 
-    // 1) generate the target code
-    let code, lineMap = null;
-    const stageMs = {};          // per-stage wall-clock (reported in the tags + status)
-    let tStage = performance.now();
-    try {
-      const tr = await transpile(source, srcLang, tgtLang);
+    // 1) transpile + original run CONCURRENTLY in their own workers
+    // (the original never needed the generated code — the old page
+    // serialized them, so a slow transpile delayed the original run).
+    const onWorkerStatus = (t) => { if (alive()) showStatus(t, "info"); };
+    const trP = callStage("transpile", "transpile",
+      { source, srcLang, tgt: tgtLang }, onWorkerStatus);
+    const origP = RUNNABLE[srcLang]
+      ? callStage("orig", "run", { lang: srcLang, code: source }, onWorkerStatus)
+      : Promise.resolve({ ok: true, result: null });
+
+    // --- transpile completion → code panes, A1, lex, then the target run
+    let code = null, lineMap = null, failed = false;
+    let tgtP = null;
+    const trR = await trP;
+    if (!alive()) return;                       // superseded — drop it
+    stageMs.transpile = performance.now() - t0;
+    done.transpile = true;
+    if (!trR.ok) {
+      failed = true;
+      renderCodeLines("transpile error: " + trR.error);
+      setTag("code", srcLang + " → " + tgtLang);
+      renderLineMap(null, null);
+      setOut("shir", "—"); setTag("shir", "");
+      setOut("shir-opt", "—"); setTag("shir-opt", "");
+      setOut("lex", "—"); setTag("lex", "");
+      showStatus("transpile failed: " + trR.error, "error");
+      // no target run without code — but the original may still be in
+      // flight; fall through so its pane still fills in on arrival.
+    } else {
+      const tr = trR.result;
       code = tr.text;
       lineMap = tr.map || null;
       renderCodeLines(code);
-      setTag("code", srcLang + " → " + tgtLang + " · " + code.split("\n").length + " lines · " + fmtMs(performance.now() - tStage));
+      setTag("code", srcLang + " → " + tgtLang + " · " + code.split("\n").length + " lines · " + fmtMs(stageMs.transpile));
       renderLineMap(source, lineMap);
-      // intermediate-stage views: the A1 shIR (already computed for the
-      // line map — downstream of the bash AST) and the token stream
-      // (sh only — the in-process core's lexer).
+      // intermediate-stage views: the A1 shIR plus the sh token stream
+      // (sh only — the frontends feed the parser directly). Both now
+      // arrive inside the transpile result (computed off-thread).
       const a1 = tr.a1 || null;
       setOut("shir", a1 ? JSON.stringify(a1, null, 2) : "no A1 for this path (sh→shader targets skip the shIR parse)");
       setTag("shir", a1 ? "A1 contract v" + (a1.contract_version || 1) + " · " + (a1.stmts || []).length + " statements" : "");
@@ -1329,63 +1088,73 @@ async function execute() {
         setOut("shir-opt", a1 ? (trOpt || "—") : "—");
         setTag("shir-opt", a1 && trOpt ? "error" : "");
       }
-      if (srcLang === "sh") {
-        try {
-          const lexText = (await libPromise).lex(source);
-          setOut("lex", lexText);
-          const tm = /Total tokens: (\d+)/.exec(lexText);
-          setTag("lex", tm ? tm[1] + " tokens" : "");
-        } catch (e) {
-          setOut("lex", "lex failed: " + e.message);
-          setTag("lex", "error");
-        }
+      if (tr.lex !== undefined && tr.lex !== null) {
+        setOut("lex", tr.lex);
+        const tm = /Total tokens: (\d+)/.exec(tr.lex);
+        setTag("lex", tm ? tm[1] + " tokens" : (/failed/.test(tr.lex) ? "error" : ""));
       } else {
         setOut("lex", "no token dump — the " + srcLang + " frontend feeds the parser directly (sh-only in-process core)");
         setTag("lex", "");
       }
-      stageMs.transpile = performance.now() - tStage;   // end of stage 1
-    } catch (e) {
-      renderCodeLines("transpile error: " + e.message);
-      setTag("code", srcLang + " → " + tgtLang);
-      renderLineMap(null, null);
-      showStatus("transpile failed: " + e.message, "error");
-      return;
+      // the target run starts as soon as the code exists (the original
+      // is still running in its own worker — it no longer blocks this).
+      started.tgt = performance.now();
+      tgtP = RUNNABLE[tgtLang]
+        ? callStage("tgt", "run", { lang: tgtLang, code }, onWorkerStatus)
+        : Promise.resolve({ ok: true, result: null });
     }
 
-    // 2) run the original (if the input language has a runtime)
+    // 2) original completion → its pane (whatever the transpile did)
     let orig = null;
-    tStage = performance.now();
-    if (RUNNABLE[srcLang]) {
-      orig = await runLanguage(srcLang, source);
-      setOut("orig", (orig.out || "") + (orig.err ? "\n[stderr] " + orig.err : ""));
-      setTag("orig", srcLang + " · " + RUNTIME_LABEL[srcLang] + " · exit " + orig.code + " · " + fmtMs(performance.now() - tStage));
-      if (orig.note) setOut("orig", (orig.out || "") + "\n[note] " + orig.note);
-    } else {
+    const origR = await origP;
+    if (!alive()) return;
+    done.orig = true;
+    if (!RUNNABLE[srcLang]) {
       setOut("orig", "no browser runtime for " + srcLang + " source");
       setTag("orig", srcLang);
-    }
-    stageMs.orig = performance.now() - tStage;          // end of stage 2
-
-    // 3) run the generated target (if the target has a runtime)
-    let tgt = null;
-    tStage = performance.now();
-    if (RUNNABLE[tgtLang]) {
-      tgt = await runLanguage(tgtLang, code);
-      setOut("tgt", (tgt.out || "") + (tgt.err ? "\n[stderr] " + tgt.err : ""));
-      setTag("tgt", tgtLang + " · " + RUNTIME_LABEL[tgtLang] + " · exit " + tgt.code + " · " + fmtMs(performance.now() - tStage));
-      if (tgt.note) setOut("tgt", (tgt.out || "") + "\n[note] " + tgt.note);
+    } else if (!origR.ok) {
+      // worker-level failure (not the program's own nonzero exit)
+      orig = { out: "", err: origR.error, code: 1 };
+      setOut("orig", "run failed: " + origR.error);
+      setTag("orig", srcLang + " · worker error");
     } else {
-      setOut("tgt", "no browser runtime for " + tgtLang + " target (compile-only)");
-      setTag("tgt", tgtLang + " · no runtime");
+      orig = origR.result;
+      setOut("orig", (orig.out || "") + (orig.err ? "\n[stderr] " + orig.err : ""));
+      setTag("orig", srcLang + " · " + RUNTIME_LABEL[srcLang] + " · exit " + orig.code + " · " + fmtMs(performance.now() - t0));
+      if (orig.note) setOut("orig", (orig.out || "") + "\n[note] " + orig.note);
     }
-    stageMs.tgt = performance.now() - tStage;           // end of stage 3
-    if (CAVEAT[tgtLang] && RUNNABLE[tgtLang]) {
-      $("out-tgt").value += "\n\n⚠ " + CAVEAT[tgtLang];
+    stageMs.orig = performance.now() - t0;
+
+    // 3) target completion → its pane (skipped when the transpile failed)
+    let tgt = null;
+    if (tgtP) {
+      const tgtR = await tgtP;
+      if (!alive()) return;
+      done.tgt = true;
+      if (!RUNNABLE[tgtLang]) {
+        setOut("tgt", "no browser runtime for " + tgtLang + " target (compile-only)");
+        setTag("tgt", tgtLang + " · no runtime");
+      } else if (!tgtR.ok) {
+        tgt = { out: "", err: tgtR.error, code: 1 };
+        setOut("tgt", "run failed: " + tgtR.error);
+        setTag("tgt", tgtLang + " · worker error");
+      } else {
+        tgt = tgtR.result;
+        setOut("tgt", (tgt.out || "") + (tgt.err ? "\n[stderr] " + tgt.err : ""));
+        setTag("tgt", tgtLang + " · " + RUNTIME_LABEL[tgtLang] + " · exit " + tgt.code + " · " + fmtMs(performance.now() - started.tgt));
+        if (tgt.note) setOut("tgt", (tgt.out || "") + "\n[note] " + tgt.note);
+      }
+      stageMs.tgt = performance.now() - started.tgt;
+      if (CAVEAT[tgtLang] && RUNNABLE[tgtLang]) {
+        $("out-tgt").value += "\n\n⚠ " + CAVEAT[tgtLang];
+      }
     }
 
     // 4) the diff
-    tStage = performance.now();
-    if (orig && tgt) {
+    if (failed) {
+      setTag("diff", "");
+      $("diff-summary").textContent = "no target output (transpile failed)";
+    } else if (orig && tgt) {
       const ops = lineDiff(orig.out, tgt.out);
       const adds = ops.filter((o) => o.t === "add").length;
       const dels = ops.filter((o) => o.t === "del").length;
@@ -1400,24 +1169,29 @@ async function execute() {
         const esc = String(o.s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
         return '<div class="diff-line ' + o.t + '"><span class="mark">' + mark + "</span>" + esc + "</div>";
       }).join("");
-      setTag("diff", srcLang + " vs " + tgtLang + " stdout · " + fmtMs(performance.now() - tStage));
+      setTag("diff", srcLang + " vs " + tgtLang + " stdout · " + fmtMs(performance.now() - t0));
     } else {
       setTag("diff", "");
       $("diff-summary").textContent = "both sides need runtimes to diff";
     }
-    stageMs.diff = performance.now() - tStage;          // end of stage 4
 
-    showStatus("done — " + srcLang + " → " + tgtLang +
-      " (orig exit " + (orig ? orig.code : "n/a") + ", target exit " + (tgt ? tgt.code : "n/a") + ")" +
-      " · transpile " + fmtMs(stageMs.transpile || 0) +
-      " · run " + srcLang + " " + fmtMs(stageMs.orig || 0) +
-      " · run " + tgtLang + " " + fmtMs(stageMs.tgt || 0) +
-      " · diff " + fmtMs(stageMs.diff || 0), "success");
+    if (!failed) {
+      showStatus("done — " + srcLang + " → " + tgtLang +
+        " (orig exit " + (orig ? orig.code : "n/a") + ", target exit " + (tgt ? tgt.code : "n/a") + ")" +
+        " · transpile " + fmtMs(stageMs.transpile || 0) +
+        " · run " + srcLang + " " + fmtMs(stageMs.orig || 0) +
+        " · run " + tgtLang + " " + fmtMs(stageMs.tgt || 0), "success");
+    } else {
+      // the transpile failed but the original may still have run —
+      // leave its pane + a summary (the error itself was shown above)
+      showStatus("transpile failed" + (orig ? " · original (" + srcLang + ") exit " + orig.code : ""), "error");
+    }
   } catch (e) {
-    showStatus("error: " + e.message, "error");
+    if (alive()) showStatus("error: " + e.message, "error");
   } finally {
-    busy = false;
-    $("run-btn").disabled = false;
+    if (tick) clearInterval(tick);
+    // a superseding execute owns `busy` now — only the current gen clears it
+    if (alive()) { busy = false; paintRunButton(); }
   }
 }
 
@@ -1550,7 +1324,8 @@ function renderExamples() {
   note.innerHTML =
     "<b>original runs in:</b> " + RUNTIME_LABEL[srcLang] + "<br>" +
     (CAVEAT[srcLang] ? "⚠ " + CAVEAT[srcLang] + "<br>" : "") +
-    "stdout diff compares the original against the transpiled target when both have a browser runtime (java/rs/zig render code only).";
+    "stdout diff compares the original against the transpiled target when both have a browser runtime (java/rs/zig render code only)." +
+    "<br>transpile + each run executes in its own Web Worker — a slow output blocks only its own panel; the Run button becomes Cancel while busy.";
 }
 
 // corpus buttons, filtered by the search box; each fetches its script on click
@@ -1726,7 +1501,7 @@ function setupInput() {
     clearTimeout(autoTimer);
     autoTimer = setTimeout(() => { if (autoUpdate && $("input").value.trim()) { syncUrl(); updateTryHint(); execute(); } }, 250);
   });
-  $("run-btn").addEventListener("click", execute);
+  $("run-btn").addEventListener("click", onRunButton);
   $("example-search").addEventListener("input", (e) => setSearch(e.target.value));
   const toggle = $("auto-update-toggle");
   toggle.addEventListener("click", () => {
@@ -1916,7 +1691,14 @@ async function init() {
   // restores the source without a loadExample, which would leave the
   // container empty until a language pill is clicked)
   renderExamples();
-  showStatus("ready — otranspilerl " + (await libPromise).version(), "success");
+  // warm the transpile worker at boot (it loads the wasm OFF the main
+  // thread) and report its version — the page itself never loads the
+  // wasm anymore, so startup stays responsive too.
+  callStage("transpile", "version", {}, null).then((r) => {
+    showStatus(r.ok
+      ? "ready — otranspilerl " + r.result.version + " (transpile + each run in its own worker)"
+      : "ready (" + r.error + ")", r.ok ? "success" : "warn");
+  });
 }
 
 init().catch((e) => showStatus("init failed: " + e.message, "error"));
