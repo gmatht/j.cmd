@@ -1003,23 +1003,43 @@ export function liftLocalVars(program) {
       if (!n || typeof n !== "object") return;
       if (Array.isArray(n)) { for (const x of n) walk(x, parent, key); return; }
       // sh2.setVar / setArray / getVar / param / arrayIndex / vars.x
+      // (plus sh2.fs.* device writes: `echo 'putb $b' > /dev/...` renders
+      // a Literal "putb $b" arg to sh2.fs.writeFile — the runtime writes
+      // it VERBATIM, so $b must stay on the store; the old direct-sh2-only
+      // scan missed namespaced calls, the lift fired, and the fragment
+      // shader staged "putb " instead of "putb $b" — black 3D)
+      const sh2Rooted = (c) => {
+        while (c && c.type === "MemberExpression") c = c.object;
+        return c && c.type === "Identifier" && c.name === "sh2";
+      };
       if (n.type === "CallExpression" && n.callee && n.callee.type === "MemberExpression" &&
-          n.callee.object && n.callee.object.type === "Identifier" && n.callee.object.name === "sh2") {
+          sh2Rooted(n.callee.object)) {
+        const directSh2 = n.callee.object && n.callee.object.type === "Identifier" && n.callee.object.name === "sh2";
         const fn = n.callee.property && n.callee.property.type === "Identifier" ? n.callee.property.name : "";
         const a0 = n.arguments && n.arguments[0];
         // a var referenced by NAME inside a STRING-LITERAL arg of a runtime
         // call ("$x" / "arr[$x]") is READ FROM THE STORE by the runtime
-        // (arrayIndex/setVar/test expand "$x" via getVar) — lifting it to a
+        // (arrayIndex/setVar/test expand "$x" via getVar — and device
+        // writes/echo payloads carry it verbatim) — lifting it to a
         // JS binding would leave the store empty and the expansion resolves
         // to "". Templates (`arr[${x}]`) are JS-evaluated, so only literal
         // strings count. Scanned FIRST (the per-function handlers return).
-        for (const a of n.arguments) {
-          if (a && a.type === "Literal" && typeof a.value === "string") {
-            const sm = String(a.value).match(/\$([A-Za-z_][A-Za-z0-9_]*)/g);
+        // walk arg SUBTREES (the echo payload often arrives as
+        // `"text $v" + "\n"` — a BinaryExpression, not a direct Literal;
+        // only the top-level check missed those and the lift corrupted
+        // single-quoted device payloads like the fragment shader)
+        const scanStrLits = (x) => {
+          if (!x || typeof x !== "object") return;
+          if (Array.isArray(x)) { for (const y of x) scanStrLits(y); return; }
+          if (x.type === "Literal" && typeof x.value === "string") {
+            const sm = String(x.value).match(/\$([A-Za-z_][A-Za-z0-9_]*)/g);
             if (sm) for (const mm of sm) stringRefs.add(mm.slice(1));
+            return;
           }
-        }
-        if (fn === "setVar" && a0) {
+          for (const k of Object.keys(x)) if (k !== "loc") scanStrLits(x[k]);
+        };
+        for (const a of n.arguments) scanStrLits(a);
+        if (directSh2 && fn === "setVar" && a0) {
           if (a0.type === "Literal" && typeof a0.value === "string") {
             const nm = a0.value;
             if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(nm)) {
@@ -1037,22 +1057,22 @@ export function liftLocalVars(program) {
           } else scope.indirect.add("*");
           return;
         }
-        if (fn === "setArray" && a0 && a0.type === "Literal" && typeof a0.value === "string") {
+        if (directSh2 && fn === "setArray" && a0 && a0.type === "Literal" && typeof a0.value === "string") {
           scope.arrays.add(a0.value);
           scope.ops.push({ name: a0.value, kind: "write", node: n, parent, key });
           return;
         }
-        if (fn === "getVar" && a0 && a0.type === "Literal" && typeof a0.value === "string") {
+        if (directSh2 && fn === "getVar" && a0 && a0.type === "Literal" && typeof a0.value === "string") {
           scope.reads.add(a0.value);
           scope.ops.push({ name: a0.value, kind: "read", node: n, parent, key });
           return;
         }
-        if (fn === "getVar" && a0 && a0.type !== "Literal") { scope.indirect.add("*"); return; }
-        if (fn === "param") {
+        if (directSh2 && fn === "getVar" && a0 && a0.type !== "Literal") { scope.indirect.add("*"); return; }
+        if (directSh2 && fn === "param") {
           for (const a of n.arguments) if (a.type === "Literal" && typeof a.value === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(a.value)) scope.indirect.add(a.value);
           return;
         }
-        if (fn === "arrayIndex" && a0 && a0.type === "Literal" && typeof a0.value === "string") {
+        if (directSh2 && fn === "arrayIndex" && a0 && a0.type === "Literal" && typeof a0.value === "string") {
           scope.arrays.add(a0.value);
           scope.ops.push({ name: a0.value, kind: "read", node: n, parent, key });
           return;
@@ -1141,10 +1161,14 @@ export function liftLocalVars(program) {
     const lifted = new Set();
     for (const v of s.ops.map((o) => o.name)) {
       if (s.arrays.has(v) || s.indirect.has(v) || s.indirect.has("*") || topUses.has(v)) continue;
-      // note: vars named in "$v" string args are NOT excluded here — the
-      // post-lift interpolation converts those strings to ${v} templates
-      // (the runtime's store expansion would answer ""), so the lift stays
-      // safe AND the array-index keys become JS-evaluated.
+      // vars named in "$v" string args ARE excluded: the post-lift
+      // interpolation cannot tell single-quoted verbatim text ('putb $b')
+      // from double-quoted expandable text — it templates both, so a
+      // single-quoted payload staged the WRONG bytes (the mimecroft
+      // fragment shader lost its "$b", black 3D). Unlifted vars fall back
+      // to the runtime's store expansion, which is correct (if slower)
+      // for the double-quoted/array-index cases.
+      if (stringRefs.has(v)) continue;
       if (moduleLets.has(v)) continue;
       // a var used in MANY functions is fine — the module let is the
       // store's scope, so cross-function sharing still resolves (the
