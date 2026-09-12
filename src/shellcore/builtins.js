@@ -216,6 +216,37 @@ and run it as a command.
   
   },
 
+  async version(ctx, args) {
+    // version — prove WHAT code this tab runs (ends stale-tab debates):
+    // the transpiler wasm, the frontend busybox, and the repo commit the
+    // served tree was stamped at (www/version.txt, written by deploy;
+    // "-dirty" means a live dev tree). All values come from the LOADED
+    // modules/files, never constants — a stale tab reports stale versions.
+    let ot = "?";
+    try { ot = (await import("../otranspilerl.js")).WASM_VERSION; } catch {}
+    let bb = "?";
+    try { bb = (await import("../busybox.js")).BUSYBOX_VERSION; } catch {}
+    let commit = "?";
+    try {
+      const { fs: vfs } = await import("../fs/index.js");
+      const raw = String(await vfs.read("/www/version.txt").catch(() => ""));
+      const m = /commit:\s*(\S+)/.exec(raw);
+      if (m) commit = m[1];
+    } catch {}
+    if (commit === "?" && typeof fetch !== "undefined") {
+      try {
+        const base = (typeof location !== "undefined" && location.origin) ? location.origin : "";
+        const res = await fetch(base + "/www/version.txt", { cache: "no-store" });
+        if (res.ok) {
+          const m = /commit:\s*(\S+)/.exec(await res.text());
+          if (m) commit = m[1];
+        }
+      } catch {}
+    }
+    ctx.stdout.write(`otranspilerl.wasm ${ot} · busybox ${bb} · tree ${commit}\n`);
+    return 0;
+  },
+
   async bug(ctx, args) {
     // bug — file a bug report as a GitHub issue (gmatht/j.cmd, label
     // bug-report) carrying the last terminal lines (the ring buffer)
@@ -2364,5 +2395,319 @@ setlocal, call other.bat, …) refuses loudly — see the frontend's v1 subset.
       ctx.stderr.write(`cmd.exe: ${e.message}\n`);
       return 1;
     }
+  },
+
+  async du(ctx, args) {
+    // du [-s] [-h] [path...] — VFS-aware disk usage. Recursively sums
+    // file sizes under each path; dirs report their subtree total.
+    let summary = false, human = false;
+    const paths = [];
+    for (const a of args) {
+      if (a === "-s" || a === "--summarize") summary = true;
+      else if (a === "-h" || a === "--human-readable") human = true;
+      else if (a.startsWith("-") && a.length > 1 && !a.startsWith("--")) {
+        // bundled short flags: -sh, -hs
+        let ok = true;
+        for (const c of a.slice(1)) {
+          if (c === "s") summary = true;
+          else if (c === "h") human = true;
+          else { ok = false; break; }
+        }
+        if (!ok) { ctx.stderr.write(`du: invalid option -- '${a}'\n`); return 2; }
+      }
+      else if (a.startsWith("-")) { ctx.stderr.write(`du: invalid option -- '${a}'\n`); return 2; }
+      else paths.push(a);
+    }
+    if (paths.length === 0) paths.push(fs.cwd !== undefined ? fs.cwd : "/");
+    const humanize = (n) => {
+      if (!human) return String(n);
+      const units = ["B", "K", "M", "G", "T"];
+      let i = 0;
+      while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+      return (i === 0 ? String(n) : n.toFixed(1)) + units[i];
+    };
+    const walk = async (p) => {
+      let st = null;
+      try { st = await fs.stat(p); } catch { return 0; }
+      if (st && st.type === "file") {
+        if (!summary) ctx.stdout.write(`${humanize(st.size || 0)}\t${p}\n`);
+        return st.size || 0;
+      }
+      let total = 0;
+      let entries = [];
+      try { entries = await fs.list(p); } catch { return 0; }
+      for (const e of entries) {
+        total += await walk((p === "/" ? "" : p) + "/" + e.replace(/\/$/, ""));
+      }
+      if (!summary) ctx.stdout.write(`${humanize(total)}\t${p}\n`);
+      return total;
+    };
+    let hadError = false;
+    for (const p of paths) {
+      try {
+        const total = await walk(p);
+        if (summary) ctx.stdout.write(`${humanize(total)}\t${p}\n`);
+      } catch (e) { hadError = true; ctx.stderr.write(`du: ${p}: ${e.message}\n`); }
+    }
+    return hadError ? 1 : 0;
+  },
+
+  async df(ctx, args) {
+    // df [-h] — per-mount listing. The VFS has no real quota/index info,
+    // so report the mount prefixes with n/a sizes (df is a
+    // filesystem-level view, NOT a recursive directory size — that's du's
+    // job). Walking mounts would be slow and semantically wrong.
+    let human = false;
+    for (const a of args) {
+      if (a === "-h" || a === "--human-readable") human = true;
+      else if (a.startsWith("-")) { ctx.stderr.write(`df: invalid option -- '${a}'\n`); return 2; }
+    }
+    const mounts = (fs.mounts || []).filter((m) => m.prefix);
+    ctx.stdout.write("Filesystem      Size  Used  Avail  Use%\n");
+    if (!mounts.length) ctx.stdout.write("none            -     -     -     -\n");
+    for (const m of mounts) {
+      const na = human ? "n/a" : "-";
+      ctx.stdout.write(`${m.prefix.padEnd(15)} ${na.padStart(6)} ${na.padStart(6)}  n/a   n/a\n`);
+    }
+    return 0;
+  },
+
+  async env(ctx, args) {
+    // env — print the environment, or run a command with extra vars:
+    //   env                 print all variables (NAME=value, one per line)
+    //   env NAME=value cmd  run cmd with NAME set (prefix assignment)
+    //   env -i cmd          run cmd with an empty environment
+    let ignoreEnv = false;
+    const assignments = [];
+    const rest = [];
+    for (const a of args) {
+      if (a === "-i" || a === "--ignore-environment") { ignoreEnv = true; continue; }
+      if (a.startsWith("-") && a !== "-") { ctx.stderr.write(`env: invalid option -- '${a}'\n`); return 2; }
+      if (a.includes("=") && rest.length === 0) assignments.push(a);
+      else rest.push(a);
+    }
+    if (rest.length > 0) {
+      // run the command with the assignments applied — the shell's
+      // transpiler handles `NAME=value cmd` prefix assignments natively
+      const cmdline = [...assignments, ...rest].join(" ");
+      const r = await ctx.runNestedCommand(cmdline);
+      return r.code;
+    }
+    const keys = ignoreEnv ? [] : Object.keys(env);
+    for (const k of keys) ctx.stdout.write(`${k}=${env[k]}\n`);
+    for (const a of assignments) ctx.stdout.write(a + "\n");
+    return 0;
+  },
+
+  async hostname(ctx, args) {
+    // hostname — print the system hostname (env.HOSTNAME, default jtsh).
+    ctx.stdout.write((env.HOSTNAME || "jtsh") + "\n");
+    return 0;
+  },
+
+  async id(ctx, args) {
+    // id — print user/group identity. id → uid=0(jtsh) gid=0(jtsh) groups=0(jtsh)
+    // Flags: -u uid, -g gid, -n name (with -u/-g), -un/-nu user name, -gn group name.
+    const user = env.USER || "jtsh";
+    const uid = user === "root" ? 0 : 1000;
+    const gid = uid;
+    let name = false, uidOnly = false, gidOnly = false;
+    for (const a of args) {
+      if (a === "-n" || a === "--name") name = true;
+      else if (a === "-u" || a === "--user") uidOnly = true;
+      else if (a === "-g" || a === "--group") gidOnly = true;
+      else if (a === "-un" || a === "-nu") { uidOnly = true; name = true; }
+      else if (a === "-gn" || a === "-ng") { gidOnly = true; name = true; }
+      else if (a.startsWith("-")) { ctx.stderr.write(`id: invalid option -- '${a}'\n`); return 2; }
+    }
+    if (uidOnly) { ctx.stdout.write((name ? user : String(uid)) + "\n"); return 0; }
+    if (gidOnly) { ctx.stdout.write((name ? user : String(gid)) + "\n"); return 0; }
+    ctx.stdout.write(`uid=${uid}(${user}) gid=${gid}(${user}) groups=${gid}(${user})\n`);
+    return 0;
+  },
+
+  async stat(ctx, args) {
+    // stat FILE... — print file metadata (size, type, mtime, owner).
+    if (args.length === 0) { ctx.stderr.write("stat: missing operand\n"); return 2; }
+    let hadError = false;
+    for (const f of args) {
+      try {
+        const st = await fs.stat(f);
+        const a = fs.attrOf(f);
+        const mode = a ? a.mode : 0o755;
+        const type = st && st.type === "dir" ? "directory" : "regular file";
+        const size = st && st.size !== undefined ? st.size : 0;
+        const mtime = st && st.mtime ? new Date(st.mtime).toString() : "-";
+        const owner = a ? a.owner : "jtsh";
+        ctx.stdout.write(`  File: ${f}\n  Size: ${size}\t  Type: ${type}\n  Owner: ${owner} (mode ${mode.toString(8)})\n  Modify: ${mtime}\n`);
+      } catch (e) {
+        hadError = true;
+        ctx.stderr.write(`stat: ${f}: ${e.message}\n`);
+      }
+    }
+    return hadError ? 1 : 0;
+  },
+
+  async xargs(ctx, args) {
+    // whitespace-separated words from stdin (or NUL-separated with -0)
+    // and runs `cmd words...` (default cmd: echo). Options:
+    //   -n N    at most N words per invocation
+    //   -I {}   replace {} in the command with each line (one per run)
+    //   -0      NUL-delimited input (find -print0 style)
+    let maxArgs = 0, replace = null, nullDelim = false;
+    const cmdArgs = [];
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (a === "-n" && args[i + 1]) {
+        maxArgs = parseInt(args[++i], 10);
+        if (isNaN(maxArgs) || maxArgs < 1) { ctx.stderr.write(`xargs: invalid number: '${args[i]}'\n`); return 2; }
+      } else if (a === "-I" && args[i + 1]) { replace = args[++i]; }
+      else if (a === "-0" || a === "--null") nullDelim = true;
+      else if (a.startsWith("-")) { ctx.stderr.write(`xargs: invalid option -- '${a}'\n`); return 2; }
+      else cmdArgs.push(a);
+    }
+    const cmd = cmdArgs.length ? cmdArgs[0] : "echo";
+    const cmdRest = cmdArgs.slice(1);
+    const input = ctx.stdin !== undefined ? String(ctx.stdin) : "";
+    const q = (w) => "'" + String(w).replace(/'/g, "'\\''") + "'";
+    let code = 0;
+    if (replace !== null) {
+      // -I: each LINE is one item; {} is replaced in the command args
+      const lines = input.split("\n").filter((s) => s !== "");
+      for (const line of lines) {
+        const cmdline = [cmd, ...cmdRest.map((a) => a.split(replace).join(line))].map(q).join(" ");
+        const r = await ctx.runNestedCommand(cmdline);
+        if (r.code !== 0) code = r.code;
+      }
+    } else {
+      const items = nullDelim ? input.split("\0").filter((s) => s !== "") : input.split(/\s+/).filter((s) => s !== "");
+      if (items.length === 0) return 0;
+      const run = async (words) => {
+        const cmdline = [cmd, ...cmdRest, ...words].map(q).join(" ");
+        const r = await ctx.runNestedCommand(cmdline);
+        return r.code;
+      };
+      if (maxArgs > 0) {
+        for (let i = 0; i < items.length; i += maxArgs) {
+          const c = await run(items.slice(i, i + maxArgs));
+          if (c !== 0) code = c;
+        }
+      } else {
+        code = await run(items);
+      }
+    }
+    return code;
+  },
+
+  async xxd(ctx, args) {
+    // xxd [opts] [file] — hex dump. Default: offset + hex + ASCII.
+    //   -p      plain hex (no offset/ascii)
+    //   -r      reverse (hex → bytes)
+    //   -l N    limit to N bytes
+    //   -s N    skip N bytes
+    //   -c N    bytes per line (default 16)
+    let plain = false, reverse = false, limit = Infinity, skip = 0, cols = 16;
+    const files = [];
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (a === "-p" || a === "--plain") plain = true;
+      else if (a === "-r" || a === "--reverse") reverse = true;
+      else if (a === "-l" && args[i + 1]) { limit = parseInt(args[++i], 10); if (isNaN(limit)) { ctx.stderr.write(`xxd: invalid number: '${args[i]}'\n`); return 2; } }
+      else if (a === "-s" && args[i + 1]) { skip = parseInt(args[++i], 10); if (isNaN(skip)) { ctx.stderr.write(`xxd: invalid number: '${args[i]}'\n`); return 2; } }
+      else if (a === "-c" && args[i + 1]) { cols = parseInt(args[++i], 10); if (isNaN(cols) || cols < 1) { ctx.stderr.write(`xxd: invalid number: '${args[i]}'\n`); return 2; } }
+      else if (a.startsWith("-")) { ctx.stderr.write(`xxd: invalid option -- '${a}'\n`); return 2; }
+      else files.push(a);
+    }
+    let data;
+    if (files.length === 0) {
+      data = ctx.stdin !== undefined ? String(ctx.stdin) : "";
+    } else {
+      try { data = String(await fs.read(files[0])); }
+      catch (e) { ctx.stderr.write(`xxd: ${files[0]}: ${e.message}\n`); return 1; }
+    }
+    if (reverse) {
+      // hex → bytes: strip whitespace, decode pairs
+      const hex = data.replace(/\s+/g, "");
+      const out = [];
+      for (let i = 0; i + 1 < hex.length; i += 2) {
+        const b = parseInt(hex.slice(i, i + 2), 16);
+        if (!isNaN(b)) out.push(b);
+      }
+      ctx.stdout.write(new TextDecoder().decode(new Uint8Array(out)));
+      return 0;
+    }
+    const bytes = new TextEncoder().encode(data).slice(skip, skip + limit);
+    if (plain) {
+      for (let i = 0; i < bytes.length; i += cols) {
+        ctx.stdout.write([...bytes.slice(i, i + cols)].map((b) => b.toString(16).padStart(2, "0")).join("") + "\n");
+      }
+      return 0;
+    }
+    for (let i = 0; i < bytes.length; i += cols) {
+      const chunk = bytes.slice(i, i + cols);
+      const hex = [...chunk].map((b) => b.toString(16).padStart(2, "0")).join(" ");
+      const ascii = [...chunk].map((b) => (b >= 32 && b < 127 ? String.fromCharCode(b) : ".")).join("");
+      ctx.stdout.write(`${(skip + i).toString(16).padStart(8, "0")}: ${hex.padEnd(cols * 3 - 1)}  ${ascii}\n`);
+    }
+    return 0;
+  },
+
+  async yes(ctx, args) {
+    // yes [STRING] — repeat STRING (default "y") forever, one per line.
+    // Ctrl+C stops it (the shell's interrupt machinery); piping through
+    // head limits it.
+    const s = args.length ? args.join(" ") : "y";
+    const line = s + "\n";
+    let stop = false;
+    if (ctx.onInterrupt) ctx.onInterrupt(() => { stop = true; });
+    while (!stop) {
+      ctx.stdout.write(line);
+      // yield to the event loop so Ctrl+C / other commands can land
+      await new Promise((r) => setImmediate(r));
+    }
+    return 0;
+  },
+
+  async mktemp(ctx, args) {
+    // mktemp [-u] [TEMPLATE] — create a temp file/dir or print a name.
+    //   -u         just print the name, do NOT create it
+    //   -d         make a directory instead of a file (implied by a
+    //              TEMPLATE ending in X's, like the real mktemp)
+    //   TEMPLATE   e.g. /tmp/tmp.XXXXXX (default /tmp/tmp.XXXXXXXXXX)
+    let dry = false;
+    const tpl = [];
+    for (const a of args) {
+      if (a === "-u" || a === "--dry-run") dry = true;
+      else if (a === "-d" || a === "--directory") tpl.push("__DIR__");
+      else if (a.startsWith("-")) { ctx.stderr.write(`mktemp: invalid option -- '${a}'\n`); return 2; }
+      else tpl.push(a);
+    }
+    const template = tpl.find((t) => t !== "__DIR__") || "/tmp/tmp.XXXXXXXXXX";
+    const wantDir = tpl.includes("__DIR__") || /X{3,}$/.test(template);
+    // replace trailing X-runs with random alphanumerics
+    const rnd = (n) => {
+      const cs = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+      let s = "";
+      const buf = new Uint8Array(n);
+      if (globalThis.crypto && globalThis.crypto.getRandomValues) globalThis.crypto.getRandomValues(buf);
+      else for (let i = 0; i < n; i++) buf[i] = Math.floor(Math.random() * 256);
+      for (let i = 0; i < n; i++) s += cs[buf[i] % cs.length];
+      return s;
+    };
+    const name = template.replace(/X{3,}/g, (m) => rnd(m.length));
+    if (dry) { ctx.stdout.write(name + "\n"); return 0; }
+    try {
+      if (wantDir) {
+        // the VFS has no direct mkdir — create the dir by writing a
+        // sentinel inside it, then remove the sentinel (leaving an empty dir)
+        const sentinel = (name === "/" ? "" : name) + "/.mktemp" + rnd(6);
+        await fs.write(sentinel, "");
+        if (fs.remove) await fs.remove(sentinel);
+      } else {
+        await fs.write(name, "");
+      }
+    } catch (e) { ctx.stderr.write(`mktemp: failed to create ${name}: ${e.message}\n`); return 1; }
+    ctx.stdout.write(name + "\n");
+    return 0;
   }
 };
