@@ -243,7 +243,26 @@ and run it as a command.
         }
       } catch {}
     }
-    ctx.stdout.write(`otranspilerl.wasm ${ot} · busybox ${bb} · tree ${commit}\n`);
+    // src/*.js staleness: the imports above prove nothing about the
+    // lowering passes (unversioned fetches). Check live markers.
+    let js = "current";
+    try {
+      const base2 = (typeof location !== "undefined" && location.origin) ? location.origin : "";
+      const need = [
+        ["/src/sh2runtime.js", "fallbackLive"],
+        ["/src/lower.js", "moduleLets"],
+      ];
+      const missing = [];
+      for (const [u, mark] of need) {
+        try {
+          const r = await fetch(base2 + u, { cache: "no-store" });
+          const t = await r.text();
+          if (!t.includes(mark)) missing.push(u.split("/").pop());
+        } catch { missing.push(u.split("/").pop() + "?"); }
+      }
+      if (missing.length) js = "STALE:" + missing.join(",");
+    } catch {}
+    ctx.stdout.write(`otranspilerl.wasm ${ot} · busybox ${bb} · tree ${commit} · js ${js}\n`);
     return 0;
   },
 
