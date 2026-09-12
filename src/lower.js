@@ -1064,6 +1064,11 @@ export function liftLocalVars(program) {
         const scanStrLits = (x) => {
           if (!x || typeof x !== "object") return;
           if (Array.isArray(x)) { for (const y of x) scanStrLits(y); return; }
+          if (x.type === "CallExpression" && x.callee && x.callee.type === "MemberExpression" &&
+              x.callee.object && x.callee.object.type === "Identifier" && x.callee.object.name === "sh2" &&
+              x.callee.property && x.callee.property.type === "Identifier" && x.callee.property.name === "lit") {
+            return;
+          }
           if (x.type === "Literal" && typeof x.value === "string") {
             const sm = String(x.value).match(/\$([A-Za-z_][A-Za-z0-9_]*)/g);
             if (sm) for (const mm of sm) stringRefs.add(mm.slice(1));
@@ -1071,7 +1076,15 @@ export function liftLocalVars(program) {
           }
           for (const k of Object.keys(x)) if (k !== "loc") scanStrLits(x[k]);
         };
-        for (const a of n.arguments) scanStrLits(a);
+        for (const a of n.arguments) {
+          // sh2.lit verbatim text is never runtime-expanded — skip (see
+          // nativeSharedScalars walk skip; both passes must agree)
+          if (!(a && a.type === "CallExpression" && a.callee && a.callee.type === "MemberExpression" &&
+              a.callee.object && a.callee.object.type === "Identifier" && a.callee.object.name === "sh2" &&
+              a.callee.property && a.callee.property.type === "Identifier" && a.callee.property.name === "lit")) {
+            scanStrLits(a);
+          }
+        }
         if (directSh2 && fn === "setVar" && a0) {
           if (a0.type === "Literal" && typeof a0.value === "string") {
             const nm = a0.value;
@@ -1762,6 +1775,14 @@ export function nativeSharedScalars(program) {
   const walk = (n) => {
     if (!n || typeof n !== "object") return;
     if (Array.isArray(n)) { for (const x of n) walk(x); return; }
+    // sh2.lit verbatim text is never runtime-expanded — its `$v` names
+    // are not store reads, so they neither block lifting nor count as
+    // reads (the opaque wrapper exists precisely so lifting stays safe)
+    if (n.type === "CallExpression" && n.callee && n.callee.type === "MemberExpression" &&
+        n.callee.object && n.callee.object.type === "Identifier" && n.callee.object.name === "sh2" &&
+        n.callee.property && n.callee.property.type === "Identifier" && n.callee.property.name === "lit") {
+      return;
+    }
     // consume the full `sh2.vars.X ?? (sh2.env.X ?? "")` read
     const rp = readPatternName(n);
     if (rp !== null) { get(rp).reads.push(n); return; }
@@ -1806,6 +1827,17 @@ export function nativeSharedScalars(program) {
       const nm = n.value.slice(1).replace(/[@*]$/, "");
       if (recs.has(nm)) get(nm).bad.add("wholeStr");
       return;
+    }
+    // an EMBEDDED `$v` in a Literal (a test condition `"\$v=..."`, an echo
+    // payload, a redirect path) is expanded by the RUNTIME from the store
+    // — lifting v to a native binding leaves the store empty and the
+    // expansion resolves to "" (the texture field reader's `$sf_probe`
+    // test went true on the first iteration, so each strip ate one char).
+    // sh2.lit args are verbatim (never expanded) — skip those.
+    if (n.type === "Literal" && typeof n.value === "string" && /\$[A-Za-z_]/.test(n.value)) {
+      for (const m of String(n.value).matchAll(/\$([A-Za-z_][A-Za-z0-9_]*)/g)) {
+        if (recs.has(m[1])) get(m[1]).bad.add("embeddedStr");
+      }
     }
     for (const k of Object.keys(n)) if (k !== "loc") walk(n[k]);
   };
