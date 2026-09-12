@@ -12,13 +12,13 @@
 # goes through deploy.sh gets the same protection as the rsync host.
 #
 # --except <a,b,c> skips named harness tests (basename with or without
-# .mjs). The Pages workflow uses this for the two PRE-EXISTING game
-# failures unrelated to transpiler work (__sound-test: game-audio
-# harness, broken since ~Aug; __claim2-live: game death) so frontend/
-# backend changes are not held hostage by game-audio flakes — while
-# deploy.sh (ca.dansted.org) still runs the FULL suite. Remove a name
-# from the Pages exception list once its test is green again; never add
-# a transpiler gate to it.
+# .mjs). The Pages workflow uses this for PRE-EXISTING game failures
+# unrelated to transpiler work (__claim2-live: game death; __sound-test
+# was excepted for the same reason until the audio gate went green)
+# so frontend/backend changes are not held hostage by game flakes —
+# while deploy.sh (ca.dansted.org) still runs the FULL suite. Remove a
+# name from the Pages exception list once its test is green again;
+# never add a transpiler gate to it.
 #
 # Exit 0 = all (non-excepted) gates pass, non-zero = refuse to deploy.
 # (Gate 1 — a clean git tree — only applies to deploy.sh: it ships the
