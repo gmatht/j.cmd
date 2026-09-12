@@ -106,6 +106,38 @@ for (let y = 0; y < 600; y += 6) {
   }
 }
 check("3D is not mono-colour (distinct colour clusters)", buckets.size >= 3, buckets.size + " clusters: " + [...buckets].slice(0, 6).join(" "));
+
+// saturation floor on REAL game content: a dirt cube with the generated
+// dirt texture and the game's dirt tint must stay BROWN (saturated), not
+// wash to grey — the "3D is still grey" outage (failed tint, grey crack
+// overlay stuck on, desaturating fragment) keeps distinct clusters but
+// kills saturation, so the cluster check above stays green while the
+// game looks wrong. This check fails it.
+{
+  const { execFileSync } = await import("node:child_process");
+  const dirtTSV = execFileSync("bash", ["www/examples/textures/texture-dirt.sh", "--tsv", "--size", "16", "--seed", "20240812"], { encoding: "utf8" });
+  const nums = dirtTSV.split("\n").filter((l) => l && !l.startsWith("#")).join(" ").split(/\s+/).filter(Boolean);
+  await w("/texture/9", "16 " + nums.join(" "));
+  await w("/call", "clear");
+  // dirt tint 0.55,0.35,0.20 (game block_color case 1), damage 0
+  await w("/blocks", "0 0 0 1 1 1 0.55 0.35 0.20 9 0\n");
+  await w("/call", "swap");
+  gl.readPixels(0, 0, 800, 600, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  let r = 0, g = 0, b = 0, n = 0;
+  for (let i = 0; i < px.length; i += 4) {
+    if (px[i] > 8 || px[i + 1] > 8 || px[i + 2] > 8) { r += px[i]; g += px[i + 1]; b += px[i + 2]; n++; }
+  }
+  if (!n) {
+    check("dirt stays brown (saturated, not grey)", false, "no dirt pixels rendered");
+  } else {
+    r /= n; g /= n; b /= n;
+    const sat = Math.max(r, g, b) - Math.min(r, g, b);
+    // dirt brown (65,32,6)-ish through the tint: R clearly above B.
+    // Grey (r≈g≈b) or black both fail here even with 3+ clusters elsewhere.
+    check("dirt stays brown (saturated, not grey)", sat > 8 && r > b + 5,
+      `avg RGB=(${r.toFixed(0)},${g.toFixed(0)},${b.toFixed(0)}) sat=${sat.toFixed(0)} n=${n}`);
+  }
+}
 check("no GL errors", errs.length === 0, errs.map((e) => e.toString(16)).join(","));
 console.log(fails === 0 ? "ALL 3D COLOUR CHECKS PASSED" : `${fails} 3D COLOUR CHECKS FAILED`);
 process.exit(fails ? 1 : 0);
