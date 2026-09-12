@@ -33,7 +33,7 @@ async function getAstring() {
 // the runtime handles synchronously. Any OTHER command the emitter
 // routes to sh2.builtin is rewritten to the async exec bridge (see
 // awaitSyncFnCalls) so it resolves through the shell like bash.
-const SYNC_BUILTINS = new Set(["echo", "printf", "true", "false", "date", "pwd", "cat", "cd", "export", "ls", "test"]);
+const SYNC_BUILTINS = new Set(["echo", "printf", "true", "false", "date", "pwd", "cat", "cd", "export", "ls", "test", "hostname", "id", "env", "stat", "du", "df", "xxd", "mktemp"]);
 
 // the sync builtins whose return value IS their output (echo/printf
 // format the args, date/pwd/cat/ls print state) — a statement-level
@@ -405,6 +405,206 @@ function markAsyncOnAwait(node) {
   }
   for (const k of Object.keys(node)) markAsyncOnAwait(node[k]);
   return node;
+}
+
+// ─── idiomLifts: the wasm's idiom recognition is partial — it lifts
+// `wc -l < FILE`, `grep -q` (to grepText) and `for i in $(seq …)` with
+// literal bounds, but emits `sh2.captureSync(async () => await
+// sh2.exec("seq", …))` / `…("wc", …)` for the remaining command
+// substitutions — and the runtime's captureSync/captureWordsSync reject
+// async stages ("captureSync: async result"). Lift the known idioms to
+// direct runtime calls (sh2.seq / sh2.lineCount / sh2.wordCount /
+// sh2.byteCount / String().includes), rewrite the `test FLAG PATH && …`
+// block to a guarded fileTest, and route any other captureSync-with-
+// async-stage through the awaited async capture bridge.
+function idiomLifts(program) {
+  const rewrite = (node) => {
+    if (!node || typeof node !== "object") return node;
+    if (Array.isArray(node)) return node.map(rewrite);
+    // sh2.grepText(TEXT, ["-q", P], false) → String(TEXT).includes(P)
+    // when P is a regex-safe literal: grep -q with a plain pattern is a
+    // substring test. (The runtime grepText also appends a trailing
+    // newline that is truthy even with no match — includes is exact.)
+    if (node.type === "CallExpression" && node.callee && node.callee.type === "MemberExpression" &&
+        node.callee.object && node.callee.object.type === "Identifier" && node.callee.object.name === "sh2" &&
+        node.callee.property && node.callee.property.type === "Identifier" && node.callee.property.name === "grepText" &&
+        node.arguments && node.arguments.length === 3 &&
+        node.arguments[1] && node.arguments[1].type === "ArrayExpression" &&
+        node.arguments[1].elements.length === 2 &&
+        node.arguments[1].elements[0] && node.arguments[1].elements[0].type === "Literal" &&
+        node.arguments[1].elements[0].value === "-q" &&
+        node.arguments[1].elements[1] && node.arguments[1].elements[1].type === "Literal" &&
+        typeof node.arguments[1].elements[1].value === "string" &&
+        !/[.*+?^${}()|[\]\\]/.test(node.arguments[1].elements[1].value)) {
+      return {
+        type: "CallExpression",
+        callee: {
+          type: "MemberExpression",
+          computed: false,
+          optional: false,
+          object: { type: "CallExpression", callee: { type: "Identifier", name: "String" }, arguments: [rewrite(node.arguments[0])], optional: false },
+          property: { type: "Identifier", name: "includes" },
+        },
+        arguments: [rewrite(node.arguments[1].elements[1])],
+        optional: false,
+      };
+    }
+    // { sh2.builtin("test", [FLAG, PATH]); if (sh2.lastExit === 0) { … } }
+    // → if (sh2.fileTest(FLAG, PATH)) { … } — the guarded-read shape
+    // (`test -f X && cat X`). Only the fileTest-supported flags (-f/-d/-e).
+    if (node.type === "BlockStatement" && node.body && node.body.length === 2) {
+      const first = node.body[0];
+      const second = node.body[1];
+      const testCall = first && first.type === "ExpressionStatement" ? first.expression : null;
+      if (testCall && testCall.type === "CallExpression" && testCall.callee && testCall.callee.type === "MemberExpression" &&
+          testCall.callee.object && testCall.callee.object.type === "Identifier" && testCall.callee.object.name === "sh2" &&
+          testCall.callee.property && testCall.callee.property.type === "Identifier" && testCall.callee.property.name === "builtin" &&
+          testCall.arguments && testCall.arguments[0] && testCall.arguments[0].type === "Literal" &&
+          testCall.arguments[0].value === "test" &&
+          testCall.arguments[1] && testCall.arguments[1].type === "ArrayExpression" &&
+          testCall.arguments[1].elements.length === 2 &&
+          testCall.arguments[1].elements[0] && testCall.arguments[1].elements[0].type === "Literal" &&
+          ["-f", "-d", "-e"].includes(testCall.arguments[1].elements[0].value) &&
+          second && second.type === "IfStatement" &&
+          second.test && second.test.type === "BinaryExpression" &&
+          second.test.operator === "===" &&
+          second.test.left && second.test.left.type === "MemberExpression" &&
+          second.test.left.object && second.test.left.object.type === "Identifier" && second.test.left.object.name === "sh2" &&
+          second.test.left.property && second.test.left.property.type === "Identifier" && second.test.left.property.name === "lastExit" &&
+          second.test.right && second.test.right.type === "Literal" && second.test.right.value === 0) {
+        return {
+          type: "IfStatement",
+          test: {
+            type: "CallExpression",
+            callee: { type: "MemberExpression", computed: false, optional: false, object: { type: "Identifier", name: "sh2" }, property: { type: "Identifier", name: "fileTest" } },
+            arguments: [rewrite(testCall.arguments[1].elements[0]), rewrite(testCall.arguments[1].elements[1])],
+            optional: false,
+          },
+          consequent: rewrite(second.consequent),
+          alternate: second.alternate ? rewrite(second.alternate) : null,
+        };
+      }
+    }
+    // sh2.captureSync / sh2.captureWordsSync wrapping an async exec stage
+    if (node.type === "CallExpression" && node.callee && node.callee.type === "MemberExpression" &&
+        node.callee.object && node.callee.object.type === "Identifier" && node.callee.object.name === "sh2" &&
+        node.callee.property && node.callee.property.type === "Identifier" &&
+        (node.callee.property.name === "captureSync" || node.callee.property.name === "captureWordsSync") &&
+        node.arguments && node.arguments[0]) {
+      const words = node.callee.property.name === "captureWordsSync";
+      const arrow = node.arguments[0];
+      let body = arrow && (arrow.type === "ArrowFunctionExpression" || arrow.type === "FunctionExpression") ? arrow.body : null;
+      if (body && body.type === "BlockStatement" && body.body.length === 1) {
+        const only = body.body[0];
+        body = only.type === "ExpressionStatement" ? only.expression : only;
+      }
+      let call = body;
+      if (call && call.type === "AwaitExpression") call = call.argument;
+      // the wasm emits the stage as `sh2.builtin("CMD", args)` (its sync
+      // classification); awaitSyncFnCalls later rewrites non-sync ones to
+      // `await sh2.exec("CMD", args)`. Match BOTH forms.
+      let cmd = null, args = [];
+      if (call && call.type === "CallExpression" && call.callee && call.callee.type === "MemberExpression" &&
+          call.callee.object && call.callee.object.type === "Identifier" && call.callee.object.name === "sh2" &&
+          call.callee.property && call.callee.property.type === "Identifier" &&
+          (call.callee.property.name === "exec" || call.callee.property.name === "builtin") &&
+          call.arguments && call.arguments[0] && call.arguments[0].type === "Literal") {
+        cmd = String(call.arguments[0].value);
+        args = call.arguments[1] && call.arguments[1].type === "ArrayExpression" ? call.arguments[1].elements : [];
+      }
+      if (cmd !== null) {
+        const lit = (el) => el && el.type === "Literal" ? String(el.value) : null;
+        // $(seq …) → sh2.seq(a, b[, inc]) — array form for the word-split
+        // context, join("\n") for the string form (command substitution)
+        if (cmd === "seq" && args.length >= 1 && args.length <= 3) {
+          const seqCall = {
+            type: "CallExpression",
+            callee: { type: "MemberExpression", computed: false, optional: false, object: { type: "Identifier", name: "sh2" }, property: { type: "Identifier", name: "seq" } },
+            arguments: args.map(rewrite),
+            optional: false,
+          };
+          if (words) return seqCall;
+          return {
+            type: "CallExpression",
+            callee: { type: "MemberExpression", computed: false, optional: false, object: seqCall, property: { type: "Identifier", name: "join" } },
+            arguments: [{ type: "Literal", value: "\n", raw: null }],
+            optional: false,
+          };
+        }
+        // $(wc -l/-w/-c FILE) → sh2.lineCount/wordCount/byteCount(FILE)
+        if (cmd === "wc" && args.length === 2 && lit(args[0]) && lit(args[1])) {
+          const helper = lit(args[0]) === "-l" ? "lineCount" : lit(args[0]) === "-w" ? "wordCount" : lit(args[0]) === "-c" ? "byteCount" : null;
+          if (helper) {
+            return {
+              type: "CallExpression",
+              callee: { type: "MemberExpression", computed: false, optional: false, object: { type: "Identifier", name: "sh2" }, property: { type: "Identifier", name: helper } },
+              arguments: [rewrite(args[1])],
+              optional: false,
+            };
+          }
+        }
+        // anything else: route through the awaited async capture bridge
+        return {
+          type: "AwaitExpression",
+          argument: {
+            type: "CallExpression",
+            callee: { type: "MemberExpression", computed: false, optional: false, object: { type: "Identifier", name: "sh2" }, property: { type: "Identifier", name: words ? "captureWords" : "capture" } },
+            arguments: [arrow],
+            optional: false,
+          },
+        };
+      }
+    }
+    const out = {};
+    for (const k of Object.keys(node)) out[k] = rewrite(node[k]);
+    return out;
+  };
+  return rewrite(program);
+}
+
+// ─── asyncPipelineSync: the wasm's sync-builtin classification is stale
+// — it emits `sh2.pipelineSync([async () => await sh2.exec(...), …])`
+// for pipelines of commands in its (outdated) sync list, and the
+// runtime's pipelineSync throws on an async stage. Rewrite any
+// pipelineSync whose stages are async (or contain awaits) to the
+// awaited async pipeline, which handles both sync and async stages.
+function asyncPipelineSync(program) {
+  const stageIsAsync = (stage) => {
+    if (!stage || typeof stage !== "object") return false;
+    if (stage.type === "ArrowFunctionExpression" || stage.type === "FunctionExpression") {
+      if (stage.async) return true;
+      if (stage.body) {
+        if (stage.body.type === "BlockStatement") return stage.body.body.some((s) => hasAwait(s));
+        return hasAwait(stage.body);
+      }
+    }
+    return false;
+  };
+  const rewrite = (node) => {
+    if (!node || typeof node !== "object") return node;
+    if (Array.isArray(node)) return node.map(rewrite);
+    if (node.type === "CallExpression" && node.callee && node.callee.type === "MemberExpression" &&
+        node.callee.object && node.callee.object.type === "Identifier" && node.callee.object.name === "sh2" &&
+        node.callee.property && node.callee.property.type === "Identifier" && node.callee.property.name === "pipelineSync" &&
+        node.arguments && node.arguments[0] && node.arguments[0].type === "ArrayExpression") {
+      const stages = node.arguments[0].elements;
+      if (stages.some(stageIsAsync)) {
+        return {
+          type: "AwaitExpression",
+          argument: {
+            type: "CallExpression",
+            callee: { type: "MemberExpression", computed: false, optional: false, object: { type: "Identifier", name: "sh2" }, property: { type: "Identifier", name: "pipeline" } },
+            arguments: node.arguments.map(rewrite),
+            optional: false,
+          },
+        };
+      }
+    }
+    const out = {};
+    for (const k of Object.keys(node)) out[k] = rewrite(node[k]);
+    return out;
+  };
+  return rewrite(program);
 }
 
 // ─── forceAsyncFileRedirects: the runtime's `redirectSync` twin ONLY
@@ -1091,8 +1291,34 @@ export async function estreeToJsMapped(program, stmtLines, a1Stmts, { repl = tru
   let js = "";
   let genFn = null;   // the astring code generator (set by the generate pass)
   const passChain = [
+    // the wasm's idiom recognition is partial and its sync classification
+    // stale — lift the known command-substitution idioms to direct runtime
+    // calls and route the rest through the async capture bridge. Runs
+    // BEFORE normalizeFunctions so markAsyncOnAwait marks any new awaits.
+    ["idiomLifts", () => { normalized = idiomLifts(precompiledHead ? program : (normalized || program)); }],
     // the whole frontend expression (bash → ESTree via the A1 renderers)
-    ["normalizeFunctions", () => { if (!precompiledHead) normalized = normalizeFunctions(awaitAsyncDirectCalls(markAsyncOnAwait(forceAsyncFileRedirects(awaitSyncFnCalls(stripProcessEnv(program), false))))); }],
+    ["normalizeFunctions", () => {
+      if (!precompiledHead) {
+        normalized = normalizeFunctions(awaitAsyncDirectCalls(markAsyncOnAwait(forceAsyncFileRedirects(awaitSyncFnCalls(stripProcessEnv(normalized), false)))));
+      } else {
+        // The wasm compile path ran its own head passes, but with a STALE
+        // sync-builtin list: it emits `sh2.builtin` for commands the JS
+        // runtime's sync table doesn't carry (wc/head/sort/seq/… and any
+        // builtin added since the wasm was built — hostname/stat/env/…),
+        // which would hit the sync table's default → "command not found".
+        // Re-run the JS-side builtin→exec rewrite (awaitSyncFnCalls) with
+        // the authoritative SYNC_BUILTINS set, then markAsyncOnAwait for
+        // any new awaits it introduced inside function bodies. (Processes
+        // `normalized` — the tree idiomLifts already rewrote — not the
+        // raw `program`, so earlier passes' output is preserved.)
+        normalized = markAsyncOnAwait(awaitSyncFnCalls(normalized, false));
+      }
+    }],
+    // the wasm's stale sync-builtin list also misclassifies PIPELINES of
+    // those commands as sync (pipelineSync with async exec stages) —
+    // rewrite them to the awaited async pipeline (runs on both paths;
+    // idempotent: after the rewrite no async-stage pipelineSync remains).
+    ["asyncPipelineSync", () => { normalized = asyncPipelineSync(normalized); }],
     // The wasm compile path has already run its head passes, but it has not
     // run this JS-side safety rewrite. Keep file redirects on the async
     // bridge even when the backend classified the enclosing function as
@@ -1114,9 +1340,6 @@ export async function estreeToJsMapped(program, stmtLines, a1Stmts, { repl = tru
     // (a NUMBER var has no .split — the game's load_textures crashed at
     // `tex_bg_done $sm_bg_i`); the pass mutates the tree in place
     ["safeWordListCoercion", () => { safeWordListCoercion(normalized); }],
-    // `${v#pat}` strips carry the live value so a module-lifted var
-    // (whose store copy is never written) strips correctly
-    ["paramLiveValue", () => { paramLiveValue(normalized); }],
     // directShellFnCalls: the shell functions became native declarations
     // but their call sites stayed sh2.fnCall/callDirect dispatches —
     // direct them now (the texture generators' per-pixel helpers are the
@@ -1137,6 +1360,13 @@ export async function estreeToJsMapped(program, stmtLines, a1Stmts, { repl = tru
     // nativeArrays/keepVariables already declared, killing the per-access
     // store round-trips in the hot loops
     ["nativeSharedScalars", () => { if (!repl) normalized = nativeSharedScalars(normalized); }],
+    // `${v#pat}` strips carry the live value so a module-lifted var
+    // (whose store copy is never written) strips correctly. Runs AFTER
+    // the lifts (not before): it appends a native ref only when the
+    // binding actually exists — before the lifts there is nothing to
+    // check against, so it either crashed (unbound) or starved (skipped
+    // a lift that happened later) depending on program size.
+    ["paramLiveValue", () => { paramLiveValue(normalized); }],
     // collapse `(arr || [])[Number(k)] ?? ""` → `arr[k] ?? ""` for the
     // module-folded arrays (the guard and coercion are dead there)
     ["foldArrayReads", () => { if (!repl) normalized = foldArrayReads(normalized); }],
