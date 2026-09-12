@@ -15,6 +15,7 @@
 //   node __3d-colour-test.mjs   → "ALL 3D COLOUR CHECKS PASSED"
 import { readFileSync } from "node:fs";
 import gl0 from "gl";
+import { execFileSync } from "node:child_process";
 import { WebGLDevice } from "./src/fs/webgldev.js";
 import { getOtranspilerl } from "./src/otranspilerl.js";
 
@@ -138,6 +139,46 @@ check("3D is not mono-colour (distinct colour clusters)", buckets.size >= 3, buc
       `avg RGB=(${r.toFixed(0)},${g.toFixed(0)},${b.toFixed(0)}) sat=${sat.toFixed(0)} n=${n}`);
   }
 }
+// GENERATED texture displays with detail (not flat): grass TSV via
+// host bash (deterministic seed), uploaded, rendered with a WHITE tint
+// (1 1 1 in the game's 0-1 range — NOT 255, which blows out to white)
+// so the texels show unmodified. Asserts pixel VARIANCE across the face
+// (a broken sampler/upload shows flat grey/white/black; a working one
+// shows the grass's green variation) and greenish average hue (right
+// texture, not cross-slot garbage). End-to-end generated → displayed.
+{
+  const grassTSV = execFileSync("bash", ["www/examples/textures/texture-grass.sh", "--tsv", "--size", "16", "--seed", "20240812"], { encoding: "utf8" });
+  const gnums = grassTSV.split("\n").filter((l) => l && !l.startsWith("#")).join(" ").split(/\s+/).filter(Boolean);
+  await w("/texture/7", "16 " + gnums.join(" "));
+  await w("/uniform/3f/uCamPos", "0 0.9 6");
+  await w("/uniform/1f/uCamYaw", "0");
+  await w("/uniform/1f/uCamShift", "0");
+  await w("/uniform/1f/uOverlay", "0");
+  await w("/uniform/1i/uDamage", "0");
+  await w("/clearcolor", "0 0 0 1");
+  await w("/call", "clear");
+  await w("/blocks", "0 0 0 1 1 1 1 1 1 7 0\n");
+  await w("/call", "swap");
+  gl.readPixels(0, 0, 800, 600, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  const buckets = new Set();
+  let r = 0, g = 0, b = 0, n = 0;
+  for (let y = 0; y < 600; y += 4) {
+    for (let x = 0; x < 800; x += 4) {
+      const p = sample(x, y);
+      if (p[0] < 8 && p[1] < 8 && p[2] < 8) continue;
+      buckets.add(Math.floor(p[0] / 32) + "," + Math.floor(p[1] / 32) + "," + Math.floor(p[2] / 32));
+      r += p[0]; g += p[1]; b += p[2]; n++;
+    }
+  }
+  check("generated grass texture shows detail (not flat)", buckets.size >= 4, buckets.size + " buckets");
+  if (n) {
+    r /= n; g /= n; b /= n;
+    check("generated grass reads green (right texture)", g > r && g > b, `avg RGB=(${r.toFixed(0)},${g.toFixed(0)},${b.toFixed(0)}) n=${n}`);
+  } else {
+    check("generated grass reads green (right texture)", false, "no pixels");
+  }
+}
+
 check("no GL errors", errs.length === 0, errs.map((e) => e.toString(16)).join(","));
 console.log(fails === 0 ? "ALL 3D COLOUR CHECKS PASSED" : `${fails} 3D COLOUR CHECKS FAILED`);
 process.exit(fails ? 1 : 0);
