@@ -386,17 +386,20 @@ export class WebGLDevice {
     const gl = this._ensureGL();
     const type = kind === "vertex" ? gl.VERTEX_SHADER : gl.FRAGMENT_SHADER;
     this._shaderSource[kind] = source;
-    if (this._shaders[kind]) {
-      gl.deleteShader(this._shaders[kind]);
-      this._shaders[kind] = null;
-    }
+    // compile FIRST, swap on success: a failed recompile (the browser
+    // ANGLE rejecting generated GLSL the CLI NullGL accepts) must keep
+    // the previous working shader — wiping it here blacked the 3D view
+    // with no recovery (every later draw re-links and throws 'need
+    // both shaders first')
+    const prev = this._shaders[kind] || null;
     const shader = gl.createShader(type);
     gl.shaderSource(shader, source);
     gl.compileShader(shader);
     if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
       const info = (gl.getShaderInfoLog(shader) || "unknown compile error").trim();
       gl.deleteShader(shader);
-      this._programLinked = false;
+      this._shaders[kind] = prev;  // keep the last working shader
+      // _programLinked untouched: the retained shader is still linked
       this._log += `[shader/${kind}] FAILED: ${info}\n`;
       this._shaderError = { kind, info };
       // no throw: the game reads /dev/webgl/log after writing and falls
@@ -404,6 +407,7 @@ export class WebGLDevice {
       // compile under the browser's (stricter than the CLI NullGL) ANGLE
       return;
     }
+    if (prev && prev !== shader) { try { gl.deleteShader(prev); } catch {} }
     this._shaders[kind] = shader;
     this._programLinked = false;  // needs relink
     this._log += `[shader/${kind}] compiled OK (${source.length} chars)\n`;
