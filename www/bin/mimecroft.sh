@@ -1540,8 +1540,12 @@ load_tex_payload() { ltp_name=$1; ltp_idx=$2
     lt_px=$((lt_px + 1))
   done
   # session cache only (/tmp — RamFS, wiped on reload): a persistent
-  # /home copy could replay a stale payload from an older generator
-  echo "$lt_payload" > /tmp/mimecroft-tex-$ltp_name-$lt_ts-$tex_seed-$tex_ver
+  # /home copy could replay a stale payload from an older generator.
+  # Never cache an empty payload — a failed parse would poison every
+  # later run (the cache-hit path replays blindly).
+  if [ "$lt_payload" != "" ] && [ "$lt_payload" != "$lt_size" ]; then
+    echo "$lt_payload" > /tmp/mimecroft-tex-$ltp_name-$lt_ts-$tex_seed-$tex_ver
+  fi
   echo "$lt_payload" > /dev/webgl/texture/$ltp_idx
   if [ "$lt_menu" -eq 1 ]; then
     # menu mode: ALSO draw the complete texture as one HUD image at the
