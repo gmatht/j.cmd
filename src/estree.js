@@ -1242,7 +1242,7 @@ function reclassAsyncLoops(program) {
 
 export async function estreeToJsMapped(program, stmtLines, a1Stmts, { repl = true, precompiledHead = false } = {}) {
   const lowerMod = await import("./lower.js");
-  const { lowerNativeArrays, hoistLoopLastExit, hoistCommonLastExit, dropDeadFlags, mergeInitAssignments, pushLastExitToEnd, nativeForLoops, lowerPureFunctions, flattenAndOrAll, lowerDeviceRedirects, directShellFnCalls, liftLocalVars, nativeArrays, nativeSharedScalars, foldArrayReads, lowerI32Trunc, backgroundDecide, safeWordListCoercion, paramLiveValue, plainIfTests } = lowerMod;
+  const { lowerNativeArrays, hoistLoopLastExit, hoistCommonLastExit, dropDeadFlags, mergeInitAssignments, pushLastExitToEnd, nativeForLoops, lowerPureFunctions, flattenAndOrAll, lowerDeviceRedirects, directShellFnCalls, liftLocalVars, nativeArrays, nativeSharedScalars, foldArrayReads, lowerI32Trunc, backgroundDecide, safeWordListCoercion, paramLiveValue, plainIfTests, awaitAsyncCalls } = lowerMod;
   // ── transpile progress: the whole-game transpile can take seconds;
   // once it exceeds 500ms, stream `[n/m passes completed (xx%)]` per
   // pass so the terminal shows forward progress instead of a silent
@@ -1406,6 +1406,8 @@ export async function estreeToJsMapped(program, stmtLines, a1Stmts, { repl = tru
     // value is the only consumer — the lastExit set inside is always
     // overwritten before any read; 0/421 consumed in mimecroft)
     ["plainIfTests", () => { if (typeof plainIfTests === "function") plainIfTests(lowered); }],
+    // await foreground sh2.* calls in async bodies (missing await races)
+    ["awaitAsyncCalls", () => { if (typeof awaitAsyncCalls === "function") awaitAsyncCalls(lowered); }],
     ["generate", async () => { genFn = (await getAstring()).generate; js = genFn(lowered, { comments: true }); }],
   ];
   for (let i = 0; i < passChain.length; i++) {
