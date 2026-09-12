@@ -1587,6 +1587,14 @@ load_tex() { lt_name=$1; lt_idx=$2
   lt_size_of $lt_name
   lt_ts=$lt_eff
   sleep 0.01
+  # a cache file can be poison (empty/partial) from a failed run before
+  # the never-cache-empty guard — validate size before replaying, else
+  # drop it and regenerate (stale poison otherwise replays forever)
+  lt_cache=/tmp/mimecroft-tex-$lt_name-$lt_ts-$tex_seed-$tex_ver
+  if [ -f "$lt_cache" ]; then
+    lt_cachesize=$(wc -c < "$lt_cache")
+    if [ "$lt_cachesize" -lt 100 ]; then rm -f "$lt_cache"; fi
+  fi
   if [ -f /tmp/mimecroft-tex-$lt_name-$lt_ts-$tex_seed-$tex_ver ]; then
     cat /tmp/mimecroft-tex-$lt_name-$lt_ts-$tex_seed-$tex_ver > /dev/webgl/texture/$lt_idx
     if [ "$lt_menu" -eq 1 ]; then
@@ -1604,6 +1612,11 @@ load_tex() { lt_name=$1; lt_idx=$2
 load_tex4() { lt_name=$1; lt_idx=$2
   lt_ts=$tex_size
   sleep 0.01
+  lt_cache=/tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed-$tex_ver
+  if [ -f "$lt_cache" ]; then
+    lt_cachesize=$(wc -c < "$lt_cache")
+    if [ "$lt_cachesize" -lt 100 ]; then rm -f "$lt_cache"; fi
+  fi
   if [ -f /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed-$tex_ver ]; then
     cat /tmp/mimecroft-tex-$lt_name-$tex_size-$tex_seed-$tex_ver > /dev/webgl/texture/$lt_idx
     if [ "$lt_menu" -eq 1 ]; then
