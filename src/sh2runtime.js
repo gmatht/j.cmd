@@ -1382,7 +1382,9 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
     // strip forms (`${v#pat}` → sh2.param("#", "v", pat)) would read ""
     // — the paramLive pass appends the LIVE value as a 4th arg; use it
     // when the store is empty (the slice form already does this).
-    const fallbackLive = (v, r) => (String(v) === "" && r.length > 1 ? r[1] : v);
+    // the live value is the LAST arg (4-arg and 5-arg-with-default
+    // forms both put it there — r[1] is the "" default in the 5-arg form)
+    const fallbackLive = (v, r) => (String(v) === "" && r.length > 1 ? r[r.length - 1] : v);
     switch (op) {
       case "-": return has ? val : defaultVal;
       case ":-": return isSet ? val : defaultVal;
