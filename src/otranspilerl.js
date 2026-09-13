@@ -36,7 +36,7 @@ import { optimizeFragmentGLSL } from "./shglsl-opt.js";
 export const GLSL_VIEW = 800;
 // cache-buster — bump whenever www/wasm-bin/otranspilerl.wasm changes so
 // the browser (and the otranspiler GUI) never serves a stale wasm.
-export const WASM_VERSION = "v30-litscope";  // v28: otranspilerl_shir_opt(a1, lang) — the post-ingress A1 the backends render (GUI shows raw vs optimized side by side); NOTE: built with STABLE rustc (the v27 PGSO fork's stage1 lacks a wasm32-wasip1 sysroot — rebuild with PGSO_RUSTC=<fork rustc> once its wasip1 std is installed to recover the ~13% transpile speed) otranspilerl_shir_opt(a1, lang) — the post-ingress A1 the backends render (GUI shows raw vs optimized side by side)  // v27: rebuilt with the PGSO rustc fork (-Z fn-opt-levels, LLVM 22) — ~13% faster transpile at +6% size (see build-wasm-otranspilerl.sh)  // v26-lex: texture samples wrap via fract(vUv) — the old (g_uv_x+0.5)/sz sample coordinate was up to ±35 for the bg planes' world-xz UVs, and a MEDIUMP (fp16) sample quantized its fraction to ±1 texel (floor texture flaked); fract() keeps the sample in [0,1) — exact at any precision, REPEAT not needed for sampling  // v24: fragment vUv/vColor highp
+export const WASM_VERSION = "v31-indexreads";  // v28: otranspilerl_shir_opt(a1, lang) — the post-ingress A1 the backends render (GUI shows raw vs optimized side by side); NOTE: built with STABLE rustc (the v27 PGSO fork's stage1 lacks a wasm32-wasip1 sysroot — rebuild with PGSO_RUSTC=<fork rustc> once its wasip1 std is installed to recover the ~13% transpile speed) otranspilerl_shir_opt(a1, lang) — the post-ingress A1 the backends render (GUI shows raw vs optimized side by side)  // v27: rebuilt with the PGSO rustc fork (-Z fn-opt-levels, LLVM 22) — ~13% faster transpile at +6% size (see build-wasm-otranspilerl.sh)  // v26-lex: texture samples wrap via fract(vUv) — the old (g_uv_x+0.5)/sz sample coordinate was up to ±35 for the bg planes' world-xz UVs, and a MEDIUMP (fp16) sample quantized its fraction to ±1 texel (floor texture flaked); fract() keeps the sample in [0,1) — exact at any precision, REPEAT not needed for sampling  // v24: fragment vUv/vColor highp
 
 let libPromise = null;
 
@@ -157,7 +157,22 @@ async function loadLibrary() {
   const bytes = await loadWasmBytes();
   const mem = { memory: null };
   const out = { stdout: "", stderr: "" };
-  const { instance } = await WebAssembly.instantiate(bytes, makeWasiImports(mem, out));
+  const wasi = makeWasiImports(mem, out);
+  // Every WASI function the module imports must be a CALLABLE or
+  // instantiation fails outright: "Import #N ... function import
+  // requires a callable". A rebuilt core (new rustc/std, a new syscall
+  // in the reactor) can import one the shim does not implement — that
+  // took the whole transpiler down when the core was last rebuilt. Any
+  // unknown import becomes an ENOSYS stub instead.
+  const ns = wasi.wasi_snapshot_preview1;
+  wasi.wasi_snapshot_preview1 = new Proxy(ns, {
+    get(t, k) {
+      if (k in t) return t[k];
+      if (typeof k !== "string") return undefined;
+      return () => ENOSYS;
+    },
+  });
+  const { instance } = await WebAssembly.instantiate(bytes, wasi);
   mem.memory = instance.exports.memory;
   instance.exports._initialize();  // reactor entry point
   return wrapLibrary(instance, mem, out);
