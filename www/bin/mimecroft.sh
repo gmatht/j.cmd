@@ -2738,6 +2738,19 @@ rmz=(-1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1)
 # dynamic part. hud_static is rebuilt (hud_static_dirty=1) only when a
 # block is mined or a treasure claimed.
 hud_build_static() {
+  # the rebuild CLEARS the HUD layer (the leading C), so every dynamic
+  # group must be repainted. The digit groups redraw only when their
+  # value differs from prev_*, so reset those gates here — otherwise a
+  # group whose value has not changed (ART = artifacts found, LIC =
+  # licence: both stable for long stretches) is wiped by the clear and
+  # never redrawn, and the numerals vanish from the display the moment a
+  # rebuild happens (a move onto a new level, a claim). score/HP were
+  # unaffected in practice only because they change often enough to
+  # re-trigger their own gate.
+  prev_score=""
+  prev_hp=""
+  prev_art=""
+  prev_lic=""
   ov_text=""
   # digit grid: 32px per digit (8px×4), y=1840 — all positions computed once
   d_W=32
