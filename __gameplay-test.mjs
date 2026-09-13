@@ -39,6 +39,17 @@ const check = (n, c, x = "") => { console.log(`${c ? "PASS" : "FAIL"}: ${n}${x ?
 const game = readFileSync("www/bin/mimecroft.sh", "utf8").replace(/\nmain\s*$/, "\n");
 const { js } = await bashToJS(fs, game);
 
+// observe the audio device: `play NOTE` writes /dev/audio/note (notes
+// mode) — claiming a treasure must make sounds, so the claim window is
+// bracketed by counting those writes.
+let noteWrites = 0;
+const origWrite = fs.write.bind(fs);
+fs.write = async (p, c) => {
+  if (String(p).endsWith("/dev/audio/note")) noteWrites++;
+  return origWrite(p, c);
+};
+
+globalThis.__noteCount = () => noteWrites;
 const driver = `
 const __say = (s) => process.stdout.write(s + "\\n");
 const __count = (h, c) => h.split(c).length - 1;
@@ -64,6 +75,7 @@ __say("HUD_ART=" + __count(ov_text, "0.60 0.75 0.95"));
 await __call("start_level");
 await new Promise((r) => setTimeout(r, 40));
 const __bf = found_count, __bs = score, __bm = maxhp;
+let __notesBefore = 0;
 let __tx = -1, __tz = -1;
 for (let __k = 0; __k < TREASURE_TOTAL; __k++) {
   if (sh2.arrayIndex("found", __k) !== "1") { __tx = Number(sh2.arrayIndex("tpx", __k)); __tz = Number(sh2.arrayIndex("tpz", __k)); break; }
@@ -73,6 +85,7 @@ if (__tx > 1) {
   // stand west of it and walk east (the real input path starts a glide)
   __setStore("px", __tx - 1); __setStore("pz", __tz);
   const __dx = 1, __dz = 0;
+  __notesBefore = globalThis.__noteCount();
   const __ok = await __call("try_anim_move", [__dx, __dz]);
   __say("GLIDE=" + __ok + " dest=" + sh2.arrayIndex("an", 3) + "," + sh2.arrayIndex("an", 4));
   // the glide's destination — main's anim-end copies an[3]/an[4] into px/pz
@@ -83,6 +96,7 @@ if (__tx > 1) {
   await new Promise((r) => setTimeout(r, 40));
 }
 __say("CLAIM=" + found_count + "," + score + "," + maxhp + " before=" + __bf + "," + __bs + "," + __bm);
+__say("NOTES=" + (globalThis.__noteCount() - __notesBefore));
 await __call("get_cell", [__tx, 1, __tz]);
 __say("CELL_AFTER=" + __store("gv"));
 __say("AIR=" + AIR);
@@ -142,6 +156,11 @@ if (__bx !== -1) {
   await new Promise((r) => setTimeout(r, 30));
   __say("VMOVED=" + sh2.arrayIndex("mx", 0) + "," + sh2.arrayIndex("mz", 0));
   __say("VWANT=" + __ax + "," + __az);
+  // the 3D view draws mimes from mime_lookup (the radar/HUD draws from
+  // mx/mz) — if mime_lookup is not re-keyed the cube stays at its
+  // ORIGINAL cell while the radar shows it moving
+  __say("LOOKUP_NEW=" + sh2.arrayIndex("mime_lookup", __az * MAP_W + __ax));
+  __say("LOOKUP_OLD=" + sh2.arrayIndex("mime_lookup", __bz * MAP_W + __bx));
   __say("VER=" + __v0 + "->" + mimes_ver);
 }
 `;
@@ -170,6 +189,7 @@ if (!claim) {
   check("treasure: claim scores +100", s === bs + 100, `${bs} → ${s}`);
   check("treasure: claim grants +1 max HP", m === bm + 1, `${bm} → ${m}`);
   check("treasure: claimed cell becomes AIR", num("CELL_AFTER") === num("AIR"), "cell=" + num("CELL_AFTER") + " air=" + num("AIR"));
+  check("treasure: claiming plays sounds", (num("NOTES") || 0) > 0, "note writes=" + num("NOTES"));
 }
 
 const sl = str("SIGHTLINE");
@@ -182,6 +202,10 @@ if (!sl || sl.includes("-1")) {
     `${str("VMOVED")} want ${str("SIGHTLINE").split("|")[0]}`);
   const v = /VER=(\d+)->(\d+)/.exec(out);
   check("mimes: visible move bumps mimes_ver (3D cache key)", v && Number(v[2]) > Number(v[1]), v ? `${v[1]} → ${v[2]}` : "no VER");
+  // the 3D view must draw the cube at the NEW cell: mime_lookup re-keyed
+  check("mimes: 3D source (mime_lookup) re-keyed to the new cell",
+    num("LOOKUP_NEW") === 0 && num("LOOKUP_OLD") === -1,
+    `new=${num("LOOKUP_NEW")} (want 0) old=${num("LOOKUP_OLD")} (want -1)`);
 }
 console.log(fails === 0 ? "ALL GAMEPLAY CHECKS PASSED" : `${fails} GAMEPLAY CHECKS FAILED`);
 process.exit(fails ? 1 : 0);

@@ -3680,19 +3680,19 @@ draw_settings_menu() {
   draw_text "VSYNC" 5 560 600 8 11 0.60 0.75 0.95
   draw_text "CANVAS SIZE" 11 560 500 8 11 0.60 0.75 0.95
   draw_text "DIFFICULTY" 10 560 400 8 11 0.60 0.75 0.95
-  draw_text $sm_shift_s 5 1000 1600 8 11 0.95 0.95 0.95
-  draw_text $sm_size_s 2 1000 1500 8 11 0.95 0.95 0.95
-  draw_text $sm_seed_s $sm_slen 1000 1400 8 11 0.95 0.95 0.95
-  draw_text $sm_crt_s $sm_crt_len 1000 1300 8 11 0.95 0.95 0.95
-  draw_text $sm_crp_s $sm_crp_len 1000 1200 8 11 0.95 0.95 0.95
-  draw_text $sm_spd_s $sm_splen 1000 1100 8 11 0.95 0.95 0.95
-  draw_text $sm_mlbl_s $sm_mlbl_len 1000 1000 8 11 0.95 0.95 0.95
-  draw_text $sm_snd_s $sm_snd_len 1000 900 8 11 0.95 0.95 0.95
-  draw_text $sm_mm_s $sm_mm_len 1000 800 8 11 0.95 0.95 0.95
-  draw_text $sm_gs_s $sm_gslen 1000 700 8 11 0.95 0.95 0.95
-  draw_text $sm_vsync_s $sm_vsync_len 1000 600 8 11 0.95 0.95 0.95
-  draw_text $sm_disp_s $sm_displen 1000 500 8 11 0.95 0.95 0.95
-  draw_text $sm_diff_s $sm_difflen 1000 400 8 11 0.95 0.95 0.95
+  draw_text "$sm_shift_s" 5 1000 1600 8 11 0.95 0.95 0.95
+  draw_text "$sm_size_s" 2 1000 1500 8 11 0.95 0.95 0.95
+  draw_text "$sm_seed_s" "$sm_slen" 1000 1400 8 11 0.95 0.95 0.95
+  draw_text "$sm_crt_s" "$sm_crt_len" 1000 1300 8 11 0.95 0.95 0.95
+  draw_text "$sm_crp_s" "$sm_crp_len" 1000 1200 8 11 0.95 0.95 0.95
+  draw_text "$sm_spd_s" "$sm_splen" 1000 1100 8 11 0.95 0.95 0.95
+  draw_text "$sm_mlbl_s" "$sm_mlbl_len" 1000 1000 8 11 0.95 0.95 0.95
+  draw_text "$sm_snd_s" "$sm_snd_len" 1000 900 8 11 0.95 0.95 0.95
+  draw_text "$sm_mm_s" "$sm_mm_len" 1000 800 8 11 0.95 0.95 0.95
+  draw_text "$sm_gs_s" "$sm_gslen" 1000 700 8 11 0.95 0.95 0.95
+  draw_text "$sm_vsync_s" "$sm_vsync_len" 1000 600 8 11 0.95 0.95 0.95
+  draw_text "$sm_disp_s" "$sm_displen" 1000 500 8 11 0.95 0.95 0.95
+  draw_text "$sm_diff_s" "$sm_difflen" 1000 400 8 11 0.95 0.95 0.95
   if [ "$sm_sel" -eq 0 ]; then draw_rect "-0.520" "0.583" "0.016" "0.030" 1.0 0.85 0.30
   elif [ "$sm_sel" -eq 1 ]; then draw_rect "-0.520" "0.483" "0.016" "0.030" 1.0 0.85 0.30
   elif [ "$sm_sel" -eq 2 ]; then draw_rect "-0.520" "0.383" "0.016" "0.030" 1.0 0.85 0.30
