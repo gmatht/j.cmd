@@ -32,7 +32,7 @@ if [ "${1:-}" = "--except" ]; then EXCEPT="${2:-}"; shift 2; fi
 [ $# -eq 0 ] || { echo "usage: $0 [--except name,...]" >&2; exit 2; }
 is_excepted() { case ",$EXCEPT," in *",${1%.mjs},"*|*",${1},"*) return 0;; esac; return 1; }
 
-TESTS=(__mini-test.mjs __my_qsort-test.mjs __linked-list-test.mjs __qsort-builtin-test.mjs __shell-regression.mjs __strip-regression.mjs __digit-test.mjs __gameplay-test.mjs __shader-test.mjs __sound-test.mjs __sideface-test.mjs __sideblocks-test.mjs __frag-example-test.mjs __texture-test.mjs __3d-colour-test.mjs __flash-test.mjs __claim2-live.mjs)
+TESTS=(__mini-test.mjs __my_qsort-test.mjs __linked-list-test.mjs __qsort-builtin-test.mjs __shell-regression.mjs __strip-regression.mjs __digit-test.mjs __gameplay-test.mjs __upstream-guard-test.mjs __shader-test.mjs __sound-test.mjs __sideface-test.mjs __sideblocks-test.mjs __frag-example-test.mjs __texture-test.mjs __3d-colour-test.mjs __flash-test.mjs __claim2-live.mjs)
 
 # ── gates 2+3: the harnesses and the C corpus ───────────────────────
 echo "── harnesses ──"
