@@ -14,7 +14,9 @@ import { runBash } from "./src/bash2js.js";
 
 // Still-unfixed upstream bugs (their reproducers live in upstream-repros/).
 // Remove a name here once the fix lands — the gate then pins it forever.
-const KNOWN_OPEN = ["01-lifted-var-in-array-index.sh", "05-param-only-use-in-index.sh"];
+// every reproducer now matches real bash — a fixed one can never
+// silently regress again (the suite auto-discovers upstream-repros/*.sh)
+const KNOWN_OPEN = [];
 
 const files = readdirSync("upstream-repros").filter((f) => f.endsWith(".sh")).sort();
 let fails = 0;

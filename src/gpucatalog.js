@@ -80,10 +80,22 @@ export function compileCollatzGLSL(rawGlsl, { width = 64, height = 1 } = {}) {
 
 // the STRICT ES 1.00 collatz (the fixed-iteration fallback): the strict
 // compilers reject the data-driven `while` — the loop is a CONSTANT
-// maxIters `for k in <list>` with an early `break` on convergence. For
-// n ≤ 255 the trajectory always converges in ≤ 111 steps < maxIters, so
-// the result is identical; a non-converged pixel caps at maxIters (a
-// sentinel the reader can distinguish by equality with maxIters).
+// maxIters `for k in <list>`. For n ≤ 255 the trajectory always
+// converges in ≤ 127 steps < maxIters, so the result is identical; a
+// non-converged pixel caps at maxIters (a sentinel the reader can
+// distinguish by equality with maxIters).
+//
+// IMPORTANT: the body is GUARDED with `if [ $n -gt 1 ]` rather than an
+// early `break`. A `break` inside a constant-bound loop whose
+// loop-index (`k`) is read after the break is mis-lowered by some
+// strict translators (verified: ANGLE/D3D11 on Intel UHD) — the loop
+// index / step counter comes back off for specific trajectories, so the
+// GPU score fails the CPU reference while still compiling cleanly. A
+// guarded body makes the loop a PURE DATA-INDEPENDENT counting loop (no
+// break/continue): once `n` reaches 1 it simply freezes and `steps`
+// keeps its converged value. Same result, but every translator unrolls
+// / lowers it identically. (n = 0 also satisfies `n > 1` == false and
+// yields steps = 0, matching the CPU `while (n > 1)`.)
 export function collatzStrictShader(maxIters = 512) {
   const list = Array.from({ length: maxIters }, (_, i) => i).join(" ");
   return [
@@ -91,13 +103,14 @@ export function collatzStrictShader(maxIters = 512) {
     "n=$(( tex_r ))",
     "steps=0",
     "for k in " + list + "; do",
-    "    if [ $n -eq 1 ]; then break; fi",
-    "    if [ $(( n % 2 )) -eq 0 ]; then",
-    "        n=$(( n / 2 ))",
-    "    else",
-    "        n=$(( 3 * n + 1 ))",
+    "    if [ $n -gt 1 ]; then",
+    "        if [ $(( n % 2 )) -eq 0 ]; then",
+    "            n=$(( n / 2 ))",
+    "        else",
+    "            n=$(( 3 * n + 1 ))",
+    "        fi",
+    "        steps=$(( k + 1 ))",
     "    fi",
-    "    steps=$(( k + 1 ))",
     "done",
     "putb $(( steps ))",
   ].join("\n");
@@ -184,11 +197,25 @@ export function hashVertexShader() {
     "vc_g=$(( ((res / 256) % 256) * 1000 / 255 ))",
     "vc_b=$(( ((res / 65536) % 256) * 1000 / 255 ))",
     "vc_a=1000",
-    // the raster slot from the aUv bridge; every capture must reference
-    // a variable (a bare literal takes the string path and breaks the
-    // vertex shader with the itos/cat do-loop helpers)
-    "vp_x=$(echo \"scale=4; $auv_u / 1000.0 + 0.0\" | bc)",
-    "vp_y=$(echo \"scale=4; $auv_v / 1000.0 + 0.0\" | bc)",
+    // The raster slot comes from the aUv bridge as an EXACT integer-ish
+    // value: aUv.x = i*stride + 0.5 (the half-pixel fragment centre —
+    // 2000*i+500, exactly representable, so auv_u = 2000*i+500 with no
+    // truncation), aUv.y = W2 (total width). Reconstruct the NDC x with
+    // FULL float precision — (slot*2/W2 - 1) — instead of the backend's
+    // int(aUv*1000)/1000 position bridge. That bridge truncates the NDC to
+    // 1/1000, drifting by ~0.0005*W2 pixels; packed with the 3px points at
+    // stride-2 that drift hands the read pixel the NEIGHBOURING point's
+    // varying on a wide canvas — reproduced on SwiftShader: hash FAILs past
+    // i≈399 at W=800. Exact slot/total → exact half-integer fragment
+    // centres, so every read pixel belongs to exactly one point (verified
+    // PASS at W=256/800 and scales to W=2000/4000).
+    // vp_y/z/w are fixed: the points all sit on the y=0 scanline.
+    "vp_x=$(echo \"scale=6; $auv_u * 2.0 / $auv_v - 1.0\" | bc)",
+    // vp_y/z/w reference a variable (never a bare literal — a literal would
+    // push the backend onto the string path, emitting a `do…while` helper
+    // that SwiftShader/ANGLE reject). They evaluate to 0/0/1: the points
+    // all sit on the y=0 scanline with w=1.
+    "vp_y=$(echo \"scale=4; $auv_u * 0.0 + 0.0\" | bc)",
     "vp_z=$(echo \"scale=4; $auv_u * 0.0 + 0.0\" | bc)",
     "vp_w=$(echo \"scale=4; $auv_u * 0.0 + 1.0\" | bc)",
   ].join("\n");

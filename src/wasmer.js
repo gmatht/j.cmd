@@ -31,6 +31,18 @@ const REGISTRY = {
     url: "wasm-bin/grep.wasm",
     desc: "Search text with patterns (real busybox grep compiled to wasm32-wasi — see build-wasm-grep.sh)",
   },
+  "awk": {
+    url: "wasm-bin/awk.wasm",
+    desc: "Real awk (busybox awk compiled to wasm32-wasi — see build-wasm-awk.sh). Fields, patterns, printf; system()/pipe-getline are stubbed (no fork in wasm)",
+  },
+  "bzip2": {
+    url: "wasm-bin/bzip2.wasm",
+    desc: "Real bzip2 (busybox bzip2 compiled to wasm32-wasi — see build-wasm-bzip2.sh). Compress/decompress streams: echo hi | bzip2 | bzip2 -d",
+  },
+  "xz": {
+    url: "wasm-bin/xz.wasm",
+    desc: "Real xz (busybox xz compiled to wasm32-wasi — see build-wasm-xz.sh). DECOMPRESS only: busybox's xz applet is unxz under the hood and always requires -d (no compression). echo hi | xz -d",
+  },
   "hexdump": {
     url: "wasm-bin/hexdump.wasm",
     desc: "Hex dump file contents",

@@ -196,7 +196,13 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       const inner = sName.slice(hb + 1, -1).trim();
       if (inner === "@" || inner === "*") {
         const v = vars.get(sName.slice(1, hb));
-        return Array.isArray(v) ? String(v.length) : "0";
+        if (!Array.isArray(v)) return "0";
+        // bash counts the EXISTING elements: an index that was never
+        // assigned is a hole, not an element (`a[1]=x` → ${#a[@]} is 1,
+        // not 2) — `v.length` counted the holes too.
+        let n = 0;
+        for (let i = 0; i < v.length; i++) if (i in v) n++;
+        return String(n);
       }
     }
     const b = sName.lastIndexOf("[");
@@ -208,7 +214,12 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       const inner = sName.slice(b + 1, -1).trim();
       if (inner === "*" || inner === "@") {
         const v = vars.get(sName.slice(0, b));
-        return Array.isArray(v) ? v.join(" ") : "";
+        if (!Array.isArray(v)) return "";
+        // skip the holes: `a[1]=x; a[2]=y` expands to "x y" in bash, not
+        // " x y" (the unset index 0 contributes no empty field)
+        const out = [];
+        for (let i = 0; i < v.length; i++) if (i in v) out.push(String(v[i]));
+        return out.join(" ");
       }
       const arrName = sName.slice(0, b);
       const idx = Number(expandOperand(sName.slice(b + 1, -1)));
@@ -996,7 +1007,14 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
   }
   function arrayLen(name) {
     const v = vars.get(name);
-    if (Array.isArray(v)) return String(v.length);
+    // `${#a[@]}` counts the EXISTING elements (holes skipped): `a[1]=x`
+    // has length 1 in bash, not 2. A plain `${#a}` is the length of the
+    // first element, which the caller reads through arrayIndex instead.
+    if (Array.isArray(v)) {
+      let n = 0;
+      for (let i = 0; i < v.length; i++) if (i in v) n++;
+      return String(n);
+    }
     if (vars.has(name)) return "1";
     return "0";
   }
@@ -1007,10 +1025,33 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
   // wrap flattens/joins to the same empty string bash yields).
   function arrayItems(name) {
     const v = vars.get(name);
-    if (Array.isArray(v)) return v.map(String);
+    // `${a[*]}` / `${a[@]}` in bash skip indices that were never
+    // assigned (a SPARSE array), so `a[1]=x; a[2]=y; echo "${a[*]}"`
+    // prints "x y", not " x y". `v.map(String)` kept the holes as "",
+    // which the `.join(" ")` wrapper turned into a leading space.
+    if (Array.isArray(v)) {
+      const out = [];
+      for (let i = 0; i < v.length; i++) if (i in v) out.push(String(v[i]));
+      return out;
+    }
     if (vars.has(name) && v !== undefined) return String(v);
     return "";
   }
+  // `${a[@]}` — like arrayItems, but the emitter spreads the result as
+  // separate words (`"${a[@]}"` keeps one word per element). Same
+  // hole-skipping as `${a[*]}`: an index that was never assigned is not
+  // an element in bash.
+  function arrayValues(name) {
+    const v = vars.get(name);
+    if (Array.isArray(v)) {
+      const out = [];
+      for (let i = 0; i < v.length; i++) if (i in v) out.push(String(v[i]));
+      return out;
+    }
+    if (vars.has(name) && v !== undefined) return [String(v)];
+    return [];
+  }
+
   // strcmp(a, b) — the C strcmp bridge (the c frontend's runtime-arg
   // strcmp): the sign of the lexicographic comparison (-1/0/1), like C.
   function strcmp(a, b) {
@@ -1593,7 +1634,7 @@ export function createSh2Runtime({ fs, env, shellExec, stdout, stderr, args = []
       exec, pipeline, capture, captureSync, pipelineSync, captureWords, redirect, test,
       forLoop, forLoopSync, whileLoop, whileLoopSync, caseMatch, define, brace, param, arith, fparith,
       guard, and, or, arithEval, background,
-      setArray, setArrayAppend, arrayIndex, arrayStore, charAt, arrayLen, arrayItems, join,
+      setArray, setArrayAppend, arrayIndex, arrayStore, charAt, arrayLen, arrayItems, arrayValues, join,
       strcmp, isdigit,
       readLine,
       // sh2.stdin — the shell seeds the current pipe input before each
