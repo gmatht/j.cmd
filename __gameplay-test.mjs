@@ -161,6 +161,11 @@ if (__bx !== -1) {
   await new Promise((r) => setTimeout(r, 30));
   __say("VMOVED=" + sh2.arrayIndex("mx", 0) + "," + sh2.arrayIndex("mz", 0));
   __say("VWANT=" + __ax + "," + __az);
+  // the 3D view draws mimes from mime_lookup (the radar/HUD draws from
+  // mx/mz) — if mime_lookup is not re-keyed the cube stays at its
+  // ORIGINAL cell while the radar shows it moving
+  __say("LOOKUP_NEW=" + sh2.arrayIndex("mime_lookup", __az * MAP_W + __ax));
+  __say("LOOKUP_OLD=" + sh2.arrayIndex("mime_lookup", __bz * MAP_W + __bx));
   __say("VER=" + __v0 + "->" + mimes_ver);
 }
 `;
@@ -170,7 +175,7 @@ await runTranspiled(fs, js + driver, {
   runCmd: async () => ({ out: "", err: "", code: 127 }), args: [], argv0: "gameplay-test",
 });
 if (process.env.GP_DEBUG) console.log(out);
-const num = (k) => { const m = new RegExp("^" + k + "=(\\d+)", "m").exec(out); return m ? Number(m[1]) : null; };
+const num = (k) => { const m = new RegExp("^" + k + "=(-?\\d+)", "m").exec(out); return m ? Number(m[1]) : null; };
 const str = (k) => { const m = new RegExp("^" + k + "=(.*)$", "m").exec(out); return m ? m[1].trim() : null; };
 
 // a glyph is <=15 lit rects; require a real group (>= 6) so a stray rect
@@ -202,6 +207,10 @@ if (!sl || sl.includes("-1")) {
     `${str("VMOVED")} want ${str("SIGHTLINE").split("|")[0]}`);
   const v = /VER=(\d+)->(\d+)/.exec(out);
   check("mimes: visible move bumps mimes_ver (3D cache key)", v && Number(v[2]) > Number(v[1]), v ? `${v[1]} → ${v[2]}` : "no VER");
+  // the 3D renderer must find the cube at the NEW cell
+  check("mimes: 3D source (mime_lookup) re-keyed to the new cell",
+    num("LOOKUP_NEW") === 0 && num("LOOKUP_OLD") === -1,
+    `new=${num("LOOKUP_NEW")} (want 0) old=${num("LOOKUP_OLD")} (want -1)`);
 }
 console.log(fails === 0 ? "ALL GAMEPLAY CHECKS PASSED" : `${fails} GAMEPLAY CHECKS FAILED`);
 process.exit(fails ? 1 : 0);

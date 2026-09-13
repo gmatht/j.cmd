@@ -1242,7 +1242,7 @@ function reclassAsyncLoops(program) {
 
 export async function estreeToJsMapped(program, stmtLines, a1Stmts, { repl = true, precompiledHead = false } = {}) {
   const lowerMod = await import("./lower.js");
-  const { lowerNativeArrays, hoistLoopLastExit, hoistCommonLastExit, dropDeadFlags, mergeInitAssignments, pushLastExitToEnd, nativeForLoops, lowerPureFunctions, flattenAndOrAll, lowerDeviceRedirects, directShellFnCalls, liftLocalVars, nativeArrays, nativeSharedScalars, foldArrayReads, lowerI32Trunc, backgroundDecide, safeWordListCoercion, paramLiveValue, plainIfTests, awaitAsyncCalls } = lowerMod;
+  const { lowerNativeArrays, hoistLoopLastExit, hoistCommonLastExit, dropDeadFlags, mergeInitAssignments, pushLastExitToEnd, nativeForLoops, lowerPureFunctions, flattenAndOrAll, lowerDeviceRedirects, directShellFnCalls, liftLocalVars, nativeArrays, nativeSharedScalars, foldArrayReads, lowerI32Trunc, backgroundDecide, safeWordListCoercion, paramLiveValue, plainIfTests, awaitAsyncCalls, interpolateNativeIndexNames } = lowerMod;
   // ── transpile progress: the whole-game transpile can take seconds;
   // once it exceeds 500ms, stream `[n/m passes completed (xx%)]` per
   // pass so the terminal shows forward progress instead of a silent
@@ -1360,6 +1360,11 @@ export async function estreeToJsMapped(program, stmtLines, a1Stmts, { repl = tru
     // nativeArrays/keepVariables already declared, killing the per-access
     // store round-trips in the hot loops
     ["nativeSharedScalars", () => { if (!repl) normalized = nativeSharedScalars(normalized); }],
+    // `arr[$v]` where v is a NATIVE binding: the runtime would expand
+    // `$v` from the empty store and write the wrong key (the 3D mime
+    // cube frozen at its original cell). Only names whose home really is
+    // the native binding are interpolated — see the pass comment.
+    ["interpolateNativeIndexNames", () => { if (typeof interpolateNativeIndexNames === "function") normalized = interpolateNativeIndexNames(normalized); }],
     // `${v#pat}` strips carry the live value so a module-lifted var
     // (whose store copy is never written) strips correctly. Runs AFTER
     // the lifts (not before): it appends a native ref only when the

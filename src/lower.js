@@ -4072,3 +4072,88 @@ export function awaitAsyncCalls(program) {
   walkFns(program);
   return program;
 }
+
+// ── interpolateNativeIndexNames: fix `arr[$v]` when $v is a NATIVE var ─
+//
+// An indexed write lowers to `sh2.setVar("arr[$v]", x)`: a STRING whose
+// `$v` the RUNTIME expands out of the sh2 STORE. That is correct for a
+// variable whose home IS the store — but a variable the emitter lifted
+// to a native JS binding has no store entry, so the expansion is empty
+// and the key collapses to "arr[]": the write lands on the wrong key and
+// the matching read returns nothing.
+//
+// Symptom this caused in mimecroft: update_mimes moved a MIME's mx/mz
+// (the radar/HUD reads those from the store and followed) while
+// `mime_lookup` — the 3D renderer's cell→mime map — was written under
+// "mime_lookup[]", so the cube stayed drawn at its ORIGINAL cell.
+//
+// The test for "native home" must be POSITIVE AND EXCLUSIVE, or the fix
+// does real damage: mimecroft's map_set does `mi=$1` (emitted as
+// `sh2.vars.mi = …`) and interpolating `map[${mi}]` reads a dead module
+// placeholder, so the maze is never written and the generator spins
+// forever in its placement loop. So a name qualifies only when it is
+// assigned NATIVELY (or is a function param — params are native) AND has
+// NO store write anywhere.
+export function interpolateNativeIndexNames(program) {
+  if (!program || program.type !== "Program" || !Array.isArray(program.body)) return program;
+  const storeNames = new Set();   // sh2.setVar("X", …) / sh2.vars.X = …
+  const nativeNames = new Set();  // Identifier = … (an ASSIGNMENT, not a declarator init)
+  const paramNames = new Set();
+  const nameOf = (a) => (a && a.type === "Literal" && typeof a.value === "string" &&
+    /^[A-Za-z_][A-Za-z0-9_]*$/.test(a.value) ? a.value : null);
+  const isSh = (n, fn) => n && n.type === "CallExpression" && n.callee &&
+    n.callee.type === "MemberExpression" && n.callee.object &&
+    n.callee.object.type === "Identifier" && n.callee.object.name === "sh2" &&
+    n.callee.property && n.callee.property.type === "Identifier" && n.callee.property.name === fn;
+  const scan = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) { for (const x of n) scan(x); return; }
+    if ((n.type === "FunctionDeclaration" || n.type === "FunctionExpression" || n.type === "ArrowFunctionExpression") && n.params) {
+      for (const p of n.params) {
+        if (p && p.type === "Identifier") paramNames.add(p.name);
+        else if (p && p.type === "AssignmentPattern" && p.left && p.left.type === "Identifier") paramNames.add(p.left.name);
+      }
+    }
+    if (isSh(n, "setVar")) { const nm = nameOf(n.arguments && n.arguments[0]); if (nm) storeNames.add(nm); }
+    if (n.type === "AssignmentExpression" && n.operator === "=") {
+      const L = n.left;
+      if (L && L.type === "Identifier") nativeNames.add(L.name);
+      else if (L && L.type === "MemberExpression" && !L.computed && L.object &&
+               L.object.type === "MemberExpression" && !L.object.computed &&
+               L.object.object && L.object.object.type === "Identifier" && L.object.object.name === "sh2" &&
+               L.object.property && L.object.property.type === "Identifier" && L.object.property.name === "vars" &&
+               L.property && L.property.type === "Identifier") storeNames.add(L.property.name);
+    }
+    for (const k of Object.keys(n)) if (k !== "loc") scan(n[k]);
+  };
+  scan(program);
+  const eligible = new Set();
+  for (const nm of nativeNames) if (!storeNames.has(nm)) eligible.add(nm);
+  for (const nm of paramNames) if (!storeNames.has(nm)) eligible.add(nm);
+  if (!eligible.size) return program;
+  const names = [...eligible];
+  const NAME_CALLS = new Set(["setVar", "arrayIndex", "arrayLen", "param"]);
+  const hit = (t) => names.some((nm) => String(t).includes("$" + nm));
+  const walk = (n) => {
+    if (!n || typeof n !== "object") return n;
+    if (Array.isArray(n)) return n.map(walk);
+    if (n.type === "CallExpression" && n.callee && n.callee.type === "MemberExpression" &&
+        n.callee.object && n.callee.object.type === "Identifier" && n.callee.object.name === "sh2" &&
+        n.callee.property && n.callee.property.type === "Identifier" && NAME_CALLS.has(n.callee.property.name)) {
+      const out = { ...n };
+      out.arguments = (n.arguments || []).map((a, i) => {
+        if (i === 0 && a && a.type === "Literal" && typeof a.value === "string" && hit(a.value)) {
+          return interpolateStringMulti(a, names);
+        }
+        return walk(a);
+      });
+      out.callee = walk(n.callee);
+      return out;
+    }
+    const out = {};
+    for (const k of Object.keys(n)) if (k !== "loc") out[k] = walk(n[k]);
+    return out;
+  };
+  program.body = program.body.map(walk);
+  return program;
+}
