@@ -1360,11 +1360,6 @@ export async function estreeToJsMapped(program, stmtLines, a1Stmts, { repl = tru
     // nativeArrays/keepVariables already declared, killing the per-access
     // store round-trips in the hot loops
     ["nativeSharedScalars", () => { if (!repl) normalized = nativeSharedScalars(normalized); }],
-    // `arr[$v]` where v is a NATIVE binding: the runtime would expand
-    // `$v` from the empty store and write the wrong key (the 3D mime
-    // cube frozen at its original cell). Only names whose home really is
-    // the native binding are interpolated — see the pass comment.
-    ["interpolateNativeIndexNames", () => { if (typeof interpolateNativeIndexNames === "function") normalized = interpolateNativeIndexNames(normalized); }],
     // `${v#pat}` strips carry the live value so a module-lifted var
     // (whose store copy is never written) strips correctly. Runs AFTER
     // the lifts (not before): it appends a native ref only when the
@@ -1383,6 +1378,17 @@ export async function estreeToJsMapped(program, stmtLines, a1Stmts, { repl = tru
     // `let` declarators and the store would read empty → sync them
     ["keepVariables", () => { keepVariables(normalized, [], { repl }); }],
     ["lowerNativeArrays", () => { lowered = lowerNativeArrays(normalized); }],
+    // `arr[$v]` where v is a NATIVE binding: the runtime expands `$v`
+    // out of the sh2 STORE, which has no entry for a lifted variable, so
+    // the key collapses to "arr[]" and the write vanishes (the 3D mime
+    // cube froze at its original cell; only ONE of ten artifacts got a
+    // tpx/tpz entry, so nine could never be claimed). It must run AFTER
+    // lowerNativeArrays, which is the pass that CREATES the
+    // `setVar("arr[$v]")` form — running earlier saw a native array
+    // write, interpolated nothing, and the later lowering reintroduced
+    // the expansion. Only names whose home really is the native binding
+    // are interpolated (a store-written index must keep its `$v`).
+    ["interpolateNativeIndexNames", () => { if (typeof interpolateNativeIndexNames === "function") lowered = interpolateNativeIndexNames(lowered); }],
     ["hoistLoopLastExit", () => { hoistLoopLastExit(lowered); }],
     ["hoistCommonLastExit", () => { hoistCommonLastExit(lowered); }],
     ["dropDeadFlags", () => { dropDeadFlags(lowered); }],

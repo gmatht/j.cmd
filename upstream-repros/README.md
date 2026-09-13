@@ -20,6 +20,7 @@ that WAS fixed can never silently come back.
 |---|---|---|
 | `01-lifted-var-in-array-index.sh` | **OPEN (A1 frontend)** | indexed write with a computed key: the A1 keeps the target as the raw string `lookup[$cell]` AND drops the `cell=$((…))` statement as dead code (its only use hides inside that string), so the runtime expands an unset `$cell` and the key collapses to `lookup[]` |
 | `02-param-strip-live-value.sh` | fixed | `${v#pat}` of a lifted variable came back empty |
+| `05-param-only-use-in-index.sh` | **OPEN** | a function param whose only use is inside an array-index name (`arr[$p]`): the assignment is dropped as dead code AND the positional args are renumbered, so `tpx[1]`/`tpx[2]` stay empty and only one element survives (mimecroft: only 1 of 10 artifacts could be claimed) |
 | `03-single-quoted-payload.sh` | fixed | a single-quoted `$var` payload was rewritten as an expansion |
 
 ## 01: the fix has two halves
