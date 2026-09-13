@@ -1351,17 +1351,18 @@ emit_fragment_shader() {
   # block texture so damaged blocks show cracks. The blend is written as
   # r - (r-cr_r)·mix/128 (≡ r·(1-mix/128) + cr_r·mix/128 — same value,
   # weights sum to 1) so the intermediate (r-cr_r)·mix ≤ 253·127 =
-  # 32131 stays inside mediump int. mix = damage·cr_a (no /2) caps at
-  # 127 on the FIRST hit — the crack texel takes ~99% of the blend at
-  # ANY damage level, so the dark GRAY crack colour dominates from the
-  # first shot and a damaged grass/gold/diamond/ruby block shows a
-  # neutral crack instead of a green/olive/teal/maroon tint of the
-  # block's own hue (a partial blend keeps (1-mix/128) of the block
-  # colour — the damage-1 49% state still read as pure-ish coloured
-  # pixels on the gems). The crack no longer scales with damage — it
-  # appears fully at the first hit and the block breaks at its hardness.
+  # 32131 stays inside mediump int.
+  #
+  # mix = damage·cr_a/4. The crack texture is dark (28,28,28) on crack
+  # lines and fully transparent elsewhere, so an UNSCALED damage·cr_a
+  # caps at 127 on the FIRST hit and the crack texel takes 127/128 ≈
+  # 99% of the blend — a damaged block renders as near-black crack lines
+  # (the "damaged blocks just display black" report) instead of the
+  # block's own colour with cracks through it. /4 makes the crack
+  # intensity scale with damage (damage 1 → ~24%, 2 → ~50%, 4 → 99%),
+  # so a block shows visible cracking and then breaks at its hardness.
   echo 'if [ "$damage" -gt 0 ]; then' >> /tmp/mimecroft-frag.sh
-  echo '  mix=$((damage * cr_a))' >> /tmp/mimecroft-frag.sh
+  echo '  mix=$((damage * cr_a / 4))' >> /tmp/mimecroft-frag.sh
   echo '  if [ "$mix" -gt 127 ]; then mix=127; fi' >> /tmp/mimecroft-frag.sh
   echo '  r=$((r - (r - cr_r) * mix / 128))' >> /tmp/mimecroft-frag.sh
   echo '  g=$((g - (g - cr_g) * mix / 128))' >> /tmp/mimecroft-frag.sh
