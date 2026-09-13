@@ -45,7 +45,10 @@ void main() {
     }
     if ((uDamage > 0)) {
         vec4 _crack = texture2D(uCrack, fract(vUv));
-        g_mix = min((float(uDamage) * float(int(_crack.a * 127.0))), 127.0);
+        // /4 — see the fixed-point fragment: unscaled, the blend
+        // saturates at the first hit and the dark crack texel takes
+        // ~99% of the pixel, rendering damaged blocks near-black.
+        g_mix = min(((float(uDamage) * float(int(_crack.a * 127.0))) / 4.0), 127.0);
         g_r = (g_r - (((g_r - float(int(_crack.r * 127.0)))) * (g_mix / 128.0)));
         g_g = (g_g - (((g_g - float(int(_crack.g * 127.0)))) * (g_mix / 128.0)));
         g_b = (g_b - (((g_b - float(int(_crack.b * 127.0)))) * (g_mix / 128.0)));
