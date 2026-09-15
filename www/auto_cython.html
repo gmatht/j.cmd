@@ -686,6 +686,11 @@ function loadExample(ex) {
   if (autoUpdate) annotate();
 }
 
+// Whether a shared #code= hash was restored and should auto-run once the
+// page has finished wiring. Example-only hashes already auto-run through
+// loadExample(); this covers arbitrary shared source.
+let autoRunShared = false;
+
 // ─── shareable URL (#mode=…&example=…&code=…) ───────────────────
 function syncUrl() {
   try {
@@ -707,7 +712,10 @@ function applyUrlState() {
   if (p.has("code") && p.get("code")) {
     $("input").value = p.get("code");
     currentExample = p.get("example") || null;
-    showStatus("shared source loaded — review it, then press Annotate", "info");
+    // Shared hashed source auto-runs by default. The Python stage has a
+    // runaway timeout plus Cancel, so a bad link cannot wedge the page.
+    autoRunShared = true;
+    showStatus("shared source loaded — auto-running…", "info");
     return true;
   }
   const name = p.get("example");
@@ -818,6 +826,7 @@ function init() {
     "so it lives source-side, next to py-sh-go.<br><br>" +
     "★ = has the hand-written <code>bench/cython</code> golden to compare against.";
 
+  if (autoRunShared && $("input").value.trim()) annotate();
   if (!restored && !$("input").value && EXAMPLES.length) loadExample(EXAMPLES[0]);
 }
 
