@@ -89,7 +89,164 @@ printf '%s\\n' "$text" | grep -oP '(?<![:-])\\b\\w+'
 #                       else echo 0; fi }
 alphanumeric_compare() { if [[ "$1" < "$2" ]]; then echo -1;
                          elif [[ "$1" > "$2" ]]; then echo 1;
-                         else echo 0; fi }` },  ],
+                         else echo 0; fi }` },
+    // ── benchmark kernels ──────────────────────────────────────────
+    // The sh2runtime benchmarks, written as plain bash compute kernels.
+    // collatz / ca1d / recordhash are the GPU-lift CATALOG kernels
+    // (src/gpucatalog.js, benched in www/gpu-catalog-bench.html);
+    // mandelbrot / maxreduce / threshold / clamp are the NAIVE branchy
+    // kernels the branchless pre-passes rewrite (bench/branchless,
+    // benched in www/branchless-bench.html). The gcc -O2 C references
+    // live in bench/gcc-vs-igpu/c-programs.mjs; the pure-CPU twins here
+    // print a checksum so they run under bash.wasm.
+    { name: "bench-collatz", desc: "benchmark: Collatz step count per number — the batch CPU twin (checksum = sum of steps)", code: `# bench-collatz — the Collatz step count for a batch of numbers,
+# v_i = (i*37+3)%251, checksum = sum of step counts.
+# This is the CPU twin of the GPU-lift catalog kernel (src/gpucatalog.js
+# collatzShader: one pixel per number, a data-driven while n > 1) and of
+# the gcc -O2 C reference (bench/gcc-vs-igpu/c-programs.mjs). Compare the
+# transpiled output via the py/c target — they print the same checksum.
+sum=0
+i=0
+while [ $i -lt 64 ]; do
+    v=$(( (i * 37 + 3) % 251 ))
+    s=0
+    while [ $v -gt 1 ]; do
+        if [ $(( v % 2 )) -eq 0 ]; then
+            v=$(( v / 2 ))
+        else
+            v=$(( 3 * v + 1 ))
+        fi
+        s=$(( s + 1 ))
+    done
+    sum=$(( sum + s ))
+    i=$(( i + 1 ))
+done
+echo "collatz checksum: $sum"
+` },
+    { name: "bench-ca1d", desc: "benchmark: one 1D cellular-automaton step (rule 118) — count of live cells", code: `# bench-ca1d — one 1D cellular-automaton step (rule 118) over a row,
+# cell i = (i*7+3)%2, edges clamp; prints the count of live cells in the
+# next row. The GPU-lift catalog kernel (src/gpucatalog.js ca1dShader)
+# does this one pixel per cell, reading the left/mid/right neighbours via
+# per-use texture samples; the C reference is in bench/gcc-vs-igpu.
+rule=(0 1 1 1 0 1 1 0)
+n=32
+sum=0
+i=0
+while [ $i -lt $n ]; do
+    if [ $i -gt 0 ]; then l=$(( ((i - 1) * 7 + 3) % 2 )); else l=$(( 3 % 2 )); fi
+    m=$(( (i * 7 + 3) % 2 ))
+    if [ $i -lt $(( n - 1 )) ]; then r=$(( ((i + 1) * 7 + 3) % 2 )); else r=$(( ((n - 1) * 7 + 3) % 2 )); fi
+    idx=$(( l * 4 + m * 2 + r ))
+    sum=$(( sum + rule[idx] ))
+    i=$(( i + 1 ))
+done
+echo "ca1d checksum: $sum"
+` },
+    { name: "bench-recordhash", desc: "benchmark: per-record hash (a*31+b*17+c*7)%256 — checksum over a batch", code: `# bench-recordhash — the per-record hash, record i =
+# ((i*53)%256, (i*89)%256, (i*127)%256), result = (a*31 + b*17 + c*7)%256.
+# The GPU-lift catalog kernel (src/gpucatalog.js hashVertexShader) runs
+# this on the VERTEX stage, one vertex per record (ap_* in, vc_* out);
+# the C reference is in bench/gcc-vs-igpu/c-programs.mjs.
+sum=0
+i=0
+while [ $i -lt 64 ]; do
+    a=$(( (i * 53) % 256 ))
+    b=$(( (i * 89) % 256 ))
+    c=$(( (i * 127) % 256 ))
+    sum=$(( (sum + (a * 31 + b * 17 + c * 7) % 256) % 256 ))
+    i=$(( i + 1 ))
+done
+echo "recordhash checksum: $sum"
+` },
+    { name: "bench-mandelbrot", desc: "benchmark: Mandelbrot escape count — the NAIVE while |z|² ≤ 4 the branchless pass rewrites", code: `# bench-mandelbrot — the NAIVE branchy Mandelbrot escape count
+# (bench/branchless/algorithms.mjs): item g maps to a 64x64 image point,
+# c = ((g%64 - 32)*2, ((g/64)%64 - 32)*2); iter counts until |z|^2 > 4,
+# bounded at 64. The data-dependent \`while\` is the branch pattern the
+# lowerBranchless pre-pass rewrites into a bounded guarded loop. Prints
+# the checksum (sum of iteration counts). See www/branchless-bench.html.
+sum=0
+g=0
+while [ $g -lt 256 ]; do
+    fx=$(( g % 64 ))
+    fy=$(( (g / 64) % 64 ))
+    cr=$(( (fx - 32) * 2 ))
+    ci=$(( (fy - 32) * 2 ))
+    zr=0
+    zi=0
+    iter=0
+    while [ $(( zr * zr + zi * zi )) -le 4 ] && [ $iter -lt 64 ]; do
+        zr_new=$(( zr * zr - zi * zi + cr ))
+        zi_new=$(( 2 * zr * zi + ci ))
+        zr=$(( zr_new ))
+        zi=$(( zi_new ))
+        iter=$(( iter + 1 ))
+    done
+    sum=$(( sum + iter ))
+    g=$(( g + 1 ))
+done
+echo "mandelbrot checksum: $sum"
+` },
+    { name: "bench-maxreduce", desc: "benchmark: block max (if v > max) — the single-branch if selectIfElse rewrites", code: `# bench-maxreduce — the NAIVE branchy block max
+# (bench/branchless/algorithms.mjs): v = ((g%1000)*37+11)%1000, per-block
+# max. The \`if v > max\` single branch is what selectIfElse rewrites to an
+# arithmetic select. Prints the checksum (sum of per-block maxes).
+sum=0
+p=0
+while [ $p -lt 32 ]; do
+    max=0
+    b=0
+    while [ $b -lt 8 ]; do
+        g=$(( p * 8 + b ))
+        v=$(( ((g % 1000) * 37 + 11) % 1000 ))
+        if [ $v -gt $max ]; then max=$v; fi
+        b=$(( b + 1 ))
+    done
+    sum=$(( sum + max ))
+    p=$(( p + 1 ))
+done
+echo "maxreduce checksum: $sum"
+` },
+    { name: "bench-threshold", desc: "benchmark: threshold count (if v > 500) — another single-branch if", code: `# bench-threshold — the NAIVE branchy threshold count
+# (bench/branchless/algorithms.mjs): v = ((g%1000)*53+7)%1000, count the
+# v > 500. selectIfElse rewrites the \`if v > 500\` to a select. Prints the
+# checksum (sum of per-block counts).
+sum=0
+p=0
+while [ $p -lt 32 ]; do
+    count=0
+    b=0
+    while [ $b -lt 8 ]; do
+        g=$(( p * 8 + b ))
+        v=$(( ((g % 1000) * 53 + 7) % 1000 ))
+        if [ $v -gt 500 ]; then count=$(( count + 1 )); fi
+        b=$(( b + 1 ))
+    done
+    sum=$(( sum + count ))
+    p=$(( p + 1 ))
+done
+echo "threshold checksum: $sum"
+` },
+    { name: "bench-clamp", desc: "benchmark: clamp to [0,255] (two ifs) — the DEGENERATE case selectIfElse skips", code: `# bench-clamp — the NAIVE branchy clamp to [0,255]
+# (bench/branchless/algorithms.mjs): v = ((g%1000)*89+3)%1000 - 500.
+# This is the DEGENERATE case: the branches are constant assignments
+# (v=0, v=255), so the select e*0 + (1-e)*v is provably wasteful — the
+# skipTrivial check leaves it branchy. Prints the checksum.
+sum=0
+p=0
+while [ $p -lt 32 ]; do
+    b=0
+    while [ $b -lt 8 ]; do
+        g=$(( p * 8 + b ))
+        v=$(( ((g % 1000) * 89 + 3) % 1000 - 500 ))
+        if [ $v -lt 0 ]; then v=0; fi
+        if [ $v -gt 255 ]; then v=255; fi
+        sum=$(( sum + v ))
+        b=$(( b + 1 ))
+    done
+    p=$(( p + 1 ))
+done
+echo "clamp checksum: $sum"
+` },  ],
 
   zsh: [
     { name: "hello", desc: "Hello world (echo)", code: 'name="world"\necho "hello $name"\n' },
@@ -146,6 +303,21 @@ alphanumeric_compare() { if [[ "$1" < "$2" ]]; then echo -1;
     { name: "concat", desc: "string joining", code: 'a = "foo"\nb = "bar"\nprint(a + b)\n' },
     { name: "multi-echo", desc: "several outputs", code: 'print("one")\nprint("two")\nprint("three")\n' },
     { name: "percent-fmt", desc: "% formatting (micropython-safe)", code: 'x = 42\nprint("x=%d" % x)\n' },
+    // ── benchmark kernels (Python twins) ───────────────────────────
+    // The same sh2runtime benchmarks as the sh examples, written in
+    // Python so the py-sh-go frontend transpiles them and the browser
+    // micropython runs them. collatz / ca1d / recordhash are the GPU-lift
+    // catalog kernels (src/gpucatalog.js); mandelbrot / maxreduce /
+    // threshold / clamp are the branchless bench's NAIVE kernels
+    // (bench/branchless/algorithms.mjs). Each prints a checksum so the
+    // sh ↔ py → target output diffs can be compared.
+    { name: "bench-collatz", desc: "benchmark: Collatz step count per number — checksum = sum of steps", code: '# bench-collatz — the Collatz step count for a batch of numbers,\n# v_i = (i*37+3)%251, sum of step counts. The CPU twin of the GPU-lift\n# catalog kernel (src/gpucatalog.js collatzShader) and the gcc -O2 C\n# reference (bench/gcc-vs-igpu/c-programs.mjs).\nsum = 0\ni = 0\nwhile i < 64:\n    v = (i * 37 + 3) % 251\n    s = 0\n    while v > 1:\n        if v % 2 == 0:\n            v = v // 2\n        else:\n            v = 3 * v + 1\n        s = s + 1\n    sum = sum + s\n    i = i + 1\nprint("collatz checksum:", sum)\n' },
+    { name: "bench-ca1d", desc: "benchmark: one 1D cellular-automaton step (rule 118) — live-cell count", code: '# bench-ca1d — one 1D cellular-automaton step (rule 118), cell i =\n# (i*7+3)%2, edges clamp; count of live cells in the next row. The GPU-lift\n# catalog kernel (src/gpucatalog.js ca1dShader) runs this one pixel per cell;\n# the rule lookup is the arithmetic form (ca1dStrictShader) — a plain-int\n# accumulator, no list (a list literal would type as strings).\nn = 32\ntotal = 0\nfor i in range(n):\n    l = 1\n    if i > 0:\n        l = ((i - 1) * 7 + 3) % 2\n    m = (i * 7 + 3) % 2\n    r = ((n - 1) * 7 + 3) % 2\n    if i < n - 1:\n        r = ((i + 1) * 7 + 3) % 2\n    idx = l * 4 + m * 2 + r\n    cell = 0\n    if idx == 1 or idx == 2 or idx == 3 or idx == 5 or idx == 6:\n        cell = 1\n    total = total + cell\nprint("ca1d checksum:", total)\n' },
+    { name: "bench-recordhash", desc: "benchmark: per-record hash (a*31+b*17+c*7)%256 — batch checksum", code: '# bench-recordhash — the per-record hash, record i =\n# ((i*53)%256, (i*89)%256, (i*127)%256), result = (a*31 + b*17 + c*7)%256.\n# The GPU-lift catalog kernel (src/gpucatalog.js hashVertexShader) runs\n# this on the VERTEX stage, one vertex per record.\nsum = 0\nfor i in range(64):\n    a = (i * 53) % 256\n    b = (i * 89) % 256\n    c = (i * 127) % 256\n    sum = (sum + (a * 31 + b * 17 + c * 7) % 256) % 256\nprint("recordhash checksum:", sum)\n' },
+    { name: "bench-mandelbrot", desc: "benchmark: Mandelbrot escape count — the NAIVE while |z|² ≤ 4", code: '# bench-mandelbrot — the NAIVE branchy Mandelbrot escape count\n# (bench/branchless/algorithms.mjs): item g maps to a 64x64 image point,\n# c = ((g%64 - 32)*2, ((g/64)%64 - 32)*2); iter counts until |z|^2 > 4,\n# bounded at 64. Prints the checksum (sum of iteration counts).\nsum = 0\nfor g in range(256):\n    fx = g % 64\n    fy = (g // 64) % 64\n    cr = (fx - 32) * 2\n    ci = (fy - 32) * 2\n    zr = 0\n    zi = 0\n    it = 0\n    while zr * zr + zi * zi <= 4 and it < 64:\n        zr_new = zr * zr - zi * zi + cr\n        zi_new = 2 * zr * zi + ci\n        zr = zr_new\n        zi = zi_new\n        it = it + 1\n    sum = sum + it\nprint("mandelbrot checksum:", sum)\n' },
+    { name: "bench-maxreduce", desc: "benchmark: block max (if v > max) — single-branch if", code: '# bench-maxreduce — the NAIVE branchy block max\n# (bench/branchless/algorithms.mjs): v = ((g%1000)*37+11)%1000, per-block\n# max. Prints the checksum (sum of per-block maxes).\nsum = 0\nfor p in range(32):\n    mx = 0\n    for b in range(8):\n        g = p * 8 + b\n        v = ((g % 1000) * 37 + 11) % 1000\n        if v > mx:\n            mx = v\n    sum = sum + mx\nprint("maxreduce checksum:", sum)\n' },
+    { name: "bench-threshold", desc: "benchmark: threshold count (if v > 500)", code: '# bench-threshold — the NAIVE branchy threshold count\n# (bench/branchless/algorithms.mjs): v = ((g%1000)*53+7)%1000, count v > 500.\n# Prints the checksum (sum of per-block counts).\nsum = 0\nfor p in range(32):\n    count = 0\n    for b in range(8):\n        g = p * 8 + b\n        v = ((g % 1000) * 53 + 7) % 1000\n        if v > 500:\n            count = count + 1\n    sum = sum + count\nprint("threshold checksum:", sum)\n' },
+    { name: "bench-clamp", desc: "benchmark: clamp to [0,255] (two ifs) — the DEGENERATE branch case", code: '# bench-clamp — the NAIVE branchy clamp to [0,255]\n# (bench/branchless/algorithms.mjs): v = ((g%1000)*89+3)%1000 - 500.\n# The DEGENERATE case: branches are constant assignments (v=0, v=255),\n# so skipTrivial leaves them branchy. Prints the checksum.\nsum = 0\nfor p in range(32):\n    for b in range(8):\n        g = p * 8 + b\n        v = ((g % 1000) * 89 + 3) % 1000 - 500\n        if v < 0:\n            v = 0\n        if v > 255:\n            v = 255\n        sum = sum + v\nprint("clamp checksum:", sum)\n' },
   ],
 
   c: [
