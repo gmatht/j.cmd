@@ -159,8 +159,9 @@ console.log("\n== (e) the shader-source junk-name shape must NOT create a file =
 // regression guard for the literal artifact that started the hunt.
 console.log("\n== (f) the literal incident filename is never created ==");
 {
-  const NAME = '$(echo "scale=4; 0.0 - $relz + 0.0" | bc)\\n  if [ "$(echo "scale=4; if ($w < 0.0001) 1 else 0" | bc)" = "1" ]; then w=0.0001; fi|';
-  check(NAME.length === 129, "(sanity) the incident name is 129 bytes");
+  // Byte-exact: the name begins with `=`, the captured redirect operator.
+  const NAME = '=$(echo "scale=4; 0.0 - $relz + 0.0" | bc)\\n  if [ "$(echo "scale=4; if ($w < 0.0001) 1 else 0" | bc)" = "1" ]; then w=0.0001; fi|';
+  check(Buffer.byteLength(NAME, "utf8") === 130, "(sanity) the incident name is 130 bytes");
   const r = await runInDir("echo hi > $(echo alpha)\n", "/tmp/rt-exact");
   check(!r.files.some((f) => f.includes("relz")),
     "no file named after the shader fragment  [files: " + r.files.join(",") + "]");
