@@ -16,7 +16,15 @@ import { runBash } from "./src/bash2js.js";
 // Remove a name here once the fix lands — the gate then pins it forever.
 // every reproducer now matches real bash — a fixed one can never
 // silently regress again (the suite auto-discovers upstream-repros/*.sh)
-const KNOWN_OPEN = [];
+const KNOWN_OPEN = [
+  // 08: an unquoted `$(…)` redirect target passes captureWords()'s ARRAY
+  // straight to fs.writeFile. One word must be unwrapped; 0-or-many words
+  // must be `ambiguous redirect` + status 1 with no file created. This is
+  // the mechanism behind the shader-source-named junk file in the repo
+  // root (see the reproducer header). Remove once the emitter collapses
+  // the word list and rejects an ambiguous target.
+  "08-unquoted-cmdsub-redirect-target.sh",
+];
 
 const files = readdirSync("upstream-repros").filter((f) => f.endsWith(".sh")).sort();
 let fails = 0;

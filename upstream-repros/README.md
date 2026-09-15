@@ -16,6 +16,13 @@ gate. Reproducers known to be OPEN are listed there as `KNOWN_OPEN`, so a
 still-unfixed upstream bug cannot block an unrelated deploy — but a bug
 that WAS fixed can never silently come back.
 
+`../__redirect-target-test.mjs` is the repo-local unit half for 08: it
+pins the exact generated-JS shape (the `captureWords()` array reaching
+`writeFile`) *and* the end-to-end behaviour, so the defect stays visible
+even while the runtime side is still being worked on. The upstream half
+lives at `sh2perl/bash_tests/redirect_target_ambiguity.sh` (same four
+cases, driven straight through `otranspiler --target js` + `js-runner`).
+
 | reproducer | status | summary |
 |---|---|---|
 | `01-lifted-var-in-array-index.sh` | fixed (toolkit; upstream ideal open — see §01) | indexed write with a computed key: the A1 keeps the target as the raw string `lookup[$cell]` AND drops the `cell=$((…))` statement as dead code (its only use hides inside that string), so the runtime expands an unset `$cell` and the key collapses to `lookup[]` |
@@ -24,6 +31,7 @@ that WAS fixed can never silently come back.
 | `03-single-quoted-payload.sh` | fixed | a single-quoted `$var` payload was rewritten as an expansion (end-to-end pins: `__frag-stage-test.mjs` byte-compares the staged fragment program; `__mime-test.mjs` checks the booted game staged `putb $b`) |
 | `06-sparse-array-star.sh` | fixed | `${a[*]}`/`${a[@]}` rendered unassigned holes as empty fields instead of skipping them |
 | `07-exact-key-lift.sh` | fixed (pins the reinstated lift) | an index var used ONLY as exact keys (`arrayIndex("a", "$k")`) lifts to a native binding (bare-Identifier key) while the same array's `${a[*]}` keeps reading the store — the storage-neutral subset of the week-ago lift, reinstated with 05 as the boundary proof |
+| `08-unquoted-cmdsub-redirect-target.sh` | **OPEN** | an unquoted `$(…)` used as a redirect TARGET: the JS backend emits `fs.writeFile(sh2.captureWords(…), …)` — handing the word-SPLITTER's array to the path argument. bash's rule is word-splitting: ONE word → the file is created; ZERO or MANY → `ambiguous redirect`, status 1, no file. The emitter does neither, so a one-word target errors (`path.startsWith is not a function`) and two words collapse to `alpha,beta`. This is the mechanism behind a 130-byte junk file in the repo root named after a fragment of mimecroft's shader source (see the reproducer header). Local unit half: `__redirect-target-test.mjs` |
 
 ## 01: the fix has two halves
 
