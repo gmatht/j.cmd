@@ -10,6 +10,8 @@
 //   main → worker: { type: "init", wasmUrl }          (once; → "ready")
 //   main → worker: { type: "job", jobId, kind, ... }  kind: "transpile"
 //                    { source, srcLang, tgt }  → { text, map, a1, optShir, lex }
+//                    kind: "annotate" { source, mode } → py2cy typed Cython
+//                    { text, mode, decls, refusals, stats }
 //                    kind: "run" { lang, code } → { out, err, code, note? }
 //                    kind: "version"             → { version }
 //   worker → main: { type: "status", jobId, text }    (progress notes)
@@ -23,7 +25,7 @@
 
 import { fs } from "../src/fs/index.js";
 import { env } from "../src/env.js";
-import { transpileJob, runJob, otranspilerVersion } from "../src/otranspile-jobs.js";
+import { transpileJob, runJob, annotateJob, otranspilerVersion } from "../src/otranspile-jobs.js";
 
 self.onmessage = async (e) => {
   const m = e.data || {};
@@ -41,6 +43,8 @@ self.onmessage = async (e) => {
     let result;
     if (m.kind === "transpile") {
       result = await transpileJob(m.source, m.srcLang, m.tgt, ctx);
+    } else if (m.kind === "annotate") {
+      result = await annotateJob(m.source, m.mode, ctx);
     } else if (m.kind === "run") {
       result = await runJob(m.lang, m.code, ctx);
     } else if (m.kind === "version") {

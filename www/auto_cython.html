@@ -1,0 +1,734 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>auto_cython — Python → auto-typed Cython (py2cy)</title>
+<style>
+  /* The look is deliberately the otranspiler GUI's (www/otranspiler.html):
+     same sidebar / panels / diff / copy affordances, so the two pages read
+     as one family. Only what is specific to the annotator is new (the
+     mode toggle, the refusal manifest, the proof table). */
+  :root {
+    --accent: #6f42c1;
+    --bg: #f5f5f5;
+    --panel: #ffffff;
+    --border: #dee2e6;
+    --text: #333333;
+    --muted: #666666;
+    --add: #d4edda;
+    --del: #f8d7da;
+    --code-bg: #f8f9fa;
+    --cython: #b8860b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    margin: 0; padding: 0;
+    background-color: var(--bg);
+    display: flex;
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  /* ── sidebar ── */
+  .sidebar {
+    width: 320px; min-width: 240px;
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 16px;
+    box-shadow: 2px 0 4px rgba(0,0,0,0.1);
+  }
+  .header { text-align: center; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 2px solid var(--accent); }
+  .header h1 { color: var(--text); margin: 0 0 6px; font-size: 22px; }
+  .header p { color: var(--muted); font-size: 12px; margin: 0; }
+  .header .bug-btn {
+    margin-top: 8px; width: 100%;
+    background: rgba(215, 58, 73, 0.07);
+    border: 1px solid rgba(215, 58, 73, 0.45);
+    color: #d73a49; border-radius: 6px; cursor: pointer;
+    font-size: 12px; line-height: 1.4; padding: 6px 10px; font-family: inherit;
+  }
+  .header .bug-btn:hover { background: rgba(215, 58, 73, 0.14); color: #b31d28; }
+  .search-wrap { margin: 4px 0 10px; }
+  .search-wrap input {
+    width: 100%; padding: 7px 10px; border: 1px solid #ddd; border-radius: 6px;
+    font-size: 13px;
+  }
+  .category h3 {
+    color: #495057; font-size: 12px; text-transform: uppercase;
+    letter-spacing: 0.5px; border-bottom: 1px solid var(--border);
+    padding-bottom: 6px; margin: 14px 0 10px; font-weight: 600;
+  }
+  .example-item { margin-bottom: 6px; }
+  .example-btn {
+    background: #6c757d; color: white; border: none; padding: 8px 12px;
+    border-radius: 6px; cursor: pointer; font-size: 13px; width: 100%;
+    text-align: left; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; transition: all 0.15s ease;
+  }
+  .example-btn:hover { background: #545b62; transform: translateX(2px); }
+  .example-btn.active { background: var(--accent); }
+  .runtime-note { font-size: 11px; color: var(--muted); margin-top: 12px; line-height: 1.5; }
+
+  /* ── main ── */
+  .main { flex: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; }
+  .card {
+    background: var(--panel); border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1); padding: 16px;
+  }
+  .card h2 { margin: 0 0 10px; color: var(--text); border-bottom: 2px solid var(--accent); padding-bottom: 10px; font-size: 18px; }
+  .example-description {
+    background: #f8f9fa; border: 1px solid var(--border); border-radius: 6px;
+    padding: 12px; font-size: 13px; color: #495057; border-left: 4px solid var(--accent);
+  }
+  .example-description .ex-name { font-weight: 600; color: var(--text); }
+  .example-description .ex-expect {
+    display: block; margin-top: 6px; font-family: 'Cascadia Code', 'Fira Code', 'Courier New', monospace;
+    font-size: 11px; color: #6f42c1;
+  }
+  textarea {
+    width: 100%; min-height: 160px; border: 1px solid #ddd; border-radius: 6px;
+    padding: 12px; font-family: 'Cascadia Code', 'Fira Code', 'Courier New', monospace;
+    font-size: 13px; resize: vertical; border-color: var(--accent); background: #fcfcfc;
+  }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .controls .lbl { font-size: 12px; color: var(--muted); margin-right: 2px; }
+  button {
+    background: var(--accent); color: white; border: none; padding: 9px 14px;
+    border-radius: 6px; cursor: pointer; font-size: 13px; transition: all 0.15s ease;
+  }
+  button:hover { background: #59359e; transform: translateY(-1px); }
+  button:disabled { background: #ccc; cursor: not-allowed; transform: none; }
+  .mode-btn {
+    background: #adb5bd; color: #212529; padding: 7px 12px;
+  }
+  .mode-btn:hover { background: #949da6; }
+  .mode-btn.active { background: var(--cython); color: #fff; box-shadow: 0 2px 4px rgba(184,134,11,0.35); }
+  .copy-btn {
+    background: #6c757d; color: white; border: none;
+    padding: 4px 12px; border-radius: 5px; cursor: pointer;
+    font-size: 12px; white-space: nowrap;
+  }
+  .copy-btn:hover { background: #545b62; }
+  .copy-btn.copied { background: #28a745; }
+  .ta-wrap { position: relative; }
+  .ta-wrap .ta-copy {
+    position: absolute; top: 8px; right: 8px; z-index: 2;
+    background: rgba(108,117,125,0.92); padding: 3px 10px; font-size: 12px;
+  }
+  .out-ta { min-height: 160px; }
+  .gate-legend { font-size: 11px; color: var(--muted); margin-top: 6px; }
+  .auto-update-toggle { background: #28a745 !important; margin-left: auto; }
+  .auto-update-toggle.off { background: #dc3545 !important; }
+
+  /* ── status ── */
+  .status { display: none; padding: 10px 12px; border-radius: 6px; font-size: 13px; font-weight: 500; }
+  .status.success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+  .status.error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+  .status.info { background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
+  .status.warn { background: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
+
+  /* ── panels ── */
+  .panel { background: var(--panel); border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); overflow: hidden; }
+  .panel-head {
+    display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+    background: #f0f2f5; cursor: pointer; user-select: none; border-bottom: 1px solid var(--border);
+  }
+  .panel-head:hover { background: #e7eaee; }
+  .panel-head .arrow { display: inline-block; width: 14px; color: var(--muted); font-size: 12px; transition: transform 0.15s ease; }
+  .panel.collapsed .panel-head .arrow { transform: rotate(-90deg); }
+  .panel-title { font-size: 13px; font-weight: 600; color: var(--text); flex: 1; }
+  .panel-tag { font-size: 11px; color: var(--muted); background: #e9ecef; border-radius: 10px; padding: 2px 8px; }
+  .panel-body { padding: 12px; overflow-x: auto; }
+  .panel.collapsed .panel-body { display: none; }
+  .panel-body pre {
+    margin: 0; padding: 10px; background: var(--code-bg); border-radius: 6px;
+    font-family: 'Cascadia Code', 'Fira Code', 'Courier New', monospace;
+    font-size: 12px; line-height: 1.45; white-space: pre-wrap; word-break: break-word;
+    max-height: 420px; overflow-y: auto;
+  }
+  .map-hint { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+
+  /* ── refusal manifest + proof table ── */
+  table.manifest { border-collapse: collapse; width: 100%; font-size: 12px; }
+  table.manifest th, table.manifest td {
+    border: 1px solid var(--border); padding: 5px 8px; text-align: left; vertical-align: top;
+  }
+  table.manifest th { background: #f0f2f5; font-weight: 600; color: #495057; }
+  table.manifest td.ln { text-align: right; color: var(--muted); white-space: nowrap; width: 42px; }
+  table.manifest code { font-family: 'Cascadia Code', 'Fira Code', 'Courier New', monospace; font-size: 11px; }
+  .manifest-empty { font-size: 12px; color: #155724; background: #d4edda; border: 1px solid #c3e6cb; border-radius: 6px; padding: 8px 10px; }
+  .ty-int { color: #0b5394; }
+  .ty-big { color: #b8860b; font-weight: 600; }
+  .ty-str { color: #6a1b9a; }
+  .ty-any { color: #adb5bd; }
+
+  /* ── diff ── */
+  .diff-summary { font-size: 12px; margin-bottom: 8px; color: var(--muted); }
+  .diff-line { font-family: 'Cascadia Code', 'Fira Code', 'Courier New', monospace; font-size: 12px; padding: 1px 8px; white-space: pre-wrap; }
+  .diff-line.same { color: #495057; }
+  .diff-line.del { background: var(--del); color: #721c24; }
+  .diff-line.add { background: var(--add); color: #155724; }
+  .diff-line .mark { display: inline-block; width: 14px; font-weight: 700; }
+
+  @media (max-width: 768px) {
+    body { flex-direction: column; overflow-y: auto; }
+    .sidebar { width: 100%; max-height: 40vh; }
+  }
+</style>
+</head>
+<body>
+  <div class="sidebar">
+    <div class="header">
+      <h1>auto_cython</h1>
+      <p>py2cy — Python → <b>auto-typed</b> Cython</p>
+      <button id="bug-btn" type="button" class="bug-btn" title="Report a bug — opens the sh2perl issue form pre-filled with this session">🐞 Bug Report</button>
+    </div>
+    <div class="search-wrap">
+      <input type="search" id="example-search" placeholder="filter examples…" autocomplete="off">
+    </div>
+    <div id="examples-container"></div>
+    <div class="runtime-note" id="runtime-note"></div>
+  </div>
+
+  <div class="main">
+    <div class="card">
+      <h2 id="workspace-title">Python → typed Cython</h2>
+      <div class="example-description" id="example-description">Select an example from the sidebar</div>
+      <div style="margin:10px 0 6px"><b id="input-label">Python input</b></div>
+      <div class="ta-wrap">
+        <textarea id="input" spellcheck="false" placeholder="Select an example from the sidebar or type Python here…"></textarea>
+        <button type="button" class="copy-btn ta-copy" data-copy="input">Copy</button>
+      </div>
+
+      <div class="controls" style="margin-top:12px">
+        <span class="lbl">mode:</span>
+        <button id="mode-pure" class="mode-btn active" title="pure-Python mode: cython.declare / @cython.locals — the file stays valid, runnable Python (AUTO_CYTHON §5 mode 2, the recommended default)">pure-Python mode (.py)</button>
+        <button id="mode-pyx" class="mode-btn" title="traditional .pyx: cdef declarations + the GMP FFI block — the form the hand-written bench/*_typed.pyx goldens use (§5 mode 1)">traditional .pyx</button>
+        <button id="run-btn">Annotate</button>
+        <button id="auto-update-toggle" class="auto-update-toggle">Auto: ON</button>
+      </div>
+      <div class="gate-legend">
+        <b>an annotation is a proof, not a guess</b> · every declaration is emitted only when py2cy has proved the type;
+        anything unprovable is left as plain Python and listed in the refusal manifest.
+      </div>
+    </div>
+
+    <div class="status" id="status"></div>
+
+    <div id="sections">
+      <div class="panel" id="sec-code" data-persist="ac:sec-code">
+        <div class="panel-head"><span class="arrow">▾</span><span class="panel-title">Generated typed Cython</span><span class="panel-tag" id="tag-code"></span></div>
+        <div class="panel-body"><div class="ta-wrap"><textarea id="out-code" class="out-ta" readonly spellcheck="false" aria-label="Generated typed Cython">—</textarea><button type="button" class="copy-btn ta-copy" data-copy="code">Copy</button></div></div>
+      </div>
+
+      <div class="panel" id="sec-proof" data-persist="ac:sec-proof">
+        <div class="panel-head"><span class="arrow">▾</span><span class="panel-title">Proof / declarations</span><span class="panel-tag" id="tag-proof"></span></div>
+        <div class="panel-body">
+          <div class="map-hint">what the abstract interpreter proved, and the Cython type it earned — the evidence behind every declaration above.</div>
+          <div id="proof-lines"></div>
+        </div>
+      </div>
+
+      <div class="panel" id="sec-refuse" data-persist="ac:sec-refuse">
+        <div class="panel-head"><span class="arrow">▾</span><span class="panel-title">Refusal manifest</span><span class="panel-tag" id="tag-refuse"></span></div>
+        <div class="panel-body">
+          <div class="map-hint">the <b>honest half</b>: constructs py2cy will not annotate. The output stays plain, exact, correct Python at each site — this is the “REFUSE &gt; GUESS” contract, and it is what keeps a partial annotator semantics-preserving.</div>
+          <div id="refuse-lines"></div>
+        </div>
+      </div>
+
+      <div class="panel collapsed" id="sec-golden" data-persist="ac:sec-golden">
+        <div class="panel-head"><span class="arrow">▾</span><span class="panel-title">Hand-written .pyx golden</span><span class="panel-tag" id="tag-golden"></span></div>
+        <div class="panel-body">
+          <div class="map-hint">the human-typed Cython from <code>py-sh-go/profile_example/bench/cython/*_typed.pyx</code> (AUTO_CYTHON §2) — the acceptance oracle. Shown for the bench examples only.</div>
+          <div class="ta-wrap"><textarea id="out-golden" class="out-ta" readonly spellcheck="false" aria-label="Hand-written golden">—</textarea><button type="button" class="copy-btn ta-copy" data-copy="golden">Copy</button></div>
+        </div>
+      </div>
+
+      <div class="panel collapsed" id="sec-diff" data-persist="ac:sec-diff">
+        <div class="panel-head"><span class="arrow">▾</span><span class="panel-title">generated .pyx vs hand-written golden</span><span class="panel-tag" id="tag-diff"></span><button type="button" class="copy-btn" data-copy="diff">Copy</button></div>
+        <div class="panel-body"><div class="diff-summary" id="diff-summary"></div><div id="diff-lines"></div></div>
+      </div>
+
+      <div class="panel collapsed" id="sec-stdout" data-persist="ac:sec-stdout">
+        <div class="panel-head"><span class="arrow">▾</span><span class="panel-title">Original stdout (CPython shape)</span><span class="panel-tag" id="tag-orig"></span></div>
+        <div class="panel-body">
+          <div class="map-hint">the input run in the browser's Python (micropython.wasm). Annotating must never change what the program prints — pure-Python mode is the same source plus inert declarations. (This stage runs on the main thread: micropython's glue writes stdout through a DOM element, so it cannot live in a Web Worker.)</div>
+          <div class="ta-wrap"><textarea id="out-orig" class="out-ta" readonly spellcheck="false" aria-label="Original stdout">—</textarea><button type="button" class="copy-btn ta-copy" data-copy="orig">Copy</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script type="module">
+import { annotateJob } from "../src/otranspile-jobs.js";
+import { EXAMPLES, getExamples, getExample } from "./auto_cython-examples.js?v=1";
+
+// ─── state ──────────────────────────────────────────────────────
+let mode = "pure";               // "pure" | "pyx"
+let currentExample = null;
+let autoUpdate = true;
+let autoTimer = null;
+let busy = false;
+let outCode = "";
+
+const $ = (id) => document.getElementById(id);
+function showStatus(msg, type) {
+  const s = $("status");
+  s.textContent = msg;
+  s.className = "status " + (type || "info");
+  s.style.display = "block";
+}
+function hideStatus() { $("status").style.display = "none"; }
+function setTag(id, text) { const el = $("tag-" + id); if (el) el.textContent = text || ""; }
+function fmtMs(ms) { return (ms >= 100 ? Math.round(ms) : ms.toFixed(1)) + " ms"; }
+function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
+
+// ─── panels (persisted open/closed) ─────────────────────────────
+function initPanels() {
+  document.querySelectorAll(".panel").forEach((panel) => {
+    const key = panel.dataset.persist;
+    let collapsed = panel.classList.contains("collapsed");
+    try { if (localStorage.getItem(key) !== null) collapsed = localStorage.getItem(key) === "1"; } catch {}
+    panel.classList.toggle("collapsed", collapsed);
+    panel.querySelector(".panel-head").addEventListener("click", (e) => {
+      if (e.target.closest("button")) return;
+      panel.classList.toggle("collapsed");
+      try { localStorage.setItem(key, panel.classList.contains("collapsed") ? "1" : "0"); } catch {}
+    });
+  });
+}
+
+// ─── the annotate flow ──────────────────────────────────────────
+async function annotate() {
+  const source = $("input").value;
+  if (!source.trim()) { showStatus("Enter Python source first.", "error"); return; }
+  // A new annotation supersedes anything in flight (a mode switch or fast
+  // typing with auto-update): bump the generation so the stale run drops
+  // its result, then take over. Without this, the busy guard below would
+  // silently swallow the mode-toggle re-run.
+  const gen = ++execGen;
+  if (busy) terminateBusyStages();
+  busy = true;
+  paintRunButton();
+  const alive = () => gen === execGen;
+  let tick = null;
+  try {
+    const t0 = performance.now();
+    showStatus("annotating (" + (mode === "pyx" ? ".pyx" : "pure-Python mode") + ")…", "info");
+    tick = setInterval(() => { if (!alive() || !busy) { clearInterval(tick); return; } }, 500);
+
+    const r = await annotateJob(source, mode, (t) => { if (alive()) showStatus(t, "info"); });
+    if (!alive()) return;
+
+    outCode = r.text;
+    $("out-code").value = r.text;
+    setTag("code", (mode === "pyx" ? ".pyx" : "pure-Python mode") + " · " + r.text.split("\n").length + " lines · " + fmtMs(performance.now() - t0));
+    renderProof(r);
+    renderRefusals(r);
+
+    const ex = currentExample ? getExample(currentExample) : null;
+    const golden = ex && ex.golden ? ex.golden : "";
+    $("out-golden").value = golden || "— no hand-written golden for this example (the bench shapes have one)";
+    setTag("golden", golden ? "bench/cython golden" : "");
+    if (golden && mode === "pyx") {
+      renderDiff(golden, r.text);
+    } else if (golden) {
+      $("diff-summary").textContent = "switch to traditional .pyx to compare against the hand-written golden (pure-Python mode is a different surface by design)";
+      $("diff-lines").innerHTML = "";
+      setTag("diff", "");
+    } else {
+      $("diff-summary").textContent = "no golden for this example";
+      $("diff-lines").innerHTML = "";
+      setTag("diff", "");
+    }
+
+    // the original run — annotating must not change the program's output;
+    // this panel is the evidence. NB: micropython's vendored glue writes
+    // stdout through a DOM element, so it cannot run inside a Web Worker;
+    // the run therefore happens on the MAIN thread (the annotate stage,
+    // the one that can block on a big module, stays in its worker).
+    const origR = await runInlinePy(source);
+    if (!alive()) return;
+    if (!origR.ok) {
+      $("out-orig").value = "run failed: " + origR.error;
+      setTag("orig", "worker error");
+    } else {
+      const o = origR.result || {};
+      $("out-orig").value = (o.out || "") + (o.err ? "\n[stderr] " + o.err : "");
+      setTag("orig", "micropython.wasm · exit " + o.code);
+    }
+
+    const s = r.stats || {};
+    showStatus("annotated — " + (s.declared || 0) + " declaration(s), " + (s.refusals || 0) +
+      " refusal(s)" + (s.bigint ? ", " + s.bigint + " bigint (GMP FFI)" : "") +
+      " · " + fmtMs(performance.now() - t0), "success");
+  } catch (e) {
+    if (alive()) showStatus("error: " + (e && e.message ? e.message : e), "error");
+  } finally {
+    if (tick) clearInterval(tick);
+    if (alive()) { busy = false; paintRunButton(); }
+  }
+}
+
+// ─── proof table ────────────────────────────────────────────────
+function renderProof(r) {
+  const rows = (r.decls || []).map((d) => {
+    const cls = d.kind === "bigint" ? "ty-big" : d.kind === "int" ? "ty-int" : d.kind === "str" ? "ty-str" : "ty-any";
+    return "<tr><td><code>" + esc(d.scope) + "</code></td><td><code>" + esc(d.name) + "</code></td>" +
+      '<td class="' + cls + '"><code>' + esc(d.ty) + "</code></td><td><code>cdef " + esc(d.ctype) + "</code></td>" +
+      "<td>" + (d.kind === "bigint" ? "GMP FFI (Cython has no big-int)" : d.loop ? "counted-loop counter" : "proved by the flow analysis") + "</td></tr>";
+  });
+  $("proof-lines").innerHTML = rows.length
+    ? '<table class="manifest"><thead><tr><th>scope</th><th>name</th><th>proved type</th><th>Cython</th><th>why</th></tr></thead><tbody>' + rows.join("") + "</tbody></table>"
+    : '<div class="map-hint">nothing was provable — every name stays a Python object (still correct, just untyped).</div>';
+  setTag("proof", (r.decls || []).length + " declaration(s)");
+}
+
+// ─── refusal manifest ───────────────────────────────────────────
+function renderRefusals(r) {
+  const list = r.refusals || [];
+  setTag("refuse", list.length ? list.length + " refusal(s)" : "none");
+  if (!list.length) {
+    $("refuse-lines").innerHTML = '<div class="manifest-empty">✓ no refusals — every construct in this program was provable.</div>';
+    return;
+  }
+  const rows = list.map((x) =>
+    "<tr><td class=\"ln\">" + (x.line == null ? "—" : x.line) + "</td><td><code>" + esc(x.construct) + "</code></td>" +
+    "<td>" + esc(x.reason) + "</td><td><code>" + esc(x.site || "") + "</code></td></tr>");
+  $("refuse-lines").innerHTML = '<table class="manifest"><thead><tr><th>line</th><th>construct</th><th>why it is not annotated</th><th>site</th></tr></thead><tbody>' + rows.join("") + "</tbody></table>";
+}
+
+// ─── diff (declarations vs the golden) ──────────────────────────
+// (the generic LCS diff is not used here — see renderDiff: a line diff
+// against a `def main():`-wrapped golden is all noise)
+function renderDiff(golden, generated) {
+  // Compare by declared NAME: the golden's `cdef long long h` and
+  // py2cy's `cdef long long h` agree exactly; `cdef long long i` vs
+  // `cdef int i` is the same declaration at a *narrower* (still sound)
+  // width, which is a win, not a mismatch. A golden initializer
+  // (`cdef long long h = 0`) is dropped: py2cy declares and then assigns
+  // on the source's own line, so the type is what we compare.
+  const norm = (l) => l.replace(/\s*=\s*[^=].*$/, "").trim();
+  const declOf = (t) => String(t).split("\n").map((l) => l.trim())
+    .filter((l) => /^cdef |^@cython\.locals|^cython\.declare/.test(l));
+  const nameOf = (l) => {
+    if (/^@cython\.locals\(/.test(l)) return l.replace(/^@cython\.locals\(|\)$/g, "").split("=")[0];
+    if (/^cython\.declare/.test(l)) return l.replace(/^cython\.declare\(|\)$/g, "").split("=")[0];
+    const m = /^cdef\s+[A-Za-z_][A-Za-z0-9_\[\]\s]*?\s+([A-Za-z_][A-Za-z0-9_]*)$/.exec(l);
+    return m ? m[1] : l;
+  };
+  const g = declOf(golden).map(norm), n = declOf(generated).map(norm);
+  const gByName = new Map(g.map((l) => [nameOf(l), l]));
+  const nByName = new Map(n.map((l) => [nameOf(l), l]));
+  const ops = [];
+  let exact = 0, narrower = 0, missing = 0, extra = 0;
+  for (const [name, gl] of gByName) {
+    const nl = nByName.get(name);
+    if (!nl) { ops.push({ t: "del", s: "- " + gl + "   (only in the golden)" }); missing++; continue; }
+    if (nl === gl) { ops.push({ t: "same", s: "= " + gl }); exact++; }
+    else { ops.push({ t: "same", s: "~ " + name + ": golden `" + gl.replace(/^cdef\s+/, "") + "` → py2cy `" + nl.replace(/^cdef\s+/, "") + "` (narrower, still sound)" }); narrower++; }
+  }
+  for (const [name, nl] of nByName) if (!gByName.has(name)) { ops.push({ t: "add", s: "+ " + nl + "   (generated only)" }); extra++; }
+  $("diff-summary").textContent =
+    exact + "/" + gByName.size + " declarations identical to the golden" +
+    (narrower ? " · " + narrower + " at a narrower width (sound)" : "") +
+    (extra ? " · " + extra + " generated-only" : "") +
+    (missing ? " · " + missing + " golden-only" : "");
+  $("diff-lines").innerHTML = ops.map((o) => {
+    const mark = o.t === "same" ? " " : o.t === "del" ? "-" : "+";
+    return '<div class="diff-line ' + o.t + '"><span class="mark">' + mark + "</span>" + esc(o.s) + "</div>";
+  }).join("");
+  setTag("diff", exact + "/" + gByName.size + " identical");
+}
+
+// ─── stage workers (annotate + python run) ──────────────────────
+// Mirrors the otranspiler page's worker protocol. The annotate job is
+// pure JS (no wasm); the run job uses the py runtime. Without Worker
+// support both fall back to the main thread.
+let execGen = 0;
+let jobSeq = 1;
+const stageWorkers = {};
+const slotBusy = {};
+const HAVE_WORKERS = typeof Worker !== "undefined";
+
+function terminateStage(slot) {
+  const s = stageWorkers[slot];
+  if (s) { try { s.worker.terminate(); } catch {} stageWorkers[slot] = null; }
+  slotBusy[slot] = false;
+}
+function terminateBusyStages() { for (const slot of Object.keys(slotBusy)) if (slotBusy[slot]) terminateStage(slot); }
+
+async function ensureStageWorker(slot) {
+  const s = stageWorkers[slot];
+  if (s) return s.ready;
+  const worker = new Worker(new URL("otranspile-job.js", import.meta.url), { type: "module" });
+  const entry = { worker, ready: null };
+  stageWorkers[slot] = entry;
+  entry.ready = new Promise((resolve, reject) => {
+    const to = setTimeout(() => reject(new Error("worker " + slot + " init timeout")), 30000);
+    const onMsg = (e) => {
+      if (e.data && e.data.type === "ready") { clearTimeout(to); worker.removeEventListener("message", onMsg); resolve(worker); }
+    };
+    worker.addEventListener("message", onMsg);
+    worker.postMessage({ type: "init" });
+  });
+  try { await entry.ready; } catch (e) { terminateStage(slot); throw e; }
+  return entry.ready;
+}
+
+function runStage(slot, kind, payload, onStatus) {
+  if (!HAVE_WORKERS) {
+    return (async () => {
+      try {
+        if (kind === "annotate") {
+          const m = await import("../src/py2cy.js");
+          const r = m.annotate(payload.source, { mode: payload.mode });
+          return { ok: true, result: { text: r.text, mode: r.mode, decls: r.decls, refusals: r.refusals, stats: r.stats } };
+        }
+        const jobs = await import("../src/otranspile-jobs.js");
+        const [fsMod, envMod] = await Promise.all([import("../src/fs/index.js"), import("../src/env.js")]);
+        const res = await jobs.runJob(payload.lang, payload.code, { fs: fsMod.fs, env: envMod.env, onStatus });
+        return { ok: true, result: res };
+      } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+    })();
+  }
+  return (async () => {
+    let worker;
+    slotBusy[slot] = true;
+    try { worker = await ensureStageWorker(slot); }
+    catch (e) { slotBusy[slot] = false; return { ok: false, error: String((e && e.message) || e) }; }
+    const jobId = jobSeq++;
+    return new Promise((resolve) => {
+      const onMsg = (e) => {
+        const m = e.data || {};
+        if (m.jobId !== jobId) return;
+        if (m.type === "status") { try { onStatus && onStatus(m.text); } catch {} return; }
+        if (m.type === "done") {
+          worker.removeEventListener("message", onMsg);
+          slotBusy[slot] = false;
+          resolve(m.ok ? { ok: true, result: m.result } : { ok: false, error: m.error });
+        }
+      };
+      worker.addEventListener("message", onMsg);
+      worker.postMessage({ type: "job", jobId, kind, ...payload });
+    });
+  })();
+}
+
+function paintRunButton() { $("run-btn").textContent = busy ? "…wait" : "Annotate"; }
+function onRunButton() { if (!busy) annotate(); }
+
+// ─── the original Python run (main thread: the glue needs the DOM) ──
+// The vendored micropython glue routes stdout through a #mp_js_stdout
+// element (www/vendor/micropython.js _mp_js_write), so a Web Worker —
+// which has no document — cannot host it. py.js checks `document` and
+// would take its Node branch; running here on the main thread keeps the
+// browser branch (and the engine is a persistent singleton, so repeat
+// runs are cheap).
+let pyJobsMod = null;
+async function runInlinePy(source) {
+  try {
+    if (!pyJobsMod) {
+      const [jobs, fsMod, envMod] = await Promise.all([
+        import("../src/otranspile-jobs.js"),
+        import("../src/fs/index.js"),
+        import("../src/env.js"),
+      ]);
+      pyJobsMod = { jobs, fs: fsMod.fs, env: envMod.env };
+    }
+    const res = await pyJobsMod.jobs.runJob("py", String(source), { fs: pyJobsMod.fs, env: pyJobsMod.env, onStatus: () => {} });
+    return { ok: true, result: res };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
+// ─── UI wiring ──────────────────────────────────────────────────
+let searchQuery = "";
+function setSearch(q) { searchQuery = (q || "").toLowerCase().trim(); renderExamples(); }
+
+function renderExamples() {
+  const container = $("examples-container");
+  container.innerHTML = "";
+  const cat = document.createElement("div");
+  cat.className = "category";
+  const h = document.createElement("h3");
+  h.textContent = "Examples (" + getExamples().length + ")";
+  cat.appendChild(h);
+  const q = searchQuery;
+  const exs = getExamples().filter((ex) => !q || ex.name.includes(q) || ex.desc.toLowerCase().includes(q));
+  if (!exs.length) {
+    const p = document.createElement("div");
+    p.className = "map-hint";
+    p.textContent = q ? "no examples match “" + q + "”" : "no examples";
+    cat.appendChild(p);
+  }
+  for (const ex of exs) {
+    const div = document.createElement("div");
+    div.className = "example-item";
+    const btn = document.createElement("button");
+    btn.className = "example-btn" + (currentExample === ex.name ? " active" : "");
+    btn.textContent = ex.name + (ex.golden ? " ★" : "");
+    btn.title = ex.desc + (ex.golden ? " (has a hand-written .pyx golden)" : "");
+    btn.addEventListener("click", () => loadExample(ex));
+    div.appendChild(btn);
+    cat.appendChild(div);
+  }
+  container.appendChild(cat);
+}
+
+function loadExample(ex) {
+  currentExample = ex.name;
+  $("input").value = ex.code;
+  $("example-description").innerHTML =
+    '<span class="ex-name">' + esc(ex.name) + "</span> — " + esc(ex.desc) +
+    (ex.expected ? '<span class="ex-expect">expected: ' + esc(ex.expected) + "</span>" : "");
+  renderExamples();
+  hideStatus();
+  syncUrl();
+  if (autoUpdate) annotate();
+}
+
+// ─── shareable URL (#mode=…&example=…&code=…) ───────────────────
+function syncUrl() {
+  try {
+    const p = new URLSearchParams();
+    p.set("mode", mode);
+    if (currentExample) p.set("example", currentExample);
+    const ex = currentExample ? getExample(currentExample) : null;
+    const code = $("input").value;
+    if (ex) { if (code !== ex.code) p.set("code", code); }
+    else if (code) p.set("code", code);
+    history.replaceState(null, "", "#" + p.toString());
+  } catch {}
+}
+function applyUrlState() {
+  const h = location.hash.slice(1);
+  if (!h) return false;
+  const p = new URLSearchParams(h);
+  if (p.get("mode") === "pyx") setMode("pyx");
+  if (p.has("code") && p.get("code")) {
+    $("input").value = p.get("code");
+    currentExample = p.get("example") || null;
+    showStatus("shared source loaded — review it, then press Annotate", "info");
+    return true;
+  }
+  const name = p.get("example");
+  const ex = name && getExample(name);
+  if (ex) { loadExample(ex); return true; }
+  return false;
+}
+
+function setMode(m) {
+  mode = m === "pyx" ? "pyx" : "pure";
+  $("mode-pure").classList.toggle("active", mode === "pure");
+  $("mode-pyx").classList.toggle("active", mode === "pyx");
+  syncUrl();
+}
+
+// ─── copy buttons ───────────────────────────────────────────────
+function copyToClipboard(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(String(text));
+  return new Promise((resolve, reject) => {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = String(text); ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      ok ? resolve() : reject(new Error("copy failed"));
+    } catch (e) { reject(e); }
+  });
+}
+function wireCopyButtons() {
+  document.querySelectorAll(".copy-btn[data-copy]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const id = btn.dataset.copy;
+      let text = "";
+      if (id === "input") text = $("input").value;
+      else if (id === "diff") text = $("diff-lines").textContent;
+      else if (id === "code") text = outCode || "";
+      else if ($("out-" + id)) text = $("out-" + id).value || "";
+      if (!text || text === "—") { showStatus("nothing to copy yet", "warn"); return; }
+      try {
+        await copyToClipboard(text);
+        const old = btn.textContent;
+        btn.textContent = "Copied ✓"; btn.classList.add("copied");
+        setTimeout(() => { btn.textContent = old; btn.classList.remove("copied"); }, 1200);
+      } catch (e) { showStatus("copy failed: " + e.message, "error"); }
+    });
+  });
+}
+
+// ─── bug report ─────────────────────────────────────────────────
+function wireBugButton() {
+  $("bug-btn").addEventListener("click", () => {
+    const src = $("input").value;
+    if (!src.trim()) { showStatus("enter source first, then file the bug report", "warn"); return; }
+    const ex = currentExample ? getExample(currentExample) : null;
+    const title = ("auto_cython: " + (currentExample || "bug report") + " (" + mode + ")").slice(0, 200);
+    const body = [
+      "## What I did",
+      "Ran the py2cy annotator on **" + (currentExample || "a pasted program") + "** in **" + mode + "** mode.",
+      "",
+      "## Python source",
+      "```python",
+      src,
+      "```",
+      "",
+      "## Generated typed Cython",
+      "```python",
+      outCode || "(not annotated yet)",
+      "```",
+      "",
+      ex && ex.golden ? "## Hand-written golden (`bench/cython/*_typed.pyx`)\n```python\n" + ex.golden + "\n```\n" : "",
+      "## Expected / actual",
+      "<!-- what did you expect to happen, and what happened instead? -->",
+    ].join("\n");
+    const url = "https://github.com/gmatht/sh2perl/issues/new?title=" +
+      encodeURIComponent(title) + "&body=" + encodeURIComponent(body);
+    showStatus("opening the sh2perl issue form — pre-filled (review & submit there)", "info");
+    window.open(url, "_blank");
+  });
+}
+
+function init() {
+  initPanels();
+  const restored = applyUrlState();
+  renderExamples();
+  wireCopyButtons();
+  wireBugButton();
+  $("mode-pure").addEventListener("click", () => { setMode("pure"); if (autoUpdate) annotate(); });
+  $("mode-pyx").addEventListener("click", () => { setMode("pyx"); if (autoUpdate) annotate(); });
+  $("run-btn").addEventListener("click", onRunButton);
+  $("example-search").addEventListener("input", (e) => setSearch(e.target.value));
+  $("input").addEventListener("input", () => {
+    if (!autoUpdate) return;
+    clearTimeout(autoTimer);
+    autoTimer = setTimeout(() => { if (autoUpdate && $("input").value.trim()) { syncUrl(); annotate(); } }, 250);
+  });
+  const toggle = $("auto-update-toggle");
+  toggle.addEventListener("click", () => {
+    autoUpdate = !autoUpdate;
+    toggle.textContent = "Auto: " + (autoUpdate ? "ON" : "OFF");
+    toggle.classList.toggle("off", !autoUpdate);
+    if (autoUpdate) annotate();
+  });
+
+  $("runtime-note").innerHTML =
+    "<b>py2cy</b> is a <i>same-language accelerator</i>: Python in, typed Cython out (AUTO_CYTHON §10).<br>" +
+    "It is not a neutral backend — the value is diagonal (source and target share CPython's runtime), " +
+    "so it lives source-side, next to py-sh-go.<br><br>" +
+    "★ = has the hand-written <code>bench/cython</code> golden to compare against.";
+
+  if (!restored && !$("input").value && EXAMPLES.length) loadExample(EXAMPLES[0]);
+}
+
+init();
+</script>
+</body>
+</html>

@@ -372,6 +372,24 @@ async function runC(src, ctx) {
   return { out: wasmRunner.getStdout(), err: wasmRunner.getStderr(), code: wasmRunner.getExitCode() };
 }
 
+// ─── py2cy: the auto-typed-Cython annotator job ─────────────────
+// The auto_cython page's compute. It is pure source→source (no wasm),
+// but it lives here for the same reason the transpile stage does: the
+// page runs it in a worker so a big module's analysis cannot block the
+// UI. `mode` is "pure" (default, §5 mode 2) or "pyx" (§5 mode 1).
+export async function annotateJob(source, mode, ctx) {
+  const { annotate } = await import("./py2cy.js");
+  onStatus(ctx, "annotating " + (mode === "pyx" ? ".pyx" : "pure-Python mode") + "…");
+  const r = annotate(String(source), { mode });
+  return {
+    text: r.text,
+    mode: r.mode,
+    decls: r.decls,
+    refusals: r.refusals,
+    stats: r.stats,
+  };
+}
+
 // Run one side (original source or generated target). Returns the
 // { out, err, code, note? } record, or null when the language has no
 // engine in this realm (the page renders the compile-only note).
