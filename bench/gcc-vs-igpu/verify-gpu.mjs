@@ -4,7 +4,8 @@ import { getOtranspilerl } from "../../src/otranspilerl.js";
 import { packFragmentResultToRGBA, collapseConsecutiveListLoop, injectPointSize } from "../../src/shglsl-opt.js";
 import {
   collatzBlockShader, ca1dBlockShader, hashBlockFragmentShader,
-  lowerWhileLoops, lowerBitOps, lowerBranchless,
+  mandelbrotBlockShader, maxreduceBlockShader, thresholdBlockShader, clampBlockShader,
+  lowerWhileLoops, lowerBitOps, lowerBranchless, selectIfElse, MAX_ITER,
   checksumAdd, RULE_118,
 } from "./c-programs.mjs";
 import { execFileSync } from "node:child_process";
@@ -40,14 +41,15 @@ const lib = await getOtranspilerl();
 // CHUNK_PX-pixel sub-draws (≈51M items each) and sum partial checksums mod 2^32.
 const CHUNK_PX = 50000;
 
-function runCollatz(gl, N, BLOCK) {
+// one generalized block-reduction runner (chunked draws + branchless pipeline)
+function runProblem(gl, name, N, BLOCK, shaderFn, maxIter) {
   N = Math.ceil(N / BLOCK) * BLOCK;
   const totalP = N / BLOCK;
   let checksum = 0;
   for (let basePx = 0; basePx < totalP; basePx += CHUNK_PX) {
     const chunkP = Math.min(CHUNK_PX, totalP - basePx);
     const { TW, TH } = grid(chunkP);
-    const raw = lib.raw("otranspilerl_glsl", [lowerBitOps(lowerWhileLoops(lowerBranchless(collatzBlockShader(TW, basePx + chunkP, BLOCK, basePx))))], [800]).output;
+    const raw = lib.raw("otranspilerl_glsl", [lowerBitOps(lowerWhileLoops(lowerBranchless(selectIfElse(shaderFn(TW, basePx + chunkP, BLOCK, basePx)), { maxIter })))], [800]).output;
     let g = collapseConsecutiveListLoop(raw);
     g = collapseConsecutiveListLoop(g);
     const glsl = packFragmentResultToRGBA(g);
@@ -57,51 +59,7 @@ function runCollatz(gl, N, BLOCK) {
     const px = new Uint8Array(TW * TH * 4);
     gl.readPixels(0, 0, TW, TH, gl.RGBA, gl.UNSIGNED_BYTE, px);
     let part = 0;
-    for (let i = 0; i < TW * TH; i++) part = checksumAdd("collatz", part, decode32(px, i));
-    checksum = (checksum + part) >>> 0;
-  }
-  return { checksum };
-}
-
-function runCa1d(gl, N, BLOCK) {
-  N = Math.ceil(N / BLOCK) * BLOCK;
-  const totalP = N / BLOCK;
-  let checksum = 0;
-  for (let basePx = 0; basePx < totalP; basePx += CHUNK_PX) {
-    const chunkP = Math.min(CHUNK_PX, totalP - basePx);
-    const { TW, TH } = grid(chunkP);
-    const raw = lib.raw("otranspilerl_glsl", [lowerBitOps(lowerWhileLoops(lowerBranchless(ca1dBlockShader(TW, basePx + chunkP, N, BLOCK, RULE_118, basePx))))], [800]).output;
-    const g = collapseConsecutiveListLoop(raw);
-    const glsl = packFragmentResultToRGBA(g);
-    const pr = fragProgram(gl, glsl, TW, TH);
-    if (pr.err) return { err: pr.err };
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
-    const px = new Uint8Array(TW * TH * 4);
-    gl.readPixels(0, 0, TW, TH, gl.RGBA, gl.UNSIGNED_BYTE, px);
-    let part = 0;
-    for (let i = 0; i < TW * TH; i++) part = checksumAdd("ca1d", part, decode32(px, i));
-    checksum = (checksum + part) >>> 0;
-  }
-  return { checksum };
-}
-
-function runHash(gl, N, BLOCK) {
-  N = Math.ceil(N / BLOCK) * BLOCK;
-  const totalP = N / BLOCK;
-  let checksum = 0;
-  for (let basePx = 0; basePx < totalP; basePx += CHUNK_PX) {
-    const chunkP = Math.min(CHUNK_PX, totalP - basePx);
-    const { TW, TH } = grid(chunkP);
-    const raw = lib.raw("otranspilerl_glsl", [lowerBitOps(lowerWhileLoops(lowerBranchless(hashBlockFragmentShader(TW, basePx + chunkP, BLOCK, basePx))))], [800]).output;
-    const g = collapseConsecutiveListLoop(raw);
-    const glsl = packFragmentResultToRGBA(g);
-    const pr = fragProgram(gl, glsl, TW, TH);
-    if (pr.err) return { err: pr.err };
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
-    const px = new Uint8Array(TW * TH * 4);
-    gl.readPixels(0, 0, TW, TH, gl.RGBA, gl.UNSIGNED_BYTE, px);
-    let part = 0;
-    for (let i = 0; i < TW * TH; i++) part = checksumAdd("hash", part, decode32(px, i));
+    for (let i = 0; i < TW * TH; i++) part = checksumAdd(name, part, decode32(px, i));
     checksum = (checksum + part) >>> 0;
   }
   return { checksum };
@@ -115,10 +73,20 @@ for (const [name, src] of Object.entries(C_SOURCES)) {
 const N = 200000;
 const BLOCK = 64;
 const gl = createGL(4096, 4096, { preserveDrawingBuffer: true });
+const PROBLEMS = ["collatz", "ca1d", "hash", "mandelbrot", "maxreduce", "threshold", "clamp"];
+const RUNNERS = {
+  collatz: (gl, N, BLOCK) => runProblem(gl, "collatz", N, BLOCK, collatzBlockShader, MAX_ITER.collatz),
+  ca1d: (gl, N, BLOCK) => runProblem(gl, "ca1d", N, BLOCK, (TW, P, B, bp) => ca1dBlockShader(TW, P, N, B, RULE_118, bp), MAX_ITER.ca1d),
+  hash: (gl, N, BLOCK) => runProblem(gl, "hash", N, BLOCK, hashBlockFragmentShader, MAX_ITER.hash),
+  mandelbrot: (gl, N, BLOCK) => runProblem(gl, "mandelbrot", N, BLOCK, mandelbrotBlockShader, MAX_ITER.mandelbrot),
+  maxreduce: (gl, N, BLOCK) => runProblem(gl, "maxreduce", N, BLOCK, maxreduceBlockShader, MAX_ITER.maxreduce),
+  threshold: (gl, N, BLOCK) => runProblem(gl, "threshold", N, BLOCK, thresholdBlockShader, MAX_ITER.threshold),
+  clamp: (gl, N, BLOCK) => runProblem(gl, "clamp", N, BLOCK, clampBlockShader, MAX_ITER.clamp),
+};
 let allOk = true;
-for (const name of ["collatz", "ca1d", "hash"]) {
-  const cOut = execFileSync(`/tmp/gvi_${name}`, [String(N)], { stdio: "pipe" }).toString().trim();
-  const r = name === "collatz" ? runCollatz(gl, N, BLOCK) : name === "ca1d" ? runCa1d(gl, N, BLOCK) : runHash(gl, N, BLOCK);
+for (const name of PROBLEMS) {
+  const cOut = execFileSync(`/tmp/gvi_${name}`, [String(N), String(BLOCK)], { stdio: "pipe" }).toString().trim();
+  const r = RUNNERS[name](gl, N, BLOCK);
   if (r.err) { console.log(name, "GPU ERR", r.err); allOk = false; continue; }
   const ok = r.checksum === Number(cOut) >>> 0;
   console.log(`${name}: GPU checksum ${r.checksum} vs C ${cOut} → ${ok ? "MATCH" : "MISMATCH"}`);

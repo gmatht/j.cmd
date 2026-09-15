@@ -30,7 +30,8 @@ import { getOtranspilerl } from "../src/otranspilerl.js";
 import { packFragmentResultToRGBA, collapseConsecutiveListLoop } from "../src/shglsl-opt.js";
 import {
   collatzBlockShader, ca1dBlockShader, hashBlockFragmentShader,
-  lowerWhileLoops, lowerBitOps, lowerBranchless,
+  mandelbrotBlockShader, maxreduceBlockShader, thresholdBlockShader, clampBlockShader,
+  lowerWhileLoops, lowerBitOps, lowerBranchless, selectIfElse, MAX_ITER,
   checksumAdd, RULE_118,
 } from "../bench/gcc-vs-igpu/c-programs.mjs";
 
@@ -82,16 +83,18 @@ function grid(P) {
 // TOTAL pixel count, so chunk boundaries are exact (no partial items).
 const CHUNK_PX = 50000;
 
-function runCollatz(gl, lib, N, BLOCK) {
+// one generalized block-reduction runner: chunked draws (TDR safety), the
+// branchless pre-pass pipeline, warmup + timed draw, mod-2^32 checksum.
+function runProblem(gl, lib, name, N, BLOCK, shaderFn, maxIter) {
   N = Math.ceil(N / BLOCK) * BLOCK;
   const totalP = N / BLOCK;
   let checksum = 0, totalMs = 0;
   for (let basePx = 0; basePx < totalP; basePx += CHUNK_PX) {
     const chunkP = Math.min(CHUNK_PX, totalP - basePx);
     const { TW, TH } = grid(chunkP);
-    const raw = lib.raw("otranspilerl_glsl", [lowerBitOps(lowerWhileLoops(lowerBranchless(collatzBlockShader(TW, basePx + chunkP, BLOCK, basePx))))], [800]).output;
-    let g = collapseConsecutiveListLoop(raw); // outer b-loop
-    g = collapseConsecutiveListLoop(g);       // inner s-loop
+    const raw = lib.raw("otranspilerl_glsl", [lowerBitOps(lowerWhileLoops(lowerBranchless(selectIfElse(shaderFn(TW, basePx + chunkP, BLOCK, basePx)), { maxIter })))], [800]).output;
+    let g = collapseConsecutiveListLoop(raw);
+    g = collapseConsecutiveListLoop(g);
     const glsl = packFragmentResultToRGBA(g);
     const pr = fragProgram(gl, glsl, TW, TH);
     if (pr.err) return { err: pr.err };
@@ -107,61 +110,7 @@ function runCollatz(gl, lib, N, BLOCK) {
     gl.readPixels(0, 0, TW, TH, gl.RGBA, gl.UNSIGNED_BYTE, px);
     totalMs += performance.now() - t0;
     let part = 0;
-    for (let i = 0; i < TW * TH; i++) part = checksumAdd("collatz", part, decode32(px, i));
-    checksum = (checksum + part) >>> 0;
-  }
-  return { ms: totalMs, checksum };
-}
-
-function runCa1d(gl, lib, N, BLOCK) {
-  N = Math.ceil(N / BLOCK) * BLOCK;
-  const totalP = N / BLOCK;
-  let checksum = 0, totalMs = 0;
-  for (let basePx = 0; basePx < totalP; basePx += CHUNK_PX) {
-    const chunkP = Math.min(CHUNK_PX, totalP - basePx);
-    const { TW, TH } = grid(chunkP);
-    const raw = lib.raw("otranspilerl_glsl", [lowerBitOps(lowerWhileLoops(lowerBranchless(ca1dBlockShader(TW, basePx + chunkP, N, BLOCK, RULE_118, basePx))))], [800]).output;
-    const g = collapseConsecutiveListLoop(raw);
-    const glsl = packFragmentResultToRGBA(g);
-    const pr = fragProgram(gl, glsl, TW, TH);
-    if (pr.err) return { err: pr.err };
-    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
-    gl.drawArrays(gl.TRIANGLES, 0, 3); // warmup (HLSL compile on first draw)
-    gl.readPixels(0, 0, TW, TH, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(TW * TH * 4));
-    const t0 = performance.now();
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
-    const px = new Uint8Array(TW * TH * 4);
-    gl.readPixels(0, 0, TW, TH, gl.RGBA, gl.UNSIGNED_BYTE, px);
-    totalMs += performance.now() - t0;
-    let part = 0;
-    for (let i = 0; i < TW * TH; i++) part = checksumAdd("ca1d", part, decode32(px, i));
-    checksum = (checksum + part) >>> 0;
-  }
-  return { ms: totalMs, checksum };
-}
-
-function runHash(gl, lib, N, BLOCK) {
-  N = Math.ceil(N / BLOCK) * BLOCK;
-  const totalP = N / BLOCK;
-  let checksum = 0, totalMs = 0;
-  for (let basePx = 0; basePx < totalP; basePx += CHUNK_PX) {
-    const chunkP = Math.min(CHUNK_PX, totalP - basePx);
-    const { TW, TH } = grid(chunkP);
-    const raw = lib.raw("otranspilerl_glsl", [lowerBitOps(lowerWhileLoops(lowerBranchless(hashBlockFragmentShader(TW, basePx + chunkP, BLOCK, basePx))))], [800]).output;
-    const g = collapseConsecutiveListLoop(raw);
-    const glsl = packFragmentResultToRGBA(g);
-    const pr = fragProgram(gl, glsl, TW, TH);
-    if (pr.err) return { err: pr.err };
-    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
-    gl.drawArrays(gl.TRIANGLES, 0, 3); // warmup (HLSL compile on first draw)
-    gl.readPixels(0, 0, TW, TH, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(TW * TH * 4));
-    const t0 = performance.now();
-  gl.drawArrays(gl.TRIANGLES, 0, 3);
-    const px = new Uint8Array(TW * TH * 4);
-    gl.readPixels(0, 0, TW, TH, gl.RGBA, gl.UNSIGNED_BYTE, px);
-    totalMs += performance.now() - t0;
-    let part = 0;
-    for (let i = 0; i < TW * TH; i++) part = checksumAdd("hash", part, decode32(px, i));
+    for (let i = 0; i < TW * TH; i++) part = checksumAdd(name, part, decode32(px, i));
     checksum = (checksum + part) >>> 0;
   }
   return { ms: totalMs, checksum };
@@ -177,7 +126,12 @@ async function main() {
     collatz: sizeOf("collatz", 100000000),
     ca1d: sizeOf("ca1d", 1000000000),
     hash: sizeOf("hash", 1000000000),
+    mandelbrot: sizeOf("mandelbrot", 50000000),
+    maxreduce: sizeOf("maxreduce", 1000000000),
+    threshold: sizeOf("threshold", 1000000000),
+    clamp: sizeOf("clamp", 1000000000),
   };
+  const PROBLEMS = Object.keys(sizes);
   const cv = $("c");
   const gl = cv.getContext("webgl", { antialias: false, preserveDrawingBuffer: true });
   if (!gl) { out("no webgl"); return; }
@@ -193,19 +147,23 @@ async function main() {
   // use the C side's sizes when available — the URL may be stale (a
   // manually re-opened page with old ?collatz=… params), and the GPU must
   // run at the SAME size the C checksum was computed for.
-  for (const name of ["collatz", "ca1d", "hash"]) {
+  for (const name of PROBLEMS) {
     if (cBy[name] && cBy[name].size) sizes[name] = cBy[name].size;
   }
 
-  out(`renderer: ${renderer} (${hw})\n⏳ running the GPU side (block=${BLOCK}; sizes: collatz ${sizes.collatz}, ca1d ${sizes.ca1d}, hash ${sizes.hash})…`);
+  out(`renderer: ${renderer} (${hw})\n⏳ running the GPU side (block=${BLOCK}; sizes: ${PROBLEMS.map((n) => `${n} ${sizes[n]}`).join(", ")})…`);
 
   const runners = {
-    collatz: (gl, lib, N) => runCollatz(gl, lib, N, BLOCK),
-    ca1d: (gl, lib, N) => runCa1d(gl, lib, N, BLOCK),
-    hash: (gl, lib, N) => runHash(gl, lib, N, BLOCK),
+    collatz: (gl, lib, N) => runProblem(gl, lib, "collatz", N, BLOCK, collatzBlockShader, MAX_ITER.collatz),
+    ca1d: (gl, lib, N) => runProblem(gl, lib, "ca1d", N, BLOCK, (TW, P, B, bp) => ca1dBlockShader(TW, P, N, B, RULE_118, bp), MAX_ITER.ca1d),
+    hash: (gl, lib, N) => runProblem(gl, lib, "hash", N, BLOCK, hashBlockFragmentShader, MAX_ITER.hash),
+    mandelbrot: (gl, lib, N) => runProblem(gl, lib, "mandelbrot", N, BLOCK, mandelbrotBlockShader, MAX_ITER.mandelbrot),
+    maxreduce: (gl, lib, N) => runProblem(gl, lib, "maxreduce", N, BLOCK, maxreduceBlockShader, MAX_ITER.maxreduce),
+    threshold: (gl, lib, N) => runProblem(gl, lib, "threshold", N, BLOCK, thresholdBlockShader, MAX_ITER.threshold),
+    clamp: (gl, lib, N) => runProblem(gl, lib, "clamp", N, BLOCK, clampBlockShader, MAX_ITER.clamp),
   };
   const results = [];
-  for (const name of ["collatz", "ca1d", "hash"]) {
+  for (const name of PROBLEMS) {
     progress("  … " + name + " (N=" + sizes[name] + ")");
     const r = runners[name](gl, lib, sizes[name]);
     if (r.err) { results.push({ name, err: r.err }); progress("  " + name + ": ERROR " + r.err); continue; }

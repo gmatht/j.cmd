@@ -236,7 +236,7 @@ const spawnMs = minOf(() => execFileSync("/bin/true", [], { stdio: "ignore" }), 
   const cMs = minOf(() => execFileSync("/tmp/vs_hash", [records.map((r) => r.join(",")).join(";")], { stdio: "ignore" }), runs);
   const raw = injectPointSize(lib.raw("otranspilerl_glslv", [hashVertexShader()], [800]).output, 3.0);
   const cold = minOf(() => lib.raw("otranspilerl_glslv", [hashVertexShader()], [800]).output, runs);
-  const W2 = N * 2; // stride-2 point transport
+  const W2 = N * 2; // stride-2 point transport (aUv.x = exact integer slot i*2, aUv.y = W2 — see hashVertexShader)
   const gl = createGL(W2, 1, { preserveDrawingBuffer: true });
   const FRAG = `precision mediump float;\nvarying highp vec4 vColor;\nvoid main(){ gl_FragColor = vColor; }`;
   const vs = gl.createShader(gl.VERTEX_SHADER); gl.shaderSource(vs, raw); gl.compileShader(vs);
@@ -244,9 +244,9 @@ const spawnMs = minOf(() => execFileSync("/bin/true", [], { stdio: "ignore" }), 
   const p = gl.createProgram(); gl.attachShader(p, vs); gl.attachShader(p, fs); gl.linkProgram(p);
   gl.useProgram(p);
   const aPos = new Float32Array(N * 3);
-  records.forEach((r, i) => { aPos[i * 3] = r[0] / 1000; aPos[i * 3 + 1] = r[1] / 1000; aPos[i * 3 + 2] = r[2] / 1000; });
+  records.forEach((r, i) => { aPos[i * 3] = (r[0] + 0.5) / 1000; aPos[i * 3 + 1] = (r[1] + 0.5) / 1000; aPos[i * 3 + 2] = (r[2] + 0.5) / 1000; }); // (v+0.5)/1000 → int(x*1000)=v exactly
   const aUv = new Float32Array(N * 2);
-  for (let i = 0; i < N; i++) { aUv[i * 2] = ((2 * i + 0.5) / W2) * 2 - 1; aUv[i * 2 + 1] = 0; }
+  for (let i = 0; i < N; i++) { aUv[i * 2] = i * 2 + 0.5; aUv[i * 2 + 1] = W2; }
   const b1 = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b1);
   gl.bufferData(gl.ARRAY_BUFFER, aPos, gl.STATIC_DRAW);
   const a1 = gl.getAttribLocation(p, "aPosition"); gl.enableVertexAttribArray(a1); gl.vertexAttribPointer(a1, 3, gl.FLOAT, false, 0, 0);

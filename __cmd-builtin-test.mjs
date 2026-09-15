@@ -9,8 +9,12 @@ import { batToJS, runBat } from "./src/bat2js.js";
 const html = readFileSync("src/shellcore/builtins.js", "utf8");
 const i = html.indexOf("async cmdExe(ctx, args) {");
 if (i < 0) { console.error("FAIL: could not find cmdExe in shellcore"); process.exit(1); }
-const j = html.lastIndexOf("\n  }\n};");
-const src = "(async (ctx, args) => {\n" + html.slice(html.indexOf("{", i) + 1, j) + "\n})";
+// slice to the END of cmdExe (its unique closing catch block), not the
+// end of the builtins object — later builtins (du/df/env/…) follow it.
+const endMarker = "cmd.exe: ${e.message}\\n`);\n      return 1;\n    }\n  },";
+const j = html.indexOf(endMarker, i);
+if (j < 0) { console.error("FAIL: could not find cmdExe end in shellcore"); process.exit(1); }
+const src = "(async (ctx, args) => {\n" + html.slice(html.indexOf("{", i) + 1, j + endMarker.length - 5) + "\n})";
 
 const stdout = { _buf: "", write(s) { this._buf += s; } };
 const stderr = { _buf: "", write(s) { this._buf += s; } };

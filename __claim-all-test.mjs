@@ -59,6 +59,18 @@ const driver = `
 const __say = (s) => process.stdout.write(s + "\\n");
 const __store = (n) => (sh2.vars[n] === undefined ? "" : sh2.vars[n]);
 const __setStore = (n, v) => sh2.setVar(n, String(v));
+// storage-robust array read: whole-script arrays whose every access is
+// JS-evaluated fold to native module bindings (tpx/tpz today) while the
+// rest stay in the store (map/an/mx). A store-only read silently answers
+// "" for a native array — every artifact looked unclaimable (0/10).
+// typeof is TDZ-safe here: the game top-level (which declares the
+// bindings) runs before the driver, and an undeclared name yields
+// "undefined" instead of throwing.
+const __arr = (n, i) => {
+  if (n === "tpx" && typeof tpx !== "undefined") return tpx[i] ?? "";
+  if (n === "tpz" && typeof tpz !== "undefined") return tpz[i] ?? "";
+  return sh2.arrayIndex(n, i);
+};
 const __call = (n, a) => sh2.exec(n, a || []);
 const __cell = async (x, z) => {
   const g = sh2.arrayIndex("map", (1 * 256) + (z * 16) + x);
@@ -73,8 +85,8 @@ await __call("start_level");
 await new Promise((r) => setTimeout(r, 40));
 const __claimed = [];
 for (let __k = 0; __k < TREASURE_TOTAL; __k++) {
-  const __tx = Number(sh2.arrayIndex("tpx", __k));
-  const __tz = Number(sh2.arrayIndex("tpz", __k));
+  const __tx = Number(__arr("tpx", __k));
+  const __tz = Number(__arr("tpz", __k));
   __say("T" + __k + "=" + __tx + "," + __tz + " cell=" + (await __cell(__tx, __tz)));
   const __foundBefore = found_count;
   // stand WEST of the artifact and walk EAST into it. Force the two

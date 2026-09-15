@@ -93,6 +93,97 @@ int main(int argc, char **argv) {
   return 0;
 }
 `,
+  mandelbrot: `/* handwritten C reference: Mandelbrot escape count for N items.
+   Item g maps to a 64x64 image point (fx=g%64, fy=(g/64)%64), c=((fx-32)*2,
+   (fy-32)*2); counts iterations until |z|^2 > 4, bounded at 64; prints the
+   checksum (sum of iteration counts, mod 2^32). */
+#include <stdio.h>
+#include <stdlib.h>
+int main(int argc, char **argv) {
+  long long n = atoll(argv[1]);
+  unsigned int sum = 0;
+  for (long long g = 0; g < n; g++) {
+    long long fx = g % 64, fy = (g / 64) % 64;
+    long long cr = (fx - 32) * 2, ci = (fy - 32) * 2;
+    long long zr = 0, zi = 0;
+    int iter = 0;
+    while (zr * zr + zi * zi <= 4 && iter < 64) {
+      long long zrn = zr * zr - zi * zi + cr;
+      long long zin = 2 * zr * zi + ci;
+      zr = zrn; zi = zin; iter++;
+    }
+    sum += (unsigned int)iter;
+  }
+  printf("%u\\n", sum);
+  return 0;
+}
+`,
+  maxreduce: `/* handwritten C reference: block max. For each block of BLOCK
+   items (argv[2], default 64), v = ((g%1000)*37+11)%1000; prints the checksum
+   (sum of per-block maxes, mod 2^32). */
+#include <stdio.h>
+#include <stdlib.h>
+int main(int argc, char **argv) {
+  long long n = atoll(argv[1]);
+  int block = argc > 2 ? atoi(argv[2]) : 64;
+  unsigned int sum = 0;
+  for (long long p = 0; p < n / block; p++) {
+    int m = 0;
+    for (int b = 0; b < block; b++) {
+      long long g = p * block + b;
+      int v = (int)(((g % 1000) * 37 + 11) % 1000);
+      if (v > m) m = v;
+    }
+    sum += (unsigned int)m;
+  }
+  printf("%u\\n", sum);
+  return 0;
+}
+`,
+  threshold: `/* handwritten C reference: threshold count. For each block of
+   BLOCK items (argv[2], default 64), count v = ((g%1000)*53+7)%1000 > 500;
+   prints the checksum (sum of per-block counts, mod 2^32). */
+#include <stdio.h>
+#include <stdlib.h>
+int main(int argc, char **argv) {
+  long long n = atoll(argv[1]);
+  int block = argc > 2 ? atoi(argv[2]) : 64;
+  unsigned int sum = 0;
+  for (long long p = 0; p < n / block; p++) {
+    int c = 0;
+    for (int b = 0; b < block; b++) {
+      long long g = p * block + b;
+      int v = (int)(((g % 1000) * 53 + 7) % 1000);
+      if (v > 500) c++;
+    }
+    sum += (unsigned int)c;
+  }
+  printf("%u\\n", sum);
+  return 0;
+}
+`,
+  clamp: `/* handwritten C reference: clamp. For each block of BLOCK items
+   (argv[2], default 64), v = ((g%1000)*89+3)%1000-500 clamped to [0,255];
+   prints the checksum (sum of clamped values, mod 2^32). */
+#include <stdio.h>
+#include <stdlib.h>
+int main(int argc, char **argv) {
+  long long n = atoll(argv[1]);
+  int block = argc > 2 ? atoi(argv[2]) : 64;
+  unsigned int sum = 0;
+  for (long long p = 0; p < n / block; p++) {
+    for (int b = 0; b < block; b++) {
+      long long g = p * block + b;
+      int v = (int)(((g % 1000) * 89 + 3) % 1000) - 500;
+      if (v < 0) v = 0;
+      if (v > 255) v = 255;
+      sum += (unsigned int)v;
+    }
+  }
+  printf("%u\\n", sum);
+  return 0;
+}
+`,
 };
 
 // ── block-reduction shader variants (the browser page compiles these) ──
@@ -198,6 +289,18 @@ export function hashBlockFragmentShader(TW, P, BLOCK, basePixels = 0) {
     "putb $(( sum ))",
   ].join("\n");
 }
+
+// ── the branchless-benchmark algorithms as block-reduction shaders ──
+// (the NAIVE forms from bench/branchless/algorithms.mjs — the page's
+// lowerBranchless/selectIfElse pre-passes rewrite them automatically).
+import { ALGORITHMS } from "../branchless/algorithms.mjs";
+export const mandelbrotBlockShader = (TW, P, BLOCK, basePixels = 0) => ALGORITHMS.mandelbrot.shader(TW, P, BLOCK, basePixels);
+export const maxreduceBlockShader = (TW, P, BLOCK, basePixels = 0) => ALGORITHMS.maxreduce.shader(TW, P, BLOCK, basePixels);
+export const thresholdBlockShader = (TW, P, BLOCK, basePixels = 0) => ALGORITHMS.threshold.shader(TW, P, BLOCK, basePixels);
+export const clampBlockShader = (TW, P, BLOCK, basePixels = 0) => ALGORITHMS.clamp.shader(TW, P, BLOCK, basePixels);
+// maxIter for the while-lowering (mandelbrot's escape bound is 64; the others
+// have no while loop so the value is unused).
+export const MAX_ITER = { collatz: 128, ca1d: 128, hash: 128, mandelbrot: 64, maxreduce: 128, threshold: 128, clamp: 128 };
 
 // ---------------------------------------------------------------------------
 // sh→GLSL backend helpers

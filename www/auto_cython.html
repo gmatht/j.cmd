@@ -256,7 +256,7 @@
       <div class="panel collapsed" id="sec-stdout" data-persist="ac:sec-stdout">
         <div class="panel-head"><span class="arrow">▾</span><span class="panel-title">Original stdout (CPython shape)</span><span class="panel-tag" id="tag-orig"></span></div>
         <div class="panel-body">
-          <div class="map-hint">the input run in the browser's Python (micropython.wasm). Annotating must never change what the program prints — pure-Python mode is the same source plus inert declarations. (This stage runs on the main thread: micropython's glue writes stdout through a DOM element, so it cannot live in a Web Worker.)</div>
+          <div class="map-hint">the input run in the browser's Python (micropython.wasm). Annotating must never change what the program prints — pure-Python mode is the same source plus inert declarations. This stage runs in micropython's own classic Web Worker, so a long loop cannot freeze the page.</div>
           <div class="ta-wrap"><textarea id="out-orig" class="out-ta" readonly spellcheck="false" aria-label="Original stdout">—</textarea><button type="button" class="copy-btn ta-copy" data-copy="orig">Copy</button></div>
         </div>
       </div>
@@ -347,11 +347,12 @@ async function annotate() {
     }
 
     // the original run — annotating must not change the program's output;
-    // this panel is the evidence. NB: micropython's vendored glue writes
-    // stdout through a DOM element, so it cannot run inside a Web Worker;
-    // the run therefore happens on the MAIN thread (the annotate stage,
-    // the one that can block on a big module, stays in its worker).
-    const origR = await runInlinePy(source);
+    // this panel is the evidence. It runs in the dedicated CLASSIC py
+    // worker (www/vendor/py-worker.js), so a long loop cannot freeze the
+    // page. micropython's glue is a classic script that needs
+    // importScripts, which a module worker cannot do — hence a separate
+    // worker rather than the module worker the other stages share.
+    const origR = await runPyWorker(source);
     if (!alive()) return;
     if (!origR.ok) {
       $("out-orig").value = "run failed: " + origR.error;
@@ -359,7 +360,7 @@ async function annotate() {
     } else {
       const o = origR.result || {};
       $("out-orig").value = (o.out || "") + (o.err ? "\n[stderr] " + o.err : "");
-      setTag("orig", "micropython.wasm · exit " + o.code);
+      setTag("orig", "micropython.wasm (worker) · exit " + o.code);
     }
 
     const s = r.stats || {};
@@ -522,30 +523,49 @@ function runStage(slot, kind, payload, onStatus) {
 function paintRunButton() { $("run-btn").textContent = busy ? "…wait" : "Annotate"; }
 function onRunButton() { if (!busy) annotate(); }
 
-// ─── the original Python run (main thread: the glue needs the DOM) ──
-// The vendored micropython glue routes stdout through a #mp_js_stdout
-// element (www/vendor/micropython.js _mp_js_write), so a Web Worker —
-// which has no document — cannot host it. py.js checks `document` and
-// would take its Node branch; running here on the main thread keeps the
-// browser branch (and the engine is a persistent singleton, so repeat
-// runs are cheap).
-let pyJobsMod = null;
-async function runInlinePy(source) {
-  try {
-    if (!pyJobsMod) {
-      const [jobs, fsMod, envMod] = await Promise.all([
-        import("../src/otranspile-jobs.js"),
-        import("../src/fs/index.js"),
-        import("../src/env.js"),
-      ]);
-      pyJobsMod = { jobs, fs: fsMod.fs, env: envMod.env };
+// ─── the original Python run (its own CLASSIC worker) ───────────
+// micropython's glue is a classic emscripten script: it declares a global
+// `var Module` and is loaded with importScripts, which a MODULE worker
+// cannot do ("Module scripts don't support importScripts()"), and the
+// module-scoped `var` would be unreachable anyway. So Python gets its own
+// classic worker (www/vendor/py-worker.js, next to micropython.wasm so the
+// glue's own script-directory wasm resolution works). The engine is a
+// persistent singleton in that worker, so repeat runs are cheap.
+let pyWorker = null;
+let pySeq = 1;
+function runPyWorker(source) {
+  return (async () => {
+    try {
+      if (!pyWorker || !pyReady) {
+        pyWorker = new Worker(new URL("vendor/py-worker.js", import.meta.url));
+        pyReady = new Promise((resolve, reject) => {
+          const to = setTimeout(() => reject(new Error("py worker init timeout")), 60000);
+          const onMsg = (e) => {
+            if (e.data && e.data.type === "ready") { clearTimeout(to); pyWorker.removeEventListener("message", onMsg); resolve(); }
+          };
+          pyWorker.addEventListener("message", onMsg);
+          pyWorker.addEventListener("error", (e) => { clearTimeout(to); reject(new Error(e.message || "py worker error")); }, { once: true });
+          pyWorker.postMessage({ type: "init" });
+        });
+      }
+      await pyReady;
+      const jobId = pySeq++;
+      return await new Promise((resolve) => {
+        const onMsg = (e) => {
+          const m = e.data || {};
+          if (m.jobId !== jobId) return;
+          if (m.type === "status") return;                     // progress notes (not shown)
+          if (m.type === "done") { pyWorker.removeEventListener("message", onMsg); resolve(m.ok ? { ok: true, result: m.result } : { ok: false, error: m.error }); }
+        };
+        pyWorker.addEventListener("message", onMsg);
+        pyWorker.postMessage({ type: "job", jobId, source: String(source) });
+      });
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
     }
-    const res = await pyJobsMod.jobs.runJob("py", String(source), { fs: pyJobsMod.fs, env: pyJobsMod.env, onStatus: () => {} });
-    return { ok: true, result: res };
-  } catch (e) {
-    return { ok: false, error: String((e && e.message) || e) };
-  }
+  })();
 }
+let pyReady = null;
 
 // ─── UI wiring ──────────────────────────────────────────────────
 let searchQuery = "";

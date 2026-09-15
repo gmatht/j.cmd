@@ -184,6 +184,19 @@ check("fragment shader keeps the CRT effects (generated)",
   fragSrc.includes("g_scan") && fragSrc.includes("g_corrupt") &&
   fragSrc.includes("g_edge") && fragSrc.includes("97") && fragSrc.includes("450"),
   fragSrc.slice(0, 240));
+// the staged bash-authored program itself: its single-quoted `$`
+// payloads must reach /tmp with the `$` intact (Sep-12 staged `putb `
+// — an evaluated-away $b — and every block rendered black while every
+// shader check above stayed green). Byte-compared exhaustively in
+// __frag-stage-test.mjs; this is the full-game half of that pin (here
+// `b` also has store writes elsewhere, which is what leaked into the
+// staged text last time).
+let stagedFrag = "";
+try { stagedFrag = String(await fs.read("/tmp/mimecroft-frag.sh")); } catch (e) { stagedFrag = ""; }
+check("staged fragment keeps putb $b (not black-3D)",
+  stagedFrag.includes("putb $b") && stagedFrag.includes("putb $r") &&
+  stagedFrag.includes("putb $g") && stagedFrag.includes('if [ "$b" -lt 0 ]; then b=0; fi'),
+  stagedFrag.slice(0, 200));
 // the VERTEX shader is AUTHORED IN BASH too — compiled from
 // /www/examples/mimecroft-vertex.sh by `sh2glsl --vertex` — prove the
 // generated source is what the game loaded (the bash bridges + outputs)

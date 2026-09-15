@@ -24,6 +24,25 @@
  * THE SOFTWARE.
  */
 
+/* ─────────────────────────────────────────────────────────────────
+ * LOCAL PATCH (sh2runtime) — Web-Worker support.
+ *
+ * www/vendor/micropython.js is otherwise a verbatim copy of
+ * @yeliulee/micropython-wasm/lib/micropython.js. Three sites keyed the
+ * environment off `typeof window`, which is undefined in a Web Worker,
+ * so a worker silently took the Node path and died on `require`/`Buffer`.
+ * See patches/micropython-worker.patch for the diff and the rationale.
+ *
+ *   1. _mp_js_write   — stdout: prefer the #mp_js_stdout DOM sink, else
+ *                       Module.onStdout, else console.log.
+ *   2. _mp_js_hook    — stdin: Node-only (`ENVIRONMENT_IS_NODE`).
+ *   3. setWindowTitle — no document in a worker; guard it.
+ *
+ * Re-apply after re-vendoring:
+ *   git apply patches/micropython-worker.patch
+ *   node bench/micropython-worker-smoke.mjs
+ * ───────────────────────────────────────────────────────────────── */
+
 var Module = {};
 
 var mainProgram = function()
@@ -35,7 +54,10 @@ var mainProgram = function()
 
   MP_JS_EPOCH = (new Date()).getTime();
 
-  if (typeof window === 'undefined' && require.main === module) {
+  // Auto-run only when invoked directly as a Node CLI. The original
+  // check was `typeof window === 'undefined'`, which is ALSO true in a
+  // Web Worker — where `require` does not exist and this threw.
+  if (ENVIRONMENT_IS_NODE && require.main === module) {
       var fs = require('fs');
       var stack_size = 64 * 1024;
       var contents = '';
@@ -349,7 +371,11 @@ if (ENVIRONMENT_IS_WEB || ENVIRONMENT_IS_WORKER) {
 // end include: web_or_worker_shell_read.js
   }
 
-  setWindowTitle = function(title) { document.title = title };
+  // Only a real document has a title; a worker does not (calling this
+  // must not be what breaks an otherwise-valid worker run).
+  setWindowTitle = function(title) {
+    if (typeof document !== 'undefined' && document.title !== undefined) document.title = title;
+  };
 } else
 {
   throw new Error('environment detection error');
@@ -2041,7 +2067,10 @@ var ASM_CONSTS = {
     }
 
   function _mp_js_hook() {
-          if (typeof window === 'undefined') {
+          // Only Node has a synchronous stdin to poll. A worker has no
+          // window AND no require/process — checking `typeof window` alone
+          // sent workers down the Node path, where `require` throws.
+          if (ENVIRONMENT_IS_NODE) {
               var mp_interrupt_char = Module.ccall('mp_hal_get_interrupt_char', 'number', ['number'], ['null']);
               var fs = require('fs');
   
@@ -2070,16 +2099,34 @@ var ASM_CONSTS = {
 
   function _mp_js_write(ptr, len) {
           for (var i = 0; i < len; ++i) {
-              if (typeof window === 'undefined') {
+              if (ENVIRONMENT_IS_NODE) {
                   var b = Buffer.alloc(1);
                   b.writeInt8(getValue(ptr + i, 'i8'));
                   process.stdout.write(b);
               } else {
+                  // Browser OR Web Worker. The original code required a
+                  // `document` element to dispatch a 'print' event, which
+                  // a worker does not have — so a worker fell through to
+                  // the Node branch above and died on `Buffer`. Prefer the
+                  // DOM sink when there is a document; otherwise forward
+                  // to any registered JS sink (see micropython.js's
+                  // `Module.onStdout` hook below), and fall back to
+                  // console.log so output is never silently dropped.
                   var c = String.fromCharCode(getValue(ptr + i, 'i8'));
-                  var mp_js_stdout = document.getElementById('mp_js_stdout');
-                  var print = new Event('print');
-                  print.data = c;
-                  mp_js_stdout.dispatchEvent(print);
+                  if (typeof document !== 'undefined' && document.getElementById) {
+                      var mp_js_stdout = document.getElementById('mp_js_stdout');
+                      if (mp_js_stdout) {
+                          var print = new Event('print');
+                          print.data = c;
+                          mp_js_stdout.dispatchEvent(print);
+                          continue;
+                      }
+                  }
+                  if (typeof Module['onStdout'] === 'function') {
+                      Module['onStdout'](c);
+                  } else if (typeof console !== 'undefined') {
+                      console.log(c);
+                  }
               }
           }
       }

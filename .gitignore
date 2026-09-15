@@ -36,3 +36,9 @@ __pycache__/
 
 # Compiler output at the repo root (e.g. stray `cc` invocations)
 a.out
+
+# pir agent runtime state (sessions, undo backups) — not source
+.pir/
+
+# V8/Node heap + isolate diagnostics
+isolate-*.log

@@ -59,7 +59,10 @@ for (const [name, src] of Object.entries(C_SOURCES)) {
 // ── 2. run C at size N → {ms, checksum} ────────────────────────
 function runC(name, N) {
   const t0 = performance.now();
-  const out = execFileSync(bins[name], [String(N)], { stdio: "pipe" }).toString().trim();
+  // argv[2] = BLOCK: the block-aggregate problems (maxreduce/threshold/clamp)
+  // need it to match the GPU's per-pixel block reduction; the per-item ones
+  // (collatz/ca1d/hash/mandelbrot) ignore it.
+  const out = execFileSync(bins[name], [String(N), String(BLOCK)], { stdio: "pipe" }).toString().trim();
   return { ms: performance.now() - t0, checksum: Number(out) >>> 0 };
 }
 
@@ -69,7 +72,11 @@ function runC(name, N) {
 // GPU BOTH run at the SAME N; the per-item ns/item rates are the
 // size-independent efficiency (the wall speedup equals C_ns/iGPU_ns because
 // both use the same N). --quick scales N down 10x for a fast smoke test.
-const BASE_N = { collatz: 100_000_000, ca1d: 1_000_000_000, hash: 1_000_000_000 };
+const BASE_N = {
+  collatz: 100_000_000, ca1d: 1_000_000_000, hash: 1_000_000_000,
+  mandelbrot: 50_000_000, maxreduce: 1_000_000_000, threshold: 1_000_000_000, clamp: 1_000_000_000,
+};
+const PROBLEMS = Object.keys(BASE_N);
 const SCALE = quick ? 0.1 : 1;
 function measure(name) {
   let N = Math.min(2 ** 31, Math.ceil((BASE_N[name] * SCALE) / BLOCK) * BLOCK);
@@ -85,11 +92,11 @@ function measure(name) {
 const FIXED_SIZES = BASE_N;
 let problems;
 if (gpuOnly) {
-  problems = ["collatz", "ca1d", "hash"].map((name) => ({ name, size: Math.ceil((BASE_N[name] * SCALE) / BLOCK) * BLOCK, cMs: null, checksum: null }));
-  console.log(`== GCC C vs browser iGPU ==\n  --gpu-only: fixed sizes (collatz ${FIXED_SIZES.collatz}, ca1d ${FIXED_SIZES.ca1d}, hash ${FIXED_SIZES.hash}), no C runs`);
+  problems = PROBLEMS.map((name) => ({ name, size: Math.ceil((BASE_N[name] * SCALE) / BLOCK) * BLOCK, cMs: null, checksum: null }));
+  console.log(`== GCC C vs browser iGPU ==\n  --gpu-only: fixed sizes (${PROBLEMS.join(", ")}), no C runs`);
 } else {
-  console.log(`== GCC C vs browser iGPU ==\n  fixed sizes (collatz ${BASE_N.collatz}, ca1d ${BASE_N.ca1d}, hash ${BASE_N.hash})${quick ? " (--quick: 0.1x)\n" : "\n"}  measuring C…`);
-  problems = ["collatz", "ca1d", "hash"].map(measure);
+  console.log(`== GCC C vs browser iGPU ==\n  fixed sizes (${PROBLEMS.map((n) => `${n} ${BASE_N[n]}`).join(", ")})${quick ? " (--quick: 0.1x)\n" : "\n"}  measuring C…`);
+  problems = PROBLEMS.map(measure);
 }
 const cResults = { fixedN: BASE_N, scaled: SCALE, problems };
 writeFileSync(OUT_JSON, JSON.stringify(cResults, null, 2));

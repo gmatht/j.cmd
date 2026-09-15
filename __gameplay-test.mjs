@@ -28,10 +28,11 @@
 // writing the wrong home silently no-ops (an earlier version of this
 // test "passed" a broken game that way).
 //
-// The one KNOWN-OPEN upstream gap in this area — the 3D renderer's
+// The one upstream gap in this area — the 3D renderer's
 // mime_lookup not being re-keyed on a move (cube drawn at the ORIGINAL
 // cell) — is a lifted-variable-as-array-index bug, reproduced minimally
-// and tracked as OPEN in upstream-repros/01 (see __upstream-guard-test).
+// in upstream-repros/01 (fixed via the toolkit interpolation; the
+// upstream shir ideal is still open — see upstream-repros/README.md §01).
 //
 //   node __gameplay-test.mjs   → "ALL GAMEPLAY CHECKS PASSED"
 import { fs } from "./src/fs/index.js";
@@ -60,6 +61,17 @@ const __say = (s) => process.stdout.write(s + "\\n");
 const __count = (h, c) => h.split(c).length - 1;
 const __store = (n) => sh2.vars[n] ?? (process.env[n] ?? "");
 const __setStore = (n, v) => sh2.setVar(n, String(v));
+// storage-robust array read (see __claim-all-test.mjs): whole-script
+// arrays whose every access is JS-evaluated fold to native module
+// bindings (found/tpx/tpz today) while the rest stay in the store
+// (map/an/mx/mz). A store-only read silently answers "" for a native
+// array — the treasure hunt found nothing and the mimes never moved.
+const __arr = (n, i) => {
+  if (n === "found" && typeof found !== "undefined") return found[i] ?? "";
+  if (n === "tpx" && typeof tpx !== "undefined") return tpx[i] ?? "";
+  if (n === "tpz" && typeof tpz !== "undefined") return tpz[i] ?? "";
+  return sh2.arrayIndex(n, i);
+};
 const __call = (n, a) => sh2.exec(n, a || []);
 
 // ── 1. HUD: each numeral group draws its own glyph set ───────────────
@@ -83,7 +95,7 @@ const __bf = found_count, __bs = score, __bm = maxhp;
 let __notesBefore = 0;
 let __tx = -1, __tz = -1;
 for (let __k = 0; __k < TREASURE_TOTAL; __k++) {
-  if (sh2.arrayIndex("found", __k) !== "1") { __tx = Number(sh2.arrayIndex("tpx", __k)); __tz = Number(sh2.arrayIndex("tpz", __k)); break; }
+  if (__arr("found", __k) !== "1") { __tx = Number(__arr("tpx", __k)); __tz = Number(__arr("tpz", __k)); break; }
 }
 __say("TREASURE_CELL=" + __tx + "," + __tz);
 if (__tx > 1) {

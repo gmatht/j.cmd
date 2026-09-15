@@ -18,10 +18,12 @@ that WAS fixed can never silently come back.
 
 | reproducer | status | summary |
 |---|---|---|
-| `01-lifted-var-in-array-index.sh` | **OPEN (A1 frontend)** | indexed write with a computed key: the A1 keeps the target as the raw string `lookup[$cell]` AND drops the `cell=$((…))` statement as dead code (its only use hides inside that string), so the runtime expands an unset `$cell` and the key collapses to `lookup[]` |
+| `01-lifted-var-in-array-index.sh` | fixed (toolkit; upstream ideal open — see §01) | indexed write with a computed key: the A1 keeps the target as the raw string `lookup[$cell]` AND drops the `cell=$((…))` statement as dead code (its only use hides inside that string), so the runtime expands an unset `$cell` and the key collapses to `lookup[]` |
 | `02-param-strip-live-value.sh` | fixed | `${v#pat}` of a lifted variable came back empty |
-| `05-param-only-use-in-index.sh` | **OPEN** | a function param whose only use is inside an array-index name (`arr[$p]`): the assignment is dropped as dead code AND the positional args are renumbered, so `tpx[1]`/`tpx[2]` stay empty and only one element survives (mimecroft: only 1 of 10 artifacts could be claimed) |
-| `03-single-quoted-payload.sh` | fixed | a single-quoted `$var` payload was rewritten as an expansion |
+| `05-param-only-use-in-index.sh` | fixed | a function param whose only use is inside an array-index name (`arr[$p]`): the assignment is dropped as dead code AND the positional args are renumbered, so `tpx[1]`/`tpx[2]` stay empty and only one element survives (mimecroft: only 1 of 10 artifacts could be claimed) |
+| `03-single-quoted-payload.sh` | fixed | a single-quoted `$var` payload was rewritten as an expansion (end-to-end pins: `__frag-stage-test.mjs` byte-compares the staged fragment program; `__mime-test.mjs` checks the booted game staged `putb $b`) |
+| `06-sparse-array-star.sh` | fixed | `${a[*]}`/`${a[@]}` rendered unassigned holes as empty fields instead of skipping them |
+| `07-exact-key-lift.sh` | fixed (pins the reinstated lift) | an index var used ONLY as exact keys (`arrayIndex("a", "$k")`) lifts to a native binding (bare-Identifier key) while the same array's `${a[*]}` keeps reading the store — the storage-neutral subset of the week-ago lift, reinstated with 05 as the boundary proof |
 
 ## 01: the fix has two halves
 
@@ -35,13 +37,13 @@ store-written (mimecroft's `map_set` `mi=$1` → `sh2.vars.mi = …`) must
 NOT be interpolated or the write lands on a dead placeholder — verified:
 doing it anyway makes `gen_maze` spin forever.
 
-*Frontend half (STILL OPEN, `shir.rs`)*: the A1 must not hide a variable
+*Frontend half (STILL OPEN upstream, `shir.rs` — the toolkit workaround below is what the gate pins)*: the A1 must not hide a variable
 use inside an indexed target's rendered string. `cell=$((b*16+a))` is
 eliminated as dead because its only use is the literal target
 `"lookup[$cell]"`; the A1 should carry the key as a real expression (an
-indexed target) so liveness sees the use. Reproducer 01 keeps failing
-until that lands — with the key expression preserved, even the
-toolkit half becomes unnecessary for this shape.
+indexed target) so liveness sees the use. The reproducer passes today
+via the toolkit half; with the key expression preserved upstream, even
+the toolkit half becomes unnecessary for this shape.
 
 ## Why stdout, not assertions
 

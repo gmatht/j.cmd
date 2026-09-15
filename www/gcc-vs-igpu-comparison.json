@@ -1,0 +1,69 @@
+{
+  "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+  "hw": "SOFTWARE",
+  "problems": [
+    {
+      "name": "collatz",
+      "size": 10000384,
+      "gpuMs": 2895.969999998808,
+      "checksum": 443443070,
+      "checksumOk": true,
+      "cMs": 691.3795359999995,
+      "cChecksum": 443443070
+    },
+    {
+      "name": "ca1d",
+      "size": 100000768,
+      "gpuMs": 761.3449999988079,
+      "checksum": 100000767,
+      "checksumOk": true,
+      "cMs": 317.32448399999976,
+      "cChecksum": 100000767
+    },
+    {
+      "name": "hash",
+      "size": 100000768,
+      "gpuMs": 589.0050000101328,
+      "checksum": 4160163328,
+      "checksumOk": true,
+      "cMs": 281.22930199999973,
+      "cChecksum": 4160163328
+    },
+    {
+      "name": "mandelbrot",
+      "size": 5000192,
+      "gpuMs": 456.5350000113249,
+      "checksum": 5157701,
+      "checksumOk": true,
+      "cMs": 27.025206999999682,
+      "cChecksum": 5157701
+    },
+    {
+      "name": "maxreduce",
+      "size": 100000768,
+      "gpuMs": 287.79500000178814,
+      "checksum": 97559343,
+      "checksumOk": true,
+      "cMs": 420.88440099999934,
+      "cChecksum": 97559343
+    },
+    {
+      "name": "threshold",
+      "size": 100000768,
+      "gpuMs": 297.95000000298023,
+      "checksum": 49900379,
+      "checksumOk": true,
+      "cMs": 460.24733899999956,
+      "cChecksum": 49900379
+    },
+    {
+      "name": "clamp",
+      "size": 100000768,
+      "gpuMs": 342.0949999988079,
+      "checksum": 896137916,
+      "checksumOk": true,
+      "cMs": 567.3282390000004,
+      "cChecksum": 896137916
+    }
+  ]
+}

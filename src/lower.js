@@ -1029,7 +1029,7 @@ export function liftLocalVars(program) {
 
   // per-scope store usage: { reads, writes, syncs, arrays, indirect, ops }
   const scopes = new Map();
-  const stringRefs = new Set(); // program-wide: vars named in "$x" string args
+  const stringRefsUnsafe = new Set(); // program-wide: vars named in "$x" string args the post-lift interpolation does NOT carry (test conditions, echo/device payloads, redirect targets, setVar VALUES, nested concatenations). Vars whose "$x" refs sit ONLY in index positions — setVar/arrayIndex/arrayLen/param NAME args ("arr[$v]", templated) + exact "$x" KEY/VALUE args of arrayIndex/arrayLen/param (bare Identifiers) — stay liftable. Storage consistency for the templated names comes from nativeArrays, whose eligibility walk now sees every store reader (bracket/template getVar, unsets, appends, embedded "${a[1]}" strings all block the fold): an array with a whole-array reader stays stored (repro 05's star), one without folds with all its accesses converted. Lifting an index var can therefore never split an array's storage.
   const newScope = () => ({ reads: new Set(), writes: new Set(), syncs: new Set(), arrays: new Set(), indirect: new Set(), ops: [] });
   const scan = (body, scope) => {
     const walk = (n, parent, key) => {
@@ -1060,31 +1060,84 @@ export function liftLocalVars(program) {
         // walk arg SUBTREES (the echo payload often arrives as
         // `"text $v" + "\n"` — a BinaryExpression, not a direct Literal;
         // only the top-level check missed those and the lift corrupted
-        // single-quoted device payloads like the fragment shader)
+        // single-quoted device payloads like the fragment shader).
+        // A direct Literal arg of an index call (setVar/arrayIndex/
+        // arrayLen/param) is seen by the post-lift interpolation: an
+        // EXACT "$v" key/value of arrayIndex/arrayLen/param becomes a
+        // bare Identifier (same storage), and an index NAME ("arr[$v]")
+        // becomes a `arr[${v}]` template. The template MOVES the element
+        // access to native storage if the array folds — which is safe
+        // because nativeArrays now sees every store reader (bracket and
+        // template getVar reads, unsets, appends, embedded "${a[1]}"
+        // strings all block the fold): arrays with whole-array readers
+        // stay stored (repro 05), the rest fold with every access
+        // converted. A direct Literal arg of test/arith is likewise
+        // carried: both always evaluate their string (never verbatim),
+        // so the template evaluates to the identical string. Anything
+        // else (exec/builtin args — single-quoted regex programs must
+        // stay literal, and echo args later fold into verbatim device
+        // writes — device/file writes, setVar VALUES, nested subtrees
+        // like "text $v"+"\n") is unsafe: lifting would leave the
+        // store empty ("" expansion) or template verbatim text
+        // ('putb $b' staged "putb " — black 3D).
+        const COVERED_CALL = directSh2 && (fn === "setVar" || fn === "arrayIndex" || fn === "arrayLen" || fn === "param" || fn === "test" || fn === "arith");
+        const isLitCall = (a) => a && a.type === "CallExpression" && a.callee && a.callee.type === "MemberExpression" &&
+          a.callee.object && a.callee.object.type === "Identifier" && a.callee.object.name === "sh2" &&
+          a.callee.property && a.callee.property.type === "Identifier" && a.callee.property.name === "lit";
+        // a nested index/test/arith call classifies its
+        // OWN direct args (same rules as a visited node) — the parent
+        // must not blind-mark them unsafe first. Without this divert,
+        // `setVar("gv", arrayIndex("map", "$gi"))` vetoed `gi` via
+        // the subtree scan even though the nested exact key is carried
+        // (the week-ago lift of every maze-helper index var died here).
+        const isCoveredCall = (x) => x && x.type === "CallExpression" && x.callee && x.callee.type === "MemberExpression" &&
+          x.callee.object && x.callee.object.type === "Identifier" && x.callee.object.name === "sh2" &&
+          x.callee.property && x.callee.property.type === "Identifier" &&
+          (x.callee.property.name === "setVar" || x.callee.property.name === "arrayIndex" ||
+           x.callee.property.name === "arrayLen" || x.callee.property.name === "param" ||
+           x.callee.property.name === "test" || x.callee.property.name === "arith");
         const scanStrLits = (x) => {
           if (!x || typeof x !== "object") return;
           if (Array.isArray(x)) { for (const y of x) scanStrLits(y); return; }
-          if (x.type === "CallExpression" && x.callee && x.callee.type === "MemberExpression" &&
-              x.callee.object && x.callee.object.type === "Identifier" && x.callee.object.name === "sh2" &&
-              x.callee.property && x.callee.property.type === "Identifier" && x.callee.property.name === "lit") {
+          if (isLitCall(x)) {
             return;
           }
+          if (isCoveredCall(x)) { classifyCoveredArgs(x); return; }
           if (x.type === "Literal" && typeof x.value === "string") {
             const sm = String(x.value).match(/\$([A-Za-z_][A-Za-z0-9_]*)/g);
-            if (sm) for (const mm of sm) stringRefs.add(mm.slice(1));
+            if (sm) for (const mm of sm) stringRefsUnsafe.add(mm.slice(1));
             return;
           }
           for (const k of Object.keys(x)) if (k !== "loc") scanStrLits(x[k]);
         };
-        for (const a of n.arguments) {
-          // sh2.lit verbatim text is never runtime-expanded — skip (see
-          // nativeSharedScalars walk skip; both passes must agree)
-          if (!(a && a.type === "CallExpression" && a.callee && a.callee.type === "MemberExpression" &&
-              a.callee.object && a.callee.object.type === "Identifier" && a.callee.object.name === "sh2" &&
-              a.callee.property && a.callee.property.type === "Identifier" && a.callee.property.name === "lit")) {
+        const classifyCoveredArgs = (callNode) => {
+          const fn2 = callNode.callee.property.name;
+          (callNode.arguments || []).forEach((a, ai) => {
+            // sh2.lit verbatim text is never runtime-expanded — skip (see
+            // nativeSharedScalars walk skip; both passes must agree)
+            if (isLitCall(a)) return;
+            if (a && a.type === "Literal" && typeof a.value === "string") {
+              const sm = String(a.value).match(/\$([A-Za-z_][A-Za-z0-9_]*)/g);
+              if (!sm) return;
+              for (const mm of sm) {
+                const nm = mm.slice(1);
+                // arg0 is the NAME (carried as a template; storage
+                // consistency via nativeArrays — see above); an EXACT
+                // "$v"/"${v}" key/value of arrayIndex/arrayLen/param is
+                // carried as a bare Identifier. setVar VALUES (arg1+) and
+                // embedded non-name keys are verbatim-sensitive or
+                // storage-moving without a carrier — leave them unsafe.
+                const exact = a.value === "$" + nm || a.value === "${" + nm + "}";
+                if (ai === 0 || (fn2 !== "setVar" && exact)) continue;
+                stringRefsUnsafe.add(nm);
+              }
+              return;
+            }
             scanStrLits(a);
-          }
-        }
+          });
+        };
+        if (COVERED_CALL) classifyCoveredArgs(n);
+        else for (const a of (n.arguments || [])) scanStrLits(a);
         if (directSh2 && fn === "setVar" && a0) {
           if (a0.type === "Literal" && typeof a0.value === "string") {
             const nm = a0.value;
@@ -1207,15 +1260,20 @@ export function liftLocalVars(program) {
     const lifted = new Set();
     for (const v of s.ops.map((o) => o.name)) {
       if (s.arrays.has(v) || s.indirect.has(v) || s.indirect.has("*") || topUses.has(v)) continue;
-      // vars named in "$v" string args ARE excluded: the post-lift
-      // interpolation cannot tell single-quoted verbatim text ('putb $b')
-      // from double-quoted expandable text — it templates both, so a
-      // single-quoted payload staged the WRONG bytes (the mimecroft
-      // fragment shader lost its "$b", black 3D). Unlifted vars fall back
-      // to the runtime's store expansion, which is correct (if slower)
-      // for the double-quoted/array-index cases.
-      if (stringRefs.has(v)) continue;
-      if (moduleLets.has(v)) continue;
+      // vars named in "$v" string args are excluded ONLY when the ref
+      // sits in a verbatim or value position (see the scan above):
+      // 'putb $b' payloads, test conditions, setVar values. Index refs
+      // (NAME strings + exact keys) stay lifted — the interpolation
+      // carries them, and nativeArrays keeps each array's storage
+      // consistent (whole-array readers pin it to the store).
+      if (stringRefsUnsafe.has(v)) continue;
+      // A var the wasm already declared as a module `let` (its newer
+      // frontends pre-declare lifted vars with a `null` init but still
+      // emit store reads/writes for them) is a HALF-LIFT: convert its
+      // store ops to the existing binding instead of declaring a new
+      // one (skipped below). Same safety rules as a fresh lift (write-first, no top
+      // use, no indirection, carried $refs only) — the declaration's
+      // `null` default is why the read-first rules still apply.
       // a var used in MANY functions is fine — the module let is the
       // store's scope, so cross-function sharing still resolves (the
       // single-function guard was for function-local lets, which we no
@@ -1229,11 +1287,12 @@ export function liftLocalVars(program) {
     }
     if (lifted.size) lifts.set(name, lifted);
     // A) param-sync drop: a param whose ONLY store ops are its syncs (and
-    // that is never read by name from a "$p" string — the runtime would
-    // resolve the empty store)
+    // that is never read by name from an UNCARRIED "$p" string — the runtime
+    // would resolve the empty store; carried index/key refs are fine —
+    // the interpolation reads the native param)
     const drop = new Set();
     for (const p of s.params) {
-      if (stringRefs.has(p)) continue;
+      if (stringRefsUnsafe.has(p)) continue;
       const ops = s.ops.filter((o) => o.name === p);
       if (ops.length && ops.every((o) => o.kind === "sync")) drop.add(p);
     }
@@ -1340,10 +1399,12 @@ export function liftLocalVars(program) {
     if (regArrow) regArrow.body.body = newBody; else fn.body.body = newBody;
   }
   // declare the lifted vars at module level (`let v = ""` — the store's
-  // default; preserves cross-call persistence like the store)
+  // default; preserves cross-call persistence like the store), EXCEPT
+  // vars the wasm already declared (half-lifts completed above —
+  // re-declaring would throw).
   const newLets = [];
   const seenLets = new Set();
-  for (const [, lifted] of lifts) for (const v of lifted) if (!seenLets.has(v)) { seenLets.add(v); newLets.push(v); }
+  for (const [, lifted] of lifts) for (const v of lifted) if (!seenLets.has(v) && !moduleLets.has(v)) { seenLets.add(v); newLets.push(v); }
   if (newLets.length) {
     newLets.sort();
     program.body.unshift({
@@ -1519,7 +1580,49 @@ export function nativeArrays(program) {
         for (const a of (n.arguments || []).slice(1)) walk(a);
         return;
       }
-      if (fn === "getVar" && a0 && a0.type === "Literal" && typeof a0.value === "string" && arrays.has(a0.value)) { get(a0.value).bad.add("getVar"); return; }
+      if (fn === "getVar" && a0) {
+        // a whole-array store read — folding would orphan it (repro 05:
+        // `${tpx[*]}` stayed on the store while the element writes went
+        // native, so the star came back empty).
+        if (a0.type === "Literal" && typeof a0.value === "string") {
+          if (arrays.has(a0.value)) { get(a0.value).bad.add("getVar"); return; }
+          // element forms ("A[1]", "A[*]", "A[@]", "A[$x]") also read
+          // the STORE array — the rewrite below has no getVar-element
+          // rule, so any of them must block the fold.
+          const bm = /^([A-Za-z_][A-Za-z0-9_]*)\[.*\]$/.exec(a0.value);
+          if (bm && arrays.has(bm[1])) { get(bm[1]).bad.add("bracketRead"); return; }
+        }
+        // a JS-evaluated element read (`A[${i}]`) likewise has no
+        // lowering — keep the array stored.
+        if (a0.type === "TemplateLiteral") {
+          const q = a0.quasis && a0.quasis[0] && a0.quasis[0].value && (a0.quasis[0].value.cooked != null ? a0.quasis[0].value.cooked : a0.quasis[0].value.raw);
+          const tm = typeof q === "string" && /^([A-Za-z_][A-Za-z0-9_]*)\[$/.exec(q);
+          if (tm && arrays.has(tm[1])) { get(tm[1]).bad.add("templateRead"); return; }
+        }
+      }
+      if (fn === "unset" && a0) {
+        // element/whole unsets mutate the STORE array — a native fold
+        // would leave the runtime copy behind.
+        if (a0.type === "Literal" && typeof a0.value === "string") {
+          const um = /^([A-Za-z_][A-Za-z0-9_]*)(\[.*\])?$/.exec(a0.value);
+          if (um && arrays.has(um[1])) { get(um[1]).bad.add("unset"); return; }
+        }
+        if (a0.type === "TemplateLiteral") {
+          const q = a0.quasis && a0.quasis[0] && a0.quasis[0].value && (a0.quasis[0].value.cooked != null ? a0.quasis[0].value.cooked : a0.quasis[0].value.raw);
+          const tm = typeof q === "string" && /^([A-Za-z_][A-Za-z0-9_]*)\[$/.exec(q);
+          if (tm && arrays.has(tm[1])) { get(tm[1]).bad.add("unsetTemplate"); return; }
+        }
+      }
+      if (fn === "setArrayAppend" && a0 && a0.type === "Literal" && typeof a0.value === "string" && arrays.has(a0.value)) {
+        // `a+=(…)` appends to the STORE array — the rewrite below has no
+        // append rule, so any append blocks the fold.
+        get(a0.value).bad.add("append"); return;
+      }
+      if (fn === "arrayItems" && a0 && a0.type === "Literal" && typeof a0.value === "string" && arrays.has(a0.value)) {
+        // whole-array store read (`[...a]` / `a.join` lowering) — folding
+        // would orphan it.
+        get(a0.value).bad.add("items"); return;
+      }
       if (fn === "arrayLen" && a0 && a0.type === "Literal" && typeof a0.value === "string" && arrays.has(a0.value)) { get(a0.value).bad.add("arrayLen"); return; }
       if (fn === "param") {
         for (const a of n.arguments) if (a && a.type === "Literal" && typeof a.value === "string" && arrays.has(a.value)) get(a.value).bad.add("param");
@@ -1535,6 +1638,15 @@ export function nativeArrays(program) {
       const nm = n.value.slice(1).replace(/[@*]$/, "");
       if (arrays.has(nm)) get(nm).bad.add("wholeStr");
       return;
+    }
+    if (n.type === "Literal" && typeof n.value === "string" && n.value.includes("$") && n.value.includes("[")) {
+      // embedded runtime-expanded element refs ('"${a[1]}" = …' test
+      // strings, echo payloads) read the STORE array — folding orphans
+      // them. The `$` sigil is required: bare "a[1]" text is never
+      // expanded, so it is harmless.
+      for (const m of String(n.value).matchAll(/\$(\{)?([A-Za-z_][A-Za-z0-9_]*)\[/g)) {
+        if (arrays.has(m[2])) get(m[2]).bad.add("embeddedElem");
+      }
     }
     for (const k of Object.keys(n)) if (k !== "loc") walk(n[k]);
   };

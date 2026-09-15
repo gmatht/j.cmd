@@ -45,3 +45,21 @@
 *.zip binary
 *.tgz binary
 *.dat binary
+
+# pir: mark common binary extensions so git reports them as binary
+*.bin binary
+*.exe binary
+*.dll binary
+*.so binary
+*.dylib binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary
+*.zip binary
+*.tar binary
+*.gz binary
+*.7z binary
+*.woff binary
+*.woff2 binary

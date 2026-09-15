@@ -155,10 +155,11 @@ function runHash(gl, lib, W, N) {
   gl.useProgram(prog);
   const t1 = performance.now();
   const aPos = new Float32Array(W * 3);
-  records.forEach((r, i) => { aPos[i * 3] = r[0] / 1000; aPos[i * 3 + 1] = r[1] / 1000; aPos[i * 3 + 2] = r[2] / 1000; });
+  records.forEach((r, i) => { aPos[i * 3] = (r[0] + 0.5) / 1000; aPos[i * 3 + 1] = (r[1] + 0.5) / 1000; aPos[i * 3 + 2] = (r[2] + 0.5) / 1000; }); // (v+0.5)/1000 → int(x*1000)=v exactly (float32)
   const W2 = W * 2; // stride-2 point transport: a 3px point per record, read every 2nd pixel
+                     // (aUv.x carries the exact integer slot i*2; aUv.y carries W2 — see hashVertexShader)
   const aUv = new Float32Array(W * 2);
-  for (let i = 0; i < W; i++) { aUv[i * 2] = ((2 * i + 0.5) / W2) * 2 - 1; aUv[i * 2 + 1] = 0; }
+  for (let i = 0; i < W; i++) { aUv[i * 2] = i * 2 + 0.5; aUv[i * 2 + 1] = W2; }
   const b1 = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b1);
   gl.bufferData(gl.ARRAY_BUFFER, aPos, gl.STATIC_DRAW);
   const a1 = gl.getAttribLocation(prog, "aPosition"); gl.enableVertexAttribArray(a1); gl.vertexAttribPointer(a1, 3, gl.FLOAT, false, 0, 0);

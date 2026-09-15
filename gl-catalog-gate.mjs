@@ -107,6 +107,7 @@ export async function run(deps) {
     const N = records.length;
     const raw = injectPointSize(lib.raw("otranspilerl_glslv", [hashVertexShader()], [800]).output, 3.0);
     const W2 = N * 2; // stride-2 point transport (a 3px point per record, read every 2nd pixel)
+                            // aUv.x = exact integer slot i*2, aUv.y = W2 (see hashVertexShader)
     const gl = createGL(W2, 1, { preserveDrawingBuffer: true });
     const FRAG = `precision mediump float;
 varying highp vec4 vColor;
@@ -122,9 +123,9 @@ void main(){ gl_FragColor = vColor; }`;
     if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error("link: " + gl.getProgramInfoLog(prog));
     gl.useProgram(prog);
     const aPos = new Float32Array(N * 3);
-    records.forEach((r, i) => { aPos[i * 3] = r[0] / 1000; aPos[i * 3 + 1] = r[1] / 1000; aPos[i * 3 + 2] = r[2] / 1000; });
+    records.forEach((r, i) => { aPos[i * 3] = (r[0] + 0.5) / 1000; aPos[i * 3 + 1] = (r[1] + 0.5) / 1000; aPos[i * 3 + 2] = (r[2] + 0.5) / 1000; }); // (v+0.5)/1000 → int(x*1000)=v exactly
     const aUv = new Float32Array(N * 2);
-    for (let i = 0; i < N; i++) { aUv[i * 2] = ((2 * i + 0.5) / W2) * 2 - 1; aUv[i * 2 + 1] = 0; }
+    for (let i = 0; i < N; i++) { aUv[i * 2] = i * 2 + 0.5; aUv[i * 2 + 1] = W2; }
     const b1 = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b1);
     gl.bufferData(gl.ARRAY_BUFFER, aPos, gl.STATIC_DRAW);
     const a1 = gl.getAttribLocation(prog, "aPosition");
@@ -144,6 +145,45 @@ void main(){ gl_FragColor = vColor; }`;
     const ok = scores.every((v, i) => v === want[i]);
     console.log(`  hash: got=[${[...scores].join(",")}] want=[${want.join(",")}] ?== cpu ${ok ? "PASS" : "FAIL"}`);
     if (!ok) failures.push("hash");
+  }
+
+  // Wide-canvas hash stress: the backend's int(aUv*1000)/1000 position
+  // bridge drifts by ~0.0005*W2 px and (with 3px points at stride-2) hands
+  // the read pixel the NEIGHBOUR's varying past i≈W/2 — reproduced FAIL on
+  // SwiftShader at W=800 before the exact-slot fix. Keep W >= 800 so this
+  // guard actually exercises the bug it's meant to prevent.
+  {
+    const N = 800;
+    const records = Array.from({ length: N }, (_, i) => [(i * 53) % 256, (i * 89) % 256, (i * 127) % 256]);
+    const raw = injectPointSize(lib.raw("otranspilerl_glslv", [hashVertexShader()], [800]).output, 3.0);
+    const W2 = N * 2;
+    const gl = createGL(W2, 1, { preserveDrawingBuffer: true });
+    const FRAG = `precision mediump float;
+varying highp vec4 vColor;
+void main(){ gl_FragColor = vColor; }`;
+    const vs = gl.createShader(gl.VERTEX_SHADER); gl.shaderSource(vs, raw); gl.compileShader(vs);
+    if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) throw new Error("vertex: " + gl.getShaderInfoLog(vs));
+    const fs = gl.createShader(gl.FRAGMENT_SHADER); gl.shaderSource(fs, FRAG); gl.compileShader(fs);
+    const prog = gl.createProgram(); gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error("link: " + gl.getProgramInfoLog(prog));
+    gl.useProgram(prog);
+    const aPos = new Float32Array(N * 3);
+    records.forEach((r, i) => { aPos[i * 3] = (r[0] + 0.5) / 1000; aPos[i * 3 + 1] = (r[1] + 0.5) / 1000; aPos[i * 3 + 2] = (r[2] + 0.5) / 1000; });
+    const aUv = new Float32Array(N * 2);
+    for (let i = 0; i < N; i++) { aUv[i * 2] = i * 2 + 0.5; aUv[i * 2 + 1] = W2; }
+    const b1 = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b1); gl.bufferData(gl.ARRAY_BUFFER, aPos, gl.STATIC_DRAW);
+    const a1 = gl.getAttribLocation(prog, "aPosition"); gl.enableVertexAttribArray(a1); gl.vertexAttribPointer(a1, 3, gl.FLOAT, false, 0, 0);
+    const b2 = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b2); gl.bufferData(gl.ARRAY_BUFFER, aUv, gl.STATIC_DRAW);
+    const a2 = gl.getAttribLocation(prog, "aUv"); gl.enableVertexAttribArray(a2); gl.vertexAttribPointer(a2, 2, gl.FLOAT, false, 0, 0);
+    gl.viewport(0, 0, W2, 1); gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.drawArrays(gl.POINTS, 0, N);
+    const px = new Uint8Array(W2 * 4); gl.readPixels(0, 0, W2, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    const scores = new Int32Array(N);
+    for (let i = 0; i < N; i++) scores[i] = px[i * 2 * 4] + 256 * px[i * 2 * 4 + 1] + 65536 * px[i * 2 * 4 + 2];
+    const want = hashCPU(records);
+    const ok = scores.every((v, i) => v === want[i]);
+    console.log(`  hash-stress W=${N}: ${ok ? "PASS" : "FAIL"} (${scores.filter((v, i) => v !== want[i]).length} mismatches)`);
+    if (!ok) failures.push("hash-stress");
   }
 
   // ── 4. the STRICT ES 1.00 variants (fixed-iteration loop / arithmetic
@@ -171,6 +211,27 @@ void main(){ gl_FragColor = vColor; }`;
     console.log(`  collatz-strict: got=[${[...scores].join(",")}] ==cpu ${ok ? "PASS" : "FAIL"} sentinels ${sentinels}`);
     if (!ok) failures.push("collatz-strict");
 
+    // the n=0 regression: the strict loop's break must be the negation of
+    // the original `while n > 1` (n ≤ 1), or n=0 runs all 512 iterations
+    {
+      const values = Array.from({ length: 256 }, (_, i) => (i * 37 + 3) % 251); // includes 0
+      const raw0 = lib.raw("otranspilerl_glsl", [deps.collatzStrictShader(512)], [800]).output;
+      const { glsl: glsl0 } = deps.compileCollatzStrictGLSL(raw0, { width: 256 });
+      const gl0 = createGL(256, 1, { preserveDrawingBuffer: true });
+      const d0 = new Uint8Array(256 * 4);
+      values.forEach((v, i) => { d0[i * 4] = v; d0[i * 4 + 3] = 255; });
+      const t0 = gl0.createTexture(); gl0.bindTexture(gl0.TEXTURE_2D, t0);
+      gl0.pixelStorei(gl0.UNPACK_ALIGNMENT, 1);
+      gl0.texImage2D(gl0.TEXTURE_2D, 0, gl0.RGBA, 256, 1, 0, gl0.RGBA, gl0.UNSIGNED_BYTE, d0);
+      gl0.texParameteri(gl0.TEXTURE_2D, gl0.TEXTURE_MIN_FILTER, gl0.NEAREST);
+      gl0.texParameteri(gl0.TEXTURE_2D, gl0.TEXTURE_MAG_FILTER, gl0.NEAREST);
+      const pr0 = fragProgram(gl0, glsl0, 256);
+      const { scores: s0 } = readScores(gl0, pr0, 256, decodeRGBA);
+      const w0 = deps.collatzCPU(values);
+      const ok0 = [...s0].every((v, i) => v === w0[i]);
+      console.log(`  collatz-strict n=0 regression (W=256): ${ok0 ? "PASS" : "FAIL"}`);
+      if (!ok0) failures.push("collatz-strict-n0");
+    }
     const W = 32;
     const row = new Array(W).fill(0); row[7] = 1; row[19] = 1; row[26] = 1;
     const rule = [0, 1, 1, 1, 0, 1, 1, 0];

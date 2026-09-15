@@ -1,0 +1,63 @@
+{
+  "fixedN": {
+    "collatz": 100000000,
+    "ca1d": 1000000000,
+    "hash": 1000000000,
+    "mandelbrot": 50000000,
+    "maxreduce": 1000000000,
+    "threshold": 1000000000,
+    "clamp": 1000000000
+  },
+  "scaled": 1,
+  "problems": [
+    {
+      "name": "collatz",
+      "size": 100000768,
+      "cMs": 7176.233678,
+      "cNsPerItem": 71.76178564948621,
+      "checksum": 139329313
+    },
+    {
+      "name": "ca1d",
+      "size": 1000000512,
+      "cMs": 2769.898601000001,
+      "cNsPerItem": 2.7698971828126435,
+      "checksum": 1000000511
+    },
+    {
+      "name": "hash",
+      "size": 1000000512,
+      "cMs": 2665.7841640000006,
+      "cNsPerItem": 2.6657827991192073,
+      "checksum": 2946013696
+    },
+    {
+      "name": "mandelbrot",
+      "size": 50000896,
+      "cMs": 241.51257199999964,
+      "cNsPerItem": 4.830164883445281,
+      "checksum": 51575599
+    },
+    {
+      "name": "maxreduce",
+      "size": 1000000512,
+      "cMs": 3995.4093339999963,
+      "cNsPerItem": 3.9954072883514646,
+      "checksum": 975586437
+    },
+    {
+      "name": "threshold",
+      "size": 1000000512,
+      "cMs": 4384.057645000001,
+      "cNsPerItem": 4.384055400363636,
+      "checksum": 499000254
+    },
+    {
+      "name": "clamp",
+      "size": 1000000512,
+      "cMs": 5370.959401,
+      "cNsPerItem": 5.370956651070195,
+      "checksum": 370767457
+    }
+  ]
+}
