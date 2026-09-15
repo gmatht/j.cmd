@@ -91,6 +91,23 @@ ok(/cdef long long h/.test(unproven.text), "h is still proved (long long) with a
 ok(!/cdef\s+\w+\s+i\b/.test(unproven.text), "i is NOT declared when its bound is unknown (no wrap-by-guess)");
 ok(unproven.refusals.some((r) => /not provable/.test(r.reason)), "the unproved counter is reported in the manifest");
 
+// ── short counted loops are unrolled exactly (tighter than the invariant) ──
+// A `range(2)` loop must prove the reachable range, not the [0,m-1] loop
+// invariant; a long loop must stay conservative (the unroll must not be a
+// route to a wrapping `int`).
+console.log("\nshort-loop precision + declaration evidence");
+const shortLoop = annotate("h = 0\nfor i in range(2):\n    h = (h * 31 + i) % 1000000007\nprint(h)\n", { mode: "pyx" });
+ok(/cdef\s+int\s+h\b/.test(shortLoop.text), "range(2) proves h ∈ [1,1] → `cdef int h`", shortLoop.text);
+ok(!/cdef\s+long long\s+h/.test(shortLoop.text), "the short loop is NOT widened to long long");
+const hDecl = shortLoop.decls.find((d) => d.name === "h");
+const iDecl = shortLoop.decls.find((d) => d.name === "i");
+ok(hDecl && /\[1,1\]/.test(hDecl.ty), "h's proved range is the exact [1,1]", hDecl && hDecl.ty);
+ok(hDecl && /intermediate/.test(hDecl.why), "h's evidence names the intermediate width", hDecl && hDecl.why);
+ok(iDecl && /counted-loop counter/.test(iDecl.why), "i's evidence says it is the counted-loop counter", iDecl && iDecl.why);
+ok(shortLoop.decls.every((d) => d.why && d.why !== "proved by the flow analysis"), "every declaration carries specific evidence, not the old canned text");
+const longLoop = annotate("h = 0\nfor i in range(100000):\n    h = (h * 31 + i) % 1000000007\nprint(h)\n", { mode: "pyx" });
+ok(/cdef\s+long long\s+h/.test(longLoop.text), "a long loop keeps the [0,m-1] invariant (long long) — no overflow-by-unrolling");
+
 // ── the module is importable and DOM-free (worker + Node safe) ──
 console.log("\nmodule contract");
 ok(typeof globalThis.document === "undefined", "the test runs without a DOM (the module is DOM-free)");

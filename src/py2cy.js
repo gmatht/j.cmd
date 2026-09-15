@@ -177,6 +177,11 @@ function parseExpr(toks) {
 // operation that could overflow 64 bits widens to BigInt, which is
 // where the GMP tier (§1b) kicks in.
 const I64_MIN = -(2n ** 63n), I64_MAX = 2n ** 63n - 1n;
+// Counted loops with a known trip count up to this are UNROLLED exactly
+// (see analyzeModule), so a short loop proves the reachable range instead
+// of the wider loop invariant. Longer loops keep the widening fixpoint
+// (whose conservative `%` rule is what makes that fixpoint terminate).
+const UNROLL_CAP = 64n;
 
 function isIntType(t) { return t.kind === "int"; }
 function typeName(t) {
@@ -241,6 +246,8 @@ class Annotator {
     this._refuseKeys = new Set();   // dedupe (see refuse())
     this.bigints = new Set();       // names needing the GMP FFI tier
     this.lists = new Set();         // names proven to be int lists
+    this.notes = new Map();         // scoped name → human-readable evidence
+    this.exact = false;             // true only while unrolling a short loop
   }
 
   refuse(line, construct, reason, site) {
@@ -360,7 +367,14 @@ class Annotator {
         // NUMERIC result is narrow, but the dividend `a` was still computed
         // at its own width — carry that as `need` so the target is wide
         // enough to evaluate `a` without wrapping.
-        return promote(0n, m - 1n, maxBig([needAB, m, a.need ?? 0n]));
+        const modNeed = maxBig([needAB, m, a.need ?? 0n]);
+        // identity case 0 <= a < m ⇒ a % m === a: keep the dividend's
+        // (narrower) range. Only valid while UNROLLING a short loop, where
+        // the body has been run for every iteration; the widening fixpoint
+        // must keep the blanket [0, m-1], or it could stop before covering
+        // every reachable value (the modulus is what bounds the loop).
+        if (this.exact && A && A[0] >= 0n && A[1] < m) return promote(A[0], A[1], maxBig([a.need ?? 0n, magnitude([A[0], A[1]])]));
+        return promote(0n, m - 1n, modNeed);
       }
       default: return unbounded;                          // >>, &, |, ^ — value-unknown but Int
     }
@@ -614,6 +628,25 @@ export function parseBlock(lines, start, end, baseIndent) {
 }
 
 function tokText(toks) { return toks.map((t) => t.v).join(""); }
+
+// render an expression AST back to a short source string (for evidence text)
+function exprText(e) {
+  if (!e) return "";
+  switch (e.t) {
+    case "num": return String(e.raw ?? e.v);
+    case "str": return JSON.stringify(e.v);
+    case "bool": return e.v;
+    case "none": return "None";
+    case "name": return e.v;
+    case "list": return "[" + e.items.map(exprText).join(", ") + "]";
+    case "unary": return e.op + exprText(e.a);
+    case "bin": return "(" + exprText(e.a) + " " + e.op + " " + exprText(e.b) + ")";
+    case "cmp": return exprText(e.a) + " " + e.op + " " + exprText(e.b);
+    case "index": return e.baseName + "[" + (e.idx || []).map((x) => (x.slice ? ":" : exprText(x.e))).join(",") + "]";
+    case "call": return e.fn + "(" + (e.args || []).map((a) => (a.e ? exprText(a.e) : "*")).join(", ") + ")";
+    default: return e.text || "";
+  }
+}
 function stripColon(s) { const t = s.trim(); return t.endsWith(":") ? t.slice(0, -1) : t; }
 function parseParams(text) {
   const m = /\(([^)]*)\)/.exec(text);
@@ -670,6 +703,17 @@ function analyzeModule(module) {
             put(t.name, tv);
             if (tv.kind === "intlist" || tv.kind === "list") A.lists.add(t.name);
             if (tv.kind === "big") A.bigints.add(t.name);
+            // remember WHICH proof bounded a modulo result: the value is
+            // clamped by the modulus while the dividend needs a wider
+            // intermediate — the rolling_hash `long long h` story.
+            if (tv.kind === "int" && v && v.t === "bin" && v.op === "%") {
+              const modN = v.b && v.b.t === "num" ? numVal(v.b.raw ?? v.b.v) : null;
+              if (modN != null && tv.hi === modN - 1n) {
+                A.notes.set((scope.name ? scope.name + "." : "") + t.name,
+                  "`(" + exprText(v.a) + ") % " + exprText(v.b) + "`: the modulus bounds the value to [0," + tv.hi +
+                  "], while `" + exprText(v.a) + "` needs the wider intermediate");
+              }
+            }
             scope.locals.add(t.name);
           }
           break;
@@ -681,6 +725,26 @@ function analyzeModule(module) {
             // `for i in range(N)` gives i ∈ [0, N-1] (the rolling_hash
             // declaration, exactly as bench/cython/rolling_hash_typed.pyx).
             const bounds = rangeBounds(it.args, env, A);
+            const trip = (bounds.lo != null && bounds.hi != null) ? bounds.hi - bounds.lo + 1n : null;
+            // A SHORT counted loop (a constant trip count <= UNROLL_CAP, and
+            // step 1 — so at most two range() args) is unrolled exactly:
+            // running the body for every iteration gives the reachable range
+            // (range(2) proves h ∈ [1,1]) instead of the [0,m-1] invariant.
+            if (it.args.length <= 2 && trip != null && trip >= 0n && trip <= UNROLL_CAP) {
+              const saved = A.exact;
+              A.exact = true;
+              for (let k = 0n; k < trip; k++) {
+                put(st.target, intTy(bounds.lo + k, bounds.lo + k, bounds.need));
+                walk(st.body, env, scope, false);
+              }
+              A.exact = saved;
+            } else {
+              put(st.target, intTy(bounds.lo, bounds.hi, bounds.need));
+              const saved = A.exact;
+              A.exact = false;               // the fixpoint needs the blanket %
+              walkLoopBody(st.body, env, scope, walk);
+              A.exact = saved;
+            }
             put(st.target, intTy(bounds.lo, bounds.hi, bounds.need));
             // only a PROVED i64-exceeding bound is a bigint (GMP) case; an
             // unknown bound is simply unproven — the target stays a Python
@@ -695,13 +759,20 @@ function analyzeModule(module) {
               put(st.target, ANY);
               A.refuse(st.line, "for", "loop iterator is not a provably-int range (element type unproven)", st.raw.trim());
             }
+            const saved = A.exact;
+            A.exact = false;
+            walkLoopBody(st.body, env, scope, walk);
+            A.exact = saved;
           }
-          walkLoopBody(st.body, env, scope, walk);
           break;
         }
-        case "while":
+        case "while": {
+          const saved = A.exact;
+          A.exact = false;
           walkLoopBody(st.body, env, scope, walk);
+          A.exact = saved;
           break;
+        }
         case "if":
           for (const b of st.branches) walk(b.body, env, scope, widen);
           if (st.elseBody) walk(st.elseBody, env, scope, widen);
@@ -843,9 +914,12 @@ function buildDecls(A, mode, opts) {
   for (const name of A.moduleScope.locals) {
     const t = A.vars.get(name);
     if (!t || t.kind === "any") { A.refuseAtModule(name); continue; }
-    const d = declFor(name, t, A.bigints.has(name));
-    if (d) module.push(d);
-    else A.refuseAtModule(name, t);
+    const d = declFor(name, t, A.bigints.has(name), A.notes.get(name));
+    if (d) {
+      const lp = (A.moduleScope.loops || []).find((l) => l.name === name);
+      if (lp && lp.lo != null && lp.hi != null) d.why = "counted-loop counter: `for " + name + " in range(...)` ⇒ [" + lp.lo + "," + lp.hi + "]";
+      module.push(d);
+    } else A.refuseAtModule(name, t);
   }
   for (const [fname, f] of A.funcs) {
     const locals = [];
@@ -853,9 +927,12 @@ function buildDecls(A, mode, opts) {
       if (f.params.includes(name)) continue;          // params carry no cdef here
       const t = A.vars.get(fname + "." + name);
       if (!t || t.kind === "any") continue;
-      const d = declFor(name, t, A.bigints.has(name), A.bigints.has(fname + "." + name));
-      if (d) locals.push(d);
-      else A.refuseAtModule(name, t, fname);
+      const d = declFor(name, t, A.bigints.has(name), A.notes.get(fname + "." + name));
+      if (d) {
+        const lp = f.loops.find((l) => l.name === name);
+        if (lp && lp.lo != null && lp.hi != null) d.why = "counted-loop counter: `for " + name + " in range(...)` ⇒ [" + lp.lo + "," + lp.hi + "]";
+        locals.push(d);
+      } else A.refuseAtModule(name, t, fname);
     }
     // a counted loop counter is proved by its bound even if the body never
     // assigns it — the canonical rolling_hash `cdef long long i`. An
@@ -863,7 +940,7 @@ function buildDecls(A, mode, opts) {
     for (const lp of f.loops) {
       if (locals.some((l) => l.name === lp.name)) continue;
       if (lp.hi == null || lp.lo == null) { A.refuse(lp.line, "loop counter", "bound of `" + lp.name + "` not provable — left as a Python object", "for " + lp.name + " in range(...)"); continue; }
-      locals.push({ name: lp.name, ty: "Int[" + lp.lo + "," + lp.hi + "]", ctype: cTypeForRange(lp.lo, lp.hi, lp.need), kind: "int", loop: true });
+      locals.push({ name: lp.name, ty: "Int[" + lp.lo + "," + lp.hi + "]", ctype: cTypeForRange(lp.lo, lp.hi, lp.need), kind: "int", loop: true, why: "counted-loop counter: `for " + lp.name + " in range(...)` ⇒ [" + lp.lo + "," + lp.hi + "]" });
     }
     functions.push({ name: fname, locals, params: f.params, localCount: locals.length });
   }
@@ -871,26 +948,39 @@ function buildDecls(A, mode, opts) {
   for (const lp of A.moduleScope.loops || []) {
     if (module.some((m) => m.name === lp.name)) continue;
     if (lp.hi == null || lp.lo == null) { A.refuse(lp.line, "loop counter", "bound of `" + lp.name + "` not provable — left as a Python object", "for " + lp.name + " in range(...)"); continue; }
-    module.push({ name: lp.name, ty: "Int[" + lp.lo + "," + lp.hi + "]", ctype: cTypeForRange(lp.lo, lp.hi, lp.need), kind: "int", loop: true });
+    module.push({ name: lp.name, ty: "Int[" + lp.lo + "," + lp.hi + "]", ctype: cTypeForRange(lp.lo, lp.hi, lp.need), kind: "int", loop: true, why: "counted-loop counter: `for " + lp.name + " in range(...)` ⇒ [" + lp.lo + "," + lp.hi + "]" });
   }
   const gmp = A.bigints.size > 0 && opts.gmp !== false;
   return { module, functions, gmp, pyx: ct };
 }
 
 // one declaration from a proved type (null = nothing to declare)
-function declFor(name, t, big) {
-  if (t.kind === "str") return { name, ty: "Str", ctype: "str", kind: "str" };
-  if (t.kind === "big") return { name, ty: "BigInt", ctype: "mpz_t", kind: "bigint", big: true };
+function declFor(name, t, big, why) {
+  if (t.kind === "str") return { name, ty: "Str", ctype: "str", kind: "str", why: why || "proved `str` (no numeric C type to win)" };
+  if (t.kind === "big") return { name, ty: "BigInt", ctype: "mpz_t", kind: "bigint", big: true, why: why || "value exceeds i64 — Cython has no native big-int, so the GMP FFI tier is emitted" };
   if (t.kind === "int") {
     // THE PROOF RULE (AUTO_CYTHON §6): a C type is emitted only when the
     // value's range is PROVED. An unbounded int is not a `long long` —
     // that would be a guess that wraps silently. It stays a Python object.
     if (t.lo == null || t.hi == null) return null;
-    return { name, ty: typeName(t), ctype: big ? "mpz_t" : cTypeForRange(t.lo, t.hi, t.need), kind: big ? "bigint" : "int", big };
+    const ctype = big ? "mpz_t" : cTypeForRange(t.lo, t.hi, t.need);
+    return { name, ty: typeName(t), ctype, kind: big ? "bigint" : "int", big, why: why || intEvidence(t, ctype) };
   }
-  if (t.kind === "intlist") return { name, ty: "SeqInt[" + (t.lo ?? "?") + "," + (t.hi ?? "?") + "]", ctype: "list", kind: "list" };
-  if (t.kind === "list") return { name, ty: "list", ctype: "list", kind: "untyped-list" };
+  if (t.kind === "intlist") return { name, ty: "SeqInt[" + (t.lo ?? "?") + "," + (t.hi ?? "?") + "]", ctype: "list", kind: "list", why: why || ("proved an int list; elements ∈ [" + (t.lo ?? "?") + "," + (t.hi ?? "?") + "]") };
+  if (t.kind === "list") return { name, ty: "list", ctype: "list", kind: "untyped-list", why: why || "a list whose element type was not proved — kept a Python list" };
   return null;
+}
+
+// the evidence behind a proved integer range: the value range, plus the
+// intermediate width whenever that is what forced a wider C type.
+function intEvidence(t, ctype) {
+  const range = "value ∈ [" + t.lo + "," + t.hi + "]";
+  const valueMag = maxBig([absBig(t.lo), absBig(t.hi)]);
+  if (t.need != null && t.need > valueMag) {
+    return range + "; the widest intermediate in its definition reaches " + t.need +
+      " (wider than the value), which is why the C type is " + ctype;
+  }
+  return range + " proved by the interval analysis → " + ctype;
 }
 
 function summarizeDecls(decls) {

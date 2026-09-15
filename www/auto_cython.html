@@ -381,7 +381,7 @@ function renderProof(r) {
     const cls = d.kind === "bigint" ? "ty-big" : d.kind === "int" ? "ty-int" : d.kind === "str" ? "ty-str" : "ty-any";
     return "<tr><td><code>" + esc(d.scope) + "</code></td><td><code>" + esc(d.name) + "</code></td>" +
       '<td class="' + cls + '"><code>' + esc(d.ty) + "</code></td><td><code>cdef " + esc(d.ctype) + "</code></td>" +
-      "<td>" + (d.kind === "bigint" ? "GMP FFI (Cython has no big-int)" : d.loop ? "counted-loop counter" : "proved by the flow analysis") + "</td></tr>";
+      "<td>" + esc(d.why || (d.kind === "bigint" ? "GMP FFI (Cython has no big-int)" : d.loop ? "counted-loop counter" : "proved by the flow analysis")) + "</td></tr>";
   });
   $("proof-lines").innerHTML = rows.length
     ? '<table class="manifest"><thead><tr><th>scope</th><th>name</th><th>proved type</th><th>Cython</th><th>why</th></tr></thead><tbody>' + rows.join("") + "</tbody></table>"
