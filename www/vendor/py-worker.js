@@ -21,6 +21,13 @@
 //   worker → main: { type: "done", jobId, ok, result|error }
 //   result = { out, err, code }
 //
+// ONE JOB AT A TIME: micropython's asyncify engine may only have a single
+// mp_js_do_str in flight. If a second job arrives while one is running
+// (the page could not cancel/restart in time, or a stale post), reject it
+// cleanly instead of entering the engine — otherwise emscripten aborts the
+// whole worker with "Cannot have multiple async operations in flight at
+// once" and every later run is lost.
+//
 // Output routing: the glue needs a sink (see the LOCAL PATCH in
 // www/vendor/micropython.js). py.js installs Module.onStdout for the
 // worker realm, so stdout arrives here as plain strings.
@@ -30,6 +37,7 @@
 
 var PY_SRC = "../../src/py.js";  // relative to this file (www/vendor/)
 var _pyMod = null;
+var _running = false;
 
 self.onmessage = async function (e) {
   var m = e.data || {};
@@ -39,6 +47,11 @@ self.onmessage = async function (e) {
   var post = function (o) { self.postMessage(o); };
   var status = function (text) { post({ type: "status", jobId: m.jobId, text: String(text) }); };
 
+  if (_running) {
+    post({ type: "done", jobId: m.jobId, ok: false, error: "a run is already in progress" });
+    return;
+  }
+  _running = true;
   try {
     status("loading the Python engine…");
     if (!_pyMod) _pyMod = await import(PY_SRC);
@@ -55,5 +68,7 @@ self.onmessage = async function (e) {
     post({ type: "done", jobId: m.jobId, ok: true, result: { out: out, err: err, code: code } });
   } catch (e2) {
     post({ type: "done", jobId: m.jobId, ok: false, error: String((e2 && e2.message) || e2) });
+  } finally {
+    _running = false;
   }
 };

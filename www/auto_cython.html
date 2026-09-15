@@ -311,7 +311,13 @@ async function annotate() {
   // its result, then take over. Without this, the busy guard below would
   // silently swallow the mode-toggle re-run.
   const gen = ++execGen;
-  if (busy) terminateBusyStages();
+  // A new annotation supersedes the previous one COMPLETELY — including the
+  // Python run. The py worker is a persistent singleton driving an asyncify
+  // engine, and queueing a second mp_js_do_str while the first is in flight
+  // aborts it ("Cannot have multiple async operations in flight at once").
+  // So when we take over, terminate the worker; the next run lazily builds a
+  // fresh worker + interpreter.
+  if (busy) { terminateBusyStages(); terminatePyWorker("superseded by a newer run"); }
   busy = true;
   paintRunButton();
   const alive = () => gen === execGen;
@@ -352,11 +358,24 @@ async function annotate() {
     // page. micropython's glue is a classic script that needs
     // importScripts, which a module worker cannot do — hence a separate
     // worker rather than the module worker the other stages share.
-    const origR = await runPyWorker(source);
-    if (!alive()) return;
+    const origR = await runPyWorker(source, alive);
+    if (!alive()) return;                                 // a newer run took over
+    if (origR.cancelled) {
+      // Pre-empted by a mode switch / new annotate (the newer run owns the
+      // status line), or killed by the runaway timeout.
+      if (origR.timedOut) {
+        $("out-orig").value = "run timed out after " + Math.round(PY_RUN_TIMEOUT_MS / 1000) +
+          "s (possible infinite loop); the Python worker was restarted.";
+        setTag("orig", "timeout");
+        showStatus("original Python run timed out — worker restarted (press Annotate to retry)", "warn");
+      }
+      return;
+    }
+    let runNote = "";
     if (!origR.ok) {
       $("out-orig").value = "run failed: " + origR.error;
       setTag("orig", "worker error");
+      runNote = " · original run failed";
     } else {
       const o = origR.result || {};
       $("out-orig").value = (o.out || "") + (o.err ? "\n[stderr] " + o.err : "");
@@ -366,7 +385,7 @@ async function annotate() {
     const s = r.stats || {};
     showStatus("annotated — " + (s.declared || 0) + " declaration(s), " + (s.refusals || 0) +
       " refusal(s)" + (s.bigint ? ", " + s.bigint + " bigint (GMP FFI)" : "") +
-      " · " + fmtMs(performance.now() - t0), "success");
+      " · " + fmtMs(performance.now() - t0) + runNote, origR.ok ? "success" : "warn");
   } catch (e) {
     if (alive()) showStatus("error: " + (e && e.message ? e.message : e), "error");
   } finally {
@@ -520,8 +539,8 @@ function runStage(slot, kind, payload, onStatus) {
   })();
 }
 
-function paintRunButton() { $("run-btn").textContent = busy ? "…wait" : "Annotate"; }
-function onRunButton() { if (!busy) annotate(); }
+function paintRunButton() { $("run-btn").textContent = busy ? "Cancel" : "Annotate"; }
+function onRunButton() { if (busy) cancelRun(); else annotate(); }
 
 // ─── the original Python run (its own CLASSIC worker) ───────────
 // micropython's glue is a classic emscripten script: it declares a global
@@ -529,43 +548,97 @@ function onRunButton() { if (!busy) annotate(); }
 // cannot do ("Module scripts don't support importScripts()"), and the
 // module-scoped `var` would be unreachable anyway. So Python gets its own
 // classic worker (www/vendor/py-worker.js, next to micropython.wasm so the
-// glue's own script-directory wasm resolution works). The engine is a
-// persistent singleton in that worker, so repeat runs are cheap.
+// glue's own script-directory wasm resolution works).
+//
+// CANCELLATION / RESTART: the engine is an asyncify singleton that can only
+// have one mp_js_do_str in flight, and a Python `while True` never returns.
+// So the worker is restartable rather than merely reusable: terminatePyWorker()
+// kills it and drops every reference (aborting an in-flight init and
+// resolving an in-flight job as cancelled), and the next run lazily creates a
+// fresh worker + interpreter. This is what the Run button's Cancel does, and
+// what lets a second annotate pre-empt the first instead of queueing a
+// concurrent job onto a busy worker.
+const PY_RUN_TIMEOUT_MS = 60000;
 let pyWorker = null;
+let pyReady = null;
 let pySeq = 1;
-function runPyWorker(source) {
+let pyPending = null;      // resolve() of the job in flight, for cancellation
+let pyInitAbort = null;    // reject() of the init promise, for cancellation
+
+function terminatePyWorker(reason, timedOut) {
+  const pend = pyPending; pyPending = null;
+  const abort = pyInitAbort; pyInitAbort = null;
+  if (pyWorker) { try { pyWorker.terminate(); } catch {} }
+  pyWorker = null;
+  pyReady = null;
+  if (abort) abort(new Error(reason || "cancelled"));
+  if (pend) pend({ ok: false, cancelled: true, timedOut: !!timedOut, error: reason || "cancelled" });
+}
+
+function cancelRun() {
+  ++execGen;                    // invalidate the in-flight annotate generation
+  terminateBusyStages();
+  terminatePyWorker("cancelled by the user");
+  busy = false;
+  paintRunButton();
+  showStatus("cancelled — the Python worker was restarted", "warn");
+}
+
+function runPyWorker(source, alive) {
   return (async () => {
     try {
       if (!pyWorker || !pyReady) {
-        pyWorker = new Worker(new URL("vendor/py-worker.js", import.meta.url));
+        const w = new Worker(new URL("vendor/py-worker.js", import.meta.url));
+        pyWorker = w;
         pyReady = new Promise((resolve, reject) => {
-          const to = setTimeout(() => reject(new Error("py worker init timeout")), 60000);
+          pyInitAbort = reject;
+          const to = setTimeout(() => { pyInitAbort = null; reject(new Error("py worker init timeout")); }, 60000);
           const onMsg = (e) => {
-            if (e.data && e.data.type === "ready") { clearTimeout(to); pyWorker.removeEventListener("message", onMsg); resolve(); }
+            if (e.data && e.data.type === "ready") { clearTimeout(to); pyInitAbort = null; w.removeEventListener("message", onMsg); resolve(); }
           };
-          pyWorker.addEventListener("message", onMsg);
-          pyWorker.addEventListener("error", (e) => { clearTimeout(to); reject(new Error(e.message || "py worker error")); }, { once: true });
-          pyWorker.postMessage({ type: "init" });
+          w.addEventListener("message", onMsg);
+          w.addEventListener("error", (e) => { clearTimeout(to); pyInitAbort = null; reject(new Error((e && e.message) || "py worker error")); }, { once: true });
+          w.postMessage({ type: "init" });
         });
       }
       await pyReady;
+      if (alive && !alive()) return { ok: false, cancelled: true };
+      const worker = pyWorker;
       const jobId = pySeq++;
       return await new Promise((resolve) => {
+        let done = false;
+        const finish = (r) => {
+          if (done) return;
+          done = true;
+          clearTimeout(to);
+          worker.removeEventListener("message", onMsg);
+          worker.removeEventListener("error", onErr);
+          if (pyPending === finish) pyPending = null;
+          resolve(r);
+        };
         const onMsg = (e) => {
           const m = e.data || {};
           if (m.jobId !== jobId) return;
           if (m.type === "status") return;                     // progress notes (not shown)
-          if (m.type === "done") { pyWorker.removeEventListener("message", onMsg); resolve(m.ok ? { ok: true, result: m.result } : { ok: false, error: m.error }); }
+          if (m.type === "done") finish(m.ok ? { ok: true, result: m.result } : { ok: false, error: m.error });
         };
-        pyWorker.addEventListener("message", onMsg);
-        pyWorker.postMessage({ type: "job", jobId, source: String(source) });
+        const onErr = (e) => {
+          finish({ ok: false, error: (e && e.message) || "py worker crashed" });
+          if (pyWorker === worker) terminatePyWorker("py worker crashed");
+        };
+        const to = setTimeout(() => {
+          if (pyWorker === worker) terminatePyWorker("timed out after " + Math.round(PY_RUN_TIMEOUT_MS / 1000) + "s (possible infinite loop)", true);
+        }, PY_RUN_TIMEOUT_MS);
+        pyPending = finish;
+        worker.addEventListener("message", onMsg);
+        worker.addEventListener("error", onErr);
+        worker.postMessage({ type: "job", jobId, source: String(source) });
       });
     } catch (e) {
       return { ok: false, error: String((e && e.message) || e) };
     }
   })();
 }
-let pyReady = null;
 
 // ─── UI wiring ──────────────────────────────────────────────────
 let searchQuery = "";
