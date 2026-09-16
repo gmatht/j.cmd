@@ -44,6 +44,8 @@
   .header { text-align: center; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 2px solid var(--accent); }
   .header h1 { color: var(--text); margin: 0 0 6px; font-size: 22px; }
   .header p { color: var(--muted); font-size: 12px; margin: 0; }
+  .header .xlink { margin-top: 6px; font-size: 12px; }
+  .header .xlink a { color: var(--accent); }
   .header .bug-btn {
     margin-top: 8px; width: 100%;
     background: rgba(215, 58, 73, 0.07);
@@ -185,6 +187,7 @@
     <div class="header">
       <h1>auto_cython</h1>
       <p>py2cy — Python → <b>auto-typed</b> Cython</p>
+      <p class="xlink">→ <a id="otranspiler-link" href="otranspiler.html" onclick="this.href='otranspiler.html#lang=py&code='+encodeURIComponent(document.getElementById('input').value)">transpile this Python to other targets in otranspiler</a></p>
       <button id="bug-btn" type="button" class="bug-btn" title="Report a bug — opens the sh2perl issue form pre-filled with this session">🐞 Bug Report</button>
     </div>
     <div class="search-wrap">

@@ -72,6 +72,8 @@
     line-height: 1.4;
     color: var(--muted);
   }
+  .header .xlink { margin: 6px 0 0; font-size: 12px; }
+  .header .xlink a { color: var(--accent); }
   .try-btn .try-main { display: block; }
   .try-btn .try-cmd {
     display: block; font-size: 9px; line-height: 1.3; margin-top: 3px;
@@ -263,6 +265,7 @@
     <div class="header">
       <h1>otranspiler</h1>
       <p>one contract, every language</p>
+      <p class="xlink" id="autocy-link-wrap" style="display:none">→ <a id="autocy-link" href="auto_cython.html" onclick="this.href='auto_cython.html#code='+encodeURIComponent(document.getElementById('input').value)">auto-annotate this Python in auto_cython</a></p>
       <button id="try-btn" type="button" class="try-btn" title="Open j.cmd with the command pre-filled — review it, then press Enter to run">
         <span class="try-main">▶ Try in j.cmd</span>
         <span class="try-cmd" id="try-cmd"></span>
@@ -1235,6 +1238,9 @@ async function getCorpus(dir) {
 function renderLangPills() {
   const el = $("lang-pills");
   el.innerHTML = "";
+  // cross-link: the auto_cython annotator only handles Python source
+  const pyLink = $("autocy-link-wrap");
+  if (pyLink) pyLink.style.display = srcLang === "py" ? "" : "none";
   for (const lang of Object.keys(LANGS)) {
     const b = document.createElement("button");
     const g = frontendGrade(lang);
