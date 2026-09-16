@@ -46,7 +46,17 @@ type Program struct {
 
 type VarType struct {
 	Name string `json:"name"`
-	Type string `json:"type"` // "Int" or "Str"
+	// A widthless verdict ("Int"/"Str"/"Any") or a sized object
+	// ({"kind":"Float","width":64} — see FloatType). encoding/json
+	// sorts map keys, so the object form is byte-identical to the
+	// core's shir_json.rs output for the same IrType.
+	Type any `json:"type"`
+}
+
+// FloatType is the A1 var_types object for an IEEE-754 double
+// ({"kind":"Float","width":64}, matching IrType::Float(64)).
+func FloatType(width int) map[string]any {
+	return map[string]any{"kind": "Float", "width": width}
 }
 
 type Sub struct {

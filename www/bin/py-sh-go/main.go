@@ -1,9 +1,10 @@
 // py-sh-go: Python source -> shIR JSON (A1 contract), ANTLR4+Go.
 //
-// The full antlr4-generated Python parser is TODO (grammars/ holds the
-// official Python3 grammar — generation is the worker's job). This file
-// is a hand-rolled recursive-descent parser + lowerer for the v1
-// shell-flavored Python subset (the t01-t52 language-ladder corpus):
+// The full antlr4-generated Python parser is in gen/ (`make gen`; expose
+// it with `py-sh-go --parse <file.py>`, see parse.go). This file is the
+// hand-rolled recursive-descent parser + lowerer for the v1 shell-flavored
+// Python subset (the t01-t101 language-ladder corpus) and is still what
+// `--shir` lowers from; lowering from the ANTLR tree is the next slice:
 //
 //	print(...) / f-strings / %-format       → echo / printf
 //	assignments / tuple assignment           → Assign (arith via Arith)
@@ -1782,6 +1783,34 @@ type lowerer struct {
 	types     map[string]string   // var → int|big|float|str|list|dict
 	params    map[string][]string // function name → params (for scoping)
 	curParams map[string]string   // active function: param → positional string
+	// exactHi is the largest magnitude an integer expression may be
+	// PROVEN within and still lower to the native "int" domain.
+	// Default 2^53 (the JS Number bound); `--exact-i64` raises it to
+	// 2^63-1 for C-only callers, where signed i64 arithmetic is exact
+	// and the `Cast(Int64)` bigint marker (which would home the var in
+	// GMP) is unnecessary. Proven-huge stays "big" either way.
+	exactHi *big.Int
+	// loopDepth counts enclosing loop bodies during lowering. The range
+	// proof is straight-line, so a variable assigned inside a loop is
+	// loop-carried and its pre-loop range is stale; an unbounded-growth
+	// accumulator must therefore not be narrowed on it (`growsUnbounded`).
+	loopDepth int
+	// loopTrips is the innermost-last trip-count stack for the enclosing
+	// loop bodies (nil = unprovable). `loopCarriedExceedsExact` multiplies
+	// it by the per-iteration magnitude to decide whether a loop-carried
+	// accumulator can leave the exact int domain (the additive sibling of
+	// the `growsUnbounded` multiplicative guard).
+	loopTrips []*big.Int
+	// loopBounded names the vars an enclosing loop's condition bounds
+	// (a counted-loop counter). Such a var cannot leave the exact domain
+	// even when the trip count is dynamic (its exit value is within one
+	// step of a provably exact bound), so the additive guard skips it.
+	loopBounded [][]string
+	// loopAssigned records the vars an enclosing loop body assigns. A
+	// loop-carried operand makes the `trips * max|rhs|` bound unsound (its
+	// stale range under-estimates the value it reaches in the loop), so an
+	// accumulator reading one is forced to the exact domain.
+	loopAssigned []map[string]bool
 	// pending Popen pipe chains (the `a | b` idiom): tail var → ordered
 	// stages (each stage is one exec statement). Flushed as an A1
 	// `Pipeline` statement at the first non-chain statement / end of
@@ -1794,7 +1823,7 @@ type lowerer struct {
 	// so an integer whose interval is NOT proven within ±2^53 lowers to
 	// the bigint domain (exact JS BigInt arith); everything proven stays
 	// on the fast Number path. fnSites feeds the param intervals.
-	ranges  map[string][2]*big.Int
+	ranges map[string][2]*big.Int
 	// setElemDom tracks set/list element domains for sorted(): var →
 	// "int" (every recorded element proven within ±2^53) or "big".
 	// Recorded at add()/append() and all-int literals; POISONED
@@ -1802,8 +1831,8 @@ type lowerer struct {
 	// to the legacy pipeline, so a stale verdict can never survive a
 	// reassignment to non-int content.
 	setElemDom map[string]string
-	fnSites map[string][][]Expr // function name → per-call arg lists
-	fnRet   map[string]string   // function name → inferred return type ("list", …)
+	fnSites    map[string][][]Expr // function name → per-call arg lists
+	fnRet      map[string]string   // function name → inferred return type ("list", …)
 	// float-path/bound hoist temp names: the base is context-derived
 	// (floatName — `int(n**0.5)` -> `i_sqrt_n`), a per-context sequence
 	// disambiguates only on collision (usedHoist tracks the names in
@@ -1813,6 +1842,9 @@ type lowerer struct {
 }
 
 var two53 = func() *big.Int { return big.NewInt(9007199254740992) }() // 2^53
+
+// 2^63-1: the C-exact integer ceiling (`--exact-i64`).
+var two63m1 = func() *big.Int { return big.NewInt(9223372036854775807) }()
 
 // foldInt constant-folds an integer expression with exact big.Int
 // arithmetic (literals, + - * // % ** over foldable operands). ok=false
@@ -2010,6 +2042,23 @@ func (l *lowerer) typeOf(e Expr) string {
 			t.Op == "%" || t.Op == "**") && floatPath(t) {
 			return "float"
 		}
+		// float-domain propagation (mirror autocython floatDomain):
+		// `+ - * / % // **` on two scalar numbers is a float when —
+		// except for `/` — at least one side is a float. `/` of two
+		// numbers is always float (true division). A side that is
+		// neither int/big/float (a string, list, unknown) keeps the
+		// legacy verdict below.
+		if t.Op == "/" {
+			if isNumType(l.typeOf(t.Lhs)) && isNumType(l.typeOf(t.Rhs)) {
+				return "float"
+			}
+		} else if t.Op == "+" || t.Op == "-" || t.Op == "*" || t.Op == "//" ||
+			t.Op == "%" || t.Op == "**" {
+			lt, rt := l.typeOf(t.Lhs), l.typeOf(t.Rhs)
+			if (lt == "float" || rt == "float") && isNumType(lt) && isNumType(rt) {
+				return "float"
+			}
+		}
 		if t.Op == "+" {
 			lt, rt := l.typeOf(t.Lhs), l.typeOf(t.Rhs)
 			if (lt == "int" || lt == "big") && (rt == "int" || rt == "big") {
@@ -2102,6 +2151,13 @@ func (l *lowerer) rangeOf(e Expr) (*big.Int, *big.Int, bool) {
 		aLo, aHi, ok1 := l.rangeOf(t.Lhs)
 		bLo, bHi, ok2 := l.rangeOf(t.Rhs)
 		if !ok1 || !ok2 {
+			// Python modulo with a proven-positive divisor bounds the
+			// RESULT from the divisor alone (x % m ∈ [0, m-1] for any x),
+			// so a loop-carried dividend does not hide the bound. This is
+			// what keeps a mod-bounded accumulator provable (sumred).
+			if t.Op == "%" && ok2 && bLo.Sign() > 0 {
+				return big.NewInt(0), new(big.Int).Sub(bHi, big.NewInt(1)), true
+			}
 			// int()/sqrt bounds are provable from ONE side's interval
 			if t.Op == "**" {
 				if fl, ok := t.Rhs.(*LitFloat); ok && fl.Text == "0.5" {
@@ -2217,19 +2273,22 @@ func truncBig(n *big.Int) *big.Int {
 // be in the same domain or the JS op throws.
 func (l *lowerer) intDom(e Expr) string {
 	switch t := e.(type) {
+	case *LitFloat:
+		// a double literal trivially fits in a JS Number.
+		return "int"
 	case *BinOpE:
 		if l.intDom(t.Lhs) == "big" || l.intDom(t.Rhs) == "big" {
 			return "big"
 		}
 		if t.Op == "**" {
 			// pow: unprovable growth — only a proven-small fold stays Number
-			if lo, hi, ok := l.rangeOf(e); ok && hi.Cmp(two53) <= 0 && lo.Cmp(new(big.Int).Neg(two53)) >= 0 {
+			if lo, hi, ok := l.rangeOf(e); ok && hi.Cmp(l.exactHi) <= 0 && lo.Cmp(new(big.Int).Neg(l.exactHi)) >= 0 {
 				return "int"
 			}
 			return "big"
 		}
 		if lo, hi, ok := l.rangeOf(e); ok {
-			if hi.Cmp(two53) <= 0 && lo.Cmp(new(big.Int).Neg(two53)) >= 0 {
+			if hi.Cmp(l.exactHi) <= 0 && lo.Cmp(new(big.Int).Neg(l.exactHi)) >= 0 {
 				return "int"
 			}
 			return "big"
@@ -2242,9 +2301,19 @@ func (l *lowerer) intDom(e Expr) string {
 			}
 			return "int" // float-path int() results are double-derived
 		}
+	case *SubscriptE:
+		// An array element read carries the list's recorded element
+		// domain (noteElemAdd). Without this, `s + a[i]` fell to the
+		// "big" default, homing the accumulator in GMP even when every
+		// element was a proven-i64 integer (squares-map: 27 s vs 2 s).
+		if n, ok := t.Obj.(*NameE); ok {
+			if dom, ok := l.setElemDom[n.Name]; ok {
+				return dom
+			}
+		}
 	}
 	if lo, hi, ok := l.rangeOf(e); ok {
-		if hi.Cmp(two53) <= 0 && lo.Cmp(new(big.Int).Neg(two53)) >= 0 {
+		if hi.Cmp(l.exactHi) <= 0 && lo.Cmp(new(big.Int).Neg(l.exactHi)) >= 0 {
 			return "int"
 		}
 		return "big"
@@ -2254,12 +2323,21 @@ func (l *lowerer) intDom(e Expr) string {
 		switch l.types[t.Name] {
 		case "big":
 			return "big"
-		case "int":
+		case "int", "float":
+			// a float var holds a double — an exact JS Number, never
+			// a BigInt (BigInt(1.5) throws).
 			return "int"
 		}
 		return "big"
 	}
 	return "big"
+}
+
+// isNumType — a scalar-number type verdict (an int/big/float value).
+// The float-domain rule (typeOf BinOp, noteElemAdd) admits only these;
+// strings, lists, dicts and unknowns keep their legacy verdicts.
+func isNumType(t string) bool {
+	return t == "int" || t == "big" || t == "float"
 }
 
 // floatPath — does this integer-context expression contain a float
@@ -2433,6 +2511,30 @@ func (l *lowerer) arithIRDom(e Expr, dom string, zeroCmp bool) (map[string]any, 
 		}
 		return arithExpr(arithBin(op, lhsAst, rhsAst)), nil
 	case *SubscriptE:
+		// Arith-context array element read: `a[i] % K` etc. must lower to
+		// the A1 arith `Index` node ({type:Index,var,key}) — NOT the
+		// expression-level `subscriptIR` result (which has no "ast" and
+		// nil-panics the enclosing BinOpE, see the hash/squares-map
+		// idioms).
+		if name, ok := t.Obj.(*NameE); ok && t.Index != nil {
+			key, err := l.arithIRDom(t.Index, dom, false)
+			if err != nil {
+				return nil, err
+			}
+			keyAst, ok := key["ast"].(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("unsupported arithmetic index")
+			}
+			return arithExpr(map[string]any{
+				"type": "Index",
+				"var":  name.Name,
+				"key":  keyAst,
+			}), nil
+		}
+		// Other subscript idioms (os.environ["K"], split/rsplit[0], …)
+		// resolve to an EXPRESSION node (e.g. getVar) — return it unchanged
+		// (the `int(os.environ["N"])` form; arithIRDom callers that need
+		// an "ast" leaf handle only genuine arith subscripts).
 		return l.subscriptIR(t)
 	}
 	return nil, fmt.Errorf("unsupported arithmetic")
@@ -3638,7 +3740,7 @@ func (l *lowerer) rangeWhile(t *ForS, c *CallE) ([]map[string]any, error) {
 		}
 		step = []map[string]any{assignStmt(t.Var, arithExpr(arithBin("+", arithVar(t.Var), one)))}
 	}
-	body, err := l.stmtsIR(t.Body)
+	body, err := l.loopBodyIRTrips(t.Body, l.rangeTrips(loE, hiE), []string{t.Var})
 	if err != nil {
 		return nil, err
 	}
@@ -3966,6 +4068,334 @@ func (l *lowerer) flushPipes() []map[string]any {
 	return out
 }
 
+// loopBodyIR lowers a loop body with loopDepth raised, so assignments
+// inside it are known to be loop-carried.
+func (l *lowerer) loopBodyIR(body []Stmt) ([]map[string]any, error) {
+	l.loopDepth++
+	irs, err := l.stmtsIR(body)
+	l.loopDepth--
+	return irs, err
+}
+
+// loopBodyIRTrips lowers a loop body with its trip count and
+// condition-bounded vars on the stack.
+func (l *lowerer) loopBodyIRTrips(body []Stmt, trips *big.Int, bounded []string) ([]map[string]any, error) {
+	l.loopTrips = append(l.loopTrips, trips)
+	l.loopBounded = append(l.loopBounded, bounded)
+	l.loopAssigned = append(l.loopAssigned, assignsIn(body))
+	irs, err := l.loopBodyIR(body)
+	l.loopAssigned = l.loopAssigned[:len(l.loopAssigned)-1]
+	l.loopBounded = l.loopBounded[:len(l.loopBounded)-1]
+	l.loopTrips = l.loopTrips[:len(l.loopTrips)-1]
+	return irs, err
+}
+
+// assignsIn collects every target a statement list assigns, recursively
+// (nested loops included — an operand growing in an inner loop is still
+// loop-carried for the outer accumulator).
+func assignsIn(stmts []Stmt) map[string]bool {
+	out := map[string]bool{}
+	var walkStmts func([]Stmt)
+	var walkStmt func(Stmt)
+	walkStmt = func(st Stmt) {
+		switch t := st.(type) {
+		case *AssignS:
+			for _, tg := range t.Targets {
+				out[tg] = true
+			}
+		case *IfS:
+			walkStmts(t.Then)
+			for _, e := range t.Elifs {
+				walkStmts(e.Body)
+			}
+			walkStmts(t.Else)
+		case *WhileS:
+			walkStmts(t.Body)
+		case *ForS:
+			walkStmts(t.Body)
+		case *TryS:
+			walkStmts(t.Body)
+			for _, e := range t.Except {
+				walkStmts(e.Body)
+			}
+			walkStmts(t.ElseBody)
+			walkStmts(t.Finally)
+		}
+	}
+	walkStmts = func(ss []Stmt) {
+		for _, st := range ss {
+			walkStmt(st)
+		}
+	}
+	walkStmts(stmts)
+	return out
+}
+
+// loopAssignedNames is the union of every enclosing loop body's assigned
+// target names.
+func (l *lowerer) loopAssignedNames() []string {
+	seen := map[string]bool{}
+	for _, m := range l.loopAssigned {
+		for k := range m {
+			seen[k] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for k := range seen {
+		out = append(out, k)
+	}
+	return out
+}
+
+// isLoopCarriedOperand: the var is assigned by an enclosing loop body and
+// not a counted-loop counter — its stale range cannot bound a per-trip
+// operand.
+func (l *lowerer) isLoopCarriedOperand(name string) bool {
+	if l.isLoopBounded(name) {
+		return false
+	}
+	for _, m := range l.loopAssigned {
+		if m[name] {
+			return true
+		}
+	}
+	return false
+}
+
+// isLoopBounded reports whether an enclosing loop's condition bounds the
+// var (a counted-loop counter, bounded by a provably exact limit).
+func (l *lowerer) isLoopBounded(name string) bool {
+	for _, b := range l.loopBounded {
+		for _, v := range b {
+			if v == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// whileCountedBounded: `while i <cmp> B:` whose LAST body statement
+// increments `i` by a positive literal is a counted loop. Returns `i`
+// when its exit value (bounded by B + step - 1) is provably inside the
+// exact ceiling — then the additive guard must not force it bigint.
+func (l *lowerer) whileCountedBounded(t *WhileS) string {
+	cmp, ok := t.Cond.(*CompareE)
+	if !ok {
+		return ""
+	}
+	switch cmp.Op {
+	case "<", "<=", "!=", "==":
+	default:
+		return ""
+	}
+	var nm string
+	var bound Expr
+	if n, ok := cmp.Lhs.(*NameE); ok {
+		nm, bound = n.Name, cmp.Rhs
+	} else if n, ok := cmp.Rhs.(*NameE); ok {
+		nm, bound = n.Name, cmp.Lhs
+	} else {
+		return ""
+	}
+	hi := (*big.Int)(nil)
+	if lit, ok := bound.(*LitInt); ok {
+		hi, _ = new(big.Int).SetString(lit.Text, 10)
+	}
+	if hi == nil {
+		if _, h, ok := l.rangeOf(bound); ok {
+			hi = new(big.Int).Set(h)
+		}
+	}
+	if hi == nil {
+		return ""
+	}
+	if len(t.Body) == 0 {
+		return ""
+	}
+	a, ok := t.Body[len(t.Body)-1].(*AssignS)
+	if !ok || len(a.Targets) != 1 || a.Targets[0] != nm {
+		return ""
+	}
+	k := (*big.Int)(nil)
+	switch a.Op {
+	case "+=":
+		if lit, ok := a.Expr.(*LitInt); ok {
+			k, _ = new(big.Int).SetString(lit.Text, 10)
+		}
+	case "=":
+		if b, ok := a.Expr.(*BinOpE); ok && b.Op == "+" {
+			if n2, ok := b.Lhs.(*NameE); ok && n2.Name == nm {
+				if lit, ok := b.Rhs.(*LitInt); ok {
+					k, _ = new(big.Int).SetString(lit.Text, 10)
+				}
+			}
+		}
+	}
+	if k == nil || k.Sign() <= 0 {
+		return ""
+	}
+	if new(big.Int).Add(hi, k).Cmp(l.exactHi) > 0 {
+		return ""
+	}
+	return nm
+}
+
+// rangeTrips is the maximum trip count of a `range(lo, hi)` when both
+// bounds are provable, else nil.
+func (l *lowerer) rangeTrips(loE, hiE Expr) *big.Int {
+	lo, _, ok1 := l.rangeOf(loE)
+	_, hiHi, ok2 := l.rangeOf(hiE)
+	if !ok1 || !ok2 {
+		return nil
+	}
+	t := new(big.Int).Sub(hiHi, lo)
+	if t.Sign() < 0 {
+		return nil
+	}
+	return t
+}
+
+// iterTrips dispatches a for-loop iterator to its trip count.
+func (l *lowerer) iterTrips(t *ForS) *big.Int {
+	c, ok := t.Iter.(*CallE)
+	if !ok || len(c.Path) != 1 || c.Path[0] != "range" || len(c.Args) < 1 || len(c.Args) > 2 {
+		return nil
+	}
+	if len(c.Args) == 1 {
+		return l.rangeTrips(&LitInt{Text: "0"}, c.Args[0])
+	}
+	return l.rangeTrips(c.Args[0], c.Args[1])
+}
+
+// tripsProduct is the product of every enclosing loop's trip count, or
+// nil when any enclosing trip count is unprovable.
+func (l *lowerer) tripsProduct() *big.Int {
+	p := big.NewInt(1)
+	for _, t := range l.loopTrips {
+		if t == nil {
+			return nil
+		}
+		p.Mul(p, t)
+	}
+	return p
+}
+
+// maxAbsRange is the largest magnitude in an expression's proven interval,
+// or nil when the interval is unproven.
+func (l *lowerer) maxAbsRange(e Expr) *big.Int {
+	lo, hi, ok := l.rangeOf(e)
+	if !ok {
+		return nil
+	}
+	a := new(big.Int).Abs(lo)
+	b := new(big.Int).Abs(hi)
+	if a.Cmp(b) > 0 {
+		return a
+	}
+	return b
+}
+
+// loopCarriedExceedsExact: an additive loop-carried accumulator whose
+// value can leave the exact int domain after every enclosing loop's
+// trips. Conservative: an unproven trip count or interval forces the
+// exact (bigint) domain. Multiplicative growth is `growsUnbounded`'s job.
+func (l *lowerer) loopCarriedExceedsExact(target string, val Expr) bool {
+	if !exprContainsName(val, target) {
+		return false
+	}
+	// A counted-loop counter is bounded by its exit condition.
+	if l.isLoopBounded(target) {
+		return false
+	}
+	// A loop-carried OPERAND (its own stale range) makes `trips * max|rhs|`
+	// unsound: the operand reaches far more than its pre-loop range.
+	for _, x := range l.loopAssignedNames() {
+		if x != target && exprContainsName(val, x) && l.isLoopCarriedOperand(x) {
+			return true
+		}
+	}
+	// A top-level modulo bounds the result (`s = (s + e) % m`).
+	if b, ok := val.(*BinOpE); ok && b.Op == "%" {
+		return false
+	}
+	m := l.maxAbsRange(val)
+	if m == nil {
+		return true
+	}
+	trips := l.tripsProduct()
+	if trips == nil {
+		return true
+	}
+	bound := new(big.Int).Mul(trips, m)
+	return bound.Cmp(l.exactHi) > 0
+}
+
+// exprContainsName reports whether expression `e` reads variable `v`.
+func exprContainsName(e Expr, v string) bool {
+	found := false
+	var walk func(Expr)
+	walk = func(e Expr) {
+		switch t := e.(type) {
+		case *NameE:
+			if t.Name == v {
+				found = true
+			}
+		case *BinOpE:
+			walk(t.Lhs)
+			walk(t.Rhs)
+		case *NotE:
+			walk(t.Arg)
+		case *CallE:
+			for _, a := range t.Args {
+				walk(a)
+			}
+		}
+	}
+	walk(e)
+	return found
+}
+
+// growsUnbounded reports whether `val` grows `v` without a bound while
+// the assignment sits inside a loop: a self-referential multiply / pow /
+// shift anywhere, or `v` appearing more than once in an additive chain
+// (`v = v + v`). A top-level modulo bounds the result and is not growth.
+// This is the guard for release blocker B1: the straight-line range
+// proof cannot bound a loop-carried accumulator, so a stale pre-loop
+// range must not narrow `v = v * i` to i64 (factorial(30) wrapped).
+func growsUnbounded(v string, val Expr) bool {
+	if b, ok := val.(*BinOpE); ok && b.Op == "%" {
+		return false // x % m is bounded by m
+	}
+	count := 0
+	growth := false
+	var walk func(Expr)
+	walk = func(e Expr) {
+		switch t := e.(type) {
+		case *NameE:
+			if t.Name == v {
+				count++
+			}
+		case *BinOpE:
+			if t.Op == "*" || t.Op == "**" || t.Op == "<<" {
+				if exprContainsName(t.Lhs, v) || exprContainsName(t.Rhs, v) {
+					growth = true
+				}
+			}
+			walk(t.Lhs)
+			walk(t.Rhs)
+		case *NotE:
+			walk(t.Arg)
+		case *CallE:
+			for _, a := range t.Args {
+				walk(a)
+			}
+		}
+	}
+	walk(val)
+	return growth || count > 1
+}
+
 func (l *lowerer) stmtsIR(stmts []Stmt) ([]map[string]any, error) {
 	var out []map[string]any
 	for _, s := range stmts {
@@ -4005,7 +4435,11 @@ func (l *lowerer) stmtIR(s Stmt) ([]map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-		body, err := l.stmtsIR(t.Body)
+		bounded := []string(nil)
+		if b := l.whileCountedBounded(t); b != "" {
+			bounded = []string{b}
+		}
+		body, err := l.loopBodyIRTrips(t.Body, nil, bounded)
 		if err != nil {
 			return nil, err
 		}
@@ -4017,7 +4451,7 @@ func (l *lowerer) stmtIR(s Stmt) ([]map[string]any, error) {
 		if at, ok := t.Iter.(*AttrE); ok {
 			if path, ok2 := dottedPath(at); ok2 && strings.Join(path, ".") == "sys.stdin" {
 				l.setType(t.Var, "str")
-				body, err := l.stmtsIR(t.Body)
+				body, err := l.loopBodyIRTrips(t.Body, nil, nil)
 				if err != nil {
 					return nil, err
 				}
@@ -4064,7 +4498,7 @@ func (l *lowerer) stmtIR(s Stmt) ([]map[string]any, error) {
 		} else {
 			l.setType(t.Var, "str")
 		}
-		body, err := l.stmtsIR(t.Body)
+		body, err := l.loopBodyIRTrips(t.Body, l.iterTrips(t), []string{t.Var})
 		if err != nil {
 			return nil, err
 		}
@@ -4093,7 +4527,7 @@ func (l *lowerer) stmtIR(s Stmt) ([]map[string]any, error) {
 				continue
 			}
 			dom := "big"
-			if iv[1].Cmp(two53) <= 0 && iv[0].Cmp(new(big.Int).Neg(two53)) >= 0 {
+			if iv[1].Cmp(l.exactHi) <= 0 && iv[0].Cmp(new(big.Int).Neg(l.exactHi)) >= 0 {
 				dom = "int"
 			}
 			l.ranges[prm] = iv
@@ -4114,7 +4548,7 @@ func (l *lowerer) stmtIR(s Stmt) ([]map[string]any, error) {
 				pre = append(pre, assignStmt(prm, arithExpr(arithCast("Int64", arithVar(pos)))))
 			}
 		}
-		body, err := l.stmtsIR(t.Body)
+		body, err := l.loopBodyIR(t.Body)
 		l.curParams = saved
 		if err != nil {
 			return nil, err
@@ -4424,24 +4858,27 @@ func (l *lowerer) assignOne(target, op string, val Expr) ([]map[string]any, erro
 	// list literal → setArray / setArrayAppend (arr += (...)). `set()` —
 	// an empty Python set — lowers to the empty array (dedup + ordering
 	// happen at sorted(): sort -nu).
-	if lst, ok := val.(*ListE); ok || (func() bool { c, okc := val.(*CallE); return okc && len(c.Path) == 1 && c.Path[0] == "set" && len(c.Args) == 0 })() {
+	if lst, ok := val.(*ListE); ok || (func() bool {
+		c, okc := val.(*CallE)
+		return okc && len(c.Path) == 1 && c.Path[0] == "set" && len(c.Args) == 0
+	})() {
 		var elems []any
 		if lst != nil {
 			for _, el := range lst.Elems {
-			if s, ok := el.(*LitStr); ok {
-				elems = append(elems, st(s.Value))
-				continue
+				if s, ok := el.(*LitStr); ok {
+					elems = append(elems, st(s.Value))
+					continue
+				}
+				if n, ok := el.(*LitInt); ok {
+					elems = append(elems, st(n.Text))
+					continue
+				}
+				ir, err := l.argIR(el)
+				if err != nil {
+					return nil, err
+				}
+				elems = append(elems, ir)
 			}
-			if n, ok := el.(*LitInt); ok {
-				elems = append(elems, st(n.Text))
-				continue
-			}
-			ir, err := l.argIR(el)
-			if err != nil {
-				return nil, err
-			}
-			elems = append(elems, ir)
-		}
 		}
 		l.setType(target, "list")
 		if lst != nil {
@@ -4459,7 +4896,20 @@ func (l *lowerer) assignOne(target, op string, val Expr) ([]map[string]any, erro
 	if op == "+=" {
 		vty := l.typeOf(val)
 		dom := vty
-		if dom != "big" && l.typeOf(&NameE{Name: target}) == "big" {
+		// a float RHS with no float literal (`x += y`, `x += 1`) still
+		// accumulates in the structured Number domain (doubles); only a
+		// literal-float RHS keeps the legacy concat path (floatPath
+		// cannot lower through arithIRDom). The verdict stays float
+		// via tgtTy/vty below.
+		if dom == "float" && !floatPath(val) {
+			dom = "int"
+		}
+		tgtTy := l.typeOf(&NameE{Name: target})
+		if dom != "big" && tgtTy == "big" {
+			dom = "big"
+		}
+		// B1 guard: `v += v` doubles an unbounded accumulator.
+		if l.loopDepth > 0 && exprContainsName(val, target) {
 			dom = "big"
 		}
 		if dom == "int" || dom == "big" {
@@ -4498,7 +4948,13 @@ func (l *lowerer) assignOne(target, op string, val Expr) ([]map[string]any, erro
 			} else {
 				ra := rhs["ast"].(map[string]any)
 				rhsAst = ra
-				l.setType(target, "int")
+				// a float operand (or float target) stays float:
+				// `x = 1.5; x += 1` is a double, not an int.
+				if vty == "float" || tgtTy == "float" {
+					l.setType(target, "float")
+				} else {
+					l.setType(target, "int")
+				}
 				delete(l.ranges, target)
 			}
 			ast := arithBin("+", arithVar(target), rhsAst)
@@ -4560,6 +5016,22 @@ func (l *lowerer) assignSimple(target string, val Expr) ([]map[string]any, error
 		}
 		return []map[string]any{assignStmt(target, st("0"))}, nil
 	}
+	// float-domain value with no float literal (`y = x + 1` from a float
+	// `x`, `q = 7 / 2` true division): the structured Arith lowering
+	// already evaluates with doubles, so it is kept byte-identical —
+	// only the verdict becomes float. (With a literal present the
+	// arith-string branch below owns the lowering.) The domain is
+	// forced plain ("int"-shaped, no Cast(Int64) BigInt homing — a
+	// double must stay a Number) and loop-growth guards are skipped: a
+	// float accumulator cannot be proven into the exact-int domain.
+	if l.typeOf(val) == "float" && !floatPath(val) {
+		if ir, err := l.arithIRDom(val, "int", false); err == nil {
+			l.setType(target, "float")
+			delete(l.ranges, target)
+			return []map[string]any{assignStmt(target, ir)}, nil
+		}
+		// else fall through to the legacy paths (which report the error)
+	}
 	// float-path arithmetic (int(x ** 0.5), …) — the runtime arith-string
 	// with JS doubles; the result is an integer-valued string the target
 	// reads back numerically.
@@ -4568,7 +5040,9 @@ func (l *lowerer) assignSimple(target string, val Expr) ([]map[string]any, error
 		if err != nil {
 			return nil, err
 		}
-		l.setType(target, "int")
+		// the verdict is the value's domain: float for `x = 1.5`, int
+		// for the int-valued `int(x ** 0.5)` idiom.
+		l.setType(target, l.typeOf(val))
 		if lo, hi, ok := l.rangeOf(val); ok {
 			l.ranges[target] = [2]*big.Int{lo, hi}
 		} else {
@@ -4578,9 +5052,20 @@ func (l *lowerer) assignSimple(target string, val Expr) ([]map[string]any, error
 	}
 	// numeric arithmetic (int or bigint domain)
 	if ty := l.typeOf(val); ty == "int" || ty == "big" {
-		ir, err := l.arithIRDom(val, ty, false)
+		// B1 guard: a loop-carried accumulator growing without a bound
+		// has no sound straight-line range, so it must be exact (bigint)
+		// rather than narrowed to i64 on a stale pre-loop range.
+		dom := ty
+		if l.loopDepth > 0 && growsUnbounded(target, val) {
+			dom = "big"
+		} else if l.loopDepth > 0 && l.loopCarriedExceedsExact(target, val) {
+			// additive growth whose bound over the enclosing trips leaves
+			// the exact int domain (the multiplicative case above)
+			dom = "big"
+		}
+		ir, err := l.arithIRDom(val, dom, false)
 		if err == nil {
-			l.setType(target, ty)
+			l.setType(target, dom)
 			if lo, hi, ok := l.rangeOf(val); ok {
 				l.ranges[target] = [2]*big.Int{lo, hi}
 			} else {
@@ -4785,17 +5270,24 @@ func (l *lowerer) withIR(t *WithS) ([]map[string]any, error) {
 // ─────────────────────────────────────────────────────────────────────
 
 func buildProgram(stmts []Stmt) (*shiremit.Program, error) {
+	return buildProgramExact(stmts, two53)
+}
+
+// buildProgramExact is buildProgram with an explicit exact-integer
+// ceiling (see lowerer.exactHi).
+func buildProgramExact(stmts []Stmt, exactHi *big.Int) (*shiremit.Program, error) {
 	l := &lowerer{
-		fns:     map[string]bool{},
-		types:   map[string]string{},
-		params:  map[string][]string{},
-		pipes:   map[string][][]map[string]any{},
-		ranges:  map[string][2]*big.Int{},
+		exactHi:    exactHi,
+		fns:        map[string]bool{},
+		types:      map[string]string{},
+		params:     map[string][]string{},
+		pipes:      map[string][][]map[string]any{},
+		ranges:     map[string][2]*big.Int{},
 		setElemDom: map[string]string{},
-		fnSites:   map[string][][]Expr{},
-		fnRet:     map[string]string{},
-		usedHoist: map[string]bool{},
-		hoistSeq:  map[string]int{},
+		fnSites:    map[string][][]Expr{},
+		fnRet:      map[string]string{},
+		usedHoist:  map[string]bool{},
+		hoistSeq:   map[string]int{},
 	}
 	l.collectFuncs(stmts)
 	irs, err := l.stmtsIR(stmts)
@@ -4805,12 +5297,16 @@ func buildProgram(stmts []Stmt) (*shiremit.Program, error) {
 	// A2 var_types: every assigned variable, sorted by name ("big" vars
 	// stay "Int" — the widthless kind the estree backend homes as an
 	// exact-precision binding; the C-only Int64 object kind would wrap
-	// assignments mod 2^64, breaking unbounded Python ints)
-	byName := map[string]string{}
+	// assignments mod 2^64, breaking unbounded Python ints). "float"
+	// vars are IEEE doubles: {"kind":"Float","width":64} (IrType::Float),
+	// additive — backends that ignore the annotation are unaffected.
+	byName := map[string]any{}
 	for name, ty := range l.types {
-		t := "Str"
+		t := any("Str")
 		if ty == "int" || ty == "big" {
 			t = "Int"
+		} else if ty == "float" {
+			t = shiremit.FloatType(64)
 		}
 		byName[name] = t
 	}
@@ -4839,6 +5335,21 @@ func buildProgram(stmts []Stmt) (*shiremit.Program, error) {
 // ─────────────────────────────────────────────────────────────────────
 
 func Shir(src string) ([]byte, error) {
+	return shir(src, two53)
+}
+
+// ShirExact is Shir with the exact-integer ceiling selected: exact64
+// raises it to 2^63-1 (C-only callers — `python-O4`). Nothing in the
+// default path changes.
+func ShirExact(src string, exact64 bool) ([]byte, error) {
+	hi := two53
+	if exact64 {
+		hi = two63m1
+	}
+	return shir(src, hi)
+}
+
+func shir(src string, exactHi *big.Int) ([]byte, error) {
 	// Strip shebang.
 	if i := strings.IndexByte(src, '\n'); i > 0 && strings.HasPrefix(src, "#!") {
 		src = src[i+1:]
@@ -4847,7 +5358,7 @@ func Shir(src string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse: %w", err)
 	}
-	prog, err := buildProgram(stmts)
+	prog, err := buildProgramExact(stmts, exactHi)
 	if err != nil {
 		return nil, fmt.Errorf("lower: %w", err)
 	}

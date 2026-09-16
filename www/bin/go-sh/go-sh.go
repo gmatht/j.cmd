@@ -1839,8 +1839,14 @@ func (p *parser) isStructType(name string) bool {
 	// POINTER returns (`*expr` — parseUnary/parseExpr/parsePrimary):
 	// the pointee is the struct type (the golib's own `e :=
 	// p.parseUnary()` then `e.isAddrOf = true` field write).
-	_, ok := p.structs[strings.TrimPrefix(name, "*")]
-	return ok
+	// Literal returns (NOT `_, ok := ...; return ok`): a bool VAR
+	// return transpiles to echo+return (the "false" leaks into
+	// enclosing captures/stdout — m8's invalid JSON), while literal
+	// and expression returns stay pure (atIdent precedent).
+	if _, ok := p.structs[strings.TrimPrefix(name, "*")]; ok {
+		return true
+	}
+	return false
 }
 
 // anyListVar: the resolved name when a var holds an objStore LIST id
@@ -1884,7 +1890,14 @@ func (p *parser) isAnyListElem(elem string) bool {
 	if elem == "any" || elem == "map" || strings.HasPrefix(elem, "map[") {
 		return true
 	}
-	return p.isStructType(elem)
+	// INLINE struct check (NOT p.isStructType call): a helper-call
+	// return forces echo-convention on the whole function (all paths
+	// echo, leaking true/false into captures — same class as the
+	// isStructType bool-var echo). Literals + inline lookup stay pure.
+	if _, ok := p.structs[strings.TrimPrefix(elem, "*")]; ok {
+		return true
+	}
+	return false
 }
 
 // peekSliceElem: the element type of a `[]T` / `[N]T` slice literal or
@@ -6083,12 +6096,63 @@ func (p *parser) parseAssignStmt() []map[string]any {
 		tmpMr := "__mr_" + strconv.Itoa(p.tmpN)
 		p.tmpN++
 		p.registerVar(tmpMr, "Str")
-		capMr := map[string]any{
-			"type": "Call", "func": "capture",
-			"args":   []any{map[string]any{"type": "Arrow", "body": []any{execStmtTA(calleeName, words, "Spawn", rhs.typeArgs)}}},
-			"purity": "Spawn",
+		// FULLY inline, branched on typeArgs (NO map temps): standalone
+		// map vars are DCE-dropped (execNode/execExpr came out ""),
+		// while maps nested in append/return materialize. Duplicate
+		// the out construction per branch (verbose but sound).
+		// calleeName/words are string/slice values (not maps) and
+		// survive as references.
+		var out []map[string]any
+		if len(rhs.typeArgs) > 0 {
+			ta := make([]any, len(rhs.typeArgs))
+			for i, s := range rhs.typeArgs {
+				ta[i] = s
+			}
+			out = []map[string]any{map[string]any{
+				"type": "Assign",
+				"targets": []any{map[string]any{
+					"var": tmpMr, "sigil": nil, "indices": []any{},
+				}},
+				"expr": map[string]any{
+					"type": "Call", "func": "capture",
+					"args": []any{map[string]any{
+						"type": "Arrow",
+						"body": []any{map[string]any{
+							"type": "Expr",
+							"expr": map[string]any{
+								"type": "Call", "func": "exec",
+								"args":     []any{map[string]any{"type": "Str", "value": calleeName, "style": "DoubleQuoted"}, map[string]any{"type": "Array", "elements": words}},
+								"purity":   "Spawn",
+								"typeArgs": ta,
+							},
+						}},
+					}},
+					"purity": "Spawn",
+				},
+			}}
+		} else {
+			out = []map[string]any{map[string]any{
+				"type": "Assign",
+				"targets": []any{map[string]any{
+					"var": tmpMr, "sigil": nil, "indices": []any{},
+				}},
+				"expr": map[string]any{
+					"type": "Call", "func": "capture",
+					"args": []any{map[string]any{
+						"type": "Arrow",
+						"body": []any{map[string]any{
+							"type": "Expr",
+							"expr": map[string]any{
+								"type": "Call", "func": "exec",
+								"args":   []any{map[string]any{"type": "Str", "value": calleeName, "style": "DoubleQuoted"}, map[string]any{"type": "Array", "elements": words}},
+								"purity": "Spawn",
+							},
+						}},
+					}},
+					"purity": "Spawn",
+				},
+			}}
 		}
-		out := []map[string]any{assignStmt(tmpMr, capMr)}
 		// a STRUCT-returning callee arms the dotted-field-write path
 		// (`sp.inSub = true` on a newParser() result)
 		if sig, okSig := p.fnSig[calleeName]; okSig && p.isStructType(sig[1]) {
@@ -6208,17 +6272,37 @@ func (p *parser) parseAssignStmt() []map[string]any {
 					p.registerVar(tg, "Str")
 				}
 			}
-			splitCall := map[string]any{
-				"type": "Call", "func": "strSplit",
-				"args":   []any{getVarExpr(tmpMr), strExpr("\036")},
-				"purity": "PureCpu",
-			}
-			out = append(out, assignStmt(tg,
-				map[string]any{
+			// INLINE Assign+listGet+splitCall (NOT via assignStmt helper
+			// or splitCall var): standalone map vars become plain
+			// objects ("[object Object]" on embed) and helper calls
+			// discard maps. Nested inline literals materialize via
+			// objNew/mapSet. getVar/strExpr/Int also inlined (helpers
+			// lose).
+			out = append(out, map[string]any{
+				"type": "Assign",
+				"targets": []any{map[string]any{
+					"var": tg, "sigil": nil, "indices": []any{},
+				}},
+				"expr": map[string]any{
 					"type": "Call", "func": "listGet",
-					"args":   []any{splitCall, map[string]any{"type": "Int", "value": i}},
+					"args": []any{
+						map[string]any{
+							"type": "Call", "func": "strSplit",
+							"args": []any{
+								map[string]any{
+									"type": "Call", "func": "getVar",
+									"args":   []any{map[string]any{"type": "Str", "value": tmpMr, "style": "DoubleQuoted"}},
+									"purity": "Emulable",
+								},
+								map[string]any{"type": "Str", "value": "\036", "style": "DoubleQuoted"},
+							},
+							"purity": "PureCpu",
+						},
+						map[string]any{"type": "Int", "value": i},
+					},
 					"purity": "PureCpu",
-				}))
+					},
+				})
 		}
 		if len(targets) > 1 {
 			return out
@@ -7600,6 +7684,45 @@ func (p *parser) parseIf() []map[string]any {
 	// call in spread position transpiles to exec+status and DISCARDS
 	// the returned slice (every `if` lowered to zero stmts). An inline
 	// literal materializes via objNew/mapSet and survives.
+	// BARE var conds (`if true`, `if ok`) via test-string + inline
+	// testCall (NOT condToJSON): same loss as BinOp (empty cond poisons).
+	// Valid Go forces bool here, so test-string is always correct
+	// (oracle uses test Calls for these too).
+	if cond.kind == "var" {
+		return append(pre, map[string]any{
+			"type": "If",
+			"cond": map[string]any{
+				"type": "Call", "func": "test",
+				"args":   []any{map[string]any{"type": "Str", "value": p.condTestString(cond), "style": "DoubleQuoted"}},
+				"purity": "Emulable",
+			},
+			"then":   then,
+			"elsifs": []any{},
+			"else":   elseBody,
+		})
+	}
+	// ==/!= via test-string + inline testCall (NOT condToJSON):
+	// ==/!= via test-string + inline testCall (NOT condToJSON):
+	// condToJSON loses BinOp maps (Go-return, no echo → empty cond
+	// poisons output). condTestString rides exec+echo (text survives);
+	// inline testCall map materializes. Shape differs from oracle
+	// BinOp (test Call vs Eq) but present+valid vs empty. Owner
+	// text→object/BinOp-echo will restore exact shape.
+	// NARROW (plain var/str/num operands only): complex operands
+	// (calls/members) need condToJSON (condTestString failfs on them).
+	if cond.kind == "binop" && (cond.BOp == "==" || cond.BOp == "!=") && p.isSimpleEqOperand(cond.lhs) && p.isSimpleEqOperand(cond.rhs) {
+		return append(pre, map[string]any{
+			"type": "If",
+			"cond": map[string]any{
+				"type": "Call", "func": "test",
+				"args":   []any{map[string]any{"type": "Str", "value": p.condTestString(cond), "style": "DoubleQuoted"}},
+				"purity": "Emulable",
+			},
+			"then":   then,
+			"elsifs": []any{},
+			"else":   elseBody,
+		})
+	}
 	return append(pre, map[string]any{
 		"type":   "If",
 		"cond":   p.condToJSON(cond),
@@ -7607,6 +7730,19 @@ func (p *parser) parseIf() []map[string]any {
 		"elsifs": []any{},
 		"else":   elseBody,
 	})
+}
+
+// isSimpleEqOperand: plain var/str/num (or nil-var) for ==/!= test-
+// string bypass (kind check only, no helpers — objGet-safe).
+func (p *parser) isSimpleEqOperand(e *expr) bool {
+	if e == nil {
+		return false
+	}
+	switch e.kind {
+	case "var", "str", "rawstr", "num":
+		return true
+	}
+	return false
 }
 
 // condToJSONIf: plain If with an already-lowered cond
@@ -11512,6 +11648,27 @@ func (p *parser) condToJSON(c *expr) map[string]any {
 	// spec.zig` format-spec match: the slice word evaluates to the
 	// sliced text. Placed BEFORE the And/Or arms so compound guards
 	// with a sliced leaf lower natively too (condSideJSON routes here).
+	// SIMPLE ==/!= FIRST (plain vars/literals, e.g. `if x == "a"`):
+	// fully inline BinOp with no helper calls and no ok-flags. Placed
+	// BEFORE the strict-BinOp below because its `ok1 && ok2` check
+	// passes spuriously in JS (refusal echoes "false", which is
+		// truthy/non-empty), building degenerate BinOps with empty
+		// operands that poison output. simpleCmpWord nil-checks are
+		// immune (nil maps, not bool strings).
+	if c.kind == "binop" && (c.BOp == "==" || c.BOp == "!=") {
+		if lwS := p.simpleCmpWord(c.lhs); lwS != nil {
+			if rwS := p.simpleCmpWord(c.rhs); rwS != nil {
+				op := "Eq"
+				if c.BOp == "!=" {
+					op = "Ne"
+				}
+				return map[string]any{
+					"type": "BinOp", "op": op,
+					"lhs": lwS, "rhs": rwS,
+				}
+			}
+		}
+	}
 	if c.kind == "binop" && (c.BOp == "==" || c.BOp == "!=") {
 		lw, ok1 := p.condOperandA1Word(c.lhs)
 		rw, ok2 := p.condOperandA1Word(c.rhs)
@@ -11670,6 +11827,7 @@ func (p *parser) condToJSON(c *expr) map[string]any {
 		lw, lok := p.condOperandA1Word(c.lhs)
 		rw, rok := p.condOperandA1Word(c.rhs)
 		op := map[string]string{"==": "Eq", "!=": "Ne"}[c.BOp]
+		// (SIMPLE ==/!= handled FIRST, above the strict-BinOp block.)
 		if op != "" && (lok || rok) {
 			// at least one operand is an OBJECT/strlen/index read: the
 			// whole comparison lowers as a native BinOp (plain operands
@@ -12108,6 +12266,33 @@ func (p *parser) stringsHelperWord(e *expr) map[string]any {
 // OBJECT reads (struct members, list/map fields, user-fn captures);
 // plain vars/literals report ok=false so the shell test-string shapes
 // keep handling them.
+// simpleCmpWord: an ==/!= operand as an inline word map (or nil when
+// not a plain var/literal). FULLY inline — no helper calls, no ok
+// flags (both lose values in JS: fnCall-status discard, bool-string
+// truthiness). Callers nil-check the result (nil maps survive the
+// channel; bools do not). Covers var (getVar), str/rawstr/num (Str).
+func (p *parser) simpleCmpWord(operand *expr) map[string]any {
+	// NO nil guard: Go `operand == nil` transpiles to `"" == ""`
+	// (always true), so the function would always return nil. Callers
+	// only pass non-nil binop operands; the `!= nil` checks on the
+	// CAPTURED results (strings) lower correctly to `!= ""`.
+	switch operand.kind {
+	case "var":
+		if operand.name == "nil" {
+			return map[string]any{"type": "Str", "value": "", "style": "DoubleQuoted"}
+		}
+		rn := p.resolveVar(operand.name)
+		return map[string]any{
+			"type": "Call", "func": "getVar",
+			"args":   []any{map[string]any{"type": "Str", "value": rn, "style": "DoubleQuoted"}},
+			"purity": "Emulable",
+		}
+	case "str", "rawstr", "num":
+		return map[string]any{"type": "Str", "value": operand.text, "style": "DoubleQuoted"}
+	}
+	return nil
+}
+
 func (p *parser) condOperandA1Word(e *expr) (map[string]any, bool) {
 	w, ok := p.condOperandA1WordInner(e)
 	return w, ok
