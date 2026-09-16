@@ -268,6 +268,14 @@
           <div class="ta-wrap"><textarea id="out-orig" class="out-ta" readonly spellcheck="false" aria-label="Original stdout">—</textarea><button type="button" class="copy-btn ta-copy" data-copy="orig">Copy</button></div>
         </div>
       </div>
+
+      <div class="panel collapsed" id="sec-cython" data-persist="ac:sec-cython">
+        <div class="panel-head"><span class="arrow">▾</span><span class="panel-title">Cython 3.3.0 — real compiler (wasm)</span><span class="panel-tag" id="tag-cython"></span><button type="button" id="cython-btn" class="copy-btn">Cythonize</button></div>
+        <div class="panel-body">
+          <div class="map-hint">the generated file compiled by the <b>real Cython 3.3.0</b>: CPython 3.12 in wasm (Pyodide) running the pure-Python Cython wheel, both vendored under <code>www/vendor/</code> so it works offline. This is the same gate as <code>bench/py2cy-smoke.mjs</code> (<code>cython --embed</code>), live in the browser — <b>0 errors</b> means the annotated file is valid Cython. Building the emitted C into a loadable extension needs emscripten + the Python headers, so that stays a CI step.</div>
+          <div class="ta-wrap"><textarea id="out-cython" class="out-ta" readonly spellcheck="false" aria-label="Cython 3.3.0 output">—</textarea><button type="button" class="copy-btn ta-copy" data-copy="cython">Copy</button></div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -593,6 +601,7 @@ function cancelRun() {
   ++execGen;                    // invalidate the in-flight annotate generation
   terminateBusyStages();
   terminatePyWorker("cancelled by the user");
+  terminateCythonWorker("cancelled by the user");
   busy = false;
   paintRunButton();
   showStatus("cancelled — the Python worker was restarted", "warn");
@@ -652,6 +661,90 @@ function runPyWorker(source, alive) {
       return { ok: false, error: String((e && e.message) || e) };
     }
   })();
+}
+
+// ─── the real Cython 3.3.0 compiler (its own CLASSIC worker) ────
+// Pyodide is CPython-in-wasm and Cython 3.3.0 is a pure-Python wheel, both
+// vendored under vendor/, so this runs offline. It is heavy (≈10 MB wasm),
+// so it is LAZY: nothing loads until "Cythonize" is pressed. Classic worker
+// for the same reason as py-worker: Pyodide's loader needs importScripts.
+let cythonWorker = null, cythonReady = null, cythonSeq = 1, cythonPending = null;
+function terminateCythonWorker(reason) {
+  if (cythonWorker) { try { cythonWorker.terminate(); } catch {} }
+  cythonWorker = null;
+  cythonReady = null;
+  if (cythonPending) { const p = cythonPending; cythonPending = null; p({ ok: false, error: reason || "cython worker restarted" }); }
+}
+function runCythonWorker(source, mode2) {
+  return (async () => {
+    try {
+      if (!cythonWorker || !cythonReady) {
+        const w = new Worker(new URL("vendor/cython-worker.js", import.meta.url));
+        cythonWorker = w;
+        cythonReady = new Promise((resolve, reject) => {
+          const to = setTimeout(() => reject(new Error("cython worker init timeout (Pyodide boot)")), 180000);
+          const onMsg = (e) => {
+            if (e.data && e.data.type === "ready") { clearTimeout(to); w.removeEventListener("message", onMsg); resolve(); }
+            if (e.data && e.data.type === "error") { clearTimeout(to); reject(new Error(e.data.error)); }
+          };
+          w.addEventListener("message", onMsg);
+          w.addEventListener("error", (e) => { clearTimeout(to); reject(new Error((e && e.message) || "cython worker error")); }, { once: true });
+          w.postMessage({ type: "init" });
+        });
+      }
+      await cythonReady;
+      const worker = cythonWorker;
+      const jobId = cythonSeq++;
+      return await new Promise((resolve) => {
+        let done = false;
+        const finish = (r) => {
+          if (done) return;
+          done = true;
+          worker.removeEventListener("message", onMsg);
+          worker.removeEventListener("error", onErr);
+          if (cythonPending === finish) cythonPending = null;
+          resolve(r);
+        };
+        const onMsg = (e) => {
+          const m = e.data || {};
+          if (m.jobId !== jobId) return;
+          if (m.type === "done") finish(m.ok ? { ok: true, result: m.result } : { ok: false, error: m.error, result: m.result });
+        };
+        const onErr = (e) => {
+          finish({ ok: false, error: (e && e.message) || "cython worker crashed" });
+          if (cythonWorker === worker) terminateCythonWorker("cython worker crashed");
+        };
+        cythonPending = finish;
+        worker.addEventListener("message", onMsg);
+        worker.addEventListener("error", onErr);
+        worker.postMessage({ type: "job", jobId, source: String(source), mode: mode2 });
+      });
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+  })();
+}
+
+async function onCythonButton() {
+  if (!outCode) { showStatus("annotate first, then run Cython", "warn"); return; }
+  const btn = $("cython-btn");
+  btn.disabled = true; btn.textContent = "…";
+  setTag("cython", "booting CPython + Cython 3.3.0 (first run fetches ~10 MB wasm)…");
+  const r = await runCythonWorker(outCode, mode);
+  btn.disabled = false; btn.textContent = "Cythonize";
+  const o = r.result;
+  if (!o) {
+    $("out-cython").value = "Cython worker error: " + (r.error || "unknown");
+    setTag("cython", "worker error");
+    return;
+  }
+  if (o.errors === 0) {
+    $("out-cython").value = "# Cython " + (o.version || "3.3.0") + " — cythonized, 0 errors · " + o.clines + " lines of C emitted\n\n" + (o.c || "");
+    setTag("cython", "cythonized ✓ 0 errors · " + o.clines + " lines of C");
+  } else {
+    $("out-cython").value = (o.err ? o.err + "\n" : "") + (o.log || "") + (o.c ? "\n\n" + o.c : "");
+    setTag("cython", "compile failed (" + (o.errors === -1 ? "exception" : o.errors + " error(s)") + ")");
+  }
 }
 
 // ─── UI wiring ──────────────────────────────────────────────────
@@ -820,6 +913,7 @@ function init() {
   $("mode-pure").addEventListener("click", () => { setMode("pure"); if (autoUpdate) annotate(); });
   $("mode-pyx").addEventListener("click", () => { setMode("pyx"); if (autoUpdate) annotate(); });
   $("run-btn").addEventListener("click", onRunButton);
+  $("cython-btn").addEventListener("click", onCythonButton);
   $("example-search").addEventListener("input", (e) => setSearch(e.target.value));
   $("input").addEventListener("input", () => {
     if (!autoUpdate) return;
