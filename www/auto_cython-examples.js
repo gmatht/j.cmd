@@ -9,6 +9,37 @@
 // `golden` is the hand-written .pyx (from otranspiler-frontends, GPL-3)
 // shown side by side with py2cy's generated output, so the page makes
 // the claim checkable rather than asserted.
+//
+// ─── the python-O4 bench appendix (2026-09) ──────────────────────────
+//
+// Everything from `pyo4-bench-*` onward is vendored from
+// `bash-o4/bench/py/` (sh2loop, GPL-3) — the eight problems the
+// python-O4 benchmark drives (`bench/README-py.md`). They are vendored
+// rather than imported because the page is deployed to GitHub Pages and
+// the sibling checkout does not exist there; keep them in sync by hand.
+//
+// TWO caveats, recorded so the corpus is not overclaimed:
+//
+//   1. These have NO hand-written `.pyx` golden. Only three goldens exist
+//      upstream (`profile_example/bench/cython/{rolling_hash,bignum,io}
+//      _typed.pyx`) and the first two already back `rolling_hash` /
+//      `bignum_mul`. So for these entries the panel shows the generated
+//      output only — the page renders "no hand-written golden" and that
+//      is accurate, not a gap to hide.
+//
+//   2. Their oracle is a C program, not Cython. `bench/c/*.c` is the
+//      byte-exact reference the benchmark's agreement gate uses, and
+//      several sources say so explicitly ("Matches bench/c/squaresmap.c
+//      exactly"). Where that counterpart exists it is shown as `agrees`,
+//      and the `expected` values below were taken from RUNNING py2cy on
+//      the source, not written by hand.
+//
+// `sqrt1337` is one of the eight bench problems and the only one the
+// frontend does not support — `bench-py.py` marks it `unsupported` and
+// reports SKIP rather than FAIL (py-sh-go v1 has no string containment).
+// py2cy refuses its `if "1337" in str(i * i)` line too, so it is
+// included as a picture of where the boundary sits — not as a claim
+// that anything was rescued or preserved.
 
 export const EXAMPLES = [
   {
@@ -89,8 +120,8 @@ print(rolling_hash(2000000))
   },
   {
     name: "sum_squares",
-    desc: "a bounded loop plus a reduction. Everything has a proved range, so every local is typed; note the annotated file stays valid, runnable Python.",
-    expected: "int/long long locals, no refusals",
+    desc: "a bounded loop plus a reduction. The loop counter is typed; the accumulator's range does not reach a fixpoint within the widening budget (there is no closed form), so it is honestly left a Python object — sound, just untyped.",
+    expected: "typed counter; accumulator refused (sound)",
     code: `total = 0
 for i in range(1000):
     total = total + i * i
@@ -99,13 +130,27 @@ print(total)
   },
   {
     name: "int-list",
-    desc: "a proved int list — py2cy declares it as a sequence and types the accumulator. A list of unknowns would stay a Python object (never guessed).",
-    expected: "list + typed accumulator",
+    desc: "a proved int list that is only iterated — py2cy converts it to a buffer (`array`) + typed memoryview. The accumulator's range does not close (no reduction bound), so it stays a Python object — never guessed.",
+    expected: "unsigned char[:] (u8) view; accumulator refused (sound)",
     code: `arr = [3, 1, 4, 1, 5, 9, 2, 6]
 total = 0
 for v in arr:
     total = total + v
 print(total)
+`,
+    golden: `# cython: language_level=3, boundscheck=False, wraparound=False
+# Hand-written typed Cython for the int-list shape: a homogeneous int list
+# that is only iterated becomes a buffer + typed memoryview (no numpy —
+# the stdlib array supplies the buffer).
+from array import array
+def main():
+    cdef unsigned char[:] arr = array('B', [3, 1, 4, 1, 5, 9, 2, 6])
+    cdef long long total = 0
+    cdef int v
+    for v in arr:
+        total += v
+    print(total)
+main()
 `,
   },
   {
@@ -145,12 +190,171 @@ print(len(data), x, words, y)
   },
   {
     name: "while-count",
-    desc: "a while loop with an unbounded trip count — the counter is only typed if its range can be proved, so here it stays a Python object (unlike the range() form).",
-    expected: "possibly unproved counter (honest)",
+    desc: "a while loop whose bound comes from the CONDITION, not range(): the guard `i < 100` bounds the loop head, so the counter is proved i ∈ [0,100] — a while counter is typed when its guard gives a closed i64 bound (REFUSE > GUESS for the rest).",
+    expected: "guard-derived counter: Int[0,100]",
     code: `i = 0
 while i < 100:
     i = i + 1
 print(i)
+`,
+  },
+  // ─── python-O4 bench appendix — see the header for provenance ──────
+  {
+    name: "pyo4-bench-hash",
+    desc: "per-record integer mix, accumulator held mod 256. The modulus gives a closed bound [0,255] while the intermediate `s + a*31 + b*17` needs the wider intermediate — the same intermediate-width proof rolling_hash makes, in one line. No refusals.",
+    expected: "0 refusals; `s` Int[0,255], `a`/`b`/`i`/`N` int",
+    code: `# hash: per-record integer mix, accumulator kept mod 256.
+N = 1000000
+s = 0
+for i in range(N):
+    a = (i * 53) % 256
+    b = (i * 89) % 256
+    s = (s + a * 31 + b * 17) % 256
+print(s)
+`,
+    agrees: `/* handwritten reference: per-record integer mix, accumulator
+   kept mod 256 (bash-faithful). */
+#include <stdio.h>
+#include <stdlib.h>
+int main(int argc, char **argv) {
+  long long n = atoll(argv[1]);
+  long long s = 0;
+  for (long long i = 0; i < n; i++) {
+    long long a = (i * 53) % 256;
+    long long b = (i * 89) % 256;
+    s = (s + a * 31 + b * 17) % 256;
+  }
+  printf("%lld\\n", s);
+  return 0;
+}
+`,
+  },
+  {
+    name: "pyo4-bench-sumred",
+    desc: "a mod-2^32 reduce that is overflow-exact on every side. Both the accumulator and its intermediate are bounded by the outer modulus, so `s` is proved [0, 2^32) and typed `long long` — wide enough for the sum but not an arbitrary bigint. No refusals; this is the benchmark's headline GPU row.",
+    expected: "0 refusals; `s` long long, Int[0,4294967295]",
+    code: `# sumred: mod-2^32 accumulate of i*i (overflow-exact on every side).
+N = 1000000000
+s = 0
+for i in range(N):
+    s = (s + (i * i) % 4294967296) % 4294967296
+print(s)
+`,
+    agrees: `/* handwritten reference: mod-2^32 accumulate of i*i
+   (overflow-exact on every side — the u32 wrap is the point). */
+#include <stdio.h>
+#include <stdlib.h>
+int main(int argc, char **argv) {
+  unsigned long long n = strtoull(argv[1], 0, 10);
+  unsigned long long s = 0;
+  for (unsigned long long i = 0; i < n; i++)
+    s = (s + ((i * i) & 0xFFFFFFFFull)) & 0xFFFFFFFFull;
+  printf("%llu\\n", s);
+  return 0;
+}
+`,
+  },
+  {
+    name: "pyo4-bench-squares-map",
+    desc: "materialise `a[i]=i*i`, then a mod-2^32 checksum — the CPU counterpart to a GPU map+readback (identical memory traffic). py2cy proves `a` an int list and `s` long long, but the `a.append(...)` method call is NOT lowered: one refusal, left as plain Python. That refusal is the honest boundary — the affine-store rewrite belongs to python-O4's CUDA candidacy view, not the annotator.",
+    expected: "1 refusal (a.append); `s` long long, `a` list",
+    code: `# squares-map: materialise a[i]=i*i, then a mod-2^32 checksum (the fair
+# CPU counterpart to a GPU map+readback: same memory traffic). Matches
+# bench/c/squaresmap.c exactly (unsigned wrap per element, u32 sum).
+#
+# \`append\` is the CPython-valid way to build a growing list (lists do not
+# auto-grow). python-O4 rewrites a counted loop's single append into the
+# affine indexed store \`a[i] = v\` for the CUDA candidacy view, so this
+# SAME source drives every leg (see docs/PYTHON-O4.md).
+N = 100000000
+a = []
+for i in range(N):
+    a.append(i * i)
+s = 0
+for i in range(N):
+    s = (s + a[i]) % 4294967296
+print(s)
+`,
+    agrees: `/* handwritten reference: materialise out[i]=i*i, then mod-2^32 checksum
+   (the fair CPU counterpart to a GPU map+readback: same memory traffic). */
+#include <stdio.h>
+#include <stdlib.h>
+int main(int argc, char **argv) {
+  unsigned long long n = strtoull(argv[1], 0, 10);
+  long long *out = malloc(n * sizeof *out);
+  if (!out) { fprintf(stderr, "oom\\n"); return 1; }
+  for (unsigned long long i = 0; i < n; i++) out[i] = (long long)(i * i);
+  unsigned long long s = 0;
+  for (unsigned long long i = 0; i < n; i++)
+    s = (s + (unsigned long long)out[i]) & 0xFFFFFFFFull;
+  printf("%llu\\n", s);
+  free(out);
+  return 0;
+}
+`,
+  },
+  {
+    name: "pyo4-bench-addsum",
+    desc: "scalar accumulation — the simplest shape in the corpus, and the one that shows a REFUSAL rather than a guess. The counter is typed from `range(N)`, but the accumulator's range never reaches a fixpoint (the loop runs 10^6 times, far past the widening budget), so `s` is honestly left a Python object. Contrast pyo4-bench-addsum32, where a smaller N makes the same source provable.",
+    expected: "1 refusal (`s` did not converge); `i`/`N` typed",
+    code: `# addsum: scalar accumulation (native i64). The addsum32 problem reuses
+# this exact program with a smaller N (int32-exact sum).
+N = 1000000
+s = 0
+for i in range(N):
+    s = s + i
+print(s)
+`,
+    agrees: `/* handwritten reference: scalar i64 accumulation (bash-faithful). */
+#include <stdio.h>
+#include <stdlib.h>
+int main(int argc, char **argv) {
+  long long n = atoll(argv[1]);
+  long long s = 0;
+  for (long long i = 0; i < n; i++) s += i;
+  printf("%lld\\n", s);
+  return 0;
+}
+`,
+  },
+  {
+    name: "pyo4-tier-overflow-replay",
+    desc: "the tiered-overflow case, and the sharpest in the corpus: `s` starts at 1 and adds 4*10^18 five times, so the value leaves i64 entirely. py2cy proves BigInt, emits the full GMP FFI block and `cdef mpz_t s` — then REFUSES two things rather than guessing: the `s = s + 4000000000000000000` assignment (not expressible as a `mpz_*_ui` call) and `print(s)` (needs a GMP output binding). So the declarations are right while the body stays Python — the sharpest illustration of REFUSE > GUESS. The subtlety the source names: a replay that started from a stale mpz slot — never written while the i64 mirror was authoritative — would print 2e19 instead of the +1-exact 20000000000000000001.",
+    expected: "2 refusals (bigint add + bigint print); BigInt proved, GMP FFI + cdef mpz_t s emitted",
+    code: `# t101_tier_overflow_replay: forces the i64 tier to overflow inside a
+# speculative fast arm, then the exact GMP replay. The tiered var's ENTRY
+# value is nonzero, so a replay that started from the stale mpz slot
+# (never written while the mirror was authoritative) would print 2e19
+# instead of the +1-exact 20000000000000000001.
+s = 1
+i = 0
+while i < 5:
+    s = s + 4000000000000000000
+    i = i + 1
+print(s)
+`,
+  },
+  {
+    name: "pyo4-additive-native",
+    desc: "the guard against over-eager tiering: the same accumulate shape as the entry above, but provably inside the exact domain (3 x 1000 = 3000). It must STAY on the native int path — if `s` were promoted to bigint here, the tier guard would be firing on every loop-carried accumulator and the whole native path would be dead. Pairs with pyo4-tier-overflow-replay as the two sides of the tier decision.",
+    expected: "0 refusals; `s` Int[3000,3000] int — NO bigint",
+    code: `# t100_additive_native: the same shape but provably inside the exact
+# domain (3 * 1000), so it must STAY on the native int path — the guard
+# must not force bigint for every loop-carried accumulator.
+s = 0
+for i in range(3):
+    s = s + 1000
+print(s)
+`,
+  },
+  {
+    name: "pyo4-sqrt1337-refusal",
+    desc: "one of the eight python-O4 bench problems, and the only one the frontend doesn't support: `bench-py.py` reports it as SKIP (py-sh-go v1 has no string containment). py2cy refuses the `if \"1337\" in str(i * i)` line for the same reason (`trailing tokens: in str ( i * i )`), so it is a useful picture of where the boundary sits.",
+    expected: "1 refusal: `in str(...)` not lowered (known v1 gap)",
+    code: `# sqrt1337: i in 1..10000 with "1337" in i*i.
+for i in range(1, 10001):
+    if "1337" in str(i * i):
+        print(i)
 `,
   },
 ];

@@ -248,6 +248,14 @@
         </div>
       </div>
 
+      <div class="panel collapsed" id="sec-c-ref" data-persist="ac:sec-c-ref">
+        <div class="panel-head"><span class="arrow">▾</span><span class="panel-title">Hand-written C reference</span><span class="panel-tag" id="tag-cref"></span></div>
+        <div class="panel-body">
+          <div class="map-hint">the byte-exact oracle for the python-O4 bench appendix: <code>bash-o4/bench/c/*.c</code>. The benchmark's agreement gate requires every leg's stdout to match this program, so it is a stronger check than a golden — but it does <em>not</em> show the declarations py2cy should emit (plain C has no `cdef`). Present only where the bench problem has a C counterpart.</div>
+          <div class="ta-wrap"><textarea id="out-cref" class="out-ta" readonly spellcheck="false" aria-label="Hand-written C reference">—</textarea><button type="button" class="copy-btn ta-copy" data-copy="cref">Copy</button></div>
+        </div>
+      </div>
+
       <div class="panel collapsed" id="sec-diff" data-persist="ac:sec-diff">
         <div class="panel-head"><span class="arrow">▾</span><span class="panel-title">generated .pyx vs hand-written golden</span><span class="panel-tag" id="tag-diff"></span><button type="button" class="copy-btn" data-copy="diff">Copy</button></div>
         <div class="panel-body"><div class="diff-summary" id="diff-summary"></div><div id="diff-lines"></div></div>
@@ -338,8 +346,14 @@ async function annotate() {
 
     const ex = currentExample ? getExample(currentExample) : null;
     const golden = ex && ex.golden ? ex.golden : "";
-    $("out-golden").value = golden || "— no hand-written golden for this example (the bench shapes have one)";
+    $("out-golden").value = golden || "— no hand-written golden for this example (the bench shapes have one; the python-O4 appendix has a C reference instead)";
     setTag("golden", golden ? "bench/cython golden" : "");
+    // the python-O4 appendix's oracle is a C program, not a golden (plain C
+    // has no `cdef`, so a declaration diff would be meaningless) — shown as
+    // the byte-exact agreement reference it is.
+    const cref = ex && ex.agrees ? ex.agrees : "";
+    $("out-cref").value = cref || "— no hand-written C reference for this example";
+    setTag("cref", cref ? "bench/c reference" : "");
     if (golden && mode === "pyx") {
       renderDiff(golden, r.text);
     } else if (golden) {
