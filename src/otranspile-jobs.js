@@ -16,7 +16,8 @@
 // ctx = { fs, env, onStatus(text), wwwBase } — wwwBase is the absolute
 // www/ URL (vendor/*.js, wasm-bin/* resolve under it); it defaults to
 // src/../www/ which is correct both served (/j.cmd/src/ → /j.cmd/www/)
-// and in Node (repo src/ → repo www/).
+// and in Node (repo src/ → repo www/). It is also what the classic
+// python worker (www/vendor/py-worker.js) is spawned from — see runPy.
 // ---------------------------------------------------------------------------
 
 import { fs as sharedFs } from "./fs/index.js";
@@ -28,7 +29,7 @@ import { ensureBusyboxWasm, busyboxA1, BUSYBOX_VERSION } from "./busybox.js";
 // re-exported so the page (which no longer imports busybox.js directly)
 // can keep cache-busting its corpus-manifest fetches on the wasm version.
 export { BUSYBOX_VERSION };
-import { pyExec } from "./py.js";
+import { pyExec, pyExecInClassicWorker, isClassicWorker } from "./py.js";
 
 const wwwFile = (rel) => new URL("../www/" + rel, import.meta.url).href;
 
@@ -290,12 +291,33 @@ async function runJs(jsCode, ctx) {
   return { out, err, code };
 }
 
+// ─── python: always a CLASSIC worker ────────────────────────────
+// The micropython glue is a classic emscripten script, so it CANNOT run
+// in this module worker (www/otranspile-job.js is spawned with
+// `{ type: "module" }`): importScripts() is illegal in module scope, and
+// a dynamic import() of the glue evals it with `var Module` in MODULE
+// scope, so self.Module stays undefined. Attempting it threw
+//   "Module scripts don't support importScripts()"
+// and every python run on the otranspiler page failed.
+//
+// So python runs are bridged to the nested classic Web Worker
+// (www/vendor/py-worker.js) — the same engine worker the auto_cython
+// page uses. On the MAIN thread (no-Worker fallback) pyExec is correct
+// as-is: the glue is a <script> in the page and Module is window.Module.
 async function runPy(src, ctx) {
   let out = "", err = "";
-  const code = await pyExec(String(src), {
-    stdout: { write: (s) => { out += s; } },
-    stderr: { write: (s) => { err += s; } },
-  });
+  const stdout = { write: (s) => { out += s; } };
+  const stderr = { write: (s) => { err += s; } };
+  // A module worker defines importScripts but throws when it is CALLED,
+  // so the realm must be probed behaviourally (py.js's isClassicWorker) —
+  // a `typeof` test here silently picked pyExec and reproduced the bug.
+  if (typeof WorkerGlobalScope !== "undefined" && !isClassicWorker()) {
+    const code = await pyExecInClassicWorker(String(src), {
+      stdout, stderr, base: (ctx && ctx.wwwBase) || undefined,
+    });
+    return { out, err, code };
+  }
+  const code = await pyExec(String(src), { stdout, stderr });
   return { out, err, code };
 }
 

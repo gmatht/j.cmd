@@ -713,6 +713,17 @@ function terminateBusyStages() {
   for (const slot of Object.keys(slotBusy)) if (slotBusy[slot]) terminateStage(slot);
 }
 
+// The www/ base URL, for the nested CLASSIC python worker (py-worker.js)
+// and any other page-relative lookup made off-thread. The page IS in
+// www/, so document.baseURI already ends in "/www/" — appending "www/"
+// again produced /www/www/vendor/py-worker.js (a 404). Derive it from
+// this module's own URL instead, which is correct however the page is
+// reached (served at /j.cmd/www/, at a bare /, under a sub-path, or
+// from disk in the Node/Playwright harness).
+function wwwBaseUrl() {
+  try { return new URL("./", import.meta.url).href; } catch { return "www/"; }
+}
+
 async function ensureStageWorker(slot) {
   const s = stageWorkers[slot];
   if (s) return s.ready;
@@ -729,7 +740,11 @@ async function ensureStageWorker(slot) {
       }
     };
     worker.addEventListener("message", onMsg);
-    worker.postMessage({ type: "init" });
+    // wwwBase + wasmUrl: this is a MODULE worker, so a nested CLASSIC
+    // worker (python's micropython glue) and any page-relative fetch must
+    // resolve against an absolute URL — a worker-relative path is not the
+    // page's. Python runs (runPy) use wwwBase to spawn py-worker.js.
+    worker.postMessage({ type: "init", wwwBase: wwwBaseUrl() });
   });
   try { await entry.ready; } catch (e) { terminateStage(slot); throw e; }
   return entry.ready;
@@ -748,7 +763,7 @@ async function runInline(kind, payload, onStatus) {
     ]);
     inlineMod = { jobs, fs: fsMod.fs, env: envMod.env };
   }
-  const ctx = { fs: inlineMod.fs, env: inlineMod.env, onStatus };
+  const ctx = { fs: inlineMod.fs, env: inlineMod.env, onStatus, wwwBase: wwwBaseUrl() };
   if (kind === "transpile") return inlineMod.jobs.transpileJob(payload.source, payload.srcLang, payload.tgt, ctx);
   if (kind === "run") return inlineMod.jobs.runJob(payload.lang, payload.code, ctx);
   if (kind === "version") return { version: await inlineMod.jobs.otranspilerVersion() };

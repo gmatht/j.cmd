@@ -59,8 +59,37 @@ for t in "${TESTS[@]}"; do
   fi
 done
 
-echo "── c-sh-go corpus ──"
-CB=/tmp/cshgo-check
+echo "── browser smokes (Playwright) ──"
+# The Node harnesses above cannot catch realm bugs (module worker vs
+# classic worker, cross-origin fetch bases, worker postMessage protocols)
+# because those only exist in a real browser. This one guards a bug that
+# shipped to the live site: python runs on otranspiler.html died with
+#
+#   micropython in a worker needs a CLASSIC worker (importScripts is not
+#   available in a module worker): Module scripts don't support
+#   importScripts()
+#
+# because the page's stage workers are MODULE workers while the
+# micropython glue is a CLASSIC script. It drives the real page over the
+# static server and asserts the python stage runs end-to-end.
+BROWSER_SMOKES=(bench/otranspiler-py-worker-smoke.mjs)
+for t in "${BROWSER_SMOKES[@]}"; do
+  b=$(basename "$t" .mjs)
+  if is_excepted "$b"; then printf '  %-26s ' "$b"; echo "SKIP (--except)"; continue; fi
+  log="/tmp/deploy-$b.log"
+  printf '  %-26s ' "$b"
+  # the page pulls the transpiler wasm + micropython wasm and boots
+  # chromium; ~10-25 s warm, more on a loaded box
+  if timeout 300 node "$t" > "$log" 2>&1; then
+    echo "PASS"
+  else
+    echo "FAIL — refusing to deploy (log: $log)"
+    tail -20 "$log" >&2
+    exit 1
+  fi
+done
+
+echo "── c-sh-go corpus ──"CB=/tmp/cshgo-check
 if [ ! -x "$CB" ]; then
   echo "  building c-sh-go frontend…"
   (cd www/bin/c-sh-go && GOOS=linux GOARCH=amd64 go build -o "$CB" ./cmd/c-sh-go)

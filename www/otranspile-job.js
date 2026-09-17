@@ -7,7 +7,7 @@
 //
 // Protocol (no shared memory — plain postMessage, so this works
 // without cross-origin isolation):
-//   main → worker: { type: "init", wasmUrl }          (once; → "ready")
+//   main → worker: { type: "init", wasmUrl, wwwBase }  (once; → "ready")
 //   main → worker: { type: "job", jobId, kind, ... }  kind: "transpile"
 //                    { source, srcLang, tgt }  → { text, map, a1, optShir, lex }
 //                    kind: "annotate" { source, mode } → py2cy typed Cython
@@ -31,12 +31,14 @@ self.onmessage = async (e) => {
   const m = e.data || {};
   if (m.type === "init") {
     if (m.wasmUrl) globalThis.__SH2_OTRANSPILERL_WASM_URL = String(m.wasmUrl);
+    if (m.wwwBase) globalThis.__SH2_WWW_BASE = String(m.wwwBase);
     self.postMessage({ type: "ready" });
     return;
   }
   if (m.type !== "job") return;
   const ctx = {
     fs, env,
+    wwwBase: globalThis.__SH2_WWW_BASE || undefined,
     onStatus: (text) => self.postMessage({ type: "status", jobId: m.jobId, text: String(text) }),
   };
   try {
