@@ -31,6 +31,7 @@
 // generous; micropython's wasm is ~1.2 MB and the busybox frontend is
 // fetched on demand.
 import { spawn } from "node:child_process";
+import { existsSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import net from "node:net";
@@ -38,8 +39,51 @@ import pkg from "playwright-core";
 const { chromium } = pkg;
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const CHROME = process.env.CHROME_PATH ||
-  "/root/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome";
+// Chromium is a CI dependency, not a repo one. When it is absent (a fresh
+// runner, a checkout without `npx playwright install`) the honest behaviour
+// is SKIP, not FAIL: a missing browser says nothing about the code under
+// test, and a hard failure blocks every deploy for an unrelated reason.
+// Set the path explicitly with CHROME_PATH, or install it with
+//   npx playwright install chromium
+//
+// The Playwright cache dir encodes a BUILD NUMBER (chromium-1234), which
+// changes when playwright-core is bumped — so glob it instead of pinning
+// one build (a pinned number silently turned the gate into a no-op).
+function playwrightChromium() {
+  const roots = [
+    process.env.PLAYWRIGHT_BROWSERS_PATH,
+    process.env.HOME ? `${process.env.HOME}/.cache/ms-playwright` : null,
+    "/root/.cache/ms-playwright",
+  ].filter(Boolean);
+  for (const root of roots) {
+    let entries;
+    try { entries = readdirSync(root); } catch { continue; }
+    // prefer the full chromium build over the headless shell
+    const dirs = entries.filter((e) => /^chromium-\d+$/.test(e)).sort().reverse();
+    for (const d of dirs) {
+      for (const rel of ["chrome-linux64/chrome", "chrome-linux/chrome", "chrome-headless-shell-linux64/chrome-headless-shell"]) {
+        const p = `${root}/${d}/${rel}`;
+        if (existsSync(p)) return p;
+      }
+    }
+  }
+  return null;
+}
+
+const CANDIDATES = [
+  process.env.CHROME_PATH,
+  playwrightChromium(),
+  "/usr/bin/chromium",
+  "/usr/bin/chromium-browser",
+  "/usr/bin/google-chrome",
+].filter(Boolean);
+const CHROME = CANDIDATES.find((p) => { try { return existsSync(p); } catch { return false; } });
+if (!CHROME) {
+  console.log("SKIP otranspiler python-in-worker smoke: no chromium found");
+  console.log("     (looked in: " + CANDIDATES.join(", ") + ")");
+  console.log("     install with: npx playwright install chromium   — or set CHROME_PATH");
+  process.exit(0);
+}
 
 const freePort = await new Promise((res) => {
   const s = net.createServer();

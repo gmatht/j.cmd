@@ -81,7 +81,14 @@ for t in "${BROWSER_SMOKES[@]}"; do
   # the page pulls the transpiler wasm + micropython wasm and boots
   # chromium; ~10-25 s warm, more on a loaded box
   if timeout 300 node "$t" > "$log" 2>&1; then
-    echo "PASS"
+    # a smoke that cannot run (no chromium installed) exits 0 having said
+    # SKIP, so the operator sees the gate did NOT actually run
+    if head -1 "$log" | grep -q '^SKIP'; then
+      echo "SKIP (no chromium — install it or set CHROME_PATH)"
+      head -3 "$log" | sed 's/^/    /'
+    else
+      echo "PASS"
+    fi
   else
     echo "FAIL — refusing to deploy (log: $log)"
     tail -20 "$log" >&2

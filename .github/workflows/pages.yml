@@ -39,6 +39,14 @@ jobs:
           sudo apt-get install -y libxi-dev libglu1-mesa-dev mesa-common-dev glslang-tools imagemagick xvfb
           npm ci
           npm install --no-save gl@8.1.6
+          # The browser smoke gates drive real chromium (Playwright). Install
+          # only the browser binary — playwright-core is already a dependency.
+          # Without this the smoke gate SKIPs (it is written to skip, not
+          # fail, when no chromium is present) and CI silently loses that
+          # coverage; with it, CI enforces the same browser checks as a
+          # ca.dansted.org deploy.
+          npx --yes playwright install --with-deps chromium || \
+            npx --yes playwright install chromium
           # headless-gl uses the X11-backed native context on the runner;
           # give the pixel-proof gates a virtual display. Without this,
           # gl(800, 600) returns null in sideface/sideblocks tests while
