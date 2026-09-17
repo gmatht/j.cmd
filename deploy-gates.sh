@@ -62,24 +62,36 @@ done
 echo "── browser smokes (Playwright) ──"
 # The Node harnesses above cannot catch realm bugs (module worker vs
 # classic worker, cross-origin fetch bases, worker postMessage protocols)
-# because those only exist in a real browser. This one guards a bug that
-# shipped to the live site: python runs on otranspiler.html died with
+# because those only exist in a real browser. These guard two bugs that
+# shipped to the live site:
 #
-#   micropython in a worker needs a CLASSIC worker (importScripts is not
-#   available in a module worker): Module scripts don't support
-#   importScripts()
+#   • python runs on otranspiler.html died with
+#       micropython in a worker needs a CLASSIC worker (importScripts is
+#       not available in a module worker)…
+#     because the page's stage workers are MODULE workers while the
+#     micropython glue is a CLASSIC script.
 #
-# because the page's stage workers are MODULE workers while the
-# micropython glue is a CLASSIC script. It drives the real page over the
-# static server and asserts the python stage runs end-to-end.
-BROWSER_SMOKES=(bench/otranspiler-py-worker-smoke.mjs)
+#   • tcc/go runs on otranspiler.html died with
+#       tcc: no inflate available (pako.min.js not loaded)
+#     because ensurePako() skipped loading when there was no `document`,
+#     and src/wasm.js used bare @wasmer specifiers only the page's import
+#     map resolves — neither holds in a MODULE worker. (The C→C lowering's
+#     fputs output was dropped by a -1 stub in the same realm.)
+#
+# Each drives the real page over the static server and asserts the stage
+# runs end-to-end in a module worker.
+BROWSER_SMOKES=(
+  bench/otranspiler-py-worker-smoke.mjs
+  bench/otranspiler-worker-smoke.mjs
+)
 for t in "${BROWSER_SMOKES[@]}"; do
   b=$(basename "$t" .mjs)
   if is_excepted "$b"; then printf '  %-26s ' "$b"; echo "SKIP (--except)"; continue; fi
   log="/tmp/deploy-$b.log"
   printf '  %-26s ' "$b"
-  # the page pulls the transpiler wasm + micropython wasm and boots
-  # chromium; ~10-25 s warm, more on a loaded box
+  # the page pulls the transpiler wasm + micropython/tcc/go wasm and boots
+  # chromium; ~10-25 s warm, more on a loaded box (the go smoke fetches
+  # the GOROOT bundle on a cold cache)
   if timeout 300 node "$t" > "$log" 2>&1; then
     # a smoke that cannot run (no chromium installed) exits 0 having said
     # SKIP, so the operator sees the gate did NOT actually run
