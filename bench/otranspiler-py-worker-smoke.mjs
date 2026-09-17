@@ -63,12 +63,29 @@ process.on("exit", shutdown);
 process.on("SIGINT", () => { shutdown(); process.exit(1); });
 process.on("SIGTERM", () => { shutdown(); process.exit(1); });
 
-let up = false;
-for (let i = 0; i < 50; i++) {
-  try { const r = await fetch(PAGE); if (r.ok) { up = true; break; } } catch {}
-  await sleep(200);
+// Wait for the static server. A plain fetch() here raced undici's parser
+// against the server's socket teardown and crashed the harness with
+// "AssertionError: assert(!this.paused)" (an undici internal, thrown from
+// an event handler so try/catch cannot contain it). A raw TCP connect is
+// enough to prove the port accepts, with no HTTP parser involved.
+const waitPort = (port, ms) => new Promise((resolve) => {
+  const deadline = Date.now() + ms;
+  const attempt = () => {
+    const s = net.connect(port, "127.0.0.1");
+    s.once("connect", () => { s.destroy(); resolve(true); });
+    s.once("error", () => {
+      s.destroy();
+      if (Date.now() > deadline) resolve(false);
+      else setTimeout(attempt, 200);
+    });
+  };
+  attempt();
+});
+if (!(await waitPort(PORT, 10000))) {
+  console.log("FATAL: static server did not start on :" + PORT);
+  shutdown();
+  process.exit(1);
 }
-if (!up) { console.log("FATAL: static server did not start on :" + PORT); shutdown(); process.exit(1); }
 
 const browser = await chromium.launch({
   executablePath: CHROME,
