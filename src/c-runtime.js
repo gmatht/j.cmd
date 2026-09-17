@@ -275,8 +275,12 @@ export function createCRuntime({ getMem, memory, out, err, table }) {
     "$fread": () => 0,
     "$fwrite": () => 0,
     "$fgets": () => 0,
-    "$fputs": () => -1,
-    "$fputc": () => -1,
+    // fputs/fputc: the C→C shell-out lowering emits fputs("…", stdout) for
+    // program output; the old stubs returned -1 and DROPPED it, so a
+    // transpiled program ran cleanly (exit 0) yet printed nothing. Match
+    // fprintf/puts (stream-agnostic → our unbuffered out sink).
+    "$fputs": (p) => { out(readStr(Ptr(p))); return 0; },
+    "$fputc": (c) => { out(String.fromCharCode(Number(c) & 0xff)); return Number(c) & 0xff; },
     "$fgetc": () => -1,
     "$fseek": () => -1,
     "$ftell": () => 0,

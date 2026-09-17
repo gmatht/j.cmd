@@ -30,16 +30,25 @@ import { createCRuntime, CExit } from "./c-runtime.js";
 // @wasmer/wasi (~485 KB) + @wasmer/wasmfs (~133 KB) are imported
 // LAZILY, on the first wasm run — static imports would fetch and parse
 // them on every page load even when no wasm binary is ever executed.
-// The import map (browser) / node_modules (CLI) resolve the bare
-// specifiers when the dynamic import runs.
+//
+// Resolution: the browser gets the vendored copy under www/vendor/ by
+// URL. The page's import map also maps the bare specifiers, but module
+// WORKERS do not inherit the document's import map, so `import("@wasmer/
+// wasi")` threw "Failed to resolve module specifier" in the otranspiler
+// tcc/go/zig stages (which run in workers). Resolving the vendored URL
+// against import.meta.url works in both the page and the worker; Node
+// (no DOM) keeps the bare specifier → node_modules.
+const wwwVendor = (file) => new URL("../www/vendor/" + file, import.meta.url).href;
+const isBrowserRealm = () => typeof document !== "undefined" || typeof WorkerGlobalScope !== "undefined";
+
 let wasiMod = null;      // @wasmer/wasi → { init, WASI, MemFS }
 let wasmfsMod = null;    // @wasmer/wasmfs → { WasmFs }
 function getWasi() {
-  wasiMod ??= import("@wasmer/wasi");
+  wasiMod ??= isBrowserRealm() ? import(wwwVendor("wasmer-wasi.mjs")) : import("@wasmer/wasi");
   return wasiMod;
 }
 function getWasmFs() {
-  wasmfsMod ??= import("@wasmer/wasmfs");
+  wasmfsMod ??= isBrowserRealm() ? import(wwwVendor("wasmer-wasmfs.mjs")) : import("@wasmer/wasmfs");
   return wasmfsMod;
 }
 

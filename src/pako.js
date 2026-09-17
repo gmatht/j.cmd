@@ -12,14 +12,33 @@ let ready = null;
 
 export function ensurePako() {
   if (typeof globalThis.pako !== "undefined") return Promise.resolve();
-  if (typeof document === "undefined") return Promise.resolve();  // CLI: node:zlib
-  ready ??= new Promise((resolve, reject) => {
-    const url = new URL("../www/vendor/pako.min.js", import.meta.url);
-    const s = document.createElement("script");
-    s.src = url;
-    s.onload = resolve;
-    s.onerror = () => reject(new Error("failed to load vendor/pako.min.js"));
-    document.head.appendChild(s);
-  });
+  // True CLI (Node): no DOM, no worker global — the callers use node:zlib.
+  if (typeof document === "undefined" && typeof WorkerGlobalScope === "undefined") {
+    return Promise.resolve();
+  }
+  ready ??= (async () => {
+    const url = new URL("../www/vendor/pako.min.js", import.meta.url).href;
+    if (typeof document !== "undefined") {
+      // Main thread: inject the UMD as a classic <script> (as before).
+      await new Promise((resolve, reject) => {
+        const s = document.createElement("script");
+        s.src = url;
+        s.onload = resolve;
+        s.onerror = () => reject(new Error("failed to load vendor/pako.min.js"));
+        document.head.appendChild(s);
+      });
+    } else {
+      // Worker (the otranspiler/tcc/go stages run in MODULE workers):
+      // there is no `document`, so the old code returned early and left
+      // globalThis.pako undefined — tcc/go then threw "no inflate
+      // available". importScripts() is unavailable in module workers,
+      // but dynamic import() of the UMD sets `self.pako` (the wrapper's
+      // fallback branch) because module scope has no exports/define.
+      await import(url);
+    }
+    if (typeof globalThis.pako === "undefined") {
+      throw new Error("failed to load vendor/pako.min.js");
+    }
+  })();
   return ready;
 }
