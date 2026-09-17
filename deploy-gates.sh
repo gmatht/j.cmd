@@ -89,7 +89,8 @@ for t in "${BROWSER_SMOKES[@]}"; do
   fi
 done
 
-echo "── c-sh-go corpus ──"CB=/tmp/cshgo-check
+echo "── c-sh-go corpus ──"
+CB=/tmp/cshgo-check
 if [ ! -x "$CB" ]; then
   echo "  building c-sh-go frontend…"
   (cd www/bin/c-sh-go && GOOS=linux GOARCH=amd64 go build -o "$CB" ./cmd/c-sh-go)
