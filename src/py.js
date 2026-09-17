@@ -12,7 +12,7 @@
 // do_str, and the interactive REPL via per-line do_str (line-based, the
 // same UX the SAB REPL had — but state now really persists).
 //
-// THREE REALMS, one engine:
+// FOUR REALMS, one engine:
 //   • window   — the glue is a <script>, stdout goes through the
 //                #mp_js_stdout DOM element (dispatchEvent('print')).
 //   • CLASSIC worker — the glue is importScripts'd (it is a classic
@@ -166,7 +166,7 @@ async function loadGlueInWorkerAsync() {
     failures.push("import(): " + (e && e.message ? e.message : e));
   }
   if (hasGlueGlobal()) return finishGlue(self.Module, base);
-  void hadGlobal;
+  if (hadGlobal) failures.push("a self.Module existed but was not adopted");
   throw new Error(CLASSIC_WORKER_HINT + " [" + failures.join("; ") + "]");
 }
 
@@ -267,7 +267,7 @@ export const pyRunStatic = pyExec;
 
 // ─── classic-worker bridge (for MODULE-worker callers) ──────────
 // A module worker cannot host the micropython glue at all (see
-// isModuleWorker above), so module-worker callers — the otranspiler
+// isClassicWorker above), so module-worker callers — the otranspiler
 // stage workers (www/otranspile-job.js → src/otranspile-jobs.js) and
 // anything else running as `{ type: "module" }` — MUST run python in a
 // nested CLASSIC worker (www/vendor/py-worker.js) and bridge its
