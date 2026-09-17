@@ -1,0 +1,10 @@
+import { readFileSync } from "node:fs";
+import { fs } from "./src/fs/index.js";
+import { getOtranspilerl } from "./src/otranspilerl.js";
+const lib = await getOtranspilerl();
+const src = readFileSync("www/examples/textures/texture-stone.sh", "utf8");
+const program = JSON.parse(lib.transpile(src, "sh", "js"));
+const s = JSON.stringify(program);
+const i = s.indexOf("fnCall");
+console.log("fnCall in JSON:", i >= 0);
+if (i >= 0) console.log(s.slice(Math.max(0, i - 250), i + 500));

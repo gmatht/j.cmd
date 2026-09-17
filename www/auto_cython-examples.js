@@ -154,6 +154,19 @@ main()
 `,
   },
   {
+    name: "base-n-parse",
+    desc: "a base-n integer parser: fold a digit list n = n*base + digit, then print the decimal value. Every local is typed — the radix, the digit list, and the accumulator. (A parser whose accumulator exceeds 64 bits has no GMP statement shape, so it is refused and left as exact Python rather than emitted as non-compiling Cython.)",
+    expected: "typed base/digits/value; int accumulator",
+    code: `# parse a base-n digit list and print the decimal value
+base = 16
+digits = [10, 15, 3, 8]
+value = 0
+for i in range(4):
+    value = value * base + digits[i]
+print(value)
+`,
+  },
+  {
     name: "refusals",
     desc: "the honest half: try/except, dicts, comprehensions and method calls are NOT provable. py2cy leaves the source untouched there and lists each refusal — the output is still plain, correct Python (REFUSE > GUESS).",
     expected: "a populated refusal manifest",
@@ -355,6 +368,119 @@ print(s)
 for i in range(1, 10001):
     if "1337" in str(i * i):
         print(i)
+`,
+  },
+  // ─── feature coverage: one example per py2cy tier ──────────────
+  // The entries above prove the classic tiers; these pin the rest of the
+  // annotator's surface, including the newest tiers. Each `expected` was
+  // taken from RUNNING py2cy (not written by hand), and none has a
+  // hand-written golden — like the pyo4 appendix, the generated output is
+  // the claim and the refusal manifest keeps it honest.
+  {
+    name: "float-recurrence",
+    desc: "the Float tier: a finite float under + and % with a nonzero modulus is exactly a C double (same IEEE-754 round-to-nearest as CPython). py2cy proves h ∈ [0, 10^9) and emits `cdef double h` — the float analogue of rolling_hash's intermediate-width proof.",
+    expected: "0 refusals; `h` Float[0,1000000007] double, `i` int",
+    code: `# float recurrence: the 31.4159 sibling of rolling_hash — the same
+# modulo shape, but the recurrence runs in floating point.
+h = 0
+for i in range(2000000):
+    h = (h * 31.4159 + i) % 1000000007
+print(h)
+`,
+  },
+  {
+    name: "bigint-huge-guard",
+    desc: "the huge-guard promotion: `while i < 10^55` lets the counter exceed i64, so an i64 C type would wrap — py2cy promotes `i` to the GMP tier instead, materialises the bound once via mpz_set_str into a hidden temp, and rewrites the guard to mpz_cmp. Doubling 2**100 past 10**55 takes ~80 iterations, so this one terminates and prints.",
+    expected: "0 refusals; `cdef mpz_t i` + hidden bound temp, mpz_cmp guard",
+    code: `# huge-guard promotion: the counter outgrows i64, so it takes the
+# GMP tier (not a wrapping long long). Doubling 2**100 past 10**55 takes
+# ~80 iterations, so this one terminates and prints.
+i = 2 ** 100
+while i < 1000000000000000000000000000000000000000000000000000000:
+    i = i * 2
+print(i % 1000000007)
+`,
+  },
+  {
+    name: "while-descending",
+    desc: "a descending while guard: `while i > 0` with `i = i - 1` bounds the loop head to i ∈ [0,5] — the mirror image of while-count's ascending guard. Guards, not just range(), are proof sources.",
+    expected: "0 refusals; `i` Int[0,5] int",
+    code: `i = 5
+while i > 0:
+    i = i - 1
+print(i)
+`,
+  },
+  {
+    name: "short-loop-exact",
+    desc: "exact unrolling: a counted loop with at most 64 trips is run body-for-body instead of widened to the loop invariant, so range(2) proves the reachable h ∈ [1,1] — `cdef int h`, not the blanket long long a long loop would need.",
+    expected: "0 refusals; `h` Int[1,1] int (exact, not widened)",
+    code: `h = 0
+for i in range(2):
+    h = (h * 31 + i) % 1000000007
+print(h)
+`,
+  },
+  {
+    name: "strings",
+    desc: "the Str tier: string concatenation stays a string, so both names earn `cdef str` (unicode in pure-Python mode). The smallest proof in the corpus — and the reason print() of a literal never needs a refusal.",
+    expected: "0 refusals; `greeting`/`name` str",
+    code: `greeting = "hello"
+name = "world"
+print(greeting + " " + name)
+`,
+  },
+  {
+    name: "builtins",
+    desc: "the modelled builtins in one place: a bool proves its exact value (True → Int[1,1]), abs() of a proved int stays proved, float() of an int proves a double, int/int / is true division (proved double — refused on a zero divisor), // is floor division even for negatives (-7 // 2 is -4, not C-truncation -3), int() truncates toward zero, and += is modelled as s = s + i, so the accumulator here is exactly Int[45,45], not a guess.",
+    expected: "0 refusals; bool/abs/float()/true-division/floor-division/truncation/aug-assign all typed",
+    code: `flag = True
+n = -42
+m = abs(n)
+x = float(m)
+q = 7 / 2
+f = 7 // 2
+g = int(7 / 2)
+s = 0
+for i in range(10):
+    s += i
+print(flag, m, x, q, f, g, s)
+`,
+  },
+  {
+    name: "width-ladder",
+    desc: "the C integer width ladder in one file: int, then unsigned int at 3×10^9 (past i32, inside u32), then unsigned long long at 10^19 (past i64, inside u64). The next rung — past u64 — is the GMP tier (see bignum_mul).",
+    expected: "0 refusals; int / unsigned int / unsigned long long",
+    code: `tiny = 5
+wide = 3000000000
+big = 10000000000000000000
+print(tiny, wide, big)
+`,
+  },
+  {
+    name: "float-single",
+    desc: "single precision, but ONLY where it is provably identical. A `cdef float` changes the arithmetic of every expression whose operands are all float/int (C promotes to double only when some operand is double), so py2cy keeps the proof only when every value is a dyadic m·2^-s with |m| ≤ 2^24 — then binary32 rounds nothing. Here 42, 3.5, 0.5, 4.0 are exact → `cdef float`; 0.1 has a 53-bit significand → it stays `cdef double` (REFUSE > GUESS).",
+    expected: "4 `cdef float` (x,q,half,r) + 1 `cdef double` (d)",
+    code: `# single precision only when provably identical. 42, 3.5, 0.5, 4.0 are
+# binary32-exact (m·2^-s with |m| <= 2^24) so float rounds nothing; 0.1 is
+# not, so it stays a double.
+x = float(42)
+q = 7 / 2
+half = 0.5
+r = q + half
+d = 0.1
+print(x, q, half, r, d)
+`,
+  },
+  {
+    name: "float-list",
+    desc: "the float32 memoryview: a list whose elements are all binary32-exact becomes `array('f', …)` + a `float[:]` view — half the memory of a double sequence, with each element already the value CPython would hold. An inexact element (0.1), a mixed int/float list, or any non-iteration use (indexing, len, append) blocks the view and it stays a plain `cdef list`.",
+    expected: "0 refusals; `cdef float[:] arr = array('f', …)` + `cdef float v`",
+    code: `# a float list that is only iterated, with every element binary32-exact:
+# array('f') + a float[:] memoryview (the buffer import is emitted).
+arr = [0.5, 1.5, 2.5, 4.0]
+for v in arr:
+    print(v)
 `,
   },
 ];

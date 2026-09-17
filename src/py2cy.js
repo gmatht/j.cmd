@@ -498,7 +498,10 @@ class Annotator {
         return ft;
       }
       case "str": return STR;
-      case "bool": return e.v === "True" ? intTy(1n, 1n, 1n) : intTy(0n, 0n, 0n);
+      // bools are NEVER ints: `True` prints as "True", not "1" — a
+      // `cdef int` would change str()/print()/repr() output, so a bool
+      // (or comparison/`not` result) is its own untypable kind.
+      case "bool": return { kind: "bool" };
       case "none": return ANY;
       case "name": return env.get(e.v) || ANY;
       case "list": {
@@ -525,7 +528,7 @@ class Annotator {
       }
       case "unary": {
         const a = this.typeOf(e.a, env);
-        if (e.op === "not") return intTy(0n, 1n, 1n);
+        if (e.op === "not") return { kind: "bool" };
         if (e.op === "~") return isIntType(a) ? intTy(null, null, a.need ?? 0n) : ANY;
         if (e.op === "-") {
           if (isBigType(a)) return BIG;
@@ -541,7 +544,7 @@ class Annotator {
         return a;
       }
       case "bin": return this.binType(e, env);
-      case "cmp": return intTy(0n, 1n, maxBig([this.typeOf(e.a, env).need ?? 0n, this.typeOf(e.b, env).need ?? 0n]));
+      case "cmp": return { kind: "bool" };
       case "index": {
         const b = env.get(e.baseName);
         if (b && (b.kind === "intlist" || b.kind === "list")) return intTy(b.lo, b.hi, b.need);
@@ -1006,9 +1009,15 @@ function analyzeModule(module) {
   // body, but declared at the top of the function).
   const walk = (stmts, env, scope, widen) => {
     const put = (name, ty) => {
-      // in fixpoint rounds (>1) a rebind WIDENS rather than overwrites:
-      // the join is the loop invariant (monotone, so it terminates).
-      const next = widen && env.has(name) ? joinTy(env.get(name), ty) : ty;
+      // JOIN, never overwrite: the declared type must cover every value
+      // the name ever holds. Straight-line redefinition (`x = 3e9; x = 1`)
+      // and opaque branches (try/except arms run exclusively) execute only
+      // their last write textually, but EVERY written value exists at
+      // runtime — a C type covering just the last one wraps or raises on
+      // the earlier ones. In fixpoint rounds this join is the loop
+      // invariant (monotone, so it terminates); at top level it is the
+      // whole-life range.
+      const next = env.has(name) ? joinTy(env.get(name), ty) : ty;
       env.set(name, next);
       A.vars.set((scope.name ? scope.name + "." : "") + name, next);
     };
@@ -1025,7 +1034,14 @@ function analyzeModule(module) {
             for (let k = 0; k < st.targets.length; k++) {
               const t = st.targets[k];
               const v = st.values[Math.min(k, st.values.length - 1)];
-              if (t.name && v) put(t.name, A.typeOf({ t: "bin", op: bop, a: { t: "name", v: t.name }, b: v }, env));
+              if (t.name && v) {
+                const ty = A.typeOf({ t: "bin", op: bop, a: { t: "name", v: t.name }, b: v }, env);
+                put(t.name, ty);
+                // register the tier the same way `=` does, or the GMP block is
+                // skipped while the declaration still says mpz_t
+                if (ty && ty.kind === "big") A.bigints.add(t.name);
+                if (ty && (ty.kind === "intlist" || ty.kind === "list")) A.lists.add(t.name);
+              }
             }
             break;
           }
@@ -1227,7 +1243,183 @@ function analyzeModule(module) {
   demoteUncoveredBigints(module, A);
   promoteListViews(module, A);
   demoteFloat32(module, A);
+  demoteUnsafeIntUses(module, A);
   return A;
+}
+
+// ─── integer C-safety: the use-site whole-program condition ────────
+// The int analogue of demoteFloat32's condition (and of Go's
+// unsafeTypedNames): Cython evaluates an ALL-C-INTEGER subexpression in C
+// (wrapping!), even when the enclosing statement is a Python object —
+// `total = total + i * i` with an untyped total still computes `i * i` in
+// C, so a `cdef` counter beside an unprovable accumulator printed a
+// wrapped value (verified: 1983905792 instead of 16000000000000000000).
+// Every all-C-integer subexpression is therefore range-checked bottom-up
+// against its C evaluation width (C promotion over the operand ctypes);
+// any C-int variable in a non-fitting one is demoted to a Python object
+// (REFUSE > GUESS). `//`/`%` are exempt (cdivision=False makes Cython emit
+// Python semantics for C ints — pinned by parity tests); `**` on C ints
+// has no C operator (object pow). Float/double subtrees belong to the
+// float machinery and are skipped here; demotion only ever removes int
+// proofs, so the fixpoint is monotone and terminates.
+function demoteUnsafeIntUses(module, A) {
+  const WIDTHS = { int: [32n, true], "long long": [64n, true], "unsigned int": [32n, false], "unsigned long long": [64n, false] };
+  const I64 = 2n ** 63n;
+  const keyOf = (scope, name) => (scope && scope.name ? scope.name + "." : "") + name;
+  const widthOfTy = (t) => {
+    if (!t || t.kind !== "int" || t.lo == null || t.hi == null) return null;
+    return WIDTHS[cTypeForRange(t.lo, t.hi, t.need)] || null;
+  };
+  const fits = (lo, hi, w) => {
+    if (lo == null || hi == null || !w) return false;
+    const bits = w[0], signed = w[1];
+    return signed ? (lo >= -(1n << (bits - 1n)) && hi < (1n << (bits - 1n)))
+                  : (lo >= 0n && hi < (1n << bits));
+  };
+  const promo = (wa, wb) => {
+    if (!wa || !wb) return null;
+    const bits = wa[0] >= wb[0] ? wa[0] : wb[0];
+    return [bits, wa[1] && wb[1]];
+  };
+  const litWidth = (v) => {
+    const a = v < 0n ? -v : v;
+    if (a < 2147483648n) return [32n, true];
+    if (a < I64) return [64n, true];
+    return null;   // beyond i64 the literal is a Python object in Cython
+  };
+  // bottom-up check: {st:"cint",lo,hi,w,names} (all-C-int, exact range),
+  // {st:"skip"} (float domain — not ours), {st:"obj"} (object-level).
+  // Unsafe subexpressions demote their C-int names immediately (the
+  // fixpoint re-checks; demotion is monotone).
+  const check = (e, scope, demote) => {
+    const OBJ = { st: "obj" }, SKIP = { st: "skip" };
+    if (!e || typeof e !== "object") return OBJ;
+    const sub = (x) => check(x, scope, demote);
+    const hurt = (names) => { for (const k of names) demote.add(k); };
+    switch (e.t) {
+      case "num": {
+        const v = numVal(e.raw ?? e.v);
+        if (v == null) return SKIP;                       // float literal — not Int
+        const w = litWidth(v);
+        return w ? { st: "cint", lo: v, hi: v, w, names: new Set() } : OBJ;
+      }
+      case "name": {
+        const t = A.vars.get(keyOf(scope, e.v));
+        const w = widthOfTy(t);
+        if (w) return { st: "cint", lo: t.lo, hi: t.hi, w, names: new Set([keyOf(scope, e.v)]) };
+        return (t && t.kind === "float") ? SKIP : OBJ;
+      }
+      case "list": for (const it of e.items || []) sub(it); return OBJ;
+      case "index": for (const x of e.idx || []) if (x.e) sub(x.e); return OBJ;
+      case "cmp": sub(e.a); sub(e.b); return OBJ;
+      case "unary": {
+        if (e.op === "not") return OBJ;
+        const r = sub(e.a);
+        if (r.st !== "cint") return r;
+        if (e.op === "~") {                             // ~x always fits; unsigned ~ diverges from Python
+          if (!r.w[1]) { hurt(r.names); return OBJ; }
+          return { st: "cint", lo: -(r.hi + 1n), hi: -(r.lo + 1n), w: r.w, names: r.names };
+        }
+        if (e.op === "-") {
+          if (fits(-r.hi, -r.lo, r.w)) return { st: "cint", lo: -r.hi, hi: -r.lo, w: r.w, names: r.names };
+          hurt(r.names); return OBJ;                      // negation overflows the width (INT_MIN edge)
+        }
+        return OBJ;
+      }
+      case "bin": {
+        const ra = sub(e.a), rb = sub(e.b);
+        if (ra.st === "skip" || rb.st === "skip") return SKIP;
+        if (ra.st !== "cint" || rb.st !== "cint") return OBJ;
+        if (e.op === "/") return SKIP;                  // true division — float domain
+        if (e.op === "//" || e.op === "%") return OBJ; // cdivision=False: Python semantics, exact
+        const names = new Set([...ra.names, ...rb.names]);
+        const bad = () => { hurt(names); return OBJ; };
+        if (e.op === "**") {                            // small exact powers only (mirrors binType's guard)
+          if (ra.lo === ra.hi && rb.lo === rb.hi && rb.lo >= 0n && rb.lo < 4096n) {
+            let v = 1n;
+            try { v = ra.lo ** rb.lo; } catch { return bad(); }
+            if (v < 0n ? -v < (1n << 120n) : v < (1n << 120n)) {
+              const w = promo(ra.w, rb.w);
+              if (fits(v, v, w)) return { st: "cint", lo: v, hi: v, w, names };
+            }
+          }
+          return bad();
+        }
+        if (e.op === "+" || e.op === "-" || e.op === "*") {
+          let lo, hi;
+          if (e.op === "+") { lo = ra.lo + rb.lo; hi = ra.hi + rb.hi; }
+          else if (e.op === "-") { lo = ra.lo - rb.hi; hi = ra.hi - rb.lo; }
+          else { const c = [ra.lo * rb.lo, ra.lo * rb.hi, ra.hi * rb.lo, ra.hi * rb.hi]; lo = c.reduce((x, y) => (y < x ? y : x)); hi = c.reduce((x, y) => (y > x ? y : x)); }
+          const w = promo(ra.w, rb.w);
+          if (fits(lo, hi, w)) return { st: "cint", lo, hi, w, names };
+          return bad();
+        }
+        return bad();                                     // shifts, bitwise, exotic ops: unmodelled C semantics
+      }
+      case "call": {
+        const argRs = (e.args || []).map((a) => (a.e ? sub(a.e) : OBJ));
+        if ((e.fn === "abs" || e.fn === "int") && e.args.length === 1 && argRs[0].st === "cint") {
+          const r = argRs[0];                             // abs()/int() of a C int: same width, exact range
+          const mag = (x) => (x < 0n ? -x : x);
+          const lo = e.fn === "abs" ? 0n : r.lo;
+          const hi = e.fn === "abs" ? (mag(r.lo) > mag(r.hi) ? mag(r.lo) : mag(r.hi)) : r.hi;
+          const w = [r.w[0], true];                       // computed signed (abs(INT_MIN) is the edge this catches)
+          if (fits(lo, hi, w)) return { st: "cint", lo, hi, w, names: r.names };
+          hurt(r.names); return OBJ;
+        }
+        if ((e.fn === "min" || e.fn === "max") && argRs.length && argRs.every((r) => r.st === "cint")) {
+          const lo = argRs.map((r) => r.lo).reduce((x, y) => (y < x ? y : x));
+          const hi = argRs.map((r) => r.hi).reduce((x, y) => (y > x ? y : x));
+          const w = argRs.map((r) => r.w).reduce((a, b) => promo(a, b));
+          const names = new Set(); for (const r of argRs) for (const k of r.names) names.add(k);
+          if (fits(lo, hi, w)) return { st: "cint", lo, hi, w, names };
+          hurt(names); return OBJ;
+        }
+        return argRs.some((r) => r.st === "skip") ? SKIP : OBJ;
+      }
+      default: return OBJ;                                // unknown/str/bool/none nodes: object-level
+    }
+  };
+  const scanExpr = (e, scope, demote) => { check(e, scope, demote); };
+  const scan = (stmts, scope, demote) => {
+    for (const st of stmts) {
+      if (!st) continue;
+      if (st.k === "assign") {
+        for (const v of st.values) scanExpr(v, scope, demote);
+        if (st.op !== "=") for (const t of st.targets) if (t.name) scanExpr({ t: "bin", op: st.op.slice(0, -1), a: { t: "name", v: t.name }, b: st.values[0] }, scope, demote);
+      } else if (st.k === "for") { if (st.iter) scanExpr(st.iter, scope, demote); if (st.body) scan(st.body, scope, demote); }
+      else if (st.k === "while") { if (st.cond) scanExpr(st.cond, scope, demote); if (st.body) scan(st.body, scope, demote); }
+      else if (st.k === "if") {
+        for (const b of st.branches || []) { if (b.cond) scanExpr(b.cond, scope, demote); if (b.body) scan(b.body, scope, demote); }
+        if (st.elseBody) scan(st.elseBody, scope, demote);
+      } else if (st.k === "def") { const f = A.funcs.get(st.name); if (f && st.body) scan(st.body, f, demote); }
+      else if (st.k === "expr" || st.k === "return") { if (st.expr) scanExpr(st.expr, scope, demote); }
+      else if (st.k === "opaque") { if (st.body) scan(st.body, scope, demote); }
+    }
+  };
+  for (let round = 0; round < 32; round++) {
+    const demote = new Set();
+    scan(module, A.moduleScope, demote);
+    // keep only live int proofs (stale keys from earlier rounds re-resolve harmlessly)
+    let any = false;
+    for (const k of demote) {
+      const t = A.vars.get(k);
+      if (!t || t.kind !== "int") continue;
+      any = true;
+      const dot = k.indexOf(".");
+      const scope = dot < 0 ? null : k.slice(0, dot);
+      const name = dot < 0 ? k : k.slice(dot + 1);
+      A.vars.set(k, ANY);
+      A.unstable.delete(k);
+      // a demoted loop counter must not be re-declared from the loop
+      // record (buildDecls backfills counters it cannot find in scope)
+      const recs = scope ? (A.funcs.get(scope) || {}).loops : A.moduleScope.loops;
+      if (recs) for (let j = recs.length - 1; j >= 0; j--) if (recs[j].name === name) recs.splice(j, 1);
+      A.notes.set(k, "`" + name + "`" + (scope ? " in `" + scope + "()`" : "") + " appears in an expression the C backend cannot evaluate exactly (C integer arithmetic wraps where Python is exact), so it stays a Python object (REFUSE > GUESS)");
+      if (scope) A.refuseAtModule(name, ANY, scope);     // function ANY-locals are otherwise skipped silently
+    }
+    if (!any) break;
+  }
 }
 
 // ─── the whole-program condition for `cdef float` ───────────────
@@ -1527,29 +1719,95 @@ function stmtRawMentions(st, name) {
   return new RegExp("\\b" + esc + "\\b").test(st.raw);
 }
 
+// Scope resolution for the coverage gate: which A.vars key does a bare
+// name refer to from inside `stack` (innermost function last)? Only the
+// innermost function's own LOCALS count — a parameter is a Python object
+// even if the body rebinds the name, and a closure over an outer
+// function's local is a cell, not a `cdef` variable — so neither ever
+// resolves to a bigint. Otherwise the module global; anything else
+// (unknown scope, duplicate def names, builtins) resolves to null, which
+// never counts as covered. Mirrors the walk's flat `scope.name` keying.
+function bigintGateResolve(stack, name, A) {
+  const has = (coll) => coll && (typeof coll.has === "function" ? coll.has(name) : coll.includes(name));
+  if (stack.length) {
+    if (new Set(stack).size !== stack.length) return null;   // duplicate def names — the walk itself merges these; refuse to reason
+    const f = A.funcs.get(stack[stack.length - 1]);
+    if (!f) return null;
+    if (has(f.locals)) return stack[stack.length - 1] + "." + name;
+    return has(A.moduleScope.locals) ? name : null;
+  }
+  return has(A.moduleScope.locals) ? name : null;
+}
+
+// Any mention of the name anywhere under these statements (used for
+// opaque blocks, whose bodies the renderer emits verbatim and never
+// rewrites inside).
+function bigintSubtreeMentions(stmts, v) {
+  const sub = (list) => {
+    for (const st of list || []) if (one(st)) return true;
+    return false;
+  };
+  const one = (st) => {
+    if (!st) return false;
+    if (stmtRawMentions(st, v)) return true;
+    if (st.k === "if") {
+      for (const b of st.branches || []) if (Array.isArray(b.body) && sub(b.body)) return true;
+      return !!(st.elseBody && sub(st.elseBody));
+    }
+    if ((st.k === "for" || st.k === "while" || st.k === "def" || st.k === "opaque") && Array.isArray(st.body)) return sub(st.body);
+    return false;
+  };
+  return sub(stmts);
+}
+
 // Is every statement that mentions bigint `v` expressible in the emitted GMP
 // FFI? A proven BigInt whose use is NOT rewritable must NOT be declared
 // `cdef mpz_t`: the untranslated line would sit next to an mpz_t variable and
 // the .pyx would not compile. Mirrors collectBigintRewrites' traversal — a
 // rewritten statement is not recursed into, a guard is rewritten separately,
-// and anything else that still mentions `v` fails.
-function bigintCovered(stmts, v, bigs) {
+// and anything else that still mentions `v` fails. Two scope rules keep the
+// gate in agreement with the scope-blind renderer (one flat bigs list):
+// def bodies are walked with their scope pushed, opaque bodies (emitted
+// verbatim, never rewritten inside) fail on ANY mention, and a matching
+// shape only covers when every bigs name it names resolves to an actual
+// bigint in the current scope — otherwise a shadowing int local or
+// parameter would be GMP-rewritten against a non-mpz_t.
+function bigintCovered(stmts, v, bigs, A, stack) {
+  stack = stack || [];
   const dummy = { refuse() {} };
   const mentions = (st) => stmtRawMentions(st, v);
+  const actedBig = (st) => {
+    for (const b of bigs) {
+      if (!stmtRawMentions(st, b)) continue;
+      const k = bigintGateResolve(stack, b, A);
+      const t = k == null ? null : A.vars.get(k);
+      if (!t || t.kind !== "big") return false;
+    }
+    return true;
+  };
   for (const st of stmts) {
-    if (rewriteBigintStmt(st, bigs, dummy)) continue;
+    if (!st) continue;
+    if (st.k === "opaque") {
+      if (bigintSubtreeMentions([st], v)) return false;
+      continue;
+    }
+    if (rewriteBigintStmt(st, bigs, dummy)) {
+      if (!actedBig(st)) return false;
+      continue;
+    }
     if ((st.k === "while" || st.k === "if") && rewriteBigintGuard(st, bigs)) {
       // guard rewritten — the body is still checked below
+      if (!actedBig(st)) return false;
     } else if (mentions(st)) {
       return false;
     }
     if (st.k === "if") {
-      for (const b of st.branches) if (Array.isArray(b.body) && !bigintCovered(b.body, v, bigs)) return false;
-      if (st.elseBody && !bigintCovered(st.elseBody, v, bigs)) return false;
+      for (const b of st.branches) if (Array.isArray(b.body) && !bigintCovered(b.body, v, bigs, A, stack)) return false;
+      if (st.elseBody && !bigintCovered(st.elseBody, v, bigs, A, stack)) return false;
     } else if ((st.k === "for" || st.k === "while") && Array.isArray(st.body)) {
-      if (!bigintCovered(st.body, v, bigs)) return false;
+      if (!bigintCovered(st.body, v, bigs, A, stack)) return false;
     } else if (st.k === "def" && Array.isArray(st.body)) {
-      if (!bigintCovered(st.body, v, bigs)) return false;
+      if (!bigintCovered(st.body, v, bigs, A, [...stack, st.name])) return false;
     }
   }
   return true;
@@ -1561,16 +1819,36 @@ function bigintCovered(stmts, v, bigs) {
 // general guard behind the bignum_mul shapes: those happen to be rewritable,
 // an arbitrary bigint accumulator is not.
 function demoteUncoveredBigints(module, A) {
-  for (const v of [...A.bigints]) {
-    const t = A.vars.get(v);
-    if (!t || t.kind !== "big") continue;              // function-scoped names are keyed differently
-    const bigs = [...new Set([...A.bigints, v])];
-    if (bigintCovered(module, v, bigs)) continue;
-    A.bigints.delete(v);
-    A.vars.set(v, ANY);
-    A.unstable.delete(v);
-    // the declaration pass records ONE refusal, using this as the reason
-    A.notes.set(v, "bigint `" + v + "` is not fully expressible in the emitted GMP FFI (a line touching it is not rewritable), so it stays exact Python (REFUSE > GUESS)");
+  // Group every proven-big variable by bare name and check the WHOLE
+  // module once per name: the renderer rewrites by bare name with one flat
+  // bigs list, so a single unrewritable mention anywhere — a function
+  // local, an opaque (verbatim) block, a shadowing int — poisons every
+  // scope sharing the name. Demoted scopes stay exact Python, which always
+  // compiles; a kept `cdef mpz_t` beside a verbatim line never does.
+  const byBare = new Map();
+  for (const [key, t] of [...A.vars]) {
+    if (!t || t.kind !== "big") continue;
+    const dot = key.indexOf(".");
+    const bare = dot < 0 ? key : key.slice(dot + 1);
+    if (!byBare.has(bare)) byBare.set(bare, []);
+    byBare.get(bare).push(key);
+  }
+  for (const [bare, keys] of byBare) {
+    const bigs = [...new Set([...A.bigints, bare])];
+    if (bigintCovered(module, bare, bigs, A, [])) continue;
+    A.bigints.delete(bare);
+    for (const key of keys) {
+      const dot = key.indexOf(".");
+      const scope = dot < 0 ? null : key.slice(0, dot);
+      const name = dot < 0 ? key : key.slice(dot + 1);
+      A.vars.set(key, ANY);
+      A.unstable.delete(key);
+      // the declaration pass records ONE refusal, using this as the reason
+      A.notes.set(key, "bigint `" + name + "`" + (scope ? " in `" + scope + "()`" : "") + " is not fully expressible in the emitted GMP FFI (a line touching it is not rewritable), so it stays exact Python (REFUSE > GUESS)");
+      // buildDecls reports module-scope ANY itself, but skips function
+      // ANY-locals silently — record those here so the manifest stays whole
+      if (scope) A.refuseAtModule(name, ANY, scope);
+    }
   }
 }
 
@@ -1911,6 +2189,8 @@ function buildDecls(A, mode, opts) {
 function declFor(name, t, big, why) {
   if (t.kind === "str") return { name, ty: "Str", ctype: "str", kind: "str", why: why || "proved `str` (no numeric C type to win)" };
   if (t.kind === "big") return { name, ty: "BigInt", ctype: "mpz_t", kind: "bigint", big: true, why: why || "value exceeds i64 — Cython has no native big-int, so the GMP FFI tier is emitted" };
+  // bools are untypable (see typeOf): a C int changes their printed form
+  if (t.kind === "bool") return null;
   if (t.kind === "int") {
     // THE PROOF RULE (AUTO_CYTHON §6): a C type is emitted only when the
     // value's range is PROVED. An unbounded int is not a `long long` —
@@ -1967,7 +2247,9 @@ Annotator.prototype.refuseAtModule = function (name, t, scope) {
         ? "type not provable"
         : t.kind === "float"
           ? "value is a float whose finiteness was not proved — a C double would diverge from Python on overflow/zero-division"
-          : "value is an unproved int (no range) — a C type would be a guess that wraps";
+          : t.kind === "bool"
+            ? "value is a bool — a C int would print 1/0 where Python prints True/False"
+            : "value is an unproved int (no range) — a C type would be a guess that wraps";
   this.refuse(null, "declaration", "type of `" + name + "` in " + where + " " + why + " — left as a Python object", name + "@" + (scope || "module"));
 };
 
@@ -2080,14 +2362,19 @@ function renderPyx(source, stmts, A, decls, opts) {
   // its own cdef/init/clear next to the bigints.
   const bigs = decls.module.filter((d) => d.kind === "bigint").map((d) => d.name)
     .concat(decls.functions.flatMap((f) => f.locals.filter((l) => l.kind === "bigint").map((l) => l.name)));
+  // module-level declarations cover module globals only — function locals
+  // get their own cdef/init/clear inside the def (a module `cdef` for a
+  // function-only name would be a dead global, and worse, a duplicate if
+  // some scope holds a C int of the same name).
+  const moduleBigs = decls.module.filter((d) => d.kind === "bigint").map((d) => d.name);
   const bigRewrites = [];       // { at, end, text, indent, pre?, temp? } — bigint statement rewrites
   const bigTemps = [];         // hidden mpz bound temps (huge guard literals)
   if (bigs.length) collectBigintRewrites(stmts, bigs, A, bigRewrites, 0, bigTemps);
   if (bigs.length) {
     out.push("# bigint declarations (GMP FFI above) — init/clear bracket the flow");
-    for (const name of bigs) out.push("cdef mpz_t " + name);
+    for (const name of moduleBigs) out.push("cdef mpz_t " + name);
     for (const name of bigTemps) out.push("cdef mpz_t " + name + "  # hidden bound temp for a huge guard literal");
-    for (const name of bigs) out.push("mpz_init(" + name + ")");
+    for (const name of moduleBigs) out.push("mpz_init(" + name + ")");
     for (const name of bigTemps) out.push("mpz_init(" + name + ")");
     out.push("");
   }
@@ -2115,14 +2402,32 @@ function renderPyx(source, stmts, A, decls, opts) {
         out.push(bodyInd + "cdef " + l.ctype + " " + l.name); anyDecl = true;
       }
       if (anyDecl) out.push("");                                 // breathe before the body
-      // emit the def's body lines verbatim, keeping its indentation
+      // function-local bigints need per-call init like the module flow
+      // does (a `cdef mpz_t` local starts uninitialised; the module-level
+      // mpz_init covers only the module global of the same name).
+      const fBigs = f.locals.filter((l) => l.big).map((l) => l.name);
+      for (const name of fBigs) out.push(bodyInd + "mpz_init(" + name + ");");
+      if (fBigs.length) out.push("");
+      // emit the def's body lines verbatim, keeping its indentation —
+      // except bigint rewrites, which apply by line exactly as at top
+      // level (collectBigintRewrites already descends into defs).
       const headerIndent = lines[i].indent;
       let j = i + 1;
       while (j < lines.length) {
         if (!lines[j].blank && lines[j].indent <= headerIndent) break;
+        const bln = j + 1;
+        const brw = bigRewrites.find((r) => r.at === bln);
+        if (brw) {
+          const bind = /^[ \t]*/.exec(lines[j].text)[0];
+          if (brw.pre) out.push(bind + brw.pre.trim());
+          out.push(bind + brw.text.trim()); j = brw.end; continue;
+        }
         out.push(lines[j].text);
         j++;
       }
+      // release the locals (an early `return` above leaks GMP memory —
+      // stdout parity is unaffected, and the leak dies with the process).
+      for (const name of fBigs) out.push(bodyInd + "mpz_clear(" + name + ");");
       out.push("");
       i = j - 1;
       continue;
@@ -2132,7 +2437,7 @@ function renderPyx(source, stmts, A, decls, opts) {
   if (bigs.length) {
     out.push("");
     out.push("# release the bigints (the GMP counterpart of the Python refcount drop)");
-    for (const name of bigs) out.push("mpz_clear(" + name + ")");
+    for (const name of moduleBigs) out.push("mpz_clear(" + name + ")");
     for (const name of bigTemps) out.push("mpz_clear(" + name + ")");
   }
   return out.join("\n").replace(/\n{3,}/g, "\n\n").replace(/\n+$/, "\n");
@@ -2247,6 +2552,26 @@ function rewriteBigintStmt(st, bigs, A) {
         if (k != null && k > 0n && k <= 2n ** 32n) {
           return { at: st.line, end: st.line, text: 'printf("%lu\\n", mpz_fdiv_ui(' + m.a.v + ", " + k + "));" };
         }
+        // else: a bigint operand with an untranslatable modulus — refuse below
+      } else {
+        // no bigint in the matched position — only an ACTUAL bigint
+        // operand is untranslatable. Anything else (print(f()),
+        // print("done")) stays verbatim Python, which is valid, so it
+        // must not record a refusal (the old code blamed every print in
+        // a bigint file on the missing GMP output binding).
+        let found = false;
+        const scanNames = (e) => {
+          if (!e || typeof e !== "object" || found) return;
+          if (e.t === "name" && isBig(e.v)) { found = true; return; }
+          if (e.t === "list") for (const it of e.items || []) scanNames(it);
+          if (e.a) scanNames(e.a);
+          if (e.b) scanNames(e.b);
+          if (e.expr) scanNames(e.expr);
+          for (const x of e.idx || []) if (x.e) scanNames(x.e);
+          for (const a of e.args || []) if (a.e) scanNames(a.e);
+        };
+        for (const a of c.args) if (a.e) scanNames(a.e);
+        if (!found) return null;
       }
       // print(x) for a bigint — no GMP print binding in the golden, refuse
       A.refuse(st.line, "bigint", "printing a bigint needs a GMP output binding — not emitted (REFUSE > GUESS)", st.raw.trim());

@@ -1,0 +1,49 @@
+import { readFileSync } from "node:fs";
+import { fs } from "./src/fs/index.js";
+import { bashToJS } from "./src/bash2js.js";
+import { createSh2Runtime } from "./src/sh2runtime.js";
+let src = readFileSync("www/bin/mimecroft.sh", "utf8");
+const m = src.match(/\*headless\*\)[^\n]*/);
+console.log("headless line:", JSON.stringify(m && m[0]));
+src = src.replace("*headless*) sound=$((0)); headless=1 ;;", "*headless*) sound=$((0)); headless=0 ;;");
+// probe: instrument settings_menu entry + the submit loop
+src = src.replace("settings_menu() {\n  if [ \"$headless\" -eq 1 ]; then return; fi", "settings_menu() {\n  echo \"DBG menu headless=$headless\" >&2\n  if [ \"$headless\" -eq 1 ]; then return; fi");
+const { js } = await bashToJS(fs, src);
+const KEYS = [];
+for (let i = 0; i < 8; i++) KEYS.push("");
+KEYS.push("q,");
+let keyFrame = 0;
+const dbg = [];
+const shellExec = async (cmdline) => {
+  const cl = cmdline.trim(); const cmd = cl.split(/\s+/)[0];
+  let rest = cl.slice(cmd.length).trim();
+  if (rest.startsWith("'") && rest.endsWith("'")) rest = rest.slice(1, -1);
+  let out = "";
+  if (cmd === "echo") out = rest + "\n";
+  else if (cmd === "cat") {
+    const p = fs._resolve(rest.split(/\s+/)[0]);
+    if (p === "/dev/webgl/key") { out = (keyFrame < KEYS.length ? KEYS[keyFrame] : "q,") + "\n"; keyFrame++; }
+    else { try { out = await fs.read(p); } catch { out = ""; } }
+  }
+  else if (cmd === "bash") { out = ""; }
+  else if (cmd === "sh2glsl") { out = ""; }
+  else if (cmd === "true") {}
+  else out = `${cmd}: command not found\n`;
+  return { out, err: "", code: 0 };
+};
+const rt = createSh2Runtime({ fs, env: {}, shellExec, stdout: { write: () => {} }, stderr: { write: (s) => dbg.push(s.trim()) }, args: [], argv0: "bash" });
+const origRead = rt.sh2.fs.readFile.bind(rt.sh2.fs);
+rt.sh2.fs.readFile = async (p, enc) => {
+  if (String(p) === "/dev/webgl/key") { const k = keyFrame < KEYS.length ? KEYS[keyFrame] : "q,"; keyFrame++; return k; }
+  if (String(p).includes("/dev/bg")) dbg.push("READ " + String(p));
+  return origRead(p, enc);
+};
+const origWrite = rt.sh2.fs.writeFile.bind(rt.sh2.fs);
+rt.sh2.fs.writeFile = async (p, data) => {
+  if (String(p) === "/dev/bg") dbg.push("WRITE /dev/bg: " + String(data).trim().slice(0, 60));
+  return origWrite(p, data);
+};
+const fn = new Function("args", "fs", "env", "stdout", "stderr", "__runCmd", "sh2", "return (async () => { " + js + " })();");
+try { await Promise.race([fn([], fs, {}, { write: () => {} }, { write: (s) => dbg.push(s.trim()) }, shellExec, rt.sh2), new Promise((_, rej) => setTimeout(() => rej(new Error("stop")), 20000))]); }
+catch (e) { if (e.message !== "stop") { console.log("RUN ERROR:", e.message); process.exit(1); } }
+console.log("dbg:", dbg.filter(l => l.startsWith("DBG") || l.startsWith("READ") || l.startsWith("WRITE")).slice(0, 8));

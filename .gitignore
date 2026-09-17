@@ -30,6 +30,8 @@ __pycache__/
 !www/wasm-bin/*.wasm
 !www/vendor/
 !www/vendor/*.wasm
+!www/vendor/pyodide/
+!www/vendor/pyodide/*.wasm
 
 # Zig bootstrap (build-wasm-zig.sh work dir)
 .zig-bootstrap/

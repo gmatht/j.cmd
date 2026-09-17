@@ -36,7 +36,7 @@ import { optimizeFragmentGLSL } from "./shglsl-opt.js";
 export const GLSL_VIEW = 800;
 // cache-buster — bump whenever www/wasm-bin/otranspilerl.wasm changes so
 // the browser (and the otranspiler GUI) never serves a stale wasm.
-export const WASM_VERSION = "v32-indexreads";  // v28: otranspilerl_shir_opt(a1, lang) — the post-ingress A1 the backends render (GUI shows raw vs optimized side by side); NOTE: built with STABLE rustc (the v27 PGSO fork's stage1 lacks a wasm32-wasip1 sysroot — rebuild with PGSO_RUSTC=<fork rustc> once its wasip1 std is installed to recover the ~13% transpile speed) otranspilerl_shir_opt(a1, lang) — the post-ingress A1 the backends render (GUI shows raw vs optimized side by side)  // v27: rebuilt with the PGSO rustc fork (-Z fn-opt-levels, LLVM 22) — ~13% faster transpile at +6% size (see build-wasm-otranspilerl.sh)  // v26-lex: texture samples wrap via fract(vUv) — the old (g_uv_x+0.5)/sz sample coordinate was up to ±35 for the bg planes' world-xz UVs, and a MEDIUMP (fp16) sample quantized its fraction to ±1 texel (floor texture flaked); fract() keeps the sample in [0,1) — exact at any precision, REPEAT not needed for sampling  // v24: fragment vUv/vColor highp
+export const WASM_VERSION = "v33-analyze";  // v33: otranspilerl_analyze(a1, mode) — Rust core static-analysis facts (per-scope var type/range/width/bigint/vetoed) for annotation consumers  // v32: otranspilerl_shir_opt(a1, lang) — the post-ingress A1 the backends render (GUI shows raw vs optimized side by side); NOTE: built with STABLE rustc (the v27 PGSO fork's stage1 lacks a wasm32-wasip1 sysroot — rebuild with PGSO_RUSTC=<fork rustc> once its wasip1 std is installed to recover the ~13% transpile speed)  // v28: otranspilerl_shir_opt(a1, lang) — the post-ingress A1 the backends render (GUI shows raw vs optimized side by side); NOTE: built with STABLE rustc (the v27 PGSO fork's stage1 lacks a wasm32-wasip1 sysroot — rebuild with PGSO_RUSTC=<fork rustc> once its wasip1 std is installed to recover the ~13% transpile speed) otranspilerl_shir_opt(a1, lang) — the post-ingress A1 the backends render (GUI shows raw vs optimized side by side)  // v27: rebuilt with the PGSO rustc fork (-Z fn-opt-levels, LLVM 22) — ~13% faster transpile at +6% size (see build-wasm-otranspilerl.sh)  // v26-lex: texture samples wrap via fract(vUv) — the old (g_uv_x+0.5)/sz sample coordinate was up to ±35 for the bg planes' world-xz UVs, and a MEDIUMP (fp16) sample quantized its fraction to ±1 texel (floor texture flaked); fract() keeps the sample in [0,1) — exact at any precision, REPEAT not needed for sampling  // v24: fragment vUv/vColor highp
 
 let libPromise = null;
 
@@ -240,6 +240,11 @@ function wrapLibrary(instance, mem, out) {
     // same ingress render() runs: transforms::apply + restructure_goto_only
     // + strip_cfor; estree skips the latter two)
     shirOpt: (a1, lang) => call("otranspilerl_shir_opt", [String(a1), String(lang || "sh")]).output,
+    // A1 shIR JSON → static-analysis facts for annotation consumers
+    // (the Rust core interval/use-safety verdicts as JSON: per-scope
+    // vars with type/range/width/bigint/vetoed). mode "python" selects
+    // the Python reading, anything else ("bash") the bash reading.
+    analyze: (a1, mode) => call("otranspilerl_analyze", [String(a1), String(mode || "bash")]).output,
     // shell → GLSL ES 1.00 render fragment (the MIMEcroft shader pipeline;
     // the `sh2glsl` shell command drives this). The wasm's output is the
     // faithful fixed-point transcription; shglsl-opt.js lowers it (exact
