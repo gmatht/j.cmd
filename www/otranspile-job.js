@@ -9,7 +9,8 @@
 // without cross-origin isolation):
 //   main → worker: { type: "init", wasmUrl, wwwBase }  (once; → "ready")
 //   main → worker: { type: "job", jobId, kind, ... }  kind: "transpile"
-//                    { source, srcLang, tgt }  → { text, map, a1, optShir, lex }
+//                    { source, srcLang, tgt, opt }  → { text, map, a1, optShir, lex, opt }
+//                    (`opt` = "Og"|"O3"|…; missing = legacy default)
 //                    kind: "annotate" { source, mode } → py2cy typed Cython
 //                    { text, mode, decls, refusals, stats }
 //                    kind: "run" { lang, code } → { out, err, code, note? }
@@ -39,6 +40,7 @@ self.onmessage = async (e) => {
   const ctx = {
     fs, env,
     wwwBase: globalThis.__SH2_WWW_BASE || undefined,
+    opt: typeof m.opt === "string" ? m.opt : "",
     onStatus: (text) => self.postMessage({ type: "status", jobId: m.jobId, text: String(text) }),
   };
   try {

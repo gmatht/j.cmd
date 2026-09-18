@@ -294,6 +294,8 @@
       <div class="controls" style="margin-top:12px">
         <span class="lbl">target:</span>
         <span id="target-buttons"></span>
+        <span class="lbl" style="margin-left:6px">opt:</span>
+        <span id="opt-buttons"></span>
         <button id="run-btn">Transpile</button>
         <button id="auto-update-toggle" class="auto-update-toggle">Auto: ON</button>
       </div>
@@ -350,12 +352,16 @@
   </div>
 
 <script type="module">
-import { RUNNABLE, RUNTIME_LABEL, BUSYBOX_VERSION } from "../src/otranspile-jobs.js";
+import { RUNNABLE, RUNTIME_LABEL, BUSYBOX_VERSION, OPT_LEVELS, normOpt } from "../src/otranspile-jobs.js";
 import { LANGS, getExamples } from "./otranspiler-examples.js?v=14";  // v=14: added benchmark examples (collatz/ca1d/recordhash + branchless kernels) for sh + py
 
 // ─── state ──────────────────────────────────────────────────────
 let srcLang = "sh";
 let tgtLang = "js";
+// Optimization level for the transpile stage ("Og"|"O3" — the wasm
+// render/shir_opt/transpile profile; "" would be the legacy default but
+// the selector always holds a real level, defaulting to Og).
+let optLevel = "Og";
 let currentExample = null;
 let autoUpdate = true;
 let autoTimer = null;
@@ -764,7 +770,7 @@ async function runInline(kind, payload, onStatus) {
     inlineMod = { jobs, fs: fsMod.fs, env: envMod.env };
   }
   const ctx = { fs: inlineMod.fs, env: inlineMod.env, onStatus, wwwBase: wwwBaseUrl() };
-  if (kind === "transpile") return inlineMod.jobs.transpileJob(payload.source, payload.srcLang, payload.tgt, ctx);
+  if (kind === "transpile") return inlineMod.jobs.transpileJob(payload.source, payload.srcLang, payload.tgt, { ...ctx, opt: payload.opt });
   if (kind === "run") return inlineMod.jobs.runJob(payload.lang, payload.code, ctx);
   if (kind === "version") return { version: await inlineMod.jobs.otranspilerVersion() };
   throw new Error("unknown job kind: " + kind);
@@ -1056,7 +1062,7 @@ async function execute() {
     // serialized them, so a slow transpile delayed the original run).
     const onWorkerStatus = (t) => { if (alive()) showStatus(t, "info"); };
     const trP = callStage("transpile", "transpile",
-      { source, srcLang, tgt: tgtLang }, onWorkerStatus);
+      { source, srcLang, tgt: tgtLang, opt: optLevel }, onWorkerStatus);
     const origP = RUNNABLE[srcLang]
       ? callStage("orig", "run", { lang: srcLang, code: source }, onWorkerStatus)
       : Promise.resolve({ ok: true, result: null });
@@ -1084,7 +1090,8 @@ async function execute() {
       code = tr.text;
       lineMap = tr.map || null;
       renderCodeLines(code);
-      setTag("code", srcLang + " → " + tgtLang + " · " + code.split("\n").length + " lines · " + fmtMs(stageMs.transpile));
+      const trLevel = tr.opt || optLevel || "";
+      setTag("code", srcLang + " → " + tgtLang + " · -" + trLevel + " · " + code.split("\n").length + " lines · " + fmtMs(stageMs.transpile));
       renderLineMap(source, lineMap);
       // intermediate-stage views: the A1 shIR plus the sh token stream
       // (sh only — the frontends feed the parser directly). Both now
@@ -1097,7 +1104,7 @@ async function execute() {
         try {
           const o = JSON.parse(trOpt);
           setOut("shir-opt", JSON.stringify(o, null, 2));
-          setTag("shir-opt", "post-ingress · " + (o.stmts || []).length + " stmts (raw " + (a1.stmts || []).length + ")");
+          setTag("shir-opt", "post-ingress -" + (trR.result.opt || optLevel || "") + " · " + (o.stmts || []).length + " stmts (raw " + (a1.stmts || []).length + ")");
         } catch {
           setOut("shir-opt", trOpt);
           setTag("shir-opt", "raw");
@@ -1194,7 +1201,7 @@ async function execute() {
     }
 
     if (!failed) {
-      showStatus("done — " + srcLang + " → " + tgtLang +
+      showStatus("done — " + srcLang + " → " + tgtLang + " (-" + optLevel + ")" +
         " (orig exit " + (orig ? orig.code : "n/a") + ", target exit " + (tgt ? tgt.code : "n/a") + ")" +
         " · transpile " + fmtMs(stageMs.transpile || 0) +
         " · run " + srcLang + " " + fmtMs(stageMs.orig || 0) +
@@ -1426,6 +1433,7 @@ function currentUrlParams() {
   const p = new URLSearchParams();
   if (srcLang) p.set("lang", srcLang);
   if (tgtLang) p.set("target", tgtLang);
+  if (optLevel && optLevel !== "Og") p.set("opt", optLevel);
   if (currentExample) p.set("example", currentExample);
   const ex = currentExample && getExamples(srcLang).find((e) => e.name === currentExample);
   const code = $("input").value;
@@ -1452,6 +1460,10 @@ async function applyUrlState() {
     $("input-label").textContent = LANGS[srcLang].label + " source input";
   }
   if (p.has("target") && TARGETS.includes(p.get("target"))) tgtLang = p.get("target");
+  if (p.has("opt")) {
+    const o = normOpt(p.get("opt"));
+    if (o === "Og" || o === "O3") optLevel = o;
+  }
   if (p.has("code") && p.get("code")) {
     $("input").value = p.get("code");     // a custom edited source wins
     currentExample = p.get("example") || null;
@@ -1484,6 +1496,35 @@ async function applyUrlState() {
         }
       } catch {}
     }
+  }
+}
+
+// ── optimization level selector (Og/O3) ────────────────────────
+// Og = human-readable (plain Number arithmetic — the legacy default);
+// O3 = speed (i53/BigInt dual loops, __t64 slot homing). Changing it
+// re-runs the transpile stage (the runs reuse the new code).
+const OPT_BLURB = {
+  Og: "Og — human-readable (default): plain Number arithmetic, no dual loops",
+  O3: "O3 — speed: i53/BigInt dual loops + __t64 slot homing",
+};
+function renderOptButtons() {
+  const el = $("opt-buttons");
+  if (!el) return;
+  el.innerHTML = "";
+  for (const o of OPT_LEVELS) {
+    const b = document.createElement("button");
+    b.className = "target-btn" + (o === optLevel ? " active" : "");
+    b.textContent = "-" + o;
+    b.title = OPT_BLURB[o] || ("optimization level -" + o);
+    b.addEventListener("click", () => {
+      if (optLevel === o) return;
+      optLevel = o;
+      renderOptButtons();
+      syncUrl();
+      updateTryHint();
+      if (autoUpdate) execute();
+    });
+    el.appendChild(b);
   }
 }
 
@@ -1697,6 +1738,7 @@ async function init() {
   loadGate();                  // async — refreshes target pills + example colours when gate.json lands
   renderLangPills();
   renderTargets();
+  renderOptButtons();
   setupInput();
   wireCopyButtons();
   wireTryButton();

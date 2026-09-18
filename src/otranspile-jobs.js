@@ -135,11 +135,22 @@ export function buildTextMap(text, tgt, a1Stmts, stmtLines) {
 }
 
 // ─── transpile: source → A1 → target ─────────────────────────────
-// Returns { text, map, a1, optShir, lex } — all structured-cloneable.
+// Returns { text, map, a1, optShir, lex, opt } — all structured-cloneable.
 // `lex` is set for sh sources (the in-process lex stage); null otherwise.
+// `opt` is the optimization level ("Og"|"O3"|…; "" = legacy default),
+// echoed back so the page can label the panes. Only "Og"/"O3" are
+// exposed in the GUI today; the wasm accepts the full CLI set
+// (O0/Os/O4) and ignores unknown names.
+export const OPT_LEVELS = ["Og", "O3"];
+export function normOpt(opt) {
+  const o = typeof opt === "string" ? opt : (opt && opt.opt) || "";
+  return o || "";
+}
 export async function transpileJob(source, srcLang, tgt, ctx) {
   const fs = ctxFs(ctx);
   const lib = await getOtranspilerl();
+  const opt = normOpt(ctx && ctx.opt);
+  const libOpt = opt ? { opt } : undefined;
   let text, a1 = null, map = null;
   if (srcLang === "sh") {
     if (tgt === "glsl") {
@@ -147,13 +158,13 @@ export async function transpileJob(source, srcLang, tgt, ctx) {
     } else if (tgt === "glslv") {
       text = lib.glslv(String(source));
     } else {
-      text = lib.transpile(String(source), "sh", tgt);
+      text = lib.transpile(String(source), "sh", tgt, libOpt);
       try { a1 = JSON.parse(lib.shir(String(source))); } catch {}
     }
   } else if (srcLang === "rust") {
     const { rustfrontendA1 } = await import("./rustfrontend.js");
     a1 = await rustfrontendA1(String(source), fs, (m) => onStatus(ctx, m));
-    text = lib.render(JSON.stringify(a1), tgt);
+    text = lib.render(JSON.stringify(a1), tgt, libOpt);
   } else if (!FRONTEND_PORTED[srcLang]) {
     throw new Error(srcLang + " frontend not ported to the browser wasm yet — " +
       "load it in the sh2loop fleet (" + (FRONTEND_NAME[srcLang] || srcLang) + ") to transpile");
@@ -163,12 +174,12 @@ export async function transpileJob(source, srcLang, tgt, ctx) {
       await (await fetch(wwwFile("wasm-bin/otranspiler-busybox.wasm?v=" + BUSYBOX_VERSION))).arrayBuffer());
     const wasmPath = await ensureBusyboxWasm(fs, { fetchBytes, onLog: (m) => onStatus(ctx, m) });
     a1 = await busyboxA1(String(source), srcLang, { fs, wasmPath, goRunner });
-    text = lib.render(JSON.stringify(a1), tgt);
+    text = lib.render(JSON.stringify(a1), tgt, libOpt);
   }
   let optShir = null;
   if (a1) {
     try {
-      optShir = lib.shirOpt(JSON.stringify(a1), tgt);
+      optShir = lib.shirOpt(JSON.stringify(a1), tgt, libOpt);
     } catch (e) { optShir = "shir_opt failed: " + e.message; }
   }
   let lex = null;
@@ -180,12 +191,12 @@ export async function transpileJob(source, srcLang, tgt, ctx) {
     const estree = JSON.parse(text);
     keepVariables(estree, [], { repl: false });
     const r = await estreeToJsMapped(estree, (a1 && a1.stmt_lines) || [], (a1 && a1.stmts) || [], { repl: false });
-    return { text: r.js, map: r.map, a1, optShir, lex };
+    return { text: r.js, map: r.map, a1, optShir, lex, opt };
   }
   if (a1 && a1.stmt_lines && a1.stmt_lines.length && TARGETS_TEXT.indexOf(tgt) >= 0) {
     map = buildTextMap(text, tgt, a1.stmts, a1.stmt_lines);
   }
-  return { text, map, a1, optShir, lex };
+  return { text, map, a1, optShir, lex, opt };
 }
 
 export async function otranspilerVersion() {
