@@ -141,7 +141,7 @@ export function buildTextMap(text, tgt, a1Stmts, stmtLines) {
 // echoed back so the page can label the panes. Only "Og"/"O3" are
 // exposed in the GUI today; the wasm accepts the full CLI set
 // (O0/Os/O4) and ignores unknown names.
-export const OPT_LEVELS = ["Og", "O3"];
+export const OPT_LEVELS = ["Og", "Os", "O3"];
 export function normOpt(opt) {
   const o = typeof opt === "string" ? opt : (opt && opt.opt) || "";
   return o || "";

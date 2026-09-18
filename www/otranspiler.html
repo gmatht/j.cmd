@@ -1462,7 +1462,7 @@ async function applyUrlState() {
   if (p.has("target") && TARGETS.includes(p.get("target"))) tgtLang = p.get("target");
   if (p.has("opt")) {
     const o = normOpt(p.get("opt"));
-    if (o === "Og" || o === "O3") optLevel = o;
+    if (o === "Og" || o === "Os" || o === "O3") optLevel = o;
   }
   if (p.has("code") && p.get("code")) {
     $("input").value = p.get("code");     // a custom edited source wins
@@ -1505,6 +1505,7 @@ async function applyUrlState() {
 // re-runs the transpile stage (the runs reuse the new code).
 const OPT_BLURB = {
   Og: "Og — human-readable (default): plain Number arithmetic, no dual loops",
+  Os: "Os — size: like Og but folds literal arithmetic (1+2 → 3); no dual loops, no slots",
   O3: "O3 — speed: i53/BigInt dual loops + __t64 slot homing",
 };
 function renderOptButtons() {
