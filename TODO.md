@@ -186,23 +186,34 @@ and device files. It runs in any browser with no build step.
 
 ### tcc fork: fix tests2 suite failures under wasm32 output
 
-The wasm-generating tcc fork (gmatht/tinycc, wasm32 backend) fails its
-own tests2 corpus when generating wasm. Baseline (150 tests, fork's
-run-corpus.mjs): PASS 51 · WRONG 17 · REFUSE 60 · COMPILE-OUT 9 ·
-RUN-CRASH 2 · RUN-ERR 2 · NO-EXPECT 9.
+The wasm-generating tcc fork (gmatht/tinycc, wasm32 backend, /root/src/
+tinycc-wasm) was measured against its own tests2 corpus with the fork's
+run-corpus.mjs. Baseline (150 tests): PASS 51 · WRONG 17 · REFUSE 60 ·
+COMPILE-OUT 9 · RUN-CRASH 2 · RUN-ERR 2 · NO-EXPECT 9.
 
-FINAL (2026-08-13, second pass): PASS 89 · WRONG 4 · REFUSE 16 ·
-RUN-CRASH 4 · RUN-ERR 0 · NO-EXPECT 9. Long-double const loads now cast
-through c.ld (22_floating_point); the c-runtime has the full 1/2/4/8-
-byte __atomic_* matrix (125_atomic_misc near its expect). Fixes: bss zero-fill (segfault), NOP dead regions +
-suppressed dead-region edges (hangs), _start argv, long-double f64,
-br_table/br LEB encoding, inverted VT_JMP (&&/||), symbol constant
-offsets (array[i]), function-value table (atexit/ctors), output-time
-global addresses, __wasm_call_ctors. Remaining WRONG are mostly
-harness expectations (-dt/compile-warning tests, WASI argv) plus a few
-codegen gaps (17_enum varargs, 22 float math, 40_stdio files,
-104 static visibility); REFUSE = documented feature gaps (fn pointers,
-VLA, struct-by-value, i64 varargs, asm, TLS/pthread, bcheck). Plan:
+CURRENT (2026-09-26, fork mob@358562d): 122 scored tests — PASS 112 ·
+NO-EXPECT 9 · REFUSE 1 · WRONG 0 · COMPILE-OUT 0 · RUN-CRASH 0. The
+9 NO-EXPECT are companion files the corpus does not score (104+_inline,
+120+_alias, 146+_tls_extern, 148+*, 149+*, 150+*, 151+*). The single
+remaining REFUSE is 73_arm64: the ARM64 HFA struct-vararg calling
+convention (structs > 4 bytes as varargs, plus the c-runtime's %hfaNN
+printf formats) is unimplemented — the backend errors on large struct
+varargs. Reproduce with
+
+    TCC_PATH=/tmp/tcc-native/tcc TCC_INC=/root/src/tinycc-wasm/include \
+      node /root/src/tinycc-wasm/tests/wasm-corpus/run-corpus.mjs
+
+(the wasm32 backend is portable C, so a host-native tcc builds and runs
+the corpus directly; the wasi-sdk build lives in /tmp/tcc-rb).
+
+The codegen work is done — every plan item below was fixed in the fork
+and the list is kept for the record. Fixes: bss zero-fill (segfault),
+NOP dead regions + suppressed dead-region edges (hangs), _start argv,
+long-double f64, br_table/br LEB encoding, inverted VT_JMP (&&/||),
+symbol constant offsets (array[i]), function-value table (atexit/
+ctors), output-time global addresses, __wasm_call_ctors, struct by-value
+args, call_indirect + funcref table, computed gotos, i64 args/varargs,
+VLA, signed-LEB pc targets, alias/__asm__ resolution, atomics.
 
 - [x] wasm32-gen.c: bss section is emitted by reading bss_section->data
       (NULL — bss has no initialized content) → segfault (32_led).
@@ -221,7 +232,7 @@ VLA, struct-by-value, i64 varargs, asm, TLS/pthread, bcheck). Plan:
       precedence wrong: line 3 got "1" want "0").
 - [x] Fix 108_constructor: __wasm_call_ctors / atexit destructors not
       running ("constructor"/"destructor" missing).
-- [ ] Fix 17_enum vararg slot collision (documented root cause).
+- [x] Fix 17_enum vararg slot collision (documented root cause).
 - [x] Harness: pass ARGS (31_args, 46_grep), FLAGS (-lm, -dt, -pthread)
       and apply the upstream platform SKIP list so diagnostics/linker
       tests are measured fairly.
@@ -245,12 +256,26 @@ VLA, struct-by-value, i64 varargs, asm, TLS/pthread, bcheck). Plan:
       reads a stale slot). The documented hard one; read each arg's
       CURRENT location (register or saved home) without perturbing
       w_layout.
-- [ ] Codegen: function pointers (call_indirect) — the table + element
+- [x] Codegen: function pointers (call_indirect) — the table + element
       section + env-runtime fn-call infra exists; emit call_indirect
       instead of "indirect call unsupported" (07, 33, 42, 81, 82 + real
       callback code).
-- [ ] Codegen: RUN-CRASH dispatch traps (136_atomic_gcc_style,
+- [x] Codegen: RUN-CRASH dispatch traps (136_atomic_gcc_style,
       93_integer_promotion) — w_layout label→sub resolution.
-- [ ] Codegen: i64 varargs (~8 REFUSE: 95, 110, 111, 118, 119, ...).
-- [ ] Runtime: 40_stdio file I/O (env $fopen/$fgets... backed by the
+- [x] Codegen: i64 varargs (~8 REFUSE: 95, 110, 111, 118, 119, ...).
+- [x] Runtime: 40_stdio file I/O (env $fopen/$fgets... backed by the
       WASI fs).
+- [x] Codegen: &&label values (96_nodata_wanted, the last WRONG).
+      Three root causes, all in the address-taken-label path: a &&lbl
+      Sym never got a symtab entry (upstream label_pop only emits one
+      when s->c is set, and only a goto chain sets it); w_layout split a
+      sub at &&label positions only for constant `goto *&&lbl` patches,
+      not for plain &&lbl refs (in particular when the reference is
+      parsed before its definition); and a sub that is entirely NOP fill
+      (a suppressed nocode_wanted region) still counted as code. Fixed
+      in the fork: wasm32-gen.c records every &&label Sym it sees (the
+      discriminator is Sym.r — a LABEL_* code 0..3 for a label, a VT_*
+      value for a data symbol) and gives each one a text-section
+      symtab entry at its jind, splits at every referenced label's jind,
+      and w_lbl_sub walks past a sub with no real code.
+
