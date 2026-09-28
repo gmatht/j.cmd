@@ -80,7 +80,13 @@ s = s.replace('echo "mimecroft-fb: wrote $OUT"',
 open(out, 'w').write(s)
 PY
 
-export FBREFR="$WORK/fbrefr" BASH_O4_SH2PERL="$SH2PERL"
+# BASH_O4_SH2PERL is deliberately NOT exported to the driver. It finds
+# the sh2perl runtime by walking up from its own path, so setting it
+# achieves nothing here — it was one more thing in the environment a
+# reader has to work out the meaning of. $SH2PERL is still needed, for
+# the harness's OWN cc line: it compiles fbrefr against
+# $SH2PERL/runtime/fbdev.c, and that is a path this script resolves.
+export FBREFR="$WORK/fbrefr"
 [ -x "$O4" ] || { echo "build bash-O4 first: cargo build --manifest-path /home/llm/sh2loop/bash-o4/Cargo.toml"; exit 1; }
 "$O4" -o "$WORK/mimecroft_fb" "$HERE/MIMEcroft_fb.sh" >/dev/null 2>&1 || exit 1
 

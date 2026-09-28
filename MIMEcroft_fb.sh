@@ -18,13 +18,11 @@
 #
 # HOW TO RUN
 #   # one frame to a PPM, no input needed (MIME_FRAMES unset = 1 frame):
-#   BASH_O4_SH2PERL=/home/llm/sh2loop/sh2perl \
-#     /home/llm/sh2loop/bash-o4/target/debug/bash-O4 MIMEcroft_fb.sh
+#   /home/llm/sh2loop/bash-o4/target/debug/bash-O4 MIMEcroft_fb.sh
 #   -> /tmp/mimecroft-fb.ppm
 #
 #   # a native binary you can run on its own:
-#   BASH_O4_SH2PERL=/home/llm/sh2loop/sh2perl \
-#     /home/llm/sh2loop/bash-o4/target/debug/bash-O4 -o ./mimecroft MIMEcroft_fb.sh
+#   /home/llm/sh2loop/bash-o4/target/debug/bash-O4 -o ./mimecroft MIMEcroft_fb.sh
 #   ./mimecroft
 #
 #   # PLAY IT, on a terminal, with the keyboard:
@@ -39,6 +37,18 @@
 #   # script a walk (headless; one key per line in the key file):
 #   printf 'w\nw\ne\nw\n' > /tmp/keys
 #   MIME_FRAMES=6 MIME_KEYS=/tmp/keys MIME_OUT=/tmp/frame.ppm ./mimecroft
+#
+#   BASH_O4_SH2PERL is NOT needed for any of the above. The driver finds
+#   the sh2perl runtime on its own, by walking up from its own path
+#   looking for ../sh2perl/runtime/uu_run.c, so the commands above work
+#   from any directory. Set it only when the binary has been COPIED out
+#   of the tree, where that walk finds nothing and the error says so:
+#
+#     cannot locate sh2perl runtime (set $BASH_O4_SH2PERL)
+#
+#   It was in the header here because the first version of this file was
+#   written when discovery was not noticed; a command line with an env
+#   var nobody needs is a thing to copy for no reason.
 #
 # On a box with a real framebuffer, set FB0_DEV (default /dev/fb0) and
 # the device mmaps it instead of dumping a PPM; the RAM + PPM path is
