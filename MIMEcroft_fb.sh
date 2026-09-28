@@ -76,8 +76,26 @@ SCREEN_H=240
 # ─── world ────────────────────────────────────────────────────────
 map=()
 bhp=()
+# CELLS ENTRIES IS NOT ENOUGH. set_cell/get_cell index the array by
+#   b * CELLS + c * MAP_W + a
+# where b is the LAYER (0, 1, 2), so the highest index is
+#   2 * CELLS + (MAP_D-1) * MAP_W + (MAP_W-1) = 767, not 255.
+# The arrays were only ever filled for i < CELLS, so every layer-1 and
+# layer-2 cell read back EMPTY.
+#
+# Two things broke, and neither announced itself:
+#   * get_cell returned "" for a solid cell, so the treasure placement
+#     tests and the can_enter walk test compared "" against a number;
+#   * try_draw's `bh` (the damage field) came back empty, so every cube
+#     record had TEN fields where fb_blocks requires ELEVEN. The device
+#     reads 11 strtods per record, so it ran off the end of one record
+#     into the next and desynchronised the whole payload — the frame
+#     came out a single flat grey in a stripe pattern, and every
+#     equivalence case still "passed" because the reference replays the
+#     same malformed payload through the same device.
+MAP_N=$((MAP_H * CELLS))
 i=0
-while [ "$i" -lt "$CELLS" ]; do
+while [ "$i" -lt "$MAP_N" ]; do
   map[$i]=0
   bhp[$i]=0
   i=$((i + 1))

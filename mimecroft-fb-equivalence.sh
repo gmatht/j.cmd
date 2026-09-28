@@ -292,6 +292,37 @@ PY
         # disagreed).
         printf 'FAIL on:\n%s\n  bash  | %s\n  bashO4| %s\n' "$keys" "$sa" "$sb"
     fi
+    # DID ANYTHING GET DRAWN AT ALL? Equality alone cannot say. Both
+    # sides replay through the SAME fbdev.c, so a game that renders a
+    # flat grey wall is byte-identical on both and the suite calls it a
+    # pass — which is exactly what happened: the world arrays were sized
+    # to CELLS (256) while cells index to 767, so every layer-1/2 cell
+    # read back empty, every cube record lost its 11th field, the
+    # device desynchronised and the frame came out a single flat colour.
+    # All 23 cases passed, byte for byte, of an image with no maze in
+    # it. A comparison that cannot fail is not a test.
+    if python3 - "$WORK/b.ppm" <<'PY'
+import sys
+d = open(sys.argv[1], 'rb').read()
+px = d[d.index(b'255\n') + 4:]
+colours = {px[o:o + 3] for o in range(0, len(px), 3)}
+# A rendered maze has the block-type shades (dirt/stone/obsidian/gold)
+# plus the background plane's. One colour means nothing was drawn but
+# the clear; two is the floor and nothing else. 6 is a comfortable floor
+# that a blank or near-blank frame cannot reach.
+sys.exit(0 if len(colours) >= 6 else 1)
+PY
+    then :; else
+        fail=$((fail + 1))
+        n=$(python3 -c "
+import sys
+d = open('$WORK/b.ppm','rb').read()
+px = d[d.index(b'255\n') + 4:]
+print(len({px[o:o+3] for o in range(0, len(px), 3)}))")
+        printf 'EMPTY on:\n%s\n  the two sides AGREE, but the frame has only %s colour(s):\n' "$keys" "$n"
+        printf '  the game drew nothing. Both sides share fbdev.c, so a\n'
+        printf '  broken payload matches itself and this suite cannot see it.\n'
+    fi
 done
 echo "== $pass passed, $fail failed =="
 [ "$fail" -eq 0 ]
