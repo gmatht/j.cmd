@@ -17,17 +17,32 @@
 #   re-render every frame, reading movement from a key file.
 #
 # HOW TO RUN
-#   # one frame to a PPM (no input needed):
+#   # one frame to a PPM, no input needed (MIME_FRAMES unset = 1 frame):
 #   BASH_O4_SH2PERL=/home/llm/sh2loop/sh2perl \
 #     /home/llm/sh2loop/bash-o4/target/debug/bash-O4 MIMEcroft_fb.sh
+#   -> /tmp/mimecroft-fb.ppm
 #
 #   # a native binary you can run on its own:
-#   bash-O4 -o mimecroft MIMEcroft_fb.sh && ./mimecroft
+#   BASH_O4_SH2PERL=/home/llm/sh2loop/sh2perl \
+#     /home/llm/sh2loop/bash-o4/target/debug/bash-O4 -o ./mimecroft MIMEcroft_fb.sh
+#   ./mimecroft
 #
-#   On a box with a real framebuffer, set FB0_DEV (default
-#   /dev/fb0) and the device mmaps it instead of dumping a PPM; the
-#   RAM + PPM path is the fallback, and is what runs where there is
-#   no /dev/fb0.
+#   # PLAY IT, on a terminal, with the keyboard:
+#   MIME_FRAMES=0 ./mimecroft
+#   MIME_FRAMES=0 means NO frame budget: the loop runs until you press
+#   `.` (quit). It used to mean "one frame", because frame 1 is already
+#   >= 0 — so there was no way to start the game without a cap, and
+#   the obvious way to run it could not be expressed. Leave MIME_FRAMES
+#   unset and you still get exactly one frame, which is what a
+#   screenshot wants.
+#
+#   # script a walk (headless; one key per line in the key file):
+#   printf 'w\nw\ne\nw\n' > /tmp/keys
+#   MIME_FRAMES=6 MIME_KEYS=/tmp/keys MIME_OUT=/tmp/frame.ppm ./mimecroft
+#
+# On a box with a real framebuffer, set FB0_DEV (default /dev/fb0) and
+# the device mmaps it instead of dumping a PPM; the RAM + PPM path is
+# the fallback, and is what runs where there is no /dev/fb0.
 #
 # THE GAME LOOP
 #   Controls come from the fbinput device (runtime/fbinput.h), which is
@@ -626,7 +641,15 @@ while :; do
 
   # the frame IS on screen; now honour a quit requested before it
   if [ "$quitting" -eq 1 ]; then break; fi
-  if [ "$frame" -ge "$FRAMES" ]; then break; fi
+  # A budget of 0 (or less) means NO budget: the loop then runs until
+  # the quit key or a signal. It used to mean "one frame", because
+  # frame 1 is already >= 0, so there was no way to start the game
+  # without a frame cap — the documented way to play it, with a live
+  # keyboard and no key file, could not be expressed. The at-least-one-
+  # frame behaviour is kept by testing the budget only when it is set,
+  # so MIME_FRAMES unset still renders exactly one frame and exits,
+  # which is what a screenshot wants.
+  if [ "$FRAMES" -gt 0 ] && [ "$frame" -ge "$FRAMES" ]; then break; fi
 done
 
 echo "mimecroft-fb: $frame frames, cell $px,$pz yaw $((dyaw * 90)), $MOVED steps, $FOUND found"
