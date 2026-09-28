@@ -328,14 +328,29 @@ td_sn=0
 # TOP LEVEL in the loop below for the same reason the draw is: a
 # function boundary here costs a use-after-free.
 
-# walkable? a cell the player may enter (the two body layers, both air).
+# walkable? a cell the player may enter.
+#
 # NB the two assignments: `ce_z=$1` (z from $1) was a typo that made
 # the second one dead — the body went on to read the z it actually
 # wanted from $2, so the bug was invisible here. It is still wrong on
 # its face, and a variable named ce_z holding an x is the kind of thing
 # the next person edits around.
+#
+# A TREASURE CELL IS ENTERABLE, and that is the whole point of it. The
+# placement writes TREASURE into layer 1 of an otherwise-air cell, so a
+# cell holding a treasure is NOT air and this test used to refuse it:
+# the chest became a wall, the player could never reach one, and FOUND
+# stayed 0 for the whole run — in every one of the 23 equivalence cases,
+# which is why a game that can never be won looked fine. Upstream is
+# explicit about the rule (www/bin/mimecroft.sh, try_move):
+#
+#   # a HIDDEN treasure is claimed by WALKING into it
+#   if [ "$gv" -eq "$TREASURE" ]; then ... claim_treasure ...; return 0; fi
+#
+# So: air, or a treasure to claim.
 can_enter() { ce_x=$1; ce_z=$2
   get_cell $1 1 $2
+  if [ "$gv" -eq "$TREASURE" ]; then return 0; fi
   if [ "$gv" -ne "$AIR" ]; then return 1; fi
   get_cell $1 2 $2
   if [ "$gv" -ne "$AIR" ]; then return 1; fi

@@ -218,8 +218,23 @@ e
 w
 q
 e
+w" "e
+w
+e
+e
+e
+w
 w"
 )
+# THE LAST CASE CLAIMS A TREASURE, and it is the only one that does.
+# Every other case ended "0 found", and a game that can never be won
+# still passes a suite that only compares the two sides against each
+# other: the placement writes TREASURE into layer 1 of an air cell, so
+# can_enter refused it, the chest was a wall, and FOUND stayed 0 in all
+# 23 runs without a word of complaint. The walk is the shortest path
+# from the start to the first treasure in the maze this seed generates
+# (see the FOUND check below, which derives it rather than trusting
+# this literal).
 pass=0; fail=0
 for keys in "${CASES[@]}"; do
     printf '%s\n' "$keys" > "$WORK/keys"
@@ -305,24 +320,173 @@ PY
 import sys
 d = open(sys.argv[1], 'rb').read()
 px = d[d.index(b'255\n') + 4:]
-colours = {px[o:o + 3] for o in range(0, len(px), 3)}
-# A rendered maze has the block-type shades (dirt/stone/obsidian/gold)
-# plus the background plane's. One colour means nothing was drawn but
-# the clear; two is the floor and nothing else. 6 is a comfortable floor
-# that a blank or near-blank frame cannot reach.
-sys.exit(0 if len(colours) >= 6 else 1)
+from collections import Counter
+c = Counter(px[o:o + 3] for o in range(0, len(px), 3))
+# THE FRAME MUST NOT BE FLAT.
+#
+# The failure this catches: a desynchronised block payload leaves one
+# stretched background plane covering the whole screen, so the frame is
+# a single colour and 100% of it. A real frame is never flat — the
+# nearest correct render still has sky, floor and several face shades,
+# and the one that looks most uniform (a wall filling the view) still
+# tops out under half the screen.
+#
+# Both halves matter. "At least N colours" alone would fail a correct
+# render for being simple; "not all one colour" alone would pass a frame
+# where the parser desynchronised on the LAST record only, leaving one
+# stray pixel. Requiring several distinct shades AND no single colour
+# covering the screen rejects both, and accepts every frame the game can
+# legitimately produce.
+if len(c) < 3:
+    sys.exit(1)
+if c.most_common(1)[0][1] * 100 >= len(px) // 3 * 100 * 0.97:
+    sys.exit(1)
+sys.exit(0)
 PY
     then :; else
         fail=$((fail + 1))
         n=$(python3 -c "
-import sys
+from collections import Counter
 d = open('$WORK/b.ppm','rb').read()
 px = d[d.index(b'255\n') + 4:]
-print(len({px[o:o+3] for o in range(0, len(px), 3)}))")
-        printf 'EMPTY on:\n%s\n  the two sides AGREE, but the frame has only %s colour(s):\n' "$keys" "$n"
-        printf '  the game drew nothing. Both sides share fbdev.c, so a\n'
-        printf '  broken payload matches itself and this suite cannot see it.\n'
+c = Counter(px[o:o+3] for o in range(0, len(px), 3))
+top = c.most_common(1)[0]
+print('%d colour(s), the top one covers %.0f%% of the frame' % (len(c), 100.0*top[1]/76800))")
+        printf 'FLAT on:\n%s\n  the two sides AGREE, but %s:\n' "$keys" "$n"
+        printf '  a real frame has sky, floor and several face shades. One\n'
+        printf '  colour filling the screen is a desynchronised block payload:\n'
+        printf '  both sides share fbdev.c, so it matches itself and this\n'
+        printf '  suite cannot see it.\n'
     fi
 done
 echo "== $pass passed, $fail failed =="
+
+# CAN THE GAME BE WON AT ALL? The cases above prove the two sides
+# agree. They cannot prove either side is CORRECT: two identical wrong
+# programs agree perfectly. A game whose goal is unreachable is the
+# sharpest version of that, and this one was unwinnable — can_enter
+# refused a treasure cell, so FOUND was structurally always 0, and 23
+# byte-exact passes said nothing was wrong.
+#
+# The check is a real playthrough: rebuild the maze the script's own
+# gen_maze/placement produce for its seed, BFS to the first treasure
+# under the rule can_enter implements, and drive that path through the
+# real binary. Derived rather than hard-coded, so a change to the seed
+# or the maze cannot leave this asserting a stale path.
+found=$(timeout -k 2 180 python3 - "$HERE/MIMEcroft_fb.sh" "$WORK/mimecroft_fb" <<'PY'
+import os, subprocess, sys, collections
+script, game = sys.argv[1], sys.argv[2]
+
+# the script's own constants, read rather than duplicated
+txt = open(script).read()
+def const(name, default=None):
+    for line in txt.split('\n'):
+        if line.startswith(name + '='):
+            return int(line.split('=', 1)[1].split('#')[0].strip())
+    return default
+MAP_W, MAP_D, MAP_H = const('MAP_W'), const('MAP_D'), const('MAP_H')
+CELLS = MAP_W * MAP_D
+AIR, STONE, OBSIDIAN, TREASURE = 0, 2, 3, 7
+
+m = {}
+def setc(a, b, c, v): m[(b, a, c)] = v
+def getc(a, b, c): return m.get((b, a, c), 0)
+for x in range(MAP_W):
+    for z in range(MAP_D):
+        setc(x, 0, z, 1); setc(x, 1, z, STONE); setc(x, 2, z, STONE)
+for sx in range(1, 4):
+    for sz in range(1, 4):
+        setc(sx, 1, sz, AIR); setc(sx, 2, sz, AIR)
+seed = 20240812
+def nmrand(m_):
+    global seed
+    seed = (seed * 48271) % 2147483647
+    return seed % m_
+cx = cz = 2; steps = 0
+while steps < MAP_W * MAP_D * 55 // 100:
+    setc(cx, 1, cz, AIR); setc(cx, 2, cz, AIR)
+    r = nmrand(4)
+    if r == 0: cx += 1
+    if r == 1: cx -= 1
+    if r == 2: cz += 1
+    if r == 3: cz -= 1
+    cx = max(1, min(MAP_W - 2, cx)); cz = max(1, min(MAP_D - 2, cz))
+    steps += 1
+bx, bz = MAP_W - 1, MAP_D - 1
+for x in range(MAP_W):
+    for z in range(MAP_D):
+        if x in (0, bx) or z in (0, bz):
+            setc(x, 0, z, OBSIDIAN); setc(x, 1, z, OBSIDIAN); setc(x, 2, z, OBSIDIAN)
+ci = MAP_W - 2
+for x in range(1, ci + 1):
+    for cell in ((x, 1, 1), (x, 1, ci), (1, 1, x), (ci, 1, x),
+                 (x, 2, 1), (x, 2, ci), (1, 2, x), (ci, 2, x)):
+        setc(*cell, AIR)
+placed = []
+tp = 0
+while tp < 4:
+    tries = 0
+    while tries < 100:
+        rx = nmrand(14) + 1; rz = nmrand(14) + 1
+        if getc(rx, 1, rz) == AIR and getc(rx, 2, rz) == AIR:
+            setc(rx, 1, rz, TREASURE); placed.append((rx, rz)); break
+        tries += 1
+    tp += 1
+
+# can_enter's rule: layer 1 is air OR a treasure, layer 2 is air
+def walk(x, z):
+    return getc(x, 1, z) in (AIR, TREASURE) and getc(x, 2, z) == AIR
+
+start = (2, 2)
+prev = {start: None}; q = collections.deque([start]); goal = None
+while q:
+    x, z = q.popleft()
+    if getc(x, 1, z) == TREASURE:
+        goal = (x, z); break
+    for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        n = (x + dx, z + dz)
+        if 1 <= n[0] < bx and 1 <= n[1] < bz and n not in prev and walk(*n):
+            prev[n] = (x, z); q.append(n)
+if goal is None:
+    print("NO-TREASURE-REACHABLE"); sys.exit(0)
+
+path = []; cur = goal
+while prev[cur] is not None:
+    path.append(cur); cur = prev[cur]
+path.reverse()
+# yaw 0=-z 1=+x 2=+z 3=-x;  w = forward,  e = turn right (yaw+1)
+keys = []; yaw = 2; at = start
+for (x, z) in path:
+    want = {(1, 0): 1, (-1, 0): 3, (0, 1): 2, (0, -1): 0}[(x - at[0], z - at[1])]
+    while yaw != want:
+        keys.append('e'); yaw = (yaw + 1) % 4
+    keys.append('w')
+    at = (x, z)
+kf = sys.argv[1].replace('.sh', '') + '.winkeys'
+open(kf, 'w').write('\n'.join(keys) + '\n')
+out = '/tmp/mime-wintrace.ppm'
+for p in (kf + '.pos', out):
+    try: os.unlink(p)
+    except OSError: pass
+env = dict(os.environ, MIME_FRAMES=str(len(keys)), MIME_KEYS=kf, MIME_OUT=out)
+r = subprocess.run([game], env=env, capture_output=True, text=True, timeout=120)
+line = r.stdout.strip().split('\n')[0] if r.stdout.strip() else '(no output)'
+print(line)
+PY
+)
+case "$found" in
+  *", 0 found"*)
+    echo "FATAL: the game cannot be won - $found"
+    echo "       a treasure cell is unreachable, so FOUND can never leave 0."
+    echo "       the cases above still passed: they compare the two sides"
+    echo "       against each other, and two identical unwinnable games agree."
+    exit 2
+    ;;
+  *"found"*) echo "  winnable: $found" ;;
+  NO-TREASURE-REACHABLE)
+    echo "FATAL: no treasure is reachable in the generated maze"
+    exit 2 ;;
+  *) echo "FATAL: the winnability probe produced nothing useful: $found"; exit 2 ;;
+esac
+
 [ "$fail" -eq 0 ]
