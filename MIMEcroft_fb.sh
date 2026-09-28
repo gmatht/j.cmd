@@ -262,48 +262,72 @@ FOUND=0
 MOVED=0
 frame=0
 quitting=0
+restarting=0
+ak_rc=0
 
-# world setup. The surface must exist before any draw: bash-O4 emits
-# the function bodies above main(), so a draw inside a function would
-# run against an unopened surface.
+# THE WORLD: a fresh maze, a fresh set of chests, and the player back
+# at the start. A FUNCTION, because `r` restarts the run and has to be
+# able to do all of this again.
+#
+# It cannot hold the DRAW, though: bash-O4 emits every function body
+# ABOVE main(), so a draw inside one would run before the top-level
+# fb_open and land on an unopened surface — which is why the first
+# version of this rendered an empty frame. The rule for the file is
+# that the DRAW stays at top level; building the world is not drawing,
+# so it goes in a function, and the surface is opened first, above it.
+#
+# DEFINED BEFORE IT IS CALLED, which real bash requires. bash-O4 hoists
+# function bodies so the transpiled build does not care, but the
+# equivalence harness runs this same file under real bash, where a
+# call above the definition is "command not found" — the reference
+# side then reported "cell ," (an empty player position) for all 25
+# cases while the native side was fine. A file that only ever runs
+# through the transpiler can drift into shapes real bash rejects, and
+# that suite is what catches it.
+new_world() {
+  # gen_maze FIRST: the treasure placement QUERIES the map with
+  # get_cell, so a maze that has not been rolled yet leaves $gv empty
+  # and every placement test fails (the shell reports "integer
+  # expression expected", and there are zero treasures in the frame).
+  gen_maze
+  # place the treasures so the frame has the white chests in it
+  tp=0
+  while [ "$tp" -lt 4 ]; do
+    tries=0
+    while [ "$tries" -lt 100 ]; do
+      nmrand 14
+      rx=$((rv + 1))
+      nmrand 14
+      rz=$((rv + 1))
+      get_cell $rx 1 $rz
+      if [ "$gv" -eq "$AIR" ]; then
+        get_cell $rx 2 $rz
+        if [ "$gv" -eq "$AIR" ]; then
+          set_cell $rx 1 $rz $TREASURE
+          break
+        fi
+      fi
+      tries=$((tries + 1))
+    done
+    tp=$((tp + 1))
+  done
+  # the player, the camera heading, and the camera uniforms — the same
+  # milli-encoding MIMEcroft uses (dpc*_ms is the camera cell x1000).
+  px=2
+  pz=2
+  dyaw=2
+  dpcx_ms=$((px * 1000))
+  dpcz_ms=$((pz * 1000))
+  dpyw_ms=$((dyaw * 90000))
+  # start facing +z (MIMEcroft's yaw 2)
+  set_rot $((dyaw * 90))
+  FOUND=0
+  MOVED=0
+}
+
 fb_open $SCREEN_W $SCREEN_H
 
-# gen_maze FIRST: the treasure placement below QUERIES the map with
-# get_cell, so a maze that has not been rolled yet leaves $gv empty
-# and every placement test fails (`[: : integer expression expected`,
-# zero treasures in the frame).
-gen_maze
-
-# place the treasures so the frame has the white chests in it
-tp=0
-while [ "$tp" -lt 4 ]; do
-  tries=0
-  while [ "$tries" -lt 100 ]; do
-    nmrand 14
-    rx=$((rv + 1))
-    nmrand 14
-    rz=$((rv + 1))
-    get_cell $rx 1 $rz
-    if [ "$gv" -eq "$AIR" ]; then
-      get_cell $rx 2 $rz
-      if [ "$gv" -eq "$AIR" ]; then
-        set_cell $rx 1 $rz $TREASURE
-        break
-      fi
-    fi
-    tries=$((tries + 1))
-  done
-  tp=$((tp + 1))
-done
-
-# the player, the camera heading, and the camera uniforms — the same
-# milli-encoding MIMEcroft uses (dpc*_ms is the camera cell x1000).
-px=2
-pz=2
-dyaw=2
-dpcx_ms=2000
-dpcz_ms=2000
-dpyw_ms=180000
+new_world
 
 # The culling rotation, per MIMEcroft's SCOS/SSIN tables
 # (degree -> per-mille cos/sin).
@@ -405,12 +429,30 @@ apply_key() { ak=$1
       pz=$nz
       MOVED=$((MOVED + 1))
       get_cell $px 1 $pz
-      if [ "$gv" -eq "$TREASURE" ]; then FOUND=$((FOUND + 1)); fi
+      if [ "$gv" -eq "$TREASURE" ]; then
+        FOUND=$((FOUND + 1))
+        # THE CHEST IS DUG OUT ON CLAIM, as upstream does
+        # (www/bin/mimecroft.sh:1041, "the recovered artifact is dug
+        # out - the block vanishes so the label/radar stop showing
+        # it"). Without this the cell stayed a TREASURE forever and the
+        # player could step off it and back on to score as many "found"
+        # as the frame budget allowed: FOUND counted CLAIMS, not
+        # chests, and could exceed the four on the map. Removing the
+        # cell is also what makes can_enter's treasure branch a
+        # ONE-TIME event, which is why it needs no per-treasure found[]
+        # flag of the kind upstream keeps.
+        set_cell $px 1 $pz $AIR
+      fi
     fi
   fi
   if [ "$ak" = "q" ]; then dyaw=$(( (dyaw + 3) % 4 )); fi
   if [ "$ak" = "e" ]; then dyaw=$(( (dyaw + 1) % 4 )); fi
-  if [ "$ak" = "r" ]; then FOUND=0; MOVED=0; fi
+  # `r` is "restart the RUN", not "reset the counters". It used to set
+  # FOUND=0; MOVED=0 and leave the map alone, which restarted nothing
+  # the player can see - the chests they had dug out stayed dug out and
+  # the player stayed put. Returning 2 asks the loop to re-roll the
+  # board; see new_world.
+  if [ "$ak" = "r" ]; then return 2; fi
   if [ "$ak" = "." ]; then return 1; fi
   return 0
 }
@@ -455,9 +497,22 @@ while :; do
   # all — a quit as the very first key left the program with no output
   # whatsoever, which is indistinguishable from a crash.
   if [ -n "$rk" ]; then
-    if ! apply_key "$rk"; then
+    apply_key "$rk"
+    ak_rc=$?
+    if [ "$ak_rc" -eq 1 ]; then
       quitting=1
     fi
+    if [ "$ak_rc" -eq 2 ]; then
+      restarting=1
+    fi
+  fi
+  # A restart re-rolls the board and the player, so the frame drawn
+  # below shows the new maze. It still draws this frame — clear plus a
+  # render of the new world — so the screen is never left showing a
+  # board the player has already walked off.
+  if [ "$restarting" -eq 1 ]; then
+    restarting=0
+    new_world
   fi
 
   # Clear after the input, every frame. Two rules in one:

@@ -224,20 +224,63 @@ e
 e
 e
 w
+w" "e
+w
+e
+e
+e
+w
+w
+s
+w
+s
+w
+s
+w
+s
+w
+s
 w"
 )
-# THE LAST CASE CLAIMS A TREASURE, and it is the only one that does.
-# Every other case ended "0 found", and a game that can never be won
-# still passes a suite that only compares the two sides against each
-# other: the placement writes TREASURE into layer 1 of an air cell, so
-# can_enter refused it, the chest was a wall, and FOUND stayed 0 in all
-# 23 runs without a word of complaint. The walk is the shortest path
-# from the start to the first treasure in the maze this seed generates
-# (see the FOUND check below, which derives it rather than trusting
-# this literal).
+# THE TWO TRAILING CASES CLAIM A TREASURE; every other case ends "0
+# found". Both of those properties were invisible to a suite that only
+# compares the two sides against each other, and neither of them was
+# true when the suite was written:
+#
+#   * every case read "0 found" because the placement writes TREASURE
+#     into layer 1 of an air cell, can_enter refused it, and the chest
+#     was a WALL. A game that can never be won passed 23/23.
+#   * FOUND then counted CLAIMS rather than chests, so one chest could
+#     be farmed by stepping off it and back on. The second trailing
+#     case does exactly that, six times, and asserts the count is 1.
+#
+# Neither is a difference between the two sides — both are built from
+# the same script and agree perfectly either way. They are checked
+# below against the game's own arithmetic, because a comparison of two
+# wrong programs agreeing cannot see either of them.
+#
+# The walk to the first treasure is derived by the probe below rather
+# than trusted from this literal, so a seed or maze change cannot leave
+# it asserting a stale path.
+# BUILT FROM THE LIST, not typed out again. A hand-copied literal of a
+# multi-line case is a silent trap: the first version of this one was
+# missing a key, so it matched nothing and the check below never ran
+# against anything - the suite reported 25 passed with the claim bug
+# present. Deriving it from the array cannot drift from the case.
+LAST_CASE="${CASES[${#CASES[@]}-1]}"
 pass=0; fail=0
 for keys in "${CASES[@]}"; do
     printf '%s\n' "$keys" > "$WORK/keys"
+    # THE FRAME BUDGET IS PER CASE, not a flat 8. A case that scripts
+    # more keys than the budget has frames never sees its own tail: the
+    # treasure case walks 7 keys to a chest, and the over-count case
+    # then steps off and back on six more times, so both were being
+    # cut short at 8 frames and the last 11 keys did nothing. The
+    # over-count check reported "1 found" against a game that scores 7
+    # on the same input when it is allowed to run.
+    nkeys=$(printf '%s\n' "$keys" | wc -l)
+    budget=$(( nkeys + 2 ))
+    if [ "$budget" -lt 8 ]; then budget=8; fi
     rm -f "$WORK/a.ppm" "$WORK/fbcmd.log" "$WORK/keys.pos"
     # A syntax error in the generated reference script makes bash exit
     # before drawing anything, so a.ppm never appears. The pixel compare
@@ -252,7 +295,7 @@ for keys in "${CASES[@]}"; do
         echo "       (the real-bash side would silently do nothing)"
         exit 2
     fi
-    sa=$(MIME_FRAMES=8 MIME_KEYS="$WORK/keys" MIME_OUT="$WORK/a.ppm" FBCMD="$WORK/fbcmd.log" \
+    sa=$(MIME_FRAMES=$budget MIME_KEYS="$WORK/keys" MIME_OUT="$WORK/a.ppm" FBCMD="$WORK/fbcmd.log" \
         timeout -k 2 300 bash "$WORK/bashref.sh" 2>/dev/null | head -1)
     if [ ! -f "$WORK/a.ppm" ]; then
         echo "FATAL: case produced no reference image (real bash failed)"
@@ -276,7 +319,7 @@ for keys in "${CASES[@]}"; do
     # `timeout -k` also supplies the follow-up KILL, which is what
     # actually clears a stopped process, so the shell is not left
     # holding a corpse that outlives the case.
-    sb=$(MIME_FRAMES=8 MIME_KEYS="$WORK/keys" MIME_OUT="$WORK/b.ppm" \
+    sb=$(MIME_FRAMES=$budget MIME_KEYS="$WORK/keys" MIME_OUT="$WORK/b.ppm" \
         timeout -k 2 120 "$WORK/mimecroft_fb" 2>/dev/null | head -1)
     rc=$?
     if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
@@ -357,6 +400,26 @@ print('%d colour(s), the top one covers %.0f%% of the frame' % (len(c), 100.0*to
         printf '  colour filling the screen is a desynchronised block payload:\n'
         printf '  both sides share fbdev.c, so it matches itself and this\n'
         printf '  suite cannot see it.\n'
+    fi
+    # FOUND MUST COUNT CHESTS, NOT CLAIMS. The last case walks onto a
+    # chest and steps off and back on six more times. Agreement between
+    # the two sides cannot catch a claim that is counted twice — both
+    # sides are built from the same script, so they over-count in
+    # lockstep and compare byte-for-byte equal. It has to be asserted
+    # against the game's own arithmetic: one chest, one find.
+    if [ "$keys" = "$LAST_CASE" ]; then
+        case "$sb" in
+            *", 1 found")
+                : ;;
+            *)
+                fail=$((fail + 1))
+                printf 'OVERCOUNT on:\n%s\n  %s\n' "$keys" "$sb"
+                printf '  one chest, claimed once, then re-entered six times:\n'
+                printf '  FOUND must be 1. Both sides agree here, so the\n'
+                printf '  comparison cannot see it — the claim must dig the\n'
+                printf '  chest out of the map the way upstream does.\n'
+                ;;
+        esac
     fi
 done
 echo "== $pass passed, $fail failed =="
