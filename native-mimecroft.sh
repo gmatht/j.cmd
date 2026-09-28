@@ -181,8 +181,8 @@ try_draw() {
 # function would run before the top-level fb_open. The frame is drawn
 # from top-level statements instead. The body below is render_frame's,
 # verbatim.
-# fmt_pos: milli -> a plain world-unit string (MIMEcroft's fmt_pos)
-fmt3() { f3_v=$1; f3_s=$f3_v; if [ "$f3_v" -lt 10 ]; then f3_s="00$f3_v"; elif [ "$f3_v" -lt 100 ]; then f3_s="0$f3_v"; fi; fv3="$f3_s"; }
+# fmt_pos: milli -> a plain world-unit string (MIMEcroft's fmt_pos).
+# fmt3 sat next to this and was never called — see MIMEcroft_fb.sh.
 fmt_pos() { fp_ms=$1
   fp_neg=0
   if [ "$fp_ms" -lt 0 ]; then fp_neg=1; fp_ms=$((0 - fp_ms)); fi

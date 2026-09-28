@@ -235,8 +235,10 @@ try_draw() {
 # function would run before the top-level fb_open. The frame is drawn
 # from top-level statements instead. The body below is render_frame's,
 # verbatim.
-# fmt_pos: milli -> a plain world-unit string (MIMEcroft's fmt_pos)
-fmt3() { f3_v=$1; f3_s=$f3_v; if [ "$f3_v" -lt 10 ]; then f3_s="00$f3_v"; elif [ "$f3_v" -lt 100 ]; then f3_s="0$f3_v"; fi; fv3="$f3_s"; }
+# fmt_pos: milli -> a plain world-unit string (MIMEcroft's fmt_pos).
+# fmt3 sat next to this and was never called: it zero-pads an integer
+# for a label, which fmt_pos does not and which the render has no use
+# for. It is gone rather than left as a second way to format a number.
 fmt_pos() { fp_ms=$1
   fp_neg=0
   if [ "$fp_ms" -lt 0 ]; then fp_neg=1; fp_ms=$((0 - fp_ms)); fi
@@ -251,7 +253,11 @@ fmt_pos() { fp_ms=$1
 KEYS=${MIME_KEYS:-/tmp/mimecroft-keys}
 OUT=${MIME_OUT:-/tmp/mimecroft-fb.ppm}
 FRAMES=${MIME_FRAMES:-1}
-SECONDS_BUDGET=${MIME_SECONDS:-0}
+# There was a SECONDS_BUDGET here, read from $MIME_SECONDS, and the
+# loop never consulted it — a dead knob that looked like a wall-clock
+# exit. Set it and nothing happened, which is worse than not having it.
+# FRAMES is the budget that actually bounds a headless run, and an
+# interactive run ends on the quit key or on Ctrl-C.
 FOUND=0
 MOVED=0
 frame=0
