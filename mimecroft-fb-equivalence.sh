@@ -463,13 +463,18 @@ for (x, z) in path:
     keys.append('w')
     at = (x, z)
 kf = sys.argv[1].replace('.sh', '') + '.winkeys'
-open(kf, 'w').write('\n'.join(keys) + '\n')
 out = '/tmp/mime-wintrace.ppm'
-for p in (kf + '.pos', out):
+for p in (kf + '.pos', kf, out):
     try: os.unlink(p)
     except OSError: pass
+open(kf, 'w').write('\n'.join(keys) + '\n')
 env = dict(os.environ, MIME_FRAMES=str(len(keys)), MIME_KEYS=kf, MIME_OUT=out)
 r = subprocess.run([game], env=env, capture_output=True, text=True, timeout=120)
+# the key file is the probe's scratch, not something to leave in the
+# source tree for the next run to trip over
+for p in (kf + '.pos', kf):
+    try: os.unlink(p)
+    except OSError: pass
 line = r.stdout.strip().split('\n')[0] if r.stdout.strip() else '(no output)'
 print(line)
 PY
