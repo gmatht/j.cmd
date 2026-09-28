@@ -21,6 +21,20 @@
 #   /home/llm/sh2loop/bash-o4/target/debug/bash-O4 MIMEcroft_fb.sh
 #   -> /tmp/mimecroft-fb.ppm
 #
+#   # SEE IT, rather than just writing a file:
+#   MIME_VIEW=1 /home/llm/sh2loop/bash-o4/target/debug/bash-O4 MIMEcroft_fb.sh
+#   MIME_VIEW=1 stops rewriting the image every frame and opens the
+#   final one in a viewer (xdg-open, else feh), once, after the last
+#   frame. WITHOUT it this program renders a maze, writes a PPM, and
+#   exits — which on a machine with no /dev/fb0 is indistinguishable
+#   from having done nothing at all.
+#
+#   There is no window to pop up on a box with no framebuffer, because
+#   there is nothing to pop up: this host has fbcon and no /dev/fb0, so
+#   the device draws into RAM. On a box that HAS one it mmaps the real
+#   device, every frame lands on the display, and MIME_VIEW is neither
+#   needed nor wanted.
+#
 #   # a native binary you can run on its own:
 #   /home/llm/sh2loop/bash-o4/target/debug/bash-O4 -o ./mimecroft MIMEcroft_fb.sh
 #   ./mimecroft
@@ -33,6 +47,9 @@
 #   the obvious way to run it could not be expressed. Leave MIME_FRAMES
 #   unset and you still get exactly one frame, which is what a
 #   screenshot wants.
+#
+#   A keyboard run wants a real terminal: it reads stdin in raw mode.
+#   Redirect stdin, or use MIME_KEYS below, and the walk is scripted.
 #
 #   # script a walk (headless; one key per line in the key file):
 #   printf 'w\nw\ne\nw\n' > /tmp/keys
@@ -278,6 +295,10 @@ fmt_pos() { fp_ms=$1
 KEYS=${MIME_KEYS:-/tmp/mimecroft-keys}
 OUT=${MIME_OUT:-/tmp/mimecroft-fb.ppm}
 FRAMES=${MIME_FRAMES:-1}
+# MIME_VIEW=1: dump ONE image at the end and hand it to an image viewer,
+# instead of rewriting it every frame. The default (0) keeps the
+# per-frame dump, because a file that nothing opens is not a picture.
+VIEW=${MIME_VIEW:-0}
 # There was a SECONDS_BUDGET here, read from $MIME_SECONDS, and the
 # loop never consulted it — a dead knob that looked like a wall-clock
 # exit. Set it and nothing happened, which is worse than not having it.
@@ -647,7 +668,17 @@ while :; do
   fi
   fb_blocks "$blk_p"
   fb_present
-  fb_dump_ppm "$OUT"
+  # The dump is what you LOOK at, so it is per frame by default. That
+  # is 230 KB of write(2) per frame, which at 50 fps is 11 MB/s — real,
+  # but it is the only I/O in the loop, and without it there is nothing
+  # to see on a host with no /dev/fb0.
+  #
+  # MIME_VIEW=1 turns it off and hands the image to a viewer ONCE, at
+  # the end. Not per frame: a refresh is a process, and this loop is
+  # otherwise free of them (see the note on fb_input_line above), so
+  # refreshing per frame would put a fork and an exec back on the hot
+  # path — trading the thing that made the native build worth having.
+  if [ "$VIEW" -eq 0 ]; then fb_dump_ppm "$OUT"; fi
 
   # the frame IS on screen; now honour a quit requested before it
   if [ "$quitting" -eq 1 ]; then break; fi
@@ -663,4 +694,64 @@ while :; do
 done
 
 echo "mimecroft-fb: $frame frames, cell $px,$pz yaw $((dyaw * 90)), $MOVED steps, $FOUND found"
+
+# MIME_VIEW: one dump and one viewer, AFTER the loop. A real /dev/fb0
+# needs none of this — the device is the display, fb_present already
+# showed every frame, and $OUT is only a convenience. On a host with no
+# framebuffer the PPM is the ONLY thing that exists to look at, and
+# without this the program renders a maze, writes a file, and exits
+# without ever showing it, which looks exactly like a crash.
+#
+# A viewer opens a window and then STAYS OPEN, so it blocks by design.
+# Backgrounding it with a plain & is not enough here: the transpiled
+# binary waits for every child, so a backgrounded viewer hangs the game
+# forever with no output — which is a worse failure than the one this
+# whole block exists to fix. "setsid --fork" double-forks, so the
+# viewer is reparented to init and there is no child left to wait for.
+# Verified: "feh ... &" never returns under bash-O4; "setsid --fork
+# feh ..." returns at once, viewer up.
+#
+# Without setsid the honest thing is to print the path and NOT pretend:
+# a viewer we cannot detach would either hang the game or be killed
+# with it, and either way the user gets a command to run instead.
+if [ "$VIEW" -eq 1 ]; then
+  fb_dump_ppm "$OUT"
+  launched=0
+  # Writing this as "setsid --fork CMD && launched=1" is the natural
+  # way and it is WRONG here, in two separate ways that happen to look
+  # like one bug:
+  #   * under bash-O4 the && assignment does not take the command's
+  #     status, and "launched" comes back as an uninitialised register
+  #     (measured: 123) instead of 1 — so the "it worked" flag is
+  #     garbage and the branch that should have reported a viewer said
+  #     nothing at all;
+  #   * even in real bash it is the wrong signal, because
+  #     "setsid --fork" exits 0 whether or not the command it forked
+  #     exists or ran. "setsid --fork /nonexistent-xyz; echo $?"
+  #     prints 0 in both shells. The parent reports that IT forked,
+  #     nothing more.
+  # So the flag records only that a tool was FOUND and was asked to
+  # open the file; whether the viewer then appears is the viewer's
+  # business, and a broken desktop association is not something this
+  # program can or should adjudicate. The status is taken as its own
+  # statement rather than as the right-hand side of `&&`, which is the
+  # form that survives the transpiler.
+  if command -v setsid > /dev/null 2>&1; then
+    if command -v xdg-open > /dev/null 2>&1; then
+      setsid --fork xdg-open "$OUT" > /dev/null 2>&1
+      launched=1
+    fi
+    if [ "$launched" -eq 0 ] && command -v feh > /dev/null 2>&1; then
+      setsid --fork feh "$OUT" > /dev/null 2>&1
+      launched=1
+    fi
+  fi
+  if [ "$launched" -eq 1 ]; then
+    echo "mimecroft-fb: opened $OUT"
+  else
+    echo "mimecroft-fb: no setsid/xdg-open/feh to open it with."
+    echo "mimecroft-fb: open it yourself:  feh $OUT   (or: xdg-open $OUT)"
+  fi
+fi
+
 echo "mimecroft-fb: wrote $OUT"
