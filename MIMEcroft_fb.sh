@@ -30,12 +30,19 @@
 #   no /dev/fb0.
 #
 # THE GAME LOOP
-#   Controls come from $MIME_KEYS (default /tmp/mimecroft-keys), one
-#   key per line, consumed as they appear:
+#   Controls come from the fbinput device (runtime/fbinput.h), which is
+#   one non-blocking in-process read per frame — no fork, no exec, no
+#   `head`/`tail`/`mv` per key:
 #       w/a/s/d  move      q/e  turn left/right
 #       r        restart   .    quit after the current frame
-#   The loop also exits on a wall-clock budget (MIME_FRAMES or
-#   MIME_SECONDS) so a headless run always terminates.
+#   It reads $MIME_KEYS (a key file, one key per line) when that file
+#   exists — that is how a headless run is scripted — and a real
+#   keyboard (/dev/input/event*, or the terminal) when it does not, so
+#   this file runs as a real game with no scripting at all.
+#   One key per frame: a burst arriving between two frames is consumed
+#   one key per frame, so a held key cannot teleport the player.
+#   The loop also exits on a frame budget (MIME_FRAMES) so a headless
+#   run always terminates.
 #
 # TWO PORT-SPECIFIC RULES (both learned the hard way)
 #   1. The DRAW must not live in a shell function. bash-O4 emits every
@@ -304,7 +311,12 @@ td_sn=0
 # function boundary here costs a use-after-free.
 
 # walkable? a cell the player may enter (the two body layers, both air).
-can_enter() { ce_x=$1; ce_z=$1
+# NB the two assignments: `ce_z=$1` (z from $1) was a typo that made
+# the second one dead — the body went on to read the z it actually
+# wanted from $2, so the bug was invisible here. It is still wrong on
+# its face, and a variable named ce_z holding an x is the kind of thing
+# the next person edits around.
+can_enter() { ce_x=$1; ce_z=$2
   get_cell $1 1 $2
   if [ "$gv" -ne "$AIR" ]; then return 1; fi
   get_cell $1 2 $2
@@ -313,9 +325,9 @@ can_enter() { ce_x=$1; ce_z=$1
 }
 
 apply_key() { ak=$1
-  # NB on the shape: the original used `case "$ak" in w|a|s|d) ...`,
-  # which lowers to ONE fnmatch against the FIRST alternative only
-  # (the C emitted `fnmatch("w", ak, 0)`) — so q/e/r/. were
+  # NB on the shape: the original used a `case` whose pattern list was
+  # w|a|s|d, which lowers to ONE fnmatch against the FIRST alternative
+  # only (the C emitted fnmatch("w", ak, 0)) — so q/e/r/. were
   # unreachable and only "w" ever acted. Each key is tested on its own
   # line here.
   #
@@ -372,19 +384,33 @@ while :; do
   frame=$((frame + 1))
 
 
-  # One queued key per frame (empty queue = just re-render). The read
-  # is inline, at top level, for the reason in the note above the loop:
-  # a shell function that sets `rk` and returns gets its locals freed on
-  # exit, and the caller then reads freed heap — every key came back
-  # empty (0 steps for 3 queued moves).
-  rk=""
-  if [ -f "$KEYS" ]; then
-    rk=$(head -n 1 "$KEYS")
-    if [ -n "$rk" ]; then
-      tail -n +2 "$KEYS" > "$KEYS.rest"
-      mv "$KEYS.rest" "$KEYS"
-    fi
-  fi
+  # One queued key per frame (empty queue = just re-render).
+  #
+  # INPUT IS A DEVICE CALL, NOT A SHELL PIPE. This used to be
+  #
+  #     rk=$(head -n 1 "$KEYS")
+  #     [ -n "$rk" ] && { tail -n +2 "$KEYS" > "$KEYS.rest"; mv "$KEYS.rest" "$KEYS"; }
+  #
+  # which is three processes PER FRAME: a fork, an exec and a wait for
+  # every single key, on the hot path of a game loop. The fbinput
+  # device (runtime/fbinput.h) answers the same question with one
+  # non-blocking in-process read, and it also reads a real keyboard
+  # (evdev, or the terminal) when $KEYS names no queue — this file no
+  # longer needs the game to be scripted at all.
+  #
+  # $KEYS IS PASSED AS AN ARGUMENT, not exported. An `export` in a
+  # transpiled program becomes a plain C assignment — the render never
+  # calls setenv — so a C device reading the environment would see
+  # whatever the process was started with and the game would silently
+  # never receive a key (0 steps, every walk, while the same script
+  # under real bash was fine). An argument keeps the queue in the
+  # program's own data.
+  #
+  # The read is at TOP LEVEL, for the reason in the note above the
+  # loop: a shell function that sets `rk` and returns gets its locals
+  # freed on exit, and the caller then reads freed heap — every key
+  # came back empty (0 steps for 3 queued moves).
+  rk=$(fb_input_line "$KEYS")
   # A quit (`.`) must still leave ONE frame on screen. Breaking out
   # here, before the first draw, produced a run that wrote no PPM at
   # all — a quit as the very first key left the program with no output
@@ -399,7 +425,7 @@ while :; do
   #  - INSIDE the loop: outside, a single-frame script paints over
   #    itself and a walk smears ghosts of every cell behind the camera
   #    instead of showing the current view;
-  #  - AFTER the key: a quit key (`.`) breaks out BEFORE the clear, so
+  #  - AFTER the key: a quit key ('.') breaks out BEFORE the clear, so
   #    the last drawn frame survives instead of being wiped to black.
   fb_clear 4278190080
 
