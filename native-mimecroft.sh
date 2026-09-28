@@ -34,8 +34,20 @@ SCREEN_H=240
 # ─── world ────────────────────────────────────────────────────────
 map=()
 bhp=()
+# CELLS ENTRIES IS NOT ENOUGH. set_cell/get_cell index the array by
+#   b * CELLS + c * MAP_W + a
+# where b is the LAYER (0, 1, 2), so the highest index is
+#   2 * CELLS + (MAP_D-1) * MAP_W + (MAP_W-1) = 767, not 255.
+# Filling only i < CELLS leaves every layer-1 and layer-2 cell EMPTY,
+# which breaks two things quietly: get_cell answers "" for a solid cell
+# (so the walk tests compare an empty string against a number), and
+# try_draw's `bh` comes back empty, so each cube record has TEN fields
+# where fb_blocks reads ELEVEN — the device's parser then runs off the
+# end of one record into the next and desynchronises, and the frame
+# comes out a single flat colour. Same fix as MIMEcroft_fb.sh.
+MAP_N=$((MAP_H * CELLS))
 i=0
-while [ "$i" -lt "$CELLS" ]; do
+while [ "$i" -lt "$MAP_N" ]; do
   map[$i]=0
   bhp[$i]=0
   i=$((i + 1))
