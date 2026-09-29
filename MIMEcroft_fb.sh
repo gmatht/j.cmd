@@ -16,24 +16,48 @@
 #   this runs the game loop: walk the maze, find the treasure, and
 #   re-render every frame, reading movement from a key file.
 #
+# THE VIRTUAL FRAMEBUFFER
+#   fb_present is not "write a file at the end". On a box with no
+#   /dev/fb0 it opens a REAL X11 WINDOW (runtime/fbwin.c, which
+#   dlopen()s libX11 so nothing here needs an X11 header to build) and
+#   every frame is blitted into it as it is drawn. So the default run:
+#
+#     bash-O4 -o ./mimecroft MIMEcroft_fb.sh
+#     ./mimecroft
+#
+#   gives a 320x240 window titled "MIMEcroft (fb0)" with the maze in
+#   it, updating as you walk. No browser, no WebGL, no image viewer,
+#   and no "it rendered something and exited".
+#
+#   The knobs, which is the one thing here that was genuinely wrong
+#   before: a window is the DEFAULT, so MIME_WINDOW is the OFF switch.
+#     (unset)        window + a PPM rewritten every frame
+#     MIME_WINDOW=0  no window, PPM only. What a box with no X wants.
+#     MIME_VIEW=1    window only; no per-frame PPM (that write is
+#                    230 KB per frame, and on a window it is dead I/O)
+#   $FBWIN=0 is the device's own off switch (runtime/fbwin.h) and
+#   outranks MIME_WINDOW. MIME_WINDOW=0 is the honest way to ask for
+#   that here: the sh2 runtime is linked into whatever transpiles
+#   this, the two settings live in different files, and a knob whose
+#   effect depends on which one happens to be read last is a knob
+#   nobody can rely on. The equivalence harness sets MIME_WINDOW=0
+#   for exactly that reason, so its 25 headless cases do not open 25
+#   windows.
+#
+#   $DISPLAY picks the server. Unset, or refusing the connection, the
+#   device falls back to RAM + PPM and says so once. Nothing about the
+#   GAME changes either way: same world, same camera, same payload.
+#
 # HOW TO RUN
-#   # one frame to a PPM, no input needed (MIME_FRAMES unset = 1 frame):
-#   /home/llm/sh2loop/bash-o4/target/debug/bash-O4 MIMEcroft_fb.sh
+#   # play it, in a window, with the keyboard (this is the default):
+#   /home/llm/sh2loop/bash-o4/target/debug/bash-O4 -o ./mimecroft MIMEcroft_fb.sh
+#   ./mimecroft
+#   -> a window. w/a/s/d move, q/e turn, r restarts, . or Esc quits.
+#
+#   # headless: one frame to a PPM, no window, no input needed
+#   # (MIME_FRAMES unset = 1 frame):
+#   MIME_WINDOW=0 /home/llm/sh2loop/bash-o4/target/debug/bash-O4 MIMEcroft_fb.sh
 #   -> /tmp/mimecroft-fb.ppm
-#
-#   # SEE IT, rather than just writing a file:
-#   MIME_VIEW=1 /home/llm/sh2loop/bash-o4/target/debug/bash-O4 MIMEcroft_fb.sh
-#   MIME_VIEW=1 stops rewriting the image every frame and opens the
-#   final one in a viewer (xdg-open, else feh), once, after the last
-#   frame. WITHOUT it this program renders a maze, writes a PPM, and
-#   exits — which on a machine with no /dev/fb0 is indistinguishable
-#   from having done nothing at all.
-#
-#   There is no window to pop up on a box with no framebuffer, because
-#   there is nothing to pop up: this host has fbcon and no /dev/fb0, so
-#   the device draws into RAM. On a box that HAS one it mmaps the real
-#   device, every frame lands on the display, and MIME_VIEW is neither
-#   needed nor wanted.
 #
 #   # a native binary you can run on its own:
 #   /home/llm/sh2loop/bash-o4/target/debug/bash-O4 -o ./mimecroft MIMEcroft_fb.sh
@@ -42,14 +66,16 @@
 #   # PLAY IT, on a terminal, with the keyboard:
 #   MIME_FRAMES=0 ./mimecroft
 #   MIME_FRAMES=0 means NO frame budget: the loop runs until you press
-#   `.` (quit). It used to mean "one frame", because frame 1 is already
-#   >= 0 — so there was no way to start the game without a cap, and
-#   the obvious way to run it could not be expressed. Leave MIME_FRAMES
-#   unset and you still get exactly one frame, which is what a
-#   screenshot wants.
+#   `.` (quit) or Escape, or close the window. It used to mean "one
+#   frame", because frame 1 is already >= 0 — so there was no way to
+#   start the game without a cap, and the obvious way to run it could
+#   not be expressed. Leave MIME_FRAMES unset and you still get
+#   exactly one frame, which is what a screenshot wants.
 #
 #   A keyboard run wants a real terminal: it reads stdin in raw mode.
 #   Redirect stdin, or use MIME_KEYS below, and the walk is scripted.
+#   With a window open the keys come from the X server instead, through
+#   the same key names, so the game's own key handling is unchanged.
 #
 #   # script a walk (headless; one key per line in the key file):
 #   printf 'w\nw\ne\nw\n' > /tmp/keys
@@ -68,8 +94,8 @@
 #   var nobody needs is a thing to copy for no reason.
 #
 # On a box with a real framebuffer, set FB0_DEV (default /dev/fb0) and
-# the device mmaps it instead of dumping a PPM; the RAM + PPM path is
-# the fallback, and is what runs where there is no /dev/fb0.
+# the device mmaps it; no window is opened and the PPM is a side effect.
+# With no framebuffer the window is the display.
 #
 # THE GAME LOOP
 #   Controls come from the fbinput device (runtime/fbinput.h), which is
@@ -295,10 +321,40 @@ fmt_pos() { fp_ms=$1
 KEYS=${MIME_KEYS:-/tmp/mimecroft-keys}
 OUT=${MIME_OUT:-/tmp/mimecroft-fb.ppm}
 FRAMES=${MIME_FRAMES:-1}
-# MIME_VIEW=1: dump ONE image at the end and hand it to an image viewer,
-# instead of rewriting it every frame. The default (0) keeps the
-# per-frame dump, because a file that nothing opens is not a picture.
+# MIME_WINDOW is the OFF switch, because a window is the DEFAULT now.
+# It used to be MIME_VIEW as the ON switch, which meant the thing you
+# got with no environment at all was a file and no picture — and the
+# very first command in this file's own header rendered a maze and
+# exited, which is indistinguishable from a crash.
+WINDOW=${MIME_WINDOW:-1}
+# MIME_VIEW=1 now means the OTHER thing: window only, no per-frame PPM
+# file. The dump is 230 KB of write(2) per frame, which is dead I/O
+# once the frame is on a window, and a loop that spends a quarter of
+# its time writing a file nobody looks at is not the loop this port
+# was for. It is kept as a distinct knob rather than folded into
+# MIME_WINDOW because "no window but still dump every frame" and
+# "window but stop writing files" are two different requests.
 VIEW=${MIME_VIEW:-0}
+# A window that cannot be opened is not a failure — the device falls
+# back to RAM + PPM — but it must not be SILENT, because "it just
+# died" and "it ran and showed you nothing" look the same from outside.
+# The loop says which surface it got before the first frame, so "no
+# window and no line" means the program died while "no window, RAM+PPM"
+# means it ran and told you where to look.
+#
+# THE NESTED IF IS THE SHAPE OF THE TRUTH, and folding it into one
+# condition would be shorter and wrong. VIEW=1 means "the window is the
+# picture", which is only true if there IS a window: asked for with
+# MIME_WINDOW=0, it is two contradictory requests, and the file is the
+# one that must win because it is the one that still exists afterwards.
+# Written as "WINDOW=0 or VIEW=1, and no PPM iff VIEW=1", the second
+# clause fires on a request that asked for no window at all.
+WANT_PPM=1
+if [ "$WINDOW" -eq 0 ]; then
+  WANT_PPM=1
+elif [ "$VIEW" -eq 1 ]; then
+  WANT_PPM=0
+fi
 # There was a SECONDS_BUDGET here, read from $MIME_SECONDS, and the
 # loop never consulted it — a dead knob that looked like a wall-clock
 # exit. Set it and nothing happened, which is worse than not having it.
@@ -372,6 +428,32 @@ new_world() {
 }
 
 fb_open $SCREEN_W $SCREEN_H
+
+# Say ONCE, on stdout, which surface the frames are going to. A window
+# that silently fails to open is indistinguishable from a game that
+# never ran, and this line is the difference: it is printed before the
+# first frame, so "no window and no line" means the program died, while
+# "no window, RAM+PPM" means it ran and told you where to look.
+#
+# IT IS AN IF, NOT A CONDITIONAL CALL. Written as
+#
+#     if fb_window_open; then echo "window ..."; else echo "no window"; fi
+#
+# the else branch is correct in real bash and WRONG under bash-O4: it
+# ran even with MIME_WINDOW=0, so the program claimed a window on a
+# run that had asked for none and opened one, and the equivalence
+# suite's own "no window per case" turned into 25 windows on a
+# desktop. Asking the DEVICE here makes the device call itself part of
+# the question, and fb_window_open's own $FBWIN switch is the right
+# place for the question. The knob is still honoured: a run that wants
+# no window says so before the device is asked, not after.
+if [ "$WINDOW" -eq 0 ]; then
+  echo "mimecroft-fb: no window (MIME_WINDOW=0); frames go to $OUT"
+elif fb_window_open; then
+  echo "mimecroft-fb: window $SCREEN_W x $SCREEN_H on ${DISPLAY:-<no DISPLAY>} - w/a/s/d move, q/e turn, r restart, . or Esc quit"
+else
+  echo "mimecroft-fb: no window (no X display); frames go to $OUT"
+fi
 
 new_world
 
@@ -538,6 +620,30 @@ while :; do
   # freed on exit, and the caller then reads freed heap — every key
   # came back empty (0 steps for 3 queued moves).
   rk=$(fb_input_line "$KEYS")
+  # The WINDOW is a key source too, and it is checked first. It has to
+  # be: fbinput's own sources are the key file, then evdev, then the
+  # terminal, and on a box that has an X display it usually also has a
+  # keyboard on stdin that a harness is not typing into. A person
+  # pressing 'w' at the window would be reading a terminal nobody
+  # watches.
+  #
+  # X first is also the only order that does not lose keys: fbinput
+  # would otherwise consume a key the moment it appeared and the window
+  # would never see it, so with the window in front, whichever device
+  # produced the key is the one that acts.
+  #
+  # Both calls translate to the SAME game key names, and the game below
+  # is unchanged, which is the point of a device: the source changes,
+  # the control code does not.
+  wk=$(fb_window_key)
+  if [ -n "$wk" ]; then rk=$wk; fi
+  # A CLOSED WINDOW IS A QUIT, and not noticing it is the last way this
+  # can look like a crash. Without this, closing the window leaves the
+  # loop running against a window nobody is looking at, spinning a
+  # frame budget or forever, with the player's last view frozen. The
+  # game's own `.` key does the same thing, so the window's close is
+  # expressed as the key the game already handles.
+  if fb_window_closed; then rk="."; fi
   # A quit (`.`) must still leave ONE frame on screen. Breaking out
   # here, before the first draw, produced a run that wrote no PPM at
   # all — a quit as the very first key left the program with no output
@@ -667,18 +773,17 @@ while :; do
     done
   fi
   fb_blocks "$blk_p"
+  # fb_present blits the frame to the window when there is one, and is
+  # a no-op on RAM. It was `return 0` with a comment saying the display
+  # was somebody else's problem, which is true on a box with a
+  # /dev/fb0 and false everywhere else: without a window there was no
+  # frame on screen at any point in the run.
   fb_present
-  # The dump is what you LOOK at, so it is per frame by default. That
-  # is 230 KB of write(2) per frame, which at 50 fps is 11 MB/s — real,
-  # but it is the only I/O in the loop, and without it there is nothing
-  # to see on a host with no /dev/fb0.
-  #
-  # MIME_VIEW=1 turns it off and hands the image to a viewer ONCE, at
-  # the end. Not per frame: a refresh is a process, and this loop is
-  # otherwise free of them (see the note on fb_input_line above), so
-  # refreshing per frame would put a fork and an exec back on the hot
-  # path — trading the thing that made the native build worth having.
-  if [ "$VIEW" -eq 0 ]; then fb_dump_ppm "$OUT"; fi
+  # The per-frame PPM is now a SECOND copy of the picture, not the only
+  # one. It is still on by default (a file nobody opens is not a
+  # picture, and the headless case has no other output) and off under
+  # MIME_VIEW=1, where the window is the picture.
+  if [ "$WANT_PPM" -eq 1 ]; then fb_dump_ppm "$OUT"; fi
 
   # the frame IS on screen; now honour a quit requested before it
   if [ "$quitting" -eq 1 ]; then break; fi
@@ -695,63 +800,15 @@ done
 
 echo "mimecroft-fb: $frame frames, cell $px,$pz yaw $((dyaw * 90)), $MOVED steps, $FOUND found"
 
-# MIME_VIEW: one dump and one viewer, AFTER the loop. A real /dev/fb0
-# needs none of this — the device is the display, fb_present already
-# showed every frame, and $OUT is only a convenience. On a host with no
-# framebuffer the PPM is the ONLY thing that exists to look at, and
-# without this the program renders a maze, writes a file, and exits
-# without ever showing it, which looks exactly like a crash.
-#
-# A viewer opens a window and then STAYS OPEN, so it blocks by design.
-# Backgrounding it with a plain & is not enough here: the transpiled
-# binary waits for every child, so a backgrounded viewer hangs the game
-# forever with no output — which is a worse failure than the one this
-# whole block exists to fix. "setsid --fork" double-forks, so the
-# viewer is reparented to init and there is no child left to wait for.
-# Verified: "feh ... &" never returns under bash-O4; "setsid --fork
-# feh ..." returns at once, viewer up.
-#
-# Without setsid the honest thing is to print the path and NOT pretend:
-# a viewer we cannot detach would either hang the game or be killed
-# with it, and either way the user gets a command to run instead.
-if [ "$VIEW" -eq 1 ]; then
-  fb_dump_ppm "$OUT"
-  launched=0
-  # Writing this as "setsid --fork CMD && launched=1" is the natural
-  # way and it is WRONG here, in two separate ways that happen to look
-  # like one bug:
-  #   * under bash-O4 the && assignment does not take the command's
-  #     status, and "launched" comes back as an uninitialised register
-  #     (measured: 123) instead of 1 — so the "it worked" flag is
-  #     garbage and the branch that should have reported a viewer said
-  #     nothing at all;
-  #   * even in real bash it is the wrong signal, because
-  #     "setsid --fork" exits 0 whether or not the command it forked
-  #     exists or ran. "setsid --fork /nonexistent-xyz; echo $?"
-  #     prints 0 in both shells. The parent reports that IT forked,
-  #     nothing more.
-  # So the flag records only that a tool was FOUND and was asked to
-  # open the file; whether the viewer then appears is the viewer's
-  # business, and a broken desktop association is not something this
-  # program can or should adjudicate. The status is taken as its own
-  # statement rather than as the right-hand side of `&&`, which is the
-  # form that survives the transpiler.
-  if command -v setsid > /dev/null 2>&1; then
-    if command -v xdg-open > /dev/null 2>&1; then
-      setsid --fork xdg-open "$OUT" > /dev/null 2>&1
-      launched=1
-    fi
-    if [ "$launched" -eq 0 ] && command -v feh > /dev/null 2>&1; then
-      setsid --fork feh "$OUT" > /dev/null 2>&1
-      launched=1
-    fi
-  fi
-  if [ "$launched" -eq 1 ]; then
-    echo "mimecroft-fb: opened $OUT"
-  else
-    echo "mimecroft-fb: no setsid/xdg-open/feh to open it with."
-    echo "mimecroft-fb: open it yourself:  feh $OUT   (or: xdg-open $OUT)"
-  fi
-fi
+# The window closes itself: the device's exit hook unmaps it and frees
+# the X image, so a game that ends leaves no orphan window on the
+# server. There is deliberately no fb_window_close call here for a
+# normal exit — an explicit close before the program's own exit-time
+# output runs would race it, and atexit is the right owner of "the
+# window outlives nothing".
 
-echo "mimecroft-fb: wrote $OUT"
+if [ "$WANT_PPM" -eq 1 ]; then
+  echo "mimecroft-fb: wrote $OUT"
+else
+  echo "mimecroft-fb: no PPM written (MIME_VIEW=1); the window had the frame"
+fi

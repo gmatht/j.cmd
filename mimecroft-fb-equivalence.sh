@@ -6,7 +6,7 @@
 #   bash-O4   + the same script         -> the frame the transpiler wants
 #
 # Diffing the two images answers "did the transpiler change the game?"
-# without trusting the transpiler at all. 23 scripted walks, byte-exact.
+# without trusting the transpiler at all. 25 scripted walks, byte-exact.
 set -u
 SH2PERL=${SH2PERL:-/home/llm/sh2loop/sh2perl}
 O4=${O4:-/home/llm/sh2loop/bash-o4/target/debug/bash-O4}
@@ -15,7 +15,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 SH2_RUNTIME=${SH2_RUNTIME:-$SH2PERL/runtime}
 
 mkdir -p "$WORK"
-cc -O2 -I"$SH2_RUNTIME" "$HERE/tools/fbrefr.c" "$SH2_RUNTIME/fbdev.c" -lm -o "$WORK/fbrefr" || exit 1
+cc -O2 -I"$SH2_RUNTIME" "$HERE/tools/fbrefr.c" "$SH2_RUNTIME/fbdev.c" "$SH2_RUNTIME/fbwin.c" -lm -o "$WORK/fbrefr" || exit 1
 
 # BALANCED BACKTICKS IN COMMENTS. An odd number of backticks on a line
 # opens a command substitution that runs to the end of file, so the
@@ -55,11 +55,32 @@ script, out, shim = sys.argv[1], sys.argv[2], sys.argv[3]
 s = open(script).read()
 shim_src = open(shim).read()
 
-# 1. the input device shim, verbatim. The anchor is the `map=()` world
-#    initialisation, not one of the box-drawing comment rules: a
-#    non-ASCII anchor got mangled by an editor round-trip once already
-#    and the replacement silently became a no-op.
-s = s.replace("map=()", shim_src + "\nmap=()", 1)
+# 1. the input device shim, verbatim, plus the WINDOW device's three
+#    questions answered for the headless case the harness runs in. The
+#    anchor is the map=() world initialisation, not one of the
+#    box-drawing comment rules: a non-ASCII anchor got mangled by an
+#    editor round-trip once already and the replacement silently became
+#    a no-op.
+#
+# fb_window_open, fb_window_key and fb_window_closed are here as a NOP
+#    rather than by omission. The game now asks the device three window
+#    questions per frame, and real bash has no fb_* device at all, so an
+#    undefined fb_window_key is "command not found" on stderr and an
+#    empty rk: the reference silently stops moving, and the two sides
+#    then disagree about a GAME they share. Worse, the disagreement is
+#    invisible in the empty-key case and loud in every other one, so
+#    adding a device call to the game shows up here as a 25/25 -> 0/25
+#    transpiler regression, which is what it did.
+#
+#    The answer is the headless one, and it is right rather than merely
+#    convenient: the harness sets MIME_WINDOW=0, so the native side has
+#    no window either and fb_window_key returns "" there. A shim that
+#    OPENED one would make the reference take a path the native run
+#    never takes.
+SHIM_WINDOW = '''fb_window_open()   { return 1; }
+fb_window_key()    { echo ""; }
+fb_window_closed() { return 1; }'''
+s = s.replace("map=()", shim_src + "\n" + SHIM_WINDOW + "\nmap=()", 1)
 
 # 2. the draw side: log every fb_* call for fbrefr to replay. AFTER the
 #    input shim, so it cannot collide with fb_input_line.
@@ -287,7 +308,7 @@ for keys in "${CASES[@]}"; do
     nkeys=$(printf '%s\n' "$keys" | wc -l)
     budget=$(( nkeys + 2 ))
     if [ "$budget" -lt 8 ]; then budget=8; fi
-    rm -f "$WORK/a.ppm" "$WORK/fbcmd.log" "$WORK/keys.pos"
+    rm -f "$WORK/a.ppm" "$WORK/b.ppm" "$WORK/fbcmd.log" "$WORK/keys.pos" "$WORK/sa.log"
     # A syntax error in the generated reference script makes bash exit
     # before drawing anything, so a.ppm never appears. The pixel compare
     # below then raises FileNotFoundError and EVERY case "fails" with a
@@ -301,15 +322,45 @@ for keys in "${CASES[@]}"; do
         echo "       (the real-bash side would silently do nothing)"
         exit 2
     fi
-    sa=$(MIME_FRAMES=$budget MIME_KEYS="$WORK/keys" MIME_OUT="$WORK/a.ppm" FBCMD="$WORK/fbcmd.log" \
-        timeout -k 2 300 bash "$WORK/bashref.sh" 2>/dev/null | head -1)
+    # THE REFERENCE RUN'S OUTPUT IS A FILE, NOT A PIPE. It used to be
+    # `... | head -1`, and `head` exiting after one line is a SIGPIPE on
+    # the writer: bash's echo of the next line dies, and with it the
+    # script — so the run that was supposed to PRODUCE a.ppm never got
+    # to fbrefr, and the case reported "no reference image" for a
+    # reason that has nothing to do with the transpiler.
+    #
+    # It was invisible until the game printed a second line before
+    # drawing anything. It then shows up as a 0/25 transpiler
+    # regression, which is the shape this harness has spent its life
+    # not producing: a broken reference that looks exactly like a
+    # correct one. The status line is read with `head` AFTER the run,
+    # on a file, where nothing is a SIGPIPE to anyone.
+    #
+    # (The native run below still uses the pipe form, and there the
+    # pipeline is `head -1` over a process that has already finished
+    # every device call it is going to make — its last line comes after
+    # the final dump — so there is nothing left to kill. It is left
+    # alone deliberately; the two runs are not symmetric and pretending
+    # they are would be its own kind of lie.)
+    # BOTH RUNS ASK FOR NO WINDOW, and the knob is MIME_WINDOW rather
+    # than the device's own FBWIN. The suite runs on a box that HAS a
+    # display (:0), so leaving the default alone means 25 cases that
+    # each pop a 320x240 X window and 25 that each blit 230 KB into
+    # one — a suite whose runtime is dominated by drawing to a screen
+    # nobody is watching, and whose failure mode is a hung X client
+    # rather than a wrong pixel. MIME_WINDOW=0 is the game's own off
+    # switch; FBWIN is the device's, and the game's is the one a
+    # reader of MIMEcroft_fb.sh can actually find.
+    MIME_WINDOW=0 MIME_FRAMES=$budget MIME_KEYS="$WORK/keys" MIME_OUT="$WORK/a.ppm" FBCMD="$WORK/fbcmd.log" FBREFR="$FBREFR" \
+        timeout -k 2 300 bash "$WORK/bashref.sh" > "$WORK/sa.log" 2>/dev/null
     if [ ! -f "$WORK/a.ppm" ]; then
         echo "FATAL: case produced no reference image (real bash failed)"
         printf 'on:\n%s\n' "$keys"
+        sed 's/^/  bash| /' "$WORK/sa.log"
         exit 2
     fi
+    sa=$(grep -m1 'frames, cell' "$WORK/sa.log")
     printf '%s\n' "$keys" > "$WORK/keys"
-    rm -f "$WORK/b.ppm"
     # A TIMEOUT ON THE NATIVE RUN, and it is not a nicety. The game's
     # input is a DEVICE call (fb_input_line), and a device that opens a
     # terminal belonging to another process group is stopped by the
@@ -325,9 +376,26 @@ for keys in "${CASES[@]}"; do
     # `timeout -k` also supplies the follow-up KILL, which is what
     # actually clears a stopped process, so the shell is not left
     # holding a corpse that outlives the case.
-    sb=$(MIME_FRAMES=$budget MIME_KEYS="$WORK/keys" MIME_OUT="$WORK/b.ppm" \
-        timeout -k 2 120 "$WORK/mimecroft_fb" 2>/dev/null | head -1)
+    #
+    # THE STATUS LINE IS FOUND BY ITS CONTENT, NOT ITS POSITION. The
+    # program now prints which surface it got before the first frame,
+    # which is the right thing for a person running it and shifts
+    # every line this harness used to read with `head -1`. Selecting on
+    # "frames, cell" is what keeps the failure reports honest: a
+    # positional read would have printed the surface line for all 25
+    # cases, and every FAIL block would have shown two identical lines
+    # and said nothing at all about the difference it was written to
+    # explain.
+    sb=$(MIME_WINDOW=0 MIME_FRAMES=$budget MIME_KEYS="$WORK/keys" MIME_OUT="$WORK/b.ppm" \
+        timeout -k 2 120 "$WORK/mimecroft_fb" 2>/dev/null | grep -m1 'frames, cell')
     rc=$?
+    if [ -z "$sb" ]; then
+        # A window on a display nobody is watching, or a device that
+        # drew nothing at all, ends up here rather than in a diff.
+        echo "FATAL: the native run printed no status line on:"
+        printf '%s\n' "$keys"
+        exit 2
+    fi
     if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
         echo "FATAL: the native run did not finish (rc=$rc) on:"
         printf '%s\n' "$keys"
@@ -537,15 +605,24 @@ for p in (kf + '.pos', kf, out):
     try: os.unlink(p)
     except OSError: pass
 open(kf, 'w').write('\n'.join(keys) + '\n')
-env = dict(os.environ, MIME_FRAMES=str(len(keys)), MIME_KEYS=kf, MIME_OUT=out)
+# MIME_WINDOW=0 for the same reason the case loop sets it: the probe
+# runs the real binary on this box, which HAS a display, and a probe
+# that opens a window is a probe whose result depends on whether X is
+# up. Headless is the answer to "can this maze be walked to a chest?".
+env = dict(os.environ, MIME_WINDOW='0', MIME_FRAMES=str(len(keys)), MIME_KEYS=kf, MIME_OUT=out)
 r = subprocess.run([game], env=env, capture_output=True, text=True, timeout=120)
 # the key file is the probe's scratch, not something to leave in the
 # source tree for the next run to trip over
 for p in (kf + '.pos', kf):
     try: os.unlink(p)
     except OSError: pass
-line = r.stdout.strip().split('\n')[0] if r.stdout.strip() else '(no output)'
-print(line)
+# The game's STATUS line, by content. It is not the first line any
+# more - the program says which surface it got before the first frame,
+# and reading position 0 here returned that line, so the probe printed
+# "window 320 x 240 on :0" where a frame count belongs and the suite
+# below could not tell a won game from a hung window.
+status = [l for l in r.stdout.split('\n') if 'frames, cell' in l]
+print(status[0] if status else '(no status line)')
 PY
 )
 case "$found" in
