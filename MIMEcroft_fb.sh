@@ -49,37 +49,51 @@
 #   GAME changes either way: same world, same camera, same payload.
 #
 # HOW TO RUN
-#   # play it, in a window, with the keyboard (this is the default):
+#   # PLAY IT. This is the default and it is a GAME, not a screenshot:
+#   # a 320x240 window, no frame limit, w/a/s/d to walk, '.' or Esc to
+#   # quit. It does not return until you stop it, which is what a game
+#   # does and what used to not happen.
 #   /home/llm/sh2loop/bash-o4/target/debug/bash-O4 -o ./mimecroft MIMEcroft_fb.sh
 #   ./mimecroft
 #   -> a window. w/a/s/d move, q/e turn, r restarts, . or Esc quits.
 #
-#   # headless: one frame to a PPM, no window, no input needed
-#   # (MIME_FRAMES unset = 1 frame):
-#   MIME_WINDOW=0 /home/llm/sh2loop/bash-o4/target/debug/bash-O4 MIMEcroft_fb.sh
+#   # a ONE-FRAME SCREENSHOT (headless, no input needed): ask for one.
+#   MIME_WINDOW=0 MIME_FRAMES=1 /home/llm/sh2loop/bash-o4/target/debug/bash-O4 MIMEcroft_fb.sh
 #   -> /tmp/mimecroft-fb.ppm
+#
+#   # script a walk (headless; one key per line in the key file):
+#   printf 'w\nw\ne\nw\n' > /tmp/keys
+#   MIME_FRAMES=6 MIME_KEYS=/tmp/keys MIME_OUT=/tmp/frame.ppm ./mimecroft
+#
+#   # THE FRAME BUDGET IS OPT-IN, and this is the second most-reported
+#   # thing about this program, so the rule is stated once here:
+#   #
+#   #     (unset)        NO budget — a game, until '.' / Esc / close
+#   #     MIME_FRAMES=n  stop after n frames
+#   #
+#   # It used to be the other way round: unset meant ONE frame, so the
+#   # default command printed a window, ran a single frame and exited,
+#   # and the status line said "1 frames" — which reads exactly like a
+#   # crash. A budget is a request for when to STOP, so it cannot be
+#   # the default of a program you are supposed to play. MIME_FRAMES=0
+#   # and unset mean the same thing (no budget) rather than the two
+#   # disagreeing, which is the other half of that bug.
 #
 #   # a native binary you can run on its own:
 #   /home/llm/sh2loop/bash-o4/target/debug/bash-O4 -o ./mimecroft MIMEcroft_fb.sh
 #   ./mimecroft
-#
-#   # PLAY IT, on a terminal, with the keyboard:
-#   MIME_FRAMES=0 ./mimecroft
-#   MIME_FRAMES=0 means NO frame budget: the loop runs until you press
-#   `.` (quit) or Escape, or close the window. It used to mean "one
-#   frame", because frame 1 is already >= 0 — so there was no way to
-#   start the game without a cap, and the obvious way to run it could
-#   not be expressed. Leave MIME_FRAMES unset and you still get
-#   exactly one frame, which is what a screenshot wants.
 #
 #   A keyboard run wants a real terminal: it reads stdin in raw mode.
 #   Redirect stdin, or use MIME_KEYS below, and the walk is scripted.
 #   With a window open the keys come from the X server instead, through
 #   the same key names, so the game's own key handling is unchanged.
 #
-#   # script a walk (headless; one key per line in the key file):
-#   printf 'w\nw\ne\nw\n' > /tmp/keys
-#   MIME_FRAMES=6 MIME_KEYS=/tmp/keys MIME_OUT=/tmp/frame.ppm ./mimecroft
+#   Ctrl-C works, and DOES NOT LEAVE YOUR TERMINAL RAW. That was the
+#   other bug: a game killed by a signal never runs the code that puts
+#   the terminal back, so the shell came back with no echo and wanted
+#   `stty sane` by hand. The input device now handles SIGINT/SIGTERM/
+#   SIGHUP/SIGQUIT, restores the terminal, and re-raises so the process
+#   still stops (and still reports $? = 130).
 #
 #   BASH_O4_SH2PERL is NOT needed for any of the above. The driver finds
 #   the sh2perl runtime on its own, by walking up from its own path
@@ -320,7 +334,36 @@ fmt_pos() { fp_ms=$1
 # ─── game state ─────────────────────────────────────────────────
 KEYS=${MIME_KEYS:-/tmp/mimecroft-keys}
 OUT=${MIME_OUT:-/tmp/mimecroft-fb.ppm}
-FRAMES=${MIME_FRAMES:-1}
+# THE DEFAULT IS NO FRAME BUDGET, and getting that wrong is the single
+# most-reported thing about this program: run the command in this file's
+# own header, get a window for a moment and then the process is gone,
+# and "1 frames" in the status line reads like a crash.
+#
+# The cause was one token. `FRAMES=${MIME_FRAMES:-1}` made UNSET mean
+# "one frame", so the documented default run — the exact command at the
+# top of this file, and the first thing anyone types — rendered a
+# single frame and exited, while this file's own header said the window
+# "update[s] as you walk". The header and the code disagreed, and the
+# code is what runs.
+#
+# It is also backwards as a default. A budget is what you want when you
+# are DONE: a screenshot, a scripted walk, a CI case. A person running
+# a game wants the opposite — no cap, and an explicit quit. So the
+# cap must be the thing you ASK for:
+#
+#     (unset)             no budget: runs until '.' / Esc / close
+#     MIME_FRAMES=n       stop after n frames (a screenshot, a walk)
+#
+# An UNSET variable is "no budget" and an explicit 0 is also "no
+# budget", so the two spellings of the interactive case agree rather
+# than disagree — the old reading of 0 as "one frame", because frame 1
+# is already >= 0, is gone with it.
+#
+# The headless cases below do NOT rely on this default. The equivalence
+# harness sets MIME_FRAMES to a per-case budget explicitly, which is
+# what a case wants anyway: a budget is a test's business, not a
+# default's.
+FRAMES=${MIME_FRAMES:-0}
 # MIME_WINDOW is the OFF switch, because a window is the DEFAULT now.
 # It used to be MIME_VIEW as the ON switch, which meant the thing you
 # got with no environment at all was a file and no picture — and the
@@ -788,13 +831,21 @@ while :; do
   # the frame IS on screen; now honour a quit requested before it
   if [ "$quitting" -eq 1 ]; then break; fi
   # A budget of 0 (or less) means NO budget: the loop then runs until
-  # the quit key or a signal. It used to mean "one frame", because
-  # frame 1 is already >= 0, so there was no way to start the game
-  # without a frame cap — the documented way to play it, with a live
-  # keyboard and no key file, could not be expressed. The at-least-one-
-  # frame behaviour is kept by testing the budget only when it is set,
-  # so MIME_FRAMES unset still renders exactly one frame and exits,
-  # which is what a screenshot wants.
+  # the quit key, or a signal (which the device's own signal handler
+  # turns into a clean stop that also gives the terminal back).
+  #
+  # The budget is tested only when it is POSITIVE, so 0 and unset are
+  # the same request — run forever — and the number of frames is
+  # compared only once a budget exists. This is what makes the default
+  # a game: MIME_FRAMES unset gives FRAMES=0, nothing below fires, and
+  # the loop ends on '.' / Esc / a closed window / Ctrl-C.
+  #
+  # It USED TO be that unset meant "one frame", and the at-least-one-
+  # -frame behaviour was preserved here by testing the budget only when
+  # it was set. That kept `MIME_FRAMES=0` meaning "one frame" too,
+  # because 0 is unset-shaped to `:-`. Both spellings of the
+  # interactive case were therefore unusable, and the default run
+  # rendered one frame and exited while the header promised a game.
   if [ "$FRAMES" -gt 0 ] && [ "$frame" -ge "$FRAMES" ]; then break; fi
 done
 
