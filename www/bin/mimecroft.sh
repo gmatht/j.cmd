@@ -4338,6 +4338,17 @@ print_stats() {
     # swap-side blend (incl. upload + flash). Reported as µs PER
     # OPERATION (the per-frame average hid sub-ms work behind the idle
     # frames — only 44/858 frames touch the HUD here).
+    # THE DEVICE IS ALLOWED TO HAVE NOTHING TO SAY. /dev/webgl/stats is a
+    # gl-side counter dump, and it only exists when there IS a gl device:
+    # real bash has no /dev/webgl to read, and the native fb0 device has
+    # its own timing (it never answers this one). The read then yields the
+    # empty string, all six fields come back empty, and the two `[ -gt 0 ]`
+    # guards below failed with "integer expression expected" — twice per
+    # run, on the very machines that CAN run the script. The `-n` guard is
+    # the device's own contract: absent stats means "no gl counters to
+    # report", which is not an error and not something to divide by.
+    # (No `2>/dev/null`: the read is silent either way, and suppressing a
+    # genuinely missing device would hide the case that caused this.)
     lt_s=$(cat /dev/webgl/stats)
     read_tex_field
     glh_r=$f
@@ -4352,8 +4363,11 @@ print_stats() {
     glh_rw=0
     glh_uw=0
     glh_cw=0
-    if [ "$glh_w" -gt 0 ]; then glh_rw=$(( glh_r / glh_w )); fi
-    if [ "$glh_n" -gt 0 ]; then
+    # `-n` FIRST: an empty field is not a zero, it is an absent device.
+    # Without it, `[ "" -gt 0 ]` is a shell error on stdout (it does not
+    # stop the run, which is what made it easy to leave in).
+    if [ -n "$glh_w" ] && [ "$glh_w" -gt 0 ]; then glh_rw=$(( glh_r / glh_w )); fi
+    if [ -n "$glh_n" ] && [ "$glh_n" -gt 0 ]; then
       glh_uw=$(( glh_u / glh_n ))
       glh_cw=$(( glh_c / glh_n ))
     fi
