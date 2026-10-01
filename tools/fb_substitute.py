@@ -159,7 +159,16 @@ RULES = [
 
     # ── what has no native equivalent, and why ─────────────────────
     (r'echo "link" > /dev/webgl/program\n', '', 'w'),
-    (r'swgl_p=\$\(cat /dev/webgl/program\)\n', '', 'r'),
+    # The link REPORT is read back and matched against `*program: linked*`.
+    # There is no link to fail (the fragment program is transcribed into
+    # the native device), so the honest substitution is not to DELETE the
+    # read — that leaves the variable unset, the case arm falls through to
+    # its failure branch, and the game announces "shader link FAILED — the
+    # 3D view will not render" on a run whose 3D view works, then proceeds
+    # down the code path that believes it has no shader. Stub the report
+    # instead, so the branch is taken or not on the device's actual state.
+    (r'swgl_p=\$\(cat /dev/webgl/program\)',
+     r'swgl_p="program: linked (native device)"', 'r'),
     (r'echo "reset" > /dev/webgl/stats\n', '', 'w'),
     (r'lt_s=\$\(cat /dev/webgl/stats\)', r'lt_s=""', 'r'),
     (r'st=\$\(cat /dev/webgl/state\)', r'st="headless"', 'r'),
