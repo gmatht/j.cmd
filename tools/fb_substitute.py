@@ -94,7 +94,16 @@ RULES = [
     (r'echo "\$lt_preview" > /dev/webgl/hud', r'fb_overlay "$lt_preview"', 'w'),
     (r'echo "\$tt_line" > /dev/webgl/hud', r'fb_overlay "$tt_line"', 'w'),
     (r'echo "C" > /dev/webgl/hud', r'fb_overlay "C"', 'w'),
-    (r'(?s)R 0\.580 -0\.11 0\.44 0\.44 30 1\.0 0\.82 0\.2 0\.45\n'
+    # THE LEADING `echo "` IS PART OF THE MATCH. Without it the rule consumes
+    # only the payload and the closing `" > /dev/webgl/hud/flash`, leaving the
+    # original `echo "` behind, so the substitution produced
+    #     echo "fb_overlay_flash "R 0.580 ... 1.0"
+    # — four unescaped quotes and a command that never closes. The stray `echo`
+    # opened a double-quoted string that swallowed the rest of the file, which
+    # is why the generated script failed `bash -n` with "unexpected end of
+    # file" while the original passed: every later construct was inside that
+    # string. Matching the `echo "` makes the replacement whole.
+    (r'(?s)echo "R 0\.580 -0\.11 0\.44 0\.44 30 1\.0 0\.82 0\.2 0\.45\n'
      r'R 0\.575 -0\.11 0\.10 0\.10 75 1\.0 1\.0 0\.9 1\.0" > /dev/webgl/hud/flash',
      r'fb_overlay_flash "R 0.580 -0.11 0.44 0.44 30 1.0 0.82 0.2 0.45\n'
      r'R 0.575 -0.11 0.10 0.10 75 1.0 1.0 0.9 1.0"', 'w'),

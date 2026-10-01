@@ -456,7 +456,7 @@ cache_sound() { cs_name=$1
     # strip through the CLOSING quote of the `. "$sl_dir/sound-lib.sh"`
     # line (the pattern includes the `"` — a separate `#\"` strip is
     # mis-transpiled in sequence)
-    ss_post=${ss_x##*sound-lib.sh"}
+    ss_post=${ss_x##*sound-lib.sh\"}
     # the lib read strips trailing newlines — keep one between the
     # inlined lib and the script (a glued `}#!` breaks both parsers)
     echo "$sl_x
@@ -1168,7 +1168,7 @@ gen_maze() {
   # the maze border is INDESTRUCTIBLE obsidian — a solid perimeter the
   # player can never mine through. Lay the ring LAST so it overwrites
   # any border cells the drunkard's walk carved. Bounds go through
-  # PLAIN vars: a `$((…))` inside a multi-test `||` chain (and a `\`
+  # PLAIN vars: a `$((…))` inside a multi-test `||` chain (and a
   # line continuation) is not parsed reliably — it silently dropped the
   # z-tests, leaving only the x=0/z=0 edges obsidian.
   gm_bx=$((MAP_W - 1))
@@ -2524,7 +2524,7 @@ glyph_index() { gi_ch=$1
     x) gi=63 ;;
     y) gi=64 ;;
     z) gi=65 ;;
-    ;) gi=69 ;;
+    ';') gi=69 ;;
     _) gi=70 ;;
     *) gi=36 ;;
   esac
@@ -4446,7 +4446,7 @@ main() {
     # NOTE: the quoted glob *"program: linked"* transpiles to a regex with
     # LITERAL quotes (a case-lowering bug) and never matches — keep the
     # pattern unquoted (bash case patterns don't need the quotes)
-    *program: linked*) echo "  shaders: bash-authored (sh2glsl)" ;;
+    *"program: linked"*) echo "  shaders: bash-authored (sh2glsl)" ;;
     *) echo "  !!! shader link FAILED — the 3D view will not render:"
        cat /dev/webgl/log ;;
   esac
@@ -4687,7 +4687,7 @@ main() {
     update_crouch
     # muzzle flash lifetime: a few loop frames of flash, then force a
     # clear render so the flash doesn't linger frozen on a static scene.
-    # `dirty` is a DEAD flag (the view_key cache made it a no-op), so
+    # 'dirty' is a DEAD flag (the view_key cache made it a no-op), so
     # the expiry needs its own flag or the retained back buffer keeps
     # showing the last flash frame until the next camera move.
     if [ "$muzzle" -gt 0 ]; then
