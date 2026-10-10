@@ -4078,6 +4078,43 @@ start_level() {
   # iterations, un-bucketed; the initial level runs before the loop)
   gtick
   r_st0=$g_now
+  # RESET THE RNG. `seed` is initialised once at the top of the file and
+  # `rand()` mutates it, so without this the maze for level N depends on
+  # how many rand() calls levels 1..N-1 happened to make — i.e. on how the
+  # player played. Measured: with seed=20240812, 0 vs 1 prior rand() calls
+  # already give different mazes, and the same seed at the same level
+  # number produced different maps after a quiet vs a busy level 1. The
+  # menu's AI preview is the loudest case: preview_start() calls
+  # start_level and its wanderings consume rand(), so lingering on the
+  # settings screen silently reseeded the player's level 1.
+  #
+  # That is the opposite of what this function is for ("A fresh level:
+  # regenerate the maze + treasures" — see the block comment above), and
+  # a seed that changes meaning with play history is not a seed. Resetting
+  # here makes a level's maze a function of (seed, level) alone. The
+  # equivalence harness already models it this way: its Python side starts
+  # from a fresh `seed = 20240812` and runs gen_maze immediately, so this
+  # brings the shell in line with the oracle rather than away from it.
+  seed=20240812
+  # MIX IN THE LEVEL, or every level is the identical board. gen_maze
+  # never reads `level` itself; with a flat `seed=20240812` reset, level 2
+  # generated exactly level 1 again (measured) — a 10-level game of ten
+  # copies of the same maze, which is a worse bug than the one being
+  # fixed. Seeding by (seed, level) keeps a level's maze independent of
+  # PLAY HISTORY while still differing per level.
+  #
+  # The advance is level-1, not level, and that is deliberate: the
+  # equivalence harness's Python oracle starts from a fresh seed and runs
+  # gen_maze immediately, i.e. it models level 1 with ZERO prior draws.
+  # Advancing `level` times made the shell's level 1 differ from the
+  # oracle (measured), which would have failed all 25 cases. level-1
+  # keeps level 1 byte-identical to the oracle and still gives each later
+  # level its own maze.
+  lv_s=1
+  while [ "$lv_s" -lt "$level" ]; do
+    seed=$(((seed * 48271) % 2147483647))
+    lv_s=$((lv_s + 1))
+  done
   # the transpiled shell's async store needs a macrotask yield between
   # the phase functions (the same reason main() sleeps between its
   # startup phases) — back-to-back calls let the map writes pile up and
