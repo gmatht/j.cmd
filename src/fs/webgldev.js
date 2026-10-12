@@ -194,6 +194,9 @@ export class WebGLDevice {
     this._hudUvLoc = null;
     this._hudTexLoc = null;
     this._lastSwapAt = 0;            // for key-steal timeout after a game ends
+    this._frameCache = "";           // last presented frame's data URL (set at
+                                    // swap; chunk reads slice this snapshot so
+                                    // a multi-read dump can't tear)
     // HUD GL timing accumulators (µs, reset via write("reset") to
     // /dev/webgl/stats): raster = the 2D-canvas layer rasterization
     // (in the /dev/webgl/hud write), upload = the texImage2D/
@@ -676,6 +679,14 @@ export class WebGLDevice {
       if (this._canvas) this._canvas.style.display = "block";
       this._setGameActive(true);
       this._lastSwapAt = Date.now();
+      // Snapshot the presented frame for chunked reads: a 960×675 PNG
+      // data URL is ~500KB, which no single shell device read can carry
+      // (the transpiled shell truncates giant reads — the --first-frame
+      // dump landed 0 bytes). The game reads it back in 32KB slices via
+      // /dev/webgl/frame/<i>; caching here keeps every slice from the
+      // same present (a re-read per slice would re-encode and could tear
+      // if anything drew between slices).
+      try { this._frameCache = this._frameDataURL(); } catch { /* keep last */ }
       this._lastCall = raw.trim();
       return;
     }
@@ -1304,7 +1315,18 @@ export class WebGLDevice {
       return `${this._glHudRasterUs}\t${this._glHudUploadUs}\t${this._glHudCompositeUs}\t${this._glHudCalls}\t${this._glHudCompCalls}\n`;
     }
     if (parts[0] === "log") return this._log + "\n";
-    if (parts[0] === "frame") return this._frameDataURL();
+    if (parts[0] === "frame") {
+      // /dev/webgl/frame — whole data URL (may exceed what one shell
+      // read can carry; prefer the chunked form below for dumps).
+      // /dev/webgl/frame/<i> — 32KB slice i of the LAST SWAPPED frame
+      // (the swap-time snapshot, so slices can't tear). Slice past the
+      // end reads empty (the dump loop's terminator).
+      if (parts.length === 1) return this._frameDataURL();
+      const i = Number(parts[1]);
+      if (!Number.isInteger(i) || i < 0) throw new Error("frame chunk: expected /dev/webgl/frame/<n>");
+      const CH = 32768;
+      return this._frameCache.slice(i * CH, i * CH + CH);
+    }
     if (parts[0] === "call") return this._lastCall + "\n";
     if (parts[0] === "key") {
       const keys = this._keys;

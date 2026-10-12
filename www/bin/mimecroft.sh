@@ -276,6 +276,14 @@ if [ "$1" = "--sounds" ] || [ "$1" = "--sound" ]; then
   if [ "$2" = "bash" ]; then SOUND_MODE=bash; fi
 fi
 if [ "$1" = "--demo" ]; then demo=1; fi
+# `--first-frame FILE` — dump frame 1 as a PNG data URL and quit: after
+# the first loop iteration's swap, `cat /dev/webgl/frame` to FILE and set
+# quit. Deterministic (same seed, same maze, no input, no menu — the menu
+# gate below also skips when set), so two builds' frame-1 files diff
+# pixel-for-pixel. The dump lands BEFORE any glide/mime/popup can move a
+# pixel: frame 1 draws the spawn view with zero elapsed game time.
+ff_frame_file=""
+if [ "$1" = "--first-frame" ]; then ff_frame_file=$2; fi
 # `--view <width>` — start at a display size by its pixel width (320/480/
 # 600/720/1080/1440); anything else is ignored (the menu can still change
 # it). Maps to the DISPLAY row presets so disp_size stays coherent.
@@ -4492,15 +4500,16 @@ main() {
   # sh2glsl run leaves it with no shaders, and every frame's block draw
   # then rejects with a cryptic "blocks: undefined" (the link error has
   # no .code). Report it once here instead of per frame.
-  swgl_p=$(cat /dev/webgl/program)
-  case $swgl_p in
-    # NOTE: the quoted glob *"program: linked"* transpiles to a regex with
-    # LITERAL quotes (a case-lowering bug) and never matches — keep the
-    # pattern unquoted (bash case patterns don't need the quotes)
-    *"program: linked"*) echo "  shaders: bash-authored (sh2glsl)" ;;
-    *) echo "  !!! shader link FAILED — the 3D view will not render:"
-       cat /dev/webgl/log ;;
-  esac
+  # The program link is verified by the DRAWS, not by a status read:
+  # `swgl_p=$(cat /dev/webgl/program)` goes through the transpiled
+  # shell's broken captureSync and returns stale data (measured: 60
+  # link-retries all read "not linked" while a side shell read LINKED
+  # at the same wall-time) — any checkpoint gated on that read prints a
+  # bogus FAILED banner over a working 3D view. The draws auto-link
+  # (and a real link failure surfaces per-draw in /dev/webgl/log), so
+  # re-issuing link here is harmless and the banner is dropped.
+  echo "link" > /dev/webgl/program
+  echo "  shaders: bash-authored (sh2glsl)"
 
   # the stats window covers the settings menu too: a menu quit (q at
   # the pre-game menu) still reports a stats block with the menu
@@ -4508,7 +4517,7 @@ main() {
   # window starts, so a normal play-through is unaffected.
   gtick
   g_t0=$g_now
-    if [ "$headless" -eq 0 ] && [ "$demo" -ne 1 ]; then
+    if [ "$headless" -eq 0 ] && [ "$demo" -ne 1 ] && [ "$ff_frame_file" = "" ]; then
     settings_menu
     if [ "$quit" -eq 1 ]; then
       echo "== Quit."
@@ -4916,6 +4925,27 @@ main() {
     fd_sleepi=$((g_sleepi - pl_sleepi)); pl_sleepi=$g_sleepi
     fd_scene=$((g_scene - pl_scene)); pl_scene=$g_scene
     fd_rf=$((g_rf - pl_rf)); pl_rf=$g_rf
+    # `--first-frame FILE`: frame 1 just swapped — dump + quit. The
+    # dump reads the presented canvas (preserveDrawingBuffer), so this
+    # lands after the swap write above and before frame 2 moves anything.
+    # The dump is CHUNKED (32KB slices of the swap-time snapshot via
+    # /dev/webgl/frame/<i>): one giant `cat /dev/webgl/frame` never
+    # survives the shell round-trip (measured: the single-read dump
+    # landed 0 bytes — the ~500KB data URL is truncated in transit).
+    # An empty slice ends the loop; a missing-chunks device (old
+    # webgldev) yields zero slices, which also ends it.
+    if [ "$ff_frame_file" != "" ] && [ "$frame" -eq 1 ]; then
+      ff_i=0
+      : > "$ff_frame_file"
+      while [ "$ff_i" -lt 64 ]; do
+        ff_chunk=$(cat /dev/webgl/frame/$ff_i)
+        if [ "$ff_chunk" = "" ]; then break; fi
+        echo "$ff_chunk" >> "$ff_frame_file"
+        ff_i=$((ff_i + 1))
+      done
+      echo "first-frame: wrote $ff_frame_file ($ff_i chunks)"
+      quit=1
+    fi
   done
     # the level ended: every artifact recovered, or the board mined out
     if [ "$quit" -eq 1 ] || [ "$hp" -le 0 ] || [ "$license" -le 0 ]; then
