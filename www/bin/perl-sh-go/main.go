@@ -34,12 +34,11 @@
 package pllib
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
-
-	shiremit "github.com/gmatht/sh2loop/frontends/shir-emit-go"
 )
 
 // ── tokens ───────────────────────────────────────────────────────────
@@ -2185,6 +2184,169 @@ func Shir(src string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	prog := &shiremit.Program{Stmts: stmts}
-	return shiremit.Emit(prog)
+	prog := &shiremitProgram{Stmts: stmts}
+	return shiremitEmit(prog)
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// The A1 emitter, INLINED from upstream shir-emit-go (package shiremit)
+// by sync-frontends.sh: the merged busybox is one stdlib-only file, so
+// the emitter ships inside the frontend instead of as a module import.
+// The JSON it emits is unchanged.
+// ─────────────────────────────────────────────────────────────────────
+
+// Package shiremit builds and emits the A1 shIR JSON contract.
+//
+// The contract is defined in sh2perl/src/shir_json.rs (and the matching
+// deserializer in shir_json_in.rs). This Go package is the
+// single-source-of-truth for the A1 JSON shape used by all
+// ANTLR4+Go frontends (py-sh-go, posix-sh-go, perl-sh-go, go-sh).
+// It replaces the deferred #4 serde-derive refactor (in Rust) with
+// the equivalent in Go: one Emitter, one Program type, one JSON shape.
+//
+// The emitted JSON MUST be byte-identical to the core's
+// shir_json.rs output for the same program. encoding/json on
+// map[string]any produces alphabetically-sorted keys (matching
+// serde_json's BTreeMap), which is what the contract requires.
+//
+// Usage:
+//
+//	prog := &shiremitProgram{...}
+//	b, err := shiremitEmit(prog)
+//	// b is the A1 JSON, ready to write to stdout or feed to
+//	// otranspilerl-cli --shir-in-estree for the round-trip / ingress test.
+
+// shiremitContractVersion must match sh2perl/src/shir_json.rs CONTRACT_VERSION.
+const shiremitContractVersion = 1
+
+// shiremitProgram is the top-level A1 shIR program.
+//
+// The JSON field order is alphabetical (encoding/json sorts map keys).
+// The struct fields below are exported for programmatic construction;
+// the emitted JSON is a map[string]any (sorted), not a Go struct
+// literal, so the JSON shape is the contract — not these struct tags.
+type shiremitProgram struct {
+	Imports                 []string          `json:"imports"`
+	Requires                []string          `json:"requires"`
+	VarTypes                []shiremitVarType `json:"var_types"`
+	Subs                    []shiremitSub     `json:"subs"`
+	Stmts                   []map[string]any  `json:"stmts"`
+	shiremitContractVersion int               `json:"contract_version"`
+	Type                    string            `json:"type"` // always "shiremitProgram"
+}
+
+type shiremitVarType struct {
+	Name string `json:"name"`
+	// A widthless verdict ("Int"/"Str"/"Any") or a sized object
+	// ({"kind":"Float","width":64} — see shiremitFloatType). encoding/json
+	// sorts map keys, so the object form is byte-identical to the
+	// core's shir_json.rs output for the same IrType.
+	Type any `json:"type"`
+}
+
+// shiremitFloatType is the A1 var_types object for an IEEE-754 double
+// ({"kind":"Float","width":64}, matching IrType::Float(64)).
+func shiremitFloatType(width int) map[string]any {
+	return map[string]any{"kind": "Float", "width": width}
+}
+
+type shiremitSub struct {
+	Type   string           `json:"type"` // "Sub"
+	Name   string           `json:"name"`
+	Params []string         `json:"params"`
+	Body   []map[string]any `json:"body"`
+}
+
+// Emit serializes prog to the A1 shIR JSON, byte-equivalent to the
+// core's shir_json.rs output for the same program (sorted keys,
+// contract_version field, etc.).
+func shiremitEmit(prog *shiremitProgram) ([]byte, error) {
+	// Build the top-level map (sorted by encoding/json).
+	// We use map[string]any so keys sort alphabetically on marshal.
+	// Empty (non-nil) slices ensure "[]" not "null" in the JSON, matching
+	// the contract exactly.
+	imports := prog.Imports
+	if imports == nil {
+		imports = []string{}
+	}
+	requires := prog.Requires
+	if requires == nil {
+		requires = []string{}
+	}
+	v := map[string]any{
+		"type":             "Program",
+		"contract_version": shiremitContractVersion,
+		"imports":          imports,
+		"requires":         requires,
+		"var_types":        shiremitToAnySlice(prog.VarTypes),
+		"subs":             shiremitToAnySubs(prog.Subs),
+		"stmts":            shiremitToAnyStmts(prog.Stmts),
+	}
+	return json.Marshal(v)
+}
+
+// shiremitEmitToMap returns the program as a map[string]any (sorted keys when
+// later marshaled). Useful for tests that need the JSON shape without
+// the final marshal step.
+func shiremitEmitToMap(prog *shiremitProgram) map[string]any {
+	imports := prog.Imports
+	if imports == nil {
+		imports = []string{}
+	}
+	requires := prog.Requires
+	if requires == nil {
+		requires = []string{}
+	}
+	return map[string]any{
+		"type":             "Program",
+		"contract_version": shiremitContractVersion,
+		"imports":          imports,
+		"requires":         requires,
+		"var_types":        shiremitToAnySlice(prog.VarTypes),
+		"subs":             shiremitToAnySubs(prog.Subs),
+		"stmts":            shiremitToAnyStmts(prog.Stmts),
+	}
+}
+
+// --- helpers to convert typed slices to map slices (so the emitted
+// JSON has alphabetically-sorted keys via map[string]any) ---
+
+func shiremitToAnySlice(vs []shiremitVarType) []any {
+	out := make([]any, len(vs))
+	for i, v := range vs {
+		out[i] = map[string]any{"name": v.Name, "type": v.Type}
+	}
+	return out
+}
+
+func shiremitToAnySubs(subs []shiremitSub) []any {
+	out := make([]any, len(subs))
+	for i, s := range subs {
+		out[i] = map[string]any{
+			"type":   s.Type,
+			"name":   s.Name,
+			"params": s.Params,
+			"body":   shiremitToAnyStmts(s.Body),
+		}
+	}
+	return out
+}
+
+func shiremitToAnyStmts(stmts []map[string]any) []any {
+	out := make([]any, len(stmts))
+	for i, s := range stmts {
+		out[i] = s
+	}
+	return out
+}
+
+// shiremitSortedKeys returns the keys of m in alphabetical order (for callers
+// that need to inspect the JSON shape).
+func shiremitSortedKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }

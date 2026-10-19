@@ -10,6 +10,7 @@ clobbered the vendored-only adapters and twice shipped a stale wasm):
 ```
 ./sync-frontends.sh [--check]   # 1. vendor latest sh2loop frontends
 ./build-wasm-busybox.sh         # 2. rebuild the merged wasm (~2 min)
+node __busybox-corpus-gate.mjs  # 2b. every example parses (all frontends)
 ./import-testdata.sh <lang>     # 3. import new corpus examples
 ./gate-bisect.sh <file> <lang>  # 4. (on failure) blame the right layer
 ./deploy.sh [--allow-dirty]     # 5. gates + push + rsync
@@ -27,10 +28,18 @@ It enforces, in order:
    pure-Go tokenizer is never touched (only by hand, deliberately).
 2. **copy** — plus warnings for new upstream `.go` files the table
    doesn't cover, and for missing upstream files.
-3. **vendored-only adapters** (idempotent — safe to re-run):
+3. **vendored-only adapters** (idempotent — safe to re-run; needs
+   `gofmt` on PATH):
    - `bat-sh-go`: `Shir` wrapper around upstream `Parse`
    - `go-sh`: drop the `runtime/debug` import + `PANICSTACK` stack dump
      (the browser GOROOT bundle lacks it; diagnostic-only upstream)
+   - `bat` / `go` / `fish` / `perl` / `py`: replace the
+     `shir-emit-go` module import with an inlined copy of
+     `www/bin/shir-emit-go/emit.go` (`shiremit*` names). The merged
+     busybox is ONE stdlib-only file: a module import cannot be
+     resolved by the in-browser toolchain, and dropping it silently
+     (the old behaviour) only built because a `sh2loop` checkout
+     supplied `replace` targets. The emitted JSON is unchanged.
 4. **post-copy guard** — the vendored tree must be stdlib-clean
    afterward (catches an adapter whose anchors moved upstream).
 
@@ -44,6 +53,22 @@ stdlib-only `main.go` and compiles with the in-browser Go toolchain.
 After any sync, bump `BUSYBOX_VERSION` in `src/busybox.js` (cache-buster
 for the staged VFS copy) and smoke-test every frontend through
 `busyboxA1()` before committing.
+
+The corpus gate is scripted — it stages the prebuilt wasm the same way
+`otranspiler.html` does and parses every example the page lists:
+
+```
+node __busybox-corpus-gate.mjs                       # all 9 languages
+node __busybox-corpus-gate.mjs --lang py,go
+# A/B against the wasm currently in git (proves a re-sync is a no-op):
+git show HEAD:www/wasm-bin/otranspiler-busybox.wasm > /tmp/old.wasm
+node __busybox-corpus-gate.mjs --changed-from /tmp/old.wasm
+```
+
+It exits 1 on a *broken* parse (wasm/runner failure, malformed A1). A
+frontend *refusal* (unsupported subset feature: the `*_refuse.*` cpp
+examples, `t103_pep695.py`, sh files that leaked into the go dir) is
+counted, not failed — add `--fail-on-refuse` to make it fatal.
 
 ## 3. import-testdata.sh <lang>
 

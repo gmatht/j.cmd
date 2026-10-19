@@ -26,13 +26,12 @@ package pylib
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"sort"
 	"strconv"
 	"strings"
-
-	shiremit "github.com/gmatht/sh2loop/frontends/shir-emit-go"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -117,7 +116,7 @@ type Stmt interface{}
 type PrintS struct{ Args []Expr }
 type AssignS struct {
 	Targets []string // "x" or "os.environ[K]" (the raw env name)
-	Op      string   // "=" or augmented ("+=" "-=" "*=" "/=" "%=" "//=" "**=")
+	Op      string   // "=" or "+="
 	Expr    Expr
 }
 type IfS struct {
@@ -169,7 +168,8 @@ type ExceptS struct {
 	Body  []Stmt
 }
 type ImportS struct{}
-type GlobalS struct{}
+type GlobalS struct{ Names []string }
+type NonlocalS struct{ Names []string }
 
 // ─────────────────────────────────────────────────────────────────────
 // Lexer
@@ -288,22 +288,13 @@ func lexLine(src string) []tok {
 			i = j
 			continue
 		}
-		// operators (three-char, then two-char, first)
-		three := ""
-		if i+2 < n {
-			three = src[i : i+3]
-		}
-		if three == "//=" || three == "**=" {
-			toks = append(toks, tok{tOp, three, i})
-			i += 3
-			continue
-		}
+		// operators (two-char first)
 		two := ""
 		if i+1 < n {
 			two = src[i : i+2]
 		}
 		switch two {
-		case "==", "!=", "<=", ">=", "+=", "-=", "*=", "/=", "%=":
+		case "==", "!=", "<=", ">=", "+=", "**", "//":
 			toks = append(toks, tok{tOp, two, i})
 			i += 2
 			continue
@@ -524,7 +515,9 @@ func (p *parser) parseStmt() (Stmt, error) {
 		case "import":
 			return &ImportS{}, nil
 		case "global":
-			return &GlobalS{}, nil
+			return parseScopeNames(toks[1:], "global")
+		case "nonlocal":
+			return parseScopeNames(toks[1:], "nonlocal")
 		case "pass":
 			return nil, nil
 		case "print":
@@ -601,6 +594,33 @@ func (p *parser) parseFunc(toks []tok, indent int) (Stmt, error) {
 		return nil, err
 	}
 	return &FuncS{Name: name, Params: params, Body: body}, nil
+}
+
+// parseScopeNames parses `global a, b` / `nonlocal a, b` name lists.
+// A bare keyword with no names is still a syntax error (never silently
+// dropped: an empty list would claim nothing while the source meant to
+// bind outer scope).
+func parseScopeNames(toks []tok, what string) (Stmt, error) {
+	var names []string
+	for _, t := range toks {
+		if t.kind == tEOF {
+			continue
+		}
+		if t.text == "," {
+			continue
+		}
+		if t.kind != tIdent {
+			return nil, fmt.Errorf("%s: expected name, got %q", what, t.text)
+		}
+		names = append(names, t.text)
+	}
+	if len(names) == 0 {
+		return nil, fmt.Errorf("%s: expected at least one name", what)
+	}
+	if what == "nonlocal" {
+		return &NonlocalS{Names: names}, nil
+	}
+	return &GlobalS{Names: names}, nil
 }
 
 func (p *parser) parseIf(toks []tok, indent int) (Stmt, error) {
@@ -996,7 +1016,7 @@ func findTopLevelAssign(toks []tok) int {
 			depth++
 		case ")", "]":
 			depth--
-		case "=", "+=", "-=", "*=", "/=", "%=", "//=", "**=":
+		case "=", "+=", "-=", "*=", "/=":
 			if depth == 0 {
 				return i
 			}
@@ -1832,7 +1852,7 @@ type lowerer struct {
 	// so an integer whose interval is NOT proven within ±2^53 lowers to
 	// the bigint domain (exact JS BigInt arith); everything proven stays
 	// on the fast Number path. fnSites feeds the param intervals.
-	ranges  map[string][2]*big.Int
+	ranges map[string][2]*big.Int
 	// setElemDom tracks set/list element domains for sorted(): var →
 	// "int" (every recorded element proven within ±2^53) or "big".
 	// Recorded at add()/append() and all-int literals; POISONED
@@ -1840,8 +1860,8 @@ type lowerer struct {
 	// to the legacy pipeline, so a stale verdict can never survive a
 	// reassignment to non-int content.
 	setElemDom map[string]string
-	fnSites map[string][][]Expr // function name → per-call arg lists
-	fnRet   map[string]string   // function name → inferred return type ("list", …)
+	fnSites    map[string][][]Expr // function name → per-call arg lists
+	fnRet      map[string]string   // function name → inferred return type ("list", …)
 	// float-path/bound hoist temp names: the base is context-derived
 	// (floatName — `int(n**0.5)` -> `i_sqrt_n`), a per-context sequence
 	// disambiguates only on collision (usedHoist tracks the names in
@@ -2050,6 +2070,23 @@ func (l *lowerer) typeOf(e Expr) string {
 		if (t.Op == "+" || t.Op == "-" || t.Op == "*" || t.Op == "//" ||
 			t.Op == "%" || t.Op == "**") && floatPath(t) {
 			return "float"
+		}
+		// float-domain propagation (mirror autocython floatDomain):
+		// `+ - * / % // **` on two scalar numbers is a float when —
+		// except for `/` — at least one side is a float. `/` of two
+		// numbers is always float (true division). A side that is
+		// neither int/big/float (a string, list, unknown) keeps the
+		// legacy verdict below.
+		if t.Op == "/" {
+			if isNumType(l.typeOf(t.Lhs)) && isNumType(l.typeOf(t.Rhs)) {
+				return "float"
+			}
+		} else if t.Op == "+" || t.Op == "-" || t.Op == "*" || t.Op == "//" ||
+			t.Op == "%" || t.Op == "**" {
+			lt, rt := l.typeOf(t.Lhs), l.typeOf(t.Rhs)
+			if (lt == "float" || rt == "float") && isNumType(lt) && isNumType(rt) {
+				return "float"
+			}
 		}
 		if t.Op == "+" {
 			lt, rt := l.typeOf(t.Lhs), l.typeOf(t.Rhs)
@@ -2265,6 +2302,9 @@ func truncBig(n *big.Int) *big.Int {
 // be in the same domain or the JS op throws.
 func (l *lowerer) intDom(e Expr) string {
 	switch t := e.(type) {
+	case *LitFloat:
+		// a double literal trivially fits in a JS Number.
+		return "int"
 	case *BinOpE:
 		if l.intDom(t.Lhs) == "big" || l.intDom(t.Rhs) == "big" {
 			return "big"
@@ -2312,12 +2352,21 @@ func (l *lowerer) intDom(e Expr) string {
 		switch l.types[t.Name] {
 		case "big":
 			return "big"
-		case "int":
+		case "int", "float":
+			// a float var holds a double — an exact JS Number, never
+			// a BigInt (BigInt(1.5) throws).
 			return "int"
 		}
 		return "big"
 	}
 	return "big"
+}
+
+// isNumType — a scalar-number type verdict (an int/big/float value).
+// The float-domain rule (typeOf BinOp, noteElemAdd) admits only these;
+// strings, lists, dicts and unknowns keep their legacy verdicts.
+func isNumType(t string) bool {
+	return t == "int" || t == "big" || t == "float"
 }
 
 // floatPath — does this integer-context expression contain a float
@@ -2833,6 +2882,14 @@ func numNode(n int64) map[string]any {
 	return map[string]any{"type": "Int", "value": n}
 }
 
+// boolNode builds an IrExpr::Bool node ({"type":"Bool","value":B}).
+// Python True prints as "True", not "1" — stringifying to "1"/"0"
+// would type as int downstream and change output once declared, so a
+// bool keeps its own node (backends render it per language).
+func boolNode(b bool) map[string]any {
+	return map[string]any{"type": "Bool", "value": b}
+}
+
 // parsePyInt parses a Python integer literal (underscores, 0x/0o/0b
 // prefixes, decimal) into an int64 for typed call args. ok=false when
 // unparseable or out of int64 range — the caller keeps the string form
@@ -3005,6 +3062,17 @@ func functionParamsStmt(name string, params []string, body []map[string]any) map
 	return map[string]any{"type": "Function", "name": name, "params": par, "body": toAnyStmts(body)}
 }
 
+// scopeNamesStmt builds a Global/Nonlocal A1 node: the names a scope
+// binds outward. Absent entirely when empty (callers only build these
+// for non-empty lists, so old emits without them stay byte-identical).
+func scopeNamesStmt(typ string, names []string) map[string]any {
+	arr := make([]any, len(names))
+	for i, n := range names {
+		arr[i] = n
+	}
+	return map[string]any{"type": typ, "names": arr}
+}
+
 func returnStmt(v map[string]any) map[string]any {
 	return map[string]any{"type": "Return", "value": v}
 }
@@ -3106,11 +3174,15 @@ func (l *lowerer) argIR(e Expr) (map[string]any, error) {
 		return st(t.Value), nil
 	case *LitInt:
 		return st(t.Text), nil
+	case *LitFloat:
+		// A float literal in word position is the literal text, exactly
+		// as the core frontend renders the equivalent shell word: the
+		// core types `echo 2.5` as IrExpr::Str("2.5") (there is no
+		// float word node in A1), so st(Text) is byte-identical to it.
+		// Same shape as the LitInt case above — the de-tokenized text.
+		return st(t.Text), nil
 	case *BoolLit:
-		if t.Value {
-			return st("1"), nil
-		}
-		return st("0"), nil
+		return boolNode(t.Value), nil
 	case *NameE:
 		// inside a function body, params read the positionals
 		if pos, ok := l.curParams[t.Name]; ok {
@@ -4402,8 +4474,12 @@ func (l *lowerer) stmtsIR(stmts []Stmt) ([]map[string]any, error) {
 
 func (l *lowerer) stmtIR(s Stmt) ([]map[string]any, error) {
 	switch t := s.(type) {
-	case *ImportS, *GlobalS:
+	case *ImportS:
 		return nil, nil
+	case *GlobalS:
+		return []map[string]any{scopeNamesStmt("Global", t.Names)}, nil
+	case *NonlocalS:
+		return []map[string]any{scopeNamesStmt("Nonlocal", t.Names)}, nil
 	case *PrintS:
 		return l.printIR(t)
 	case *AssignS:
@@ -4838,24 +4914,27 @@ func (l *lowerer) assignOne(target, op string, val Expr) ([]map[string]any, erro
 	// list literal → setArray / setArrayAppend (arr += (...)). `set()` —
 	// an empty Python set — lowers to the empty array (dedup + ordering
 	// happen at sorted(): sort -nu).
-	if lst, ok := val.(*ListE); ok || (func() bool { c, okc := val.(*CallE); return okc && len(c.Path) == 1 && c.Path[0] == "set" && len(c.Args) == 0 })() {
+	if lst, ok := val.(*ListE); ok || (func() bool {
+		c, okc := val.(*CallE)
+		return okc && len(c.Path) == 1 && c.Path[0] == "set" && len(c.Args) == 0
+	})() {
 		var elems []any
 		if lst != nil {
 			for _, el := range lst.Elems {
-			if s, ok := el.(*LitStr); ok {
-				elems = append(elems, st(s.Value))
-				continue
+				if s, ok := el.(*LitStr); ok {
+					elems = append(elems, st(s.Value))
+					continue
+				}
+				if n, ok := el.(*LitInt); ok {
+					elems = append(elems, st(n.Text))
+					continue
+				}
+				ir, err := l.argIR(el)
+				if err != nil {
+					return nil, err
+				}
+				elems = append(elems, ir)
 			}
-			if n, ok := el.(*LitInt); ok {
-				elems = append(elems, st(n.Text))
-				continue
-			}
-			ir, err := l.argIR(el)
-			if err != nil {
-				return nil, err
-			}
-			elems = append(elems, ir)
-		}
 		}
 		l.setType(target, "list")
 		if lst != nil {
@@ -4869,24 +4948,23 @@ func (l *lowerer) assignOne(target, op string, val Expr) ([]map[string]any, erro
 		}
 		return []map[string]any{assignStmt(target, call("setArray", []any{st(target), array(elems)}))}, nil
 	}
-	// aug-assign (x OP= e  ≡  x = x OP e). The int/big path handles the
-	// arithmetic siblings (+= -= *= /= //= %= **=); string += stays the
-	// concat path below (only + concatenates). The composed Bin op is
-	// the aug suffix with "=" stripped ("*=" → "*"); "**=" keeps "**".
-	if op == "+=" || op == "-=" || op == "*=" || op == "/=" || op == "//=" || op == "%=" || op == "**=" {
-		binOp := strings.TrimSuffix(op, "=")
-		// The TARGET must be numeric: `s *= 3` on a string is repeat
-		// (unimplemented — refuse), not arithmetic. Only += has the
-		// string-concat path below, and only for string values.
-		if tty := l.typeOf(&NameE{Name: target}); tty != "int" && tty != "big" && (op != "+=" || tty != "str") {
-			return nil, fmt.Errorf("augmented assignment %q requires a numeric target (got %s)", op, tty)
-		}
+	// aug-assign
+	if op == "+=" {
 		vty := l.typeOf(val)
 		dom := vty
-		if dom != "big" && l.typeOf(&NameE{Name: target}) == "big" {
+		// a float RHS with no float literal (`x += y`, `x += 1`) still
+		// accumulates in the structured Number domain (doubles); only a
+		// literal-float RHS keeps the legacy concat path (floatPath
+		// cannot lower through arithIRDom). The verdict stays float
+		// via tgtTy/vty below.
+		if dom == "float" && !floatPath(val) {
+			dom = "int"
+		}
+		tgtTy := l.typeOf(&NameE{Name: target})
+		if dom != "big" && tgtTy == "big" {
 			dom = "big"
 		}
-		// B1 guard: `v OP= v` grows an unbounded accumulator.
+		// B1 guard: `v += v` doubles an unbounded accumulator.
 		if l.loopDepth > 0 && exprContainsName(val, target) {
 			dom = "big"
 		}
@@ -4926,24 +5004,25 @@ func (l *lowerer) assignOne(target, op string, val Expr) ([]map[string]any, erro
 			} else {
 				ra := rhs["ast"].(map[string]any)
 				rhsAst = ra
-				l.setType(target, "int")
+				// a float operand (or float target) stays float:
+				// `x = 1.5; x += 1` is a double, not an int.
+				if vty == "float" || tgtTy == "float" {
+					l.setType(target, "float")
+				} else {
+					l.setType(target, "int")
+				}
 				delete(l.ranges, target)
 			}
-			ast := arithBin(binOp, arithVar(target), rhsAst)
+			ast := arithBin("+", arithVar(target), rhsAst)
 			if dom == "big" {
 				// the accumulator is bigint-typed: read it exactly as BigInt
 				// too (Cast(Int64, …) is the frontend's exact-BigInt marker;
 				// the core renders a bigint-homed var arg as BigInt(raw || 0)
 				// with no asIntN wrap). Without this, `total` reads as a
 				// Number and `total + BigInt(x)` mixes types (t91).
-				ast = arithBin(binOp, arithCast("Int64", arithVar(target)), rhsAst)
+				ast = arithBin("+", arithCast("Int64", arithVar(target)), rhsAst)
 			}
 			return append(pre, assignStmt(target, arithExpr(ast))), nil
-		}
-		if op != "+=" {
-			// a non-+ aug-assign on a non-numeric value has no lowering
-			// (only string += concatenates) — refuse, don't miscompile.
-			return nil, fmt.Errorf("augmented assignment %q requires a numeric value", op)
 		}
 		// string += → concat
 		rhs, err := l.argIR(val)
@@ -4988,10 +5067,23 @@ func (l *lowerer) assignSimple(target string, val Expr) ([]map[string]any, error
 		return []map[string]any{assignStmt(target, st(v.Text))}, nil
 	case *BoolLit:
 		l.setType(target, "int")
-		if v.Value {
-			return []map[string]any{assignStmt(target, st("1"))}, nil
+		return []map[string]any{assignStmt(target, boolNode(v.Value))}, nil
+	}
+	// float-domain value with no float literal (`y = x + 1` from a float
+	// `x`, `q = 7 / 2` true division): the structured Arith lowering
+	// already evaluates with doubles, so it is kept byte-identical —
+	// only the verdict becomes float. (With a literal present the
+	// arith-string branch below owns the lowering.) The domain is
+	// forced plain ("int"-shaped, no Cast(Int64) BigInt homing — a
+	// double must stay a Number) and loop-growth guards are skipped: a
+	// float accumulator cannot be proven into the exact-int domain.
+	if l.typeOf(val) == "float" && !floatPath(val) {
+		if ir, err := l.arithIRDom(val, "int", false); err == nil {
+			l.setType(target, "float")
+			delete(l.ranges, target)
+			return []map[string]any{assignStmt(target, ir)}, nil
 		}
-		return []map[string]any{assignStmt(target, st("0"))}, nil
+		// else fall through to the legacy paths (which report the error)
 	}
 	// float-path arithmetic (int(x ** 0.5), …) — the runtime arith-string
 	// with JS doubles; the result is an integer-valued string the target
@@ -5001,7 +5093,9 @@ func (l *lowerer) assignSimple(target string, val Expr) ([]map[string]any, error
 		if err != nil {
 			return nil, err
 		}
-		l.setType(target, "int")
+		// the verdict is the value's domain: float for `x = 1.5`, int
+		// for the int-valued `int(x ** 0.5)` idiom.
+		l.setType(target, l.typeOf(val))
 		if lo, hi, ok := l.rangeOf(val); ok {
 			l.ranges[target] = [2]*big.Int{lo, hi}
 		} else {
@@ -5228,25 +5322,25 @@ func (l *lowerer) withIR(t *WithS) ([]map[string]any, error) {
 // Program assembly
 // ─────────────────────────────────────────────────────────────────────
 
-func buildProgram(stmts []Stmt) (*shiremit.Program, error) {
+func buildProgram(stmts []Stmt) (*shiremitProgram, error) {
 	return buildProgramExact(stmts, two53)
 }
 
 // buildProgramExact is buildProgram with an explicit exact-integer
 // ceiling (see lowerer.exactHi).
-func buildProgramExact(stmts []Stmt, exactHi *big.Int) (*shiremit.Program, error) {
+func buildProgramExact(stmts []Stmt, exactHi *big.Int) (*shiremitProgram, error) {
 	l := &lowerer{
-		exactHi: exactHi,
-		fns:     map[string]bool{},
-		types:   map[string]string{},
-		params:  map[string][]string{},
-		pipes:   map[string][][]map[string]any{},
-		ranges:  map[string][2]*big.Int{},
+		exactHi:    exactHi,
+		fns:        map[string]bool{},
+		types:      map[string]string{},
+		params:     map[string][]string{},
+		pipes:      map[string][][]map[string]any{},
+		ranges:     map[string][2]*big.Int{},
 		setElemDom: map[string]string{},
-		fnSites:   map[string][][]Expr{},
-		fnRet:     map[string]string{},
-		usedHoist: map[string]bool{},
-		hoistSeq:  map[string]int{},
+		fnSites:    map[string][][]Expr{},
+		fnRet:      map[string]string{},
+		usedHoist:  map[string]bool{},
+		hoistSeq:   map[string]int{},
 	}
 	l.collectFuncs(stmts)
 	irs, err := l.stmtsIR(stmts)
@@ -5256,12 +5350,16 @@ func buildProgramExact(stmts []Stmt, exactHi *big.Int) (*shiremit.Program, error
 	// A2 var_types: every assigned variable, sorted by name ("big" vars
 	// stay "Int" — the widthless kind the estree backend homes as an
 	// exact-precision binding; the C-only Int64 object kind would wrap
-	// assignments mod 2^64, breaking unbounded Python ints)
-	byName := map[string]string{}
+	// assignments mod 2^64, breaking unbounded Python ints). "float"
+	// vars are IEEE doubles: {"kind":"Float","width":64} (IrType::Float),
+	// additive — backends that ignore the annotation are unaffected.
+	byName := map[string]any{}
 	for name, ty := range l.types {
-		t := "Str"
+		t := any("Str")
 		if ty == "int" || ty == "big" {
 			t = "Int"
+		} else if ty == "float" {
+			t = shiremitFloatType(64)
 		}
 		byName[name] = t
 	}
@@ -5270,15 +5368,15 @@ func buildProgramExact(stmts []Stmt, exactHi *big.Int) (*shiremit.Program, error
 		names = append(names, k)
 	}
 	sort.Strings(names)
-	vt := make([]shiremit.VarType, 0, len(names))
+	vt := make([]shiremitVarType, 0, len(names))
 	for _, k := range names {
-		vt = append(vt, shiremit.VarType{Name: k, Type: byName[k]})
+		vt = append(vt, shiremitVarType{Name: k, Type: byName[k]})
 	}
-	return &shiremit.Program{
+	return &shiremitProgram{
 		Imports:  []string{},
 		Requires: []string{},
 		VarTypes: vt,
-		Subs:     []shiremit.Sub{},
+		Subs:     []shiremitSub{},
 		Stmts:    irs,
 	}, nil
 }
@@ -5317,7 +5415,7 @@ func shir(src string, exactHi *big.Int) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("lower: %w", err)
 	}
-	out, err := shiremit.Emit(prog)
+	out, err := shiremitEmit(prog)
 	if err != nil {
 		return nil, fmt.Errorf("emit: %w", err)
 	}
@@ -5327,4 +5425,167 @@ func shir(src string, exactHi *big.Int) ([]byte, error) {
 	// where serde_json's BTreeMap ordering places it.
 	out = bytes.Replace(out, []byte(`"requires":[]`), []byte(`"requires":[],"stmt_lines":[]`), 1)
 	return out, nil
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// The A1 emitter, INLINED from upstream shir-emit-go (package shiremit)
+// by sync-frontends.sh: the merged busybox is one stdlib-only file, so
+// the emitter ships inside the frontend instead of as a module import.
+// The JSON it emits is unchanged.
+// ─────────────────────────────────────────────────────────────────────
+
+// Package shiremit builds and emits the A1 shIR JSON contract.
+//
+// The contract is defined in sh2perl/src/shir_json.rs (and the matching
+// deserializer in shir_json_in.rs). This Go package is the
+// single-source-of-truth for the A1 JSON shape used by all
+// ANTLR4+Go frontends (py-sh-go, posix-sh-go, perl-sh-go, go-sh).
+// It replaces the deferred #4 serde-derive refactor (in Rust) with
+// the equivalent in Go: one Emitter, one Program type, one JSON shape.
+//
+// The emitted JSON MUST be byte-identical to the core's
+// shir_json.rs output for the same program. encoding/json on
+// map[string]any produces alphabetically-sorted keys (matching
+// serde_json's BTreeMap), which is what the contract requires.
+//
+// Usage:
+//
+//	prog := &shiremitProgram{...}
+//	b, err := shiremitEmit(prog)
+//	// b is the A1 JSON, ready to write to stdout or feed to
+//	// otranspilerl-cli --shir-in-estree for the round-trip / ingress test.
+
+// shiremitContractVersion must match sh2perl/src/shir_json.rs CONTRACT_VERSION.
+const shiremitContractVersion = 1
+
+// shiremitProgram is the top-level A1 shIR program.
+//
+// The JSON field order is alphabetical (encoding/json sorts map keys).
+// The struct fields below are exported for programmatic construction;
+// the emitted JSON is a map[string]any (sorted), not a Go struct
+// literal, so the JSON shape is the contract — not these struct tags.
+type shiremitProgram struct {
+	Imports                 []string          `json:"imports"`
+	Requires                []string          `json:"requires"`
+	VarTypes                []shiremitVarType `json:"var_types"`
+	Subs                    []shiremitSub     `json:"subs"`
+	Stmts                   []map[string]any  `json:"stmts"`
+	shiremitContractVersion int               `json:"contract_version"`
+	Type                    string            `json:"type"` // always "shiremitProgram"
+}
+
+type shiremitVarType struct {
+	Name string `json:"name"`
+	// A widthless verdict ("Int"/"Str"/"Any") or a sized object
+	// ({"kind":"Float","width":64} — see shiremitFloatType). encoding/json
+	// sorts map keys, so the object form is byte-identical to the
+	// core's shir_json.rs output for the same IrType.
+	Type any `json:"type"`
+}
+
+// shiremitFloatType is the A1 var_types object for an IEEE-754 double
+// ({"kind":"Float","width":64}, matching IrType::Float(64)).
+func shiremitFloatType(width int) map[string]any {
+	return map[string]any{"kind": "Float", "width": width}
+}
+
+type shiremitSub struct {
+	Type   string           `json:"type"` // "Sub"
+	Name   string           `json:"name"`
+	Params []string         `json:"params"`
+	Body   []map[string]any `json:"body"`
+}
+
+// Emit serializes prog to the A1 shIR JSON, byte-equivalent to the
+// core's shir_json.rs output for the same program (sorted keys,
+// contract_version field, etc.).
+func shiremitEmit(prog *shiremitProgram) ([]byte, error) {
+	// Build the top-level map (sorted by encoding/json).
+	// We use map[string]any so keys sort alphabetically on marshal.
+	// Empty (non-nil) slices ensure "[]" not "null" in the JSON, matching
+	// the contract exactly.
+	imports := prog.Imports
+	if imports == nil {
+		imports = []string{}
+	}
+	requires := prog.Requires
+	if requires == nil {
+		requires = []string{}
+	}
+	v := map[string]any{
+		"type":             "Program",
+		"contract_version": shiremitContractVersion,
+		"imports":          imports,
+		"requires":         requires,
+		"var_types":        shiremitToAnySlice(prog.VarTypes),
+		"subs":             shiremitToAnySubs(prog.Subs),
+		"stmts":            shiremitToAnyStmts(prog.Stmts),
+	}
+	return json.Marshal(v)
+}
+
+// shiremitEmitToMap returns the program as a map[string]any (sorted keys when
+// later marshaled). Useful for tests that need the JSON shape without
+// the final marshal step.
+func shiremitEmitToMap(prog *shiremitProgram) map[string]any {
+	imports := prog.Imports
+	if imports == nil {
+		imports = []string{}
+	}
+	requires := prog.Requires
+	if requires == nil {
+		requires = []string{}
+	}
+	return map[string]any{
+		"type":             "Program",
+		"contract_version": shiremitContractVersion,
+		"imports":          imports,
+		"requires":         requires,
+		"var_types":        shiremitToAnySlice(prog.VarTypes),
+		"subs":             shiremitToAnySubs(prog.Subs),
+		"stmts":            shiremitToAnyStmts(prog.Stmts),
+	}
+}
+
+// --- helpers to convert typed slices to map slices (so the emitted
+// JSON has alphabetically-sorted keys via map[string]any) ---
+
+func shiremitToAnySlice(vs []shiremitVarType) []any {
+	out := make([]any, len(vs))
+	for i, v := range vs {
+		out[i] = map[string]any{"name": v.Name, "type": v.Type}
+	}
+	return out
+}
+
+func shiremitToAnySubs(subs []shiremitSub) []any {
+	out := make([]any, len(subs))
+	for i, s := range subs {
+		out[i] = map[string]any{
+			"type":   s.Type,
+			"name":   s.Name,
+			"params": s.Params,
+			"body":   shiremitToAnyStmts(s.Body),
+		}
+	}
+	return out
+}
+
+func shiremitToAnyStmts(stmts []map[string]any) []any {
+	out := make([]any, len(stmts))
+	for i, s := range stmts {
+		out[i] = s
+	}
+	return out
+}
+
+// shiremitSortedKeys returns the keys of m in alphabetical order (for callers
+// that need to inspect the JSON shape).
+func shiremitSortedKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }

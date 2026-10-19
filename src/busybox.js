@@ -41,7 +41,7 @@ const PREBUILT = "wasm-bin/otranspiler-busybox.wasm";  // shipped static build
 // changes so a browser never reuses a stale staged copy (the staged
 // VFS file at /usr/bin/otranspiler-busybox.wasm persists across page
 // loads; ensureBusyboxWasm re-fetches when this version differs).
-export const BUSYBOX_VERSION = "v37";  // v37: py-sh-go augmented assignment (*= -= /= //= %= **= alongside +=; string targets refuse; t100/t101 corpus)  // v36: otranspiler-busybox.wasm rebuild (byte-identical resync check)  // v35: py-sh-go Float(64) var_types (float-domain verdicts in A1)  // v34: py-sh-go named function params (functionParamsStmt), go-sh node-var lowering fixes  // v33: c-sh-go struct pointers (Tag *p decls/params, -> member mem ops, void*/argv[] params, fn-ptr calls, param arrayIndex/arrayStore, null -n/-z tests, strcmp/isdigit/getline/nodeChild/nodeData/strtoull bridges, nested a[b][c], user-body call statements); sh2runtime gains sh2.arrayStore/fnValue/charAt/isdigit + memLoad1 element-0; otranspilerl.js WASI environ + KEEP_VARIABLES library mode for source  // v32: resync all vendored frontends (c-sh-go If lowering + os import, go-sh accumulators/panic-recover/os.ReadDir/sort.Strings/debug.PrintStack source-forms, posix/zsh analysis+lowering, py/bat/fish updates, shir-emit comment fix); vendored go-sh drops the runtime/debug import (browser GOROOT bundle lacks it — diagnostic-only, kept upstream)  // v31: resync all vendored frontends with sh2loop (posix-sh-go analysis/lowering, go-sh, py-sh-go, c-sh-go, bat-sh-go, zsh-sh-go, fish-sh-go); bat keeps the vendored-only Shir→Parse adapter, go-sh drops a duplicated pkgNames field left mid-edit upstream  // v30: rebuild with the pure-Go cpp tokenizer (main.go only — the tree-sitter parser.go is cgo, not wasm-buildable; otranspiler.html serves cpp via the merged busybox)  // v29: cpp-sh-go + zig-sh-go merged into the busybox (pure-Go tokenizers onto clib)  // v28: c-sh-go emits ForInit + first-class Break/Continue  // v27: user-fn for/seq decls, non-cast param lift, ptr-param index via mem seam
+export const BUSYBOX_VERSION = "v38";  // v38: resync all vendored frontends with sh2loop (go-sh ~1.6k-line update; py-sh-go drops augmented assignment — the v37 py wasm was built from a py-sh-go tree that no longer exists upstream), and INLINE the shir-emit-go emitter in bat/go/fish/perl/py via sync-frontends.sh so the merge is truly stdlib-only (before, the merge silently dropped that import, so the build only worked with a sh2loop checkout next to the repo). Output on every shipped example is unchanged vs v37.  // v37:
 
 // Read one vendored frontend source file (browser: fetch; node: disk).
 // `base` is unused in node (paths resolve against the repo root); in the
@@ -167,12 +167,21 @@ export async function mergedBusyboxSource(base) {
   allSrc.forEach((f) => {
     extractImports(f).forEach((i) => { impSet[i] = true; });
   });
-  // stdlib-only merge: drop module (dotted) imports — the cpp/zig
-  // frontends import clib (c-sh-go), which is merged in as the c
-  // frontend, not linked as a module. (stdlib imports have no dot)
-  delete impSet["github.com/gmatht/sh2loop/frontends/c-sh-go"];
-  delete impSet["github.com/gmatht/sh2loop/frontends/shir-emit-go"];
-  const imports = Object.keys(impSet).sort();
+    // stdlib-only merge: drop module (dotted) imports — cpp/zig import
+    // clib (c-sh-go), which is merged in as the c frontend, not linked
+    // as a module. The shir-emit-go import is inlined by the vendored
+    // adapter (sync-frontends.sh), so only clib appears here. Keep a
+    // safety net: a module import that slips through would build the
+    // merged file against a path that does not exist (upstream checkout
+    // only). (stdlib imports have no dot)
+    delete impSet["github.com/gmatht/sh2loop/frontends/c-sh-go"];
+    const imports = Object.keys(impSet).sort();
+    const moduleImports = imports.filter((i) => i.includes("."));
+    if (moduleImports.length) {
+      throw new Error(
+        "busybox merge: non-stdlib import(s) survived the vendored adapters: " +
+          moduleImports.join(", ") + " (run ./sync-frontends.sh)");
+    }
   return (
     "// Generated unified frontend (busybox): eight frontend libs + shir-emit-go + the dispatcher CLI.\n" +
     "// Source of truth: gmatht/sh2loop/frontends, vendored in www/bin/.\n" +

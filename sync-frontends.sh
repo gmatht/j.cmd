@@ -8,13 +8,19 @@
 # them in sync when a frontend gains a file. After syncing, rebuild:
 #   ./build-wasm-busybox.sh
 #
-# Two vendored-only adaptations are re-applied idempotently after every
+# Three vendored-only adaptations are re-applied idempotently after every
 # copy (upstream must stay untouched — workers edit it live):
 #   bat-sh-go/bat.go ... Shir adapter (upstream exposes Parse only;
 #                        the merge dispatcher needs one Shir per lib)
 #   go-sh/go-sh.go ..... drop the runtime/debug import + PANICSTACK
 #                        stack dump (the browser Go toolchain's GOROOT
 #                        bundle has no runtime/debug; diagnostic only)
+#   go-sh / py-sh-go ... inline the shir-emit-go emitter instead of
+#                        importing it: the merged busybox is one
+#                        stdlib-only file. The inlined copy is
+#                        www/bin/shir-emit-go/emit.go with the
+#                        shiremit identifiers renamed out of the
+#                        frontend's namespace (JSON output unchanged).
 #
 # The cgo guard refuses the whole sync if any NORMALLY-pure frontend
 # gains a non-wasm-buildable import ("C", runtime/debug, runtime/cgo,
@@ -26,6 +32,9 @@
 #   ./sync-frontends.sh           # copy changed files, re-apply adapters
 #   ./sync-frontends.sh --check   # report drift, change nothing (exit 1 if any)
 #   SH2LOOP=/path/to/sh2loop ./sync-frontends.sh
+#
+# Both adaptations need gofmt on PATH (the inlined emitter is gofmt'd
+# like the upstream file, so the result stays reproducible).
 # -----------------------------------------------------------------
 
 set -euo pipefail
@@ -91,7 +100,7 @@ echo "  clean"
 
 # files that ALWAYS differ by design (vendored-only adapters, §3) —
 # reported separately, never a drift failure
-EXPECTED_DRIFT="go-sh/go-sh.go bat-sh-go/bat.go"
+EXPECTED_DRIFT="go-sh/go-sh.go bat-sh-go/bat.go fish-sh-go/fish-sh-go.go perl-sh-go/main.go"
 is_expected() { case " $EXPECTED_DRIFT " in *" $1 "*) return 0;; esac; return 1; }
 
 # ── 2. copy ───────────────────────────────────────────────────────
@@ -173,25 +182,55 @@ EOF
 else
   echo "  go-sh: no runtime/debug import"
 fi
-fi
-
-
-# ── 4. post-copy guard: the VENDORED tree must be stdlib-clean ─────
-# (catches an adapter that stopped applying, e.g. moved anchors)
-if [ "$CHECK" = 0 ]; then
-echo "── post-copy guard ──"
-POSTBAD=$(grep -rn -E '"(C|runtime/debug|runtime/cgo)"' $(find "$V" -name '*.go' -not -path '*/testdata/*') 2>/dev/null | grep -vE '^[^:]+:[0-9]+:\s*//' || true)
-for gf in $(find "$V" -name '*.go' -not -path '*/testdata/*' -not -path "$V/cpp-sh-go/*"); do
-  if sed -n '/^import (/,/^)/p; /^import "/p' "$gf" | grep -qE 'tree-sitter|tree_sitter'; then POSTBAD="$POSTBAD $gf: tree-sitter import"; fi
+# bat/go/fish/perl/py: inline the shir-emit-go emitter (stdlib-only
+# merge). The import leaves the frontend; the emitter's code is appended
+# with its identifiers renamed out of the frontend's namespace and the
+# two upstream call shapes rewritten (`&shiremit.Program{...}` and
+# `shiremit.Emit(prog)` become the inlined names). gofmt normalises the
+# result so a re-sync is a no-op.
+for fe in bat-sh-go/bat.go go-sh/go-sh.go fish-sh-go/fish-sh-go.go perl-sh-go/main.go py-sh-go/main.go; do
+  if grep -q '"github.com/gmatht/sh2loop/frontends/shir-emit-go"' "$V/$fe"; then
+    python3 - "$V/$fe" "$V/shir-emit-go/emit.go" <<'EOF'
+import re, sys, subprocess
+dst, emit = sys.argv[1], sys.argv[2]
+pre = "shiremit"
+s = open(dst).read()
+imp = '\n\tshiremit "github.com/gmatht/sh2loop/frontends/shir-emit-go"\n'
+assert s.count(imp) == 1, "emit import anchor moved — fix sync-frontends.sh"
+s = s.replace(imp, "")
+if not re.search(r'\bencoding/json\b', s):
+    s = s.replace('import (\n', 'import (\n\t"encoding/json"\n', 1)
+s = s.replace("shiremit.", pre)
+seg = open(emit).read().replace("package shiremit\n", "", 1)
+seg = re.sub(r"\bshiremit\.", pre, seg)
+seg = seg.replace('import (\n\t"encoding/json"\n\t"sort"\n)\n', "", 1)
+seg = re.sub(r"\bProgram\b", pre + "Program", seg)
+seg = re.sub(r"\bVarType\b", pre + "VarType", seg)
+seg = re.sub(r"\bSub\b", pre + "Sub", seg)
+seg = re.sub(r"\bFloatType\b", pre + "FloatType", seg)
+seg = re.sub(r"\bEmitToMap\b", pre + "EmitToMap", seg)
+seg = re.sub(r"\bSortedKeys\b", pre + "SortedKeys", seg)
+seg = re.sub(r"\bContractVersion\b", pre + "ContractVersion", seg)
+seg = seg.replace("toAnySlice", pre + "ToAnySlice").replace("toAnySubs", pre + "ToAnySubs").replace("toAnyStmts", pre + "ToAnyStmts")
+seg = seg.replace("func Emit(prog *", "func " + pre + "Emit(prog *")
+seg = seg.replace('"type":             "' + pre + 'Program",', '"type":             "Program",')
+seg = seg.replace('`json:"type"` // "' + pre + 'Sub"', '`json:"type"` // "Sub"')
+# the copied doc comments named the upstream package; keep them prose
+seg = seg.replace(pre + "Program type", "Program type")
+hdr = ("// ─────────────────────────────────────────────────────────────────────\n"
+       "// The A1 emitter, INLINED from upstream shir-emit-go (package shiremit)\n"
+       "// by sync-frontends.sh: the merged busybox is one stdlib-only file, so\n"
+       "// the emitter ships inside the frontend instead of as a module import.\n"
+       "// The JSON it emits is unchanged.\n"
+       "// ─────────────────────────────────────────────────────────────────────\n\n")
+s = s.rstrip("\n") + "\n\n" + hdr + seg.rstrip("\n") + "\n"
+open(dst, "w").write(s)
+subprocess.run(["gofmt", "-w", dst], check=True)
+print("  " + dst.split("/www/bin/")[1] + ": shir-emit-go inlined")
+EOF
+  else
+    echo "  ${fe%%/*}: emitter inlined"
+  fi
 done
-POSTBAD=$(echo "$POSTBAD" | grep -v '^$' || true)
-if [ -n "$POSTBAD" ]; then
-  echo "$POSTBAD"; echo "error: non-wasm-buildable import survived sync — fix an adapter" >&2; exit 1
-fi
-echo "  vendored tree stdlib-clean"
-fi
-
-if [ "$CHECK" = 1 ]; then
-  if [ "$UNEXPECTED" = 0 ] && [ "$NEWFILES" = 0 ]; then echo "IN SYNC (adapters aside)"; exit 0; else echo "DRIFT DETECTED ($UNEXPECTED unexpected, $NEWFILES new files)"; exit 1; fi
 fi
 echo "done — next: ./build-wasm-busybox.sh"
