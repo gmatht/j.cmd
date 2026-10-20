@@ -11,6 +11,7 @@ clobbered the vendored-only adapters and twice shipped a stale wasm):
 ./sync-frontends.sh [--check]   # 1. vendor latest sh2loop frontends
 ./build-wasm-busybox.sh         # 2. rebuild the merged wasm (~2 min)
 node __busybox-corpus-gate.mjs  # 2b. every example parses (all frontends)
+node __otranspiler-targets-gate.mjs  # 2c. every target backend renders
 ./import-testdata.sh <lang>     # 3. import new corpus examples
 ./gate-bisect.sh <file> <lang>  # 4. (on failure) blame the right layer
 ./deploy.sh [--allow-dirty]     # 5. gates + push + rsync
@@ -69,6 +70,40 @@ It exits 1 on a *broken* parse (wasm/runner failure, malformed A1). A
 frontend *refusal* (unsupported subset feature: the `*_refuse.*` cpp
 examples, `t103_pep695.py`, sh files that leaked into the go dir) is
 counted, not failed — add `--fail-on-refuse` to make it fatal.
+
+## 2d. Backend targets (otranspilerl.wasm)
+
+The TARGET buttons in `otranspiler.html` are the backends linked into
+`www/wasm-bin/otranspilerl.wasm` (built from `gmatht/sh2loop/otranspilerl`
+by `build-wasm-otranspilerl.sh`). Adding a backend is a **sh2loop** change
+(renderer + an `ingest()` TARGETS row), then a rebuild here:
+
+* `fish` — `debashl::fish_backend` lives in `sh2perl/backends/fish/` as a
+  standalone copy of the crate (own `src/lib.rs`, `fish_backend.rs`,
+  `src/bin`). To link it into the shipped crate: add `pub mod
+  fish_backend;` to `sh2perl/src/lib.rs` and copy
+  `backends/fish/src/fish_backend.rs` over `sh2perl/src/fish_backend.rs`
+  WITHOUT its vendored `src/` (the old copy imports modules that no longer
+  exist — `crate::ir` moved to `debashl::ir`). Then `.fish` in
+  otranspilerl's `TARGETS`, a `"fish" => shir_to_fish(...)` arm, and
+  `transforms::plain_if` in the A1 ingress (the sh/fish renderers refuse
+  the raw BinOp `[ … ]` command-expression form; every other backend is
+  unchanged). Bump `WASM_VERSION` in `src/otranspilerl.js` and add the
+  target to `TARGETS` (page) + `TARGETS_TEXT` (text targets) and a
+  `BACKEND_STATUS` row.
+* `zsh`, `bat` — renderers exist upstream (`backends/zsh`, no bat backend)
+  but are NOT linked. The page lists them disabled with the reason from
+  `TARGET_UNAVAILABLE` (`src/otranspile-jobs.js`) rather than hiding the
+  gap; move a target out of that map only when the wasm really renders it.
+
+`node __otranspiler-targets-gate.mjs` checks the wiring: every target in
+`TARGETS` either renders its probe programs or is listed unavailable AND
+refused by the wasm, every wired non-render-only target has a page runtime
+(`RUNNABLE`), and the fish output is really fish (`shebang`, `end`,
+`$argv`). It is browserless (drives `transpileJob` through the real wasm).
+The fish backend's execution fidelity (356 identical / 125 differing / 50
+unrenderable over the sh2perl corpus, 2026-10-20) is not yet gated in
+sh2loop — treat fish as an experimental target until it is.
 
 ## 3. import-testdata.sh <lang>
 

@@ -57,7 +57,14 @@ export const RUNTIME_LABEL = {
 // rustfrontend.js; powershell is fleet-only).
 const FRONTEND_PORTED = { sh: 1, zsh: 1, fish: 1, go: 1, py: 1, c: 1, pl: 1, bat: 1, cpp: 1, zig: 1, rust: 1, js: 1 };
 const FRONTEND_NAME = { powershell: "powershell-sh-go" };
-const TARGETS_TEXT = ["sh", "pl", "c", "go", "py", "java", "rs", "zig"];
+const TARGETS_TEXT = ["sh", "pl", "c", "go", "py", "java", "rs", "zig", "fish"];
+// render targets that exist in the TARGETS list but have NO backend in the
+// shipped otranspilerl.wasm yet — the page shows them disabled with this
+// reason rather than offering a target that can only fail.
+export const TARGET_UNAVAILABLE = {
+  zsh: "no zsh backend in otranspilerl.wasm yet (sh2perl/backends/zsh is not linked); zsh as a SOURCE language works",
+  bat: "no batch/cmd backend in otranspilerl.wasm yet; bat as a SOURCE language works",
+};
 
 // ─── line map for TEXT targets (moved verbatim from the page) ────
 // (see www/otranspiler.html history for the per-target rationale)
