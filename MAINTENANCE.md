@@ -91,6 +91,14 @@ by `build-wasm-otranspilerl.sh`). Adding a backend is a **sh2loop** change
   unchanged). Bump `WASM_VERSION` in `src/otranspilerl.js` and add the
   target to `TARGETS` (page) + `TARGETS_TEXT` (text targets) and a
   `BACKEND_STATUS` row.
+* `fish` — the backend BUILDS (it renders the probes, and 356/531 sh2perl
+  examples produce bash-identical stdout under fish 3.x, 125 differ), but
+  linking it into the shipped wasm is NOT safe yet: with `fish_backend`
+  compiled in, rendering `mimecroft.sh` through the **estree** path traps
+  (`RuntimeError: unreachable`) — an estree entry unrelated to the new
+  match arm. Reproducer: link `fish_backend`, then
+  `lib.render(lib.shir(mimecroft.sh), "js")`. Until that is fixed the page
+  lists `fish` disabled (`TARGET_UNAVAILABLE`), like zsh/bat.
 * `zsh`, `bat` — renderers exist upstream (`backends/zsh`, no bat backend)
   but are NOT linked. The page lists them disabled with the reason from
   `TARGET_UNAVAILABLE` (`src/otranspile-jobs.js`) rather than hiding the
@@ -98,12 +106,9 @@ by `build-wasm-otranspilerl.sh`). Adding a backend is a **sh2loop** change
 
 `node __otranspiler-targets-gate.mjs` checks the wiring: every target in
 `TARGETS` either renders its probe programs or is listed unavailable AND
-refused by the wasm, every wired non-render-only target has a page runtime
-(`RUNNABLE`), and the fish output is really fish (`shebang`, `end`,
-`$argv`). It is browserless (drives `transpileJob` through the real wasm).
-The fish backend's execution fidelity (356 identical / 125 differing / 50
-unrenderable over the sh2perl corpus, 2026-10-20) is not yet gated in
-sh2loop — treat fish as an experimental target until it is.
+refused by the wasm, and every wired non-render-only target has a page
+runtime (`RUNNABLE`). It is browserless (drives `transpileJob` through the
+real wasm) and runs as a step of `deploy-gates.sh`.
 
 ## 3. import-testdata.sh <lang>
 

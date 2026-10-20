@@ -108,6 +108,19 @@ for t in "${BROWSER_SMOKES[@]}"; do
   fi
 done
 
+echo "── backend targets (otranspilerl.wasm) ──"
+# every TARGET button the page offers must render, or be listed
+# unavailable and refused by the wasm; fish output must be fish. Browserless
+# (drives transpileJob through the real wasm), so it guards the wasm/render
+# pair on every deploy, not just the worker smokes.
+if timeout 300 node __otranspiler-targets-gate.mjs > /tmp/deploy-targets.log 2>&1; then
+  echo "  $(grep -c '^  ok' /tmp/deploy-targets.log) target checks pass"
+else
+  echo "✗ backend-target gate failed — refusing to deploy (log: /tmp/deploy-targets.log)" >&2
+  grep -E "FAIL|GATE" /tmp/deploy-targets.log | head -10 >&2
+  exit 1
+fi
+
 echo "── c-sh-go corpus ──"
 CB=/tmp/cshgo-check
 if [ ! -x "$CB" ]; then

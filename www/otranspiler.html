@@ -369,18 +369,10 @@ let autoUpdate = true;
 let autoTimer = null;
 let busy = false;
 
-// target backends offered by the page, in display order. `fish` renders
-// through the fish backend in otranspilerl.wasm; `zsh` and `bat` have no
-// renderer in the shipped wasm yet, so they render disabled with the
-// reason in TARGET_UNAVAILABLE (src/otranspile-jobs.js) — offering a
+// target backends offered by the page. `fish`, `zsh` and `bat` have no
+// renderer in the shipped otranspilerl.wasm, so they render disabled with
+// the reason in TARGET_UNAVAILABLE (src/otranspile-jobs.js) — offering a
 // target that can only fail is worse than saying what is missing.
-// ORDER: renderTargets() rebuilds the buttons on every click, and the
-// click event is still bubbling to the (removed) button when the handler
-// runs — unless the handler is capture-phase, the removal means the
-// bubble-phase target listeners never fire, so the first click on any
-// target did nothing. Only the LAST button therefore carries a
-// bubble-phase listener (the auto-update toggle) and that button is last
-// so the rebuild cannot detach it.
 const TARGETS = ["js", "pl", "c", "go", "py", "java", "rs", "zig", "fish", "zsh", "bat", "glsl", "glslv", "sh", "shir"];
 
 // ── backend gate status ─────────────────────────────────────────
@@ -401,7 +393,6 @@ const BACKEND_STATUS = {
   java: { pass: 19,  total: 613, name: "java" },
   rs:   { pass: 23,  total: 539, name: "rust" },
   zig:  { pass: 0,   total: 539, name: "zig" },
-  fish: { pass: 0,   total: 531, name: "fish", note: "EXPERIMENTAL — renderer linked in otranspilerl.wasm; bash-vs-fish 356/531 identical, not yet gated upstream" },
   glsl: { pass: 0,   total: 0,   name: "glsl", note: "sh→GLSL ES 1.00 renderer (sh2glsl) — no fleet gate data yet" },
   glslv: { pass: 0, total: 0, name: "glslv", note: "sh→GLSL ES 1.00 VERTEX renderer (sh2glsl --vertex) — no fleet gate data yet" },
   shir: { pass: 0,   total: 0,   name: "A1 contract" },

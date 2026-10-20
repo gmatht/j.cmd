@@ -13,15 +13,13 @@
 //   • a wired target (TARGETS minus TARGET_UNAVAILABLE) errors on the
 //     probe programs, or
 //   • a target listed unavailable actually renders, or
-//   • fish output for the probes is not fish (no `end`/`set` where the
-//     backend promises them).
+//   • (fish is listed unavailable until its renderer is linked — see
+//     MAINTENANCE.md §2d — so the fish-output checks are SKIPPED).
 //
 // Execution fidelity of the fish BACKEND (bash stdout vs fish stdout over
-// the sh2perl corpus) is reported, not failed: the backend is newly
-// linked and its gate baseline does not exist yet (BACKEND_STATUS.fish).
-// Measured 2026-10-20 with fish 3.x on PATH: 356 identical / 125 differ /
-// 50 unrenderable-or-not-clean-bash — the fish target is offered as an
-// EXPERIMENT until that ratio is gated properly in sh2loop.
+// the sh2perl corpus), measured 2026-10-20 with fish 3.x on PATH: 356
+// identical / 125 differ / 50 unrenderable-or-not-clean-bash. Not gated
+// here — it belongs in sh2loop's own backend gate once fish is linked.
 import { getOtranspilerl } from "./src/otranspilerl.js";
 import { transpileJob, TARGET_UNAVAILABLE, RUNNABLE } from "./src/otranspile-jobs.js";
 
@@ -80,7 +78,7 @@ for (const t of TARGETS) {
 }
 
 // fish specifically: the backend's promises (set/end/math/argv) show up
-{
+if (!TARGET_UNAVAILABLE.fish) {
   const fn = (await transpileJob(PROBES.fn, "sh", "fish", {})).text;
   const loop = (await transpileJob(PROBES.loop, "sh", "fish", {})).text;
   ok(/^#!.*fish/m.test(fn), "fish output has a fish shebang", fn.slice(0, 80));
