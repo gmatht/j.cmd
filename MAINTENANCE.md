@@ -78,27 +78,39 @@ The TARGET buttons in `otranspiler.html` are the backends linked into
 by `build-wasm-otranspilerl.sh`). Adding a backend is a **sh2loop** change
 (renderer + an `ingest()` TARGETS row), then a rebuild here:
 
-* `fish` — `debashl::fish_backend` lives in `sh2perl/backends/fish/` as a
-  standalone copy of the crate (own `src/lib.rs`, `fish_backend.rs`,
-  `src/bin`). To link it into the shipped crate: add `pub mod
-  fish_backend;` to `sh2perl/src/lib.rs` and copy
-  `backends/fish/src/fish_backend.rs` over `sh2perl/src/fish_backend.rs`
-  WITHOUT its vendored `src/` (the old copy imports modules that no longer
-  exist — `crate::ir` moved to `debashl::ir`). Then `.fish` in
-  otranspilerl's `TARGETS`, a `"fish" => shir_to_fish(...)` arm, and
-  `transforms::plain_if` in the A1 ingress (the sh/fish renderers refuse
-  the raw BinOp `[ … ]` command-expression form; every other backend is
-  unchanged). Bump `WASM_VERSION` in `src/otranspilerl.js` and add the
-  target to `TARGETS` (page) + `TARGETS_TEXT` (text targets) and a
-  `BACKEND_STATUS` row.
-* `fish` — the backend BUILDS (it renders the probes, and 356/531 sh2perl
-  examples produce bash-identical stdout under fish 3.x, 125 differ), but
-  linking it into the shipped wasm is NOT safe yet: with `fish_backend`
-  compiled in, rendering `mimecroft.sh` through the **estree** path traps
-  (`RuntimeError: unreachable`) — an estree entry unrelated to the new
-  match arm. Reproducer: link `fish_backend`, then
-  `lib.render(lib.shir(mimecroft.sh), "js")`. Until that is fixed the page
-  lists `fish` disabled (`TARGET_UNAVAILABLE`), like zsh/bat.
+* `fish` — the backend builds, but linking it REGRESSES a different
+  backend, so it is not wired (`TARGET_UNAVAILABLE.fish`, page disabled).
+  Why, precisely:
+
+  | wasm | `render(shir(mimecroft.sh), "js")` | `fish` |
+  |---|---|---|
+  | shipped (no `fish_backend` linked) | OK (3 625 607 bytes) | not linked |
+  | `fish_backend` linked, arm returns `""` (no fish_backend code runs) | **traps** (`unreachable`) | – |
+  | same, with `transforms::fbdev-gpu` commented out | OK (3 305 904 bytes) | – |
+
+  The panic is *not* in estree.rs: `shir.rs` panics with `Ext statement node
+  (GpuOp) reached the ESTree renderer without a handler`. The fish linker
+  changes the shared A1 ingress: the lift that turns `echo … > /dev/webgl/…`
+  into the GpuOp node (src/transforms/fbdev_gpu.rs, registered as
+  `fbdev-gpu`) is gated by `SH2_TRANSFORMS` (empty = ALL registered), and in
+  the fish build `SH2_TRANSFORMS` reads as SET for that pass — the
+  `shir()` the page gets back from the fish build contains 64 `GpuOp` nodes
+  where the shipped build's contains none. The ESTree renderer has no GpuOp
+  handler, so it panics; every other backend happens to render or refuse it.
+  (The ingress was also instrumented to confirm `transforms::target()` is
+  `None` and `BASH_O4` unset, i.e. not a target/BASH_O4 gate misfiring.)
+  Fix belongs in sh2loop: find why the pass's SH2_TRANSFORMS lookup differs
+  after linking fish_backend, or make the lift run only under `BASH_O4`;
+  then re-link (the `render(shir(mimecroft.sh), "js")` check above is the
+  gate for that).
+
+  The vendored-copy drift is also real: `sh2perl/backends/fish/src/
+  fish_backend.rs` predates `IrStmt::Function{params}` (E0063 on link) — copy
+  it to `sh2perl/src/fish_backend.rs` with the `params` field added, add
+  `pub mod fish_backend;` and drop `[workspace]` from sh2perl/Cargo.toml
+  (the dependency manifest must not be a workspace root). With that, fish
+  renders its probes and 356/531 sh2perl examples are bash-identical under
+  fish 3.x (125 differ, 50 unrenderable-or-not-clean-bash).
 * `zsh`, `bat` — renderers exist upstream (`backends/zsh`, no bat backend)
   but are NOT linked. The page lists them disabled with the reason from
   `TARGET_UNAVAILABLE` (`src/otranspile-jobs.js`) rather than hiding the
